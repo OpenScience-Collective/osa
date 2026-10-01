@@ -16,10 +16,10 @@ from collections.abc import AsyncGenerator, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NamedTuple
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -58,7 +58,9 @@ from src.api.tool_results import (
 )
 from src.api.turn_outcome import (
     ModelRuns,
+    ReplyProblem,
     current_turn,
+    error_body,
     error_event,
     reply_problem,
     warning_event,
@@ -296,6 +298,20 @@ class ChatResponse(BaseModel):
             "its context window. The streamed endpoint sends the same text as a "
             "`warning` event."
         ),
+    )
+
+
+class UnansweredReplyResponse(BaseModel):
+    """Body of the 502 a request that is not streamed gets when the model wrote no answer.
+
+    The same ids the streamed ``error`` event carries, so a client that retries can tie its
+    attempts to the log and to the request's row in the metrics.
+    """
+
+    detail: str = Field(..., description="Why there is no answer, as a reader should be told")
+    error_id: str = Field(..., description="The id the error's log line carries")
+    request_id: str | None = Field(
+        default=None, description="Key of the request's row in the metrics"
     )
 
 
@@ -1134,7 +1150,7 @@ class ProviderChoice:
         return self.takes_native_blocks or self.tags_citations
 
 
-def _platform_choice(settings: Settings, community_id: str) -> ProviderChoice:
+def _platform_choice(settings: Settings, community_id: str, *, log: bool = True) -> ProviderChoice:
     """Fall back to the platform's own key, preferring Anthropic.
 
     Phase 2 flips platform-key routing to the Claude Platform on AWS: when
@@ -1146,6 +1162,8 @@ def _platform_choice(settings: Settings, community_id: str) -> ProviderChoice:
     Args:
         settings: Server settings, for the platform's keys.
         community_id: The community the request is for, named in the error log.
+        log: Whether to log what it finds (the OpenRouter fallback, no key at all). False
+            for a probe of a request that is routed again for real (see ``_route_request``).
 
     Raises:
         HTTPException(500): If neither platform key is configured.
@@ -1160,42 +1178,85 @@ def _platform_choice(settings: Settings, community_id: str) -> ProviderChoice:
         # rejected -- inferring from key presence plus a loud warning is
         # enough for now, and a provider toggle would reintroduce the
         # configuration ambiguity this epic is removing.
-        logger.warning(
-            "ANTHROPIC_API_KEY is not configured; platform-funded requests are "
-            "falling back to OpenRouter and are NOT running on the Claude "
-            "Platform on AWS. Set ANTHROPIC_API_KEY to fix this.",
-            extra={"provider": "openrouter", "key_source": "platform"},
-        )
+        if log:
+            logger.warning(
+                "ANTHROPIC_API_KEY is not configured; platform-funded requests are "
+                "falling back to OpenRouter and are NOT running on the Claude "
+                "Platform on AWS. Set ANTHROPIC_API_KEY to fix this.",
+                extra={"provider": "openrouter", "key_source": "platform"},
+            )
         return ProviderChoice(
             provider="openrouter", api_key=settings.openrouter_api_key, key_source="platform"
         )
     # Every platform-funded request to this community fails from here, and the caller
     # only sees a 500: the log is where an operator learns why. A Bedrock key alone does
     # not help, since a Bedrock model is only ever reached from the Anthropic provider.
-    logger.error(
-        "No platform API key is configured for community %s: ANTHROPIC_API_KEY and "
-        "OPENROUTER_API_KEY are both unset, so platform-funded requests fail with HTTP 500.%s",
-        community_id,
-        " AWS_BEARER_TOKEN_BEDROCK is set but serves nothing without ANTHROPIC_API_KEY."
-        if settings.bedrock_api_key
-        else "",
-        extra={
-            "community_id": community_id,
-            "anthropic_key_configured": False,
-            "openrouter_key_configured": False,
-            "bedrock_key_configured": bool(settings.bedrock_api_key),
-        },
-    )
+    if log:
+        logger.error(
+            "No platform API key is configured for community %s: ANTHROPIC_API_KEY and "
+            "OPENROUTER_API_KEY are both unset, so platform-funded requests fail with "
+            "HTTP 500.%s",
+            community_id,
+            " AWS_BEARER_TOKEN_BEDROCK is set but serves nothing without ANTHROPIC_API_KEY."
+            if settings.bedrock_api_key
+            else "",
+            extra={
+                "community_id": community_id,
+                "anthropic_key_configured": False,
+                "openrouter_key_configured": False,
+                "bedrock_key_configured": bool(settings.bedrock_api_key),
+            },
+        )
     raise HTTPException(
         status_code=500,
         detail="No API key configured for this community. Please contact support.",
     )
 
 
+@dataclass(frozen=True)
+class CommunityKey:
+    """The key a community names to fund its own requests, and whether it is there.
+
+    Attributes:
+        provider: "anthropic" or "openrouter", by which env var the community names.
+        env_var: The name of the environment variable the key is read from.
+        key: The key, or None when that variable is unset or empty.
+    """
+
+    provider: Literal["anthropic", "openrouter"]
+    env_var: str
+    key: str | None
+
+
+def _community_key(config: CommunityConfig | None) -> CommunityKey | None:
+    """The key a community funds itself with, read as ``_resolve_provider`` reads it.
+
+    The Anthropic variable is checked before OpenRouter's, and naming one settles it: a
+    community that names an Anthropic variable which is unset goes to the platform's key,
+    never on to its OpenRouter variable. The one place that precedence lives, so the
+    request, the ``/config`` default and the startup log cannot read it differently.
+
+    Returns:
+        The variable the community names first, with its key (None if unset or empty), or
+        None when it names neither.
+    """
+    if config is None:
+        return None
+    if config.anthropic_api_key_env_var:
+        name = config.anthropic_api_key_env_var
+        return CommunityKey("anthropic", name, os.getenv(name) or None)
+    if config.openrouter_api_key_env_var:
+        name = config.openrouter_api_key_env_var
+        return CommunityKey("openrouter", name, os.getenv(name) or None)
+    return None
+
+
 def _resolve_provider(
     community_id: str,
     byok: ByokCredential | None,
     origin: str | None,
+    *,
+    log: bool = True,
 ) -> ProviderChoice:
     """Resolve which LLM provider, API key, and key source to use.
 
@@ -1203,13 +1264,17 @@ def _resolve_provider(
     1. If BYOK provided → use it (always allowed), for whichever provider
        the caller's header selected (see ``resolve_byok``).
     2. If origin matches community CORS → allow fallback to a community key
-       (Anthropic env var checked before OpenRouter's), then the platform key.
+       (Anthropic env var checked before OpenRouter's, see ``_community_key``), then
+       the platform key.
     3. Otherwise → reject (CLI or unauthorized origin must provide BYOK).
 
     Args:
         community_id: Community identifier.
         byok: Caller-supplied credential, if any (see ``resolve_byok``).
         origin: Origin header from the HTTP request.
+        log: Whether to log the community key it uses or finds missing, and what
+            ``_platform_choice`` finds. False for a probe of a request that is routed
+            again for real (see ``_route_request``).
 
     Returns:
         The resolved ProviderChoice.
@@ -1244,83 +1309,45 @@ def _resolve_provider(
     # Origin is authorized - allow fallback to community/platform keys
     settings = get_settings()
     community_info = registry.get(community_id)
+    community = _community_key(community_info.community_config if community_info else None)
 
-    if community_info and community_info.community_config:
-        config = community_info.community_config
-
-        anthropic_env_var = config.anthropic_api_key_env_var
-        if anthropic_env_var:
-            community_key = os.getenv(anthropic_env_var)
-            if community_key:
+    if community is not None:
+        label = "Anthropic" if community.provider == "anthropic" else "OpenRouter"
+        if community.key:
+            if log:
                 logger.info(
-                    "Using community-specific Anthropic API key from %s for %s",
-                    anthropic_env_var,
+                    "Using community-specific %s API key from %s for %s",
+                    label,
+                    community.env_var,
                     community_id,
                     extra={
                         "community_id": community_id,
                         "key_source": "community",
-                        "provider": "anthropic",
-                        "env_var": anthropic_env_var,
+                        "provider": community.provider,
+                        "env_var": community.env_var,
                     },
                 )
-                return ProviderChoice(
-                    provider="anthropic", api_key=community_key, key_source="community"
-                )
+            return ProviderChoice(
+                provider=community.provider, api_key=community.key, key_source="community"
+            )
+        if log:
             logger.error(
                 "Community %s configured to use %s but env var not set, falling back to "
                 "the platform key. This may incur unexpected costs. Set the environment "
                 "variable to fix this.",
                 community_id,
-                anthropic_env_var,
+                community.env_var,
                 extra={
                     "community_id": community_id,
                     "key_source": "platform",
-                    "configured_env_var": anthropic_env_var,
+                    "configured_env_var": community.env_var,
                     "env_var_missing": True,
                     "fallback_to_platform": True,
                     "origin": origin,
                 },
             )
-            return _platform_choice(settings, community_id)
 
-        # Anthropic env var not configured for this community; a community
-        # can still fund itself through OpenRouter instead.
-        openrouter_env_var = config.openrouter_api_key_env_var
-        if openrouter_env_var:
-            community_key = os.getenv(openrouter_env_var)
-            if community_key:
-                logger.info(
-                    "Using community-specific OpenRouter API key from %s for %s",
-                    openrouter_env_var,
-                    community_id,
-                    extra={
-                        "community_id": community_id,
-                        "key_source": "community",
-                        "provider": "openrouter",
-                        "env_var": openrouter_env_var,
-                    },
-                )
-                return ProviderChoice(
-                    provider="openrouter", api_key=community_key, key_source="community"
-                )
-            logger.error(
-                "Community %s configured to use %s but env var not set, falling back to "
-                "the platform key. This may incur unexpected costs. Set the environment "
-                "variable to fix this.",
-                community_id,
-                openrouter_env_var,
-                extra={
-                    "community_id": community_id,
-                    "key_source": "platform",
-                    "configured_env_var": openrouter_env_var,
-                    "env_var_missing": True,
-                    "fallback_to_platform": True,
-                    "origin": origin,
-                },
-            )
-            return _platform_choice(settings, community_id)
-
-    return _platform_choice(settings, community_id)
+    return _platform_choice(settings, community_id, log=log)
 
 
 def _to_openrouter_model_via_canonical(model: str) -> str | None:
@@ -1351,6 +1378,8 @@ def _select_model(
     requested_model: str | None,
     provider: ProviderName,
     has_byok: bool,
+    *,
+    log: bool = True,
 ) -> tuple[str, str | None]:
     """Select the model (and, on OpenRouter, its provider-routing hint).
 
@@ -1374,6 +1403,8 @@ def _select_model(
         requested_model: User-requested model from the request body.
         provider: The provider resolved by ``_resolve_provider``.
         has_byok: Whether the caller provided their own API key.
+        log: Whether to log a configured default that cannot be served. False for a
+            probe of a request that is routed again for real (see ``_route_request``).
 
     Returns:
         Tuple of (model, provider_routing_hint). The routing hint is always
@@ -1385,14 +1416,8 @@ def _select_model(
         HTTPException(403): On the OpenRouter path, if a custom model is
             requested without BYOK.
     """
-    settings = get_settings()
-
-    # Determine the default model for this community
-    default_model = settings.default_model
-    default_provider = settings.default_model_provider
-    if community_info.community_config and community_info.community_config.default_model:
-        default_model = community_info.community_config.default_model
-        default_provider = community_info.community_config.default_model_provider
+    # The community's default model, else the platform's
+    default_model, default_provider = _configured_default(community_info, get_settings())
 
     if provider in ("anthropic", "bedrock"):
         try:
@@ -1445,15 +1470,16 @@ def _select_model(
         # Falling back to the factory default keeps the request serviceable,
         # but it is a misconfiguration worth seeing in the logs, and naming
         # the community is what makes it actionable.
-        logger.error(
-            "Community %s: default model %r is neither an offered Anthropic "
-            "model nor an OpenRouter slug; falling back to %s for this "
-            "OpenRouter-funded request",
-            community_info.id,
-            default_model,
-            OPENROUTER_DEFAULT_MODEL,
-            extra={"community_id": community_info.id},
-        )
+        if log:
+            logger.error(
+                "Community %s: default model %r is neither an offered Anthropic "
+                "model nor an OpenRouter slug; falling back to %s for this "
+                "OpenRouter-funded request",
+                community_info.id,
+                default_model,
+                OPENROUTER_DEFAULT_MODEL,
+                extra={"community_id": community_info.id},
+            )
         return (OPENROUTER_DEFAULT_MODEL, OPENROUTER_DEFAULT_PROVIDER)
 
     # Use community or platform default
@@ -1497,15 +1523,43 @@ def _bedrock_choice(choice: ProviderChoice, model: str, settings: Settings) -> P
     return ProviderChoice(provider="bedrock", api_key=None, key_source="platform")
 
 
-def _serves_bedrock_models(settings: Settings) -> bool:
-    """Whether this deployment can route a request to a Bedrock model.
+def _funded_provider(settings: Settings, config: CommunityConfig | None) -> ProviderName | None:
+    """The provider a request with no caller key of its own resolves to, without raising.
+
+    What ``_resolve_provider`` decides for an authorized origin: the community's own key
+    when it names one and that is set (``_community_key``), otherwise the platform's
+    (``_platform_choice``: Anthropic before OpenRouter). The startup log, the ``/config``
+    default and the model menu ask this instead of deciding from the platform's keys alone,
+    which is wrong for a community that funds itself.
+
+    Args:
+        settings: Server settings, for the platform's keys.
+        config: The community's config, or None for a community that has none.
+
+    Returns:
+        "anthropic" or "openrouter", or None when no key can serve the request (it fails
+        with HTTP 500).
+    """
+    community = _community_key(config)
+    if community is not None and community.key:
+        return community.provider
+    if settings.anthropic_api_key:
+        return "anthropic"
+    if settings.openrouter_api_key:
+        return "openrouter"
+    return None
+
+
+def _serves_bedrock_models(settings: Settings, config: CommunityConfig | None = None) -> bool:
+    """Whether this deployment can route a request for this community to a Bedrock model.
 
     Routing moves a request to Bedrock only from the Anthropic provider (see
-    ``_route_request``), and a platform-funded request resolves to Anthropic only
-    when the platform has an Anthropic key. A deployment with a Bedrock key and an
-    OpenRouter fallback would list models it then refuses.
+    ``_route_request``), and a request with no caller key resolves to Anthropic only when
+    the community's own Anthropic key or else the platform's is there
+    (``_funded_provider``). A deployment with a Bedrock key and an OpenRouter fallback
+    would list models it then refuses.
     """
-    return bool(settings.bedrock_api_key and settings.anthropic_api_key)
+    return bool(settings.bedrock_api_key) and _funded_provider(settings, config) == "anthropic"
 
 
 def _claude_fallback(settings: Settings) -> str:
@@ -1524,27 +1578,34 @@ def _claude_fallback(settings: Settings) -> str:
 BedrockDefaultOutcome = Literal["bedrock", "openrouter", "claude_fallback", "unavailable"]
 
 
-def _bedrock_default_outcome(settings: Settings) -> BedrockDefaultOutcome:
-    """What a platform-funded request that names no model does with a Bedrock default.
+def _bedrock_default_outcome(
+    settings: Settings, config: CommunityConfig | None = None
+) -> BedrockDefaultOutcome:
+    """What a request with no caller key and no model named does with a Bedrock default.
 
-    The same decisions ``_platform_choice`` and ``_route_request`` make, read off the
-    deployment's keys: "bedrock" when Bedrock serves it (``_serves_bedrock_models``);
-    "claude_fallback" when the platform has an Anthropic key but the request cannot have
-    Bedrock (no Bedrock key), so it runs ``_claude_fallback``; "openrouter" when there is
-    no Anthropic key, which sends platform requests to OpenRouter, where the model runs
-    under its slug whatever the Bedrock key; "unavailable" when no key can serve the
-    request at all (HTTP 500).
+    The same decisions ``_resolve_provider`` and ``_route_request`` make, read off the
+    keys the request would use (``_funded_provider``): the community's own when it names
+    one and that is set, else the platform's. "bedrock" when Bedrock serves it
+    (``_serves_bedrock_models``); "claude_fallback" when the key is an Anthropic one but
+    the request cannot have Bedrock (no Bedrock key), so it runs ``_claude_fallback``;
+    "openrouter" when the key is an OpenRouter one, where the model runs under its slug
+    whatever the Bedrock key; "unavailable" when no key can serve the request at all
+    (HTTP 500).
+
+    Args:
+        settings: Server settings, for the platform's keys.
+        config: The community's config, for a key of its own. None reads the platform's
+            keys alone, which is all a community that funds no requests itself has.
     """
-    if _serves_bedrock_models(settings):
-        return "bedrock"
-    if settings.anthropic_api_key:
-        return "claude_fallback"
-    if settings.openrouter_api_key:
+    provider = _funded_provider(settings, config)
+    if provider == "anthropic":
+        return "bedrock" if settings.bedrock_api_key else "claude_fallback"
+    if provider == "openrouter":
         return "openrouter"
     return "unavailable"
 
 
-def _configured_default(info: AssistantInfo, settings: Settings) -> tuple[str | None, str | None]:
+def _configured_default(info: AssistantInfo, settings: Settings) -> tuple[str, str | None]:
     """A community's default model and OpenRouter routing hint: its own, else the platform's."""
     if info.community_config and info.community_config.default_model:
         return (
@@ -1554,21 +1615,22 @@ def _configured_default(info: AssistantInfo, settings: Settings) -> tuple[str | 
     return settings.default_model, settings.default_model_provider
 
 
-def _effective_default(info: AssistantInfo, settings: Settings) -> tuple[str | None, str | None]:
+def _effective_default(info: AssistantInfo, settings: Settings) -> tuple[str, str | None]:
     """The default model this deployment actually runs for a community, and its hint.
 
     What the community configures, unless that is a Bedrock model nothing on this
-    deployment can run, in which case ``_claude_fallback`` (with the platform's routing
-    hint, the community's being for the model it named). What the widget shows as the
-    community default has to be what a request runs, and the model menu already leaves
-    out the models the server cannot run.
+    deployment can run, in which case ``_claude_fallback`` with no routing hint: the
+    community's hint is for the model it named, the platform's is an OpenRouter upstream
+    host that means nothing next to a Claude model, and a request for a bare Claude id
+    carries none (see ``_select_model``). What the widget shows as the community default
+    has to be what a request runs, and the model menu already leaves out the models the
+    server cannot run.
     """
     default_model, default_provider = _configured_default(info, settings)
-    if is_bedrock_model(default_model) and _bedrock_default_outcome(settings) in (
-        "claude_fallback",
-        "unavailable",
-    ):
-        return _claude_fallback(settings), settings.default_model_provider
+    if is_bedrock_model(default_model) and _bedrock_default_outcome(
+        settings, info.community_config
+    ) in ("claude_fallback", "unavailable"):
+        return _claude_fallback(settings), None
     return default_model, default_provider
 
 
@@ -1579,8 +1641,11 @@ def log_unserved_bedrock_defaults(settings: Settings | None = None) -> list[str]
     price, and the only signal was a log line per request, after the bill had started.
     One record per community, at ERROR when requests run Claude or fail, and WARNING
     when they run the model through OpenRouter (which works, and is warned about on
-    every such request too). Every record names the two keys that serve the model
-    from Bedrock: ``AWS_BEARER_TOKEN_BEDROCK`` and ``ANTHROPIC_API_KEY``.
+    every such request too). Every record names the keys that serve the model from
+    Bedrock: ``AWS_BEARER_TOKEN_BEDROCK`` and ``ANTHROPIC_API_KEY``, or for a community
+    that funds itself with a key of its own (``anthropic_api_key_env_var`` or
+    ``openrouter_api_key_env_var``, set), the one it needs instead. Each community is
+    judged on the key its requests use, the same one ``_resolve_provider`` picks.
 
     Args:
         settings: The deployment's settings. Defaults to ``get_settings()``.
@@ -1589,27 +1654,43 @@ def log_unserved_bedrock_defaults(settings: Settings | None = None) -> list[str]
         The ids of the communities logged.
     """
     settings = settings or get_settings()
-    outcome = _bedrock_default_outcome(settings)
-    if outcome == "bedrock":
-        return []
-    needs = "It needs both AWS_BEARER_TOKEN_BEDROCK and ANTHROPIC_API_KEY."
     logged: list[str] = []
     for info in registry.list_all():
         default_model, _ = _configured_default(info, settings)
         if default_model is None or not is_bedrock_model(default_model):
             continue
+        outcome = _bedrock_default_outcome(settings, info.community_config)
+        if outcome == "bedrock":
+            continue
         model = normalize_model(default_model)
+        own = _community_key(info.community_config)
+        own = own if own is not None and own.key else None
+        if own is None:
+            subject = "every platform-funded request"
+            needs = "It needs both AWS_BEARER_TOKEN_BEDROCK and ANTHROPIC_API_KEY."
+        else:
+            subject = f"every request funded by its own key ({own.env_var})"
+            needs = (
+                "It needs AWS_BEARER_TOKEN_BEDROCK."
+                if own.provider == "anthropic"
+                else "It needs AWS_BEARER_TOKEN_BEDROCK, and to fund itself with an Anthropic "
+                "key (anthropic_api_key_env_var) instead of an OpenRouter one."
+            )
         if outcome == "claude_fallback":
             level = logging.ERROR
             consequence = (
-                f"every platform-funded request runs {_claude_fallback(settings)} instead, "
-                "at several times the price"
+                f"{subject} runs {_claude_fallback(settings)} instead, at several times the price"
             )
         elif outcome == "openrouter":
             level = logging.WARNING
+            because = (
+                "ANTHROPIC_API_KEY is unset, so platform-funded requests"
+                if own is None
+                else f"{own.env_var} is an OpenRouter key, so its requests"
+            )
             consequence = (
-                "ANTHROPIC_API_KEY is unset, so platform-funded requests go to OpenRouter "
-                f"and run it there as {OPENROUTER_MODEL_IDS.get(model, model)}"
+                f"{because} go to OpenRouter and run it there as "
+                f"{OPENROUTER_MODEL_IDS.get(model, model)}"
             )
         else:
             level = logging.ERROR
@@ -1731,7 +1812,7 @@ def _route_request(
     origin: str | None,
     requested_model: str | None,
     *,
-    log_fallback: bool = True,
+    log: bool = True,
 ) -> RequestRoute:
     """Decide the provider and model for a request, with authorization checks.
 
@@ -1746,21 +1827,23 @@ def _route_request(
         byok: The caller's own credential, if any.
         origin: The request's Origin header.
         requested_model: The model the caller named, if any.
-        log_fallback: Whether to log a Bedrock default being replaced by Claude. A
-            caller that routes the same request a second time (``/chat/resume``
-            probes the route before the stream makes it for real) passes False so the
-            request logs once.
+        log: Whether to log what routing finds: a community key in use or missing, the
+            platform falling back to OpenRouter or having no key, a default that cannot
+            be served, a Bedrock default replaced by Claude. A caller that routes the same
+            request a second time (``/chat/resume`` probes the route before the stream
+            makes it for real) passes False, so the request logs once.
 
     Raises:
         HTTPException: As ``_resolve_provider``, ``_select_model`` and
             ``_bedrock_choice`` do.
     """
-    choice = _resolve_provider(community_id, byok, origin)
+    choice = _resolve_provider(community_id, byok, origin, log=log)
     model, provider_hint = _select_model(
         community_info,
         requested_model,
         provider=choice.provider,
         has_byok=choice.key_source == "byok",
+        log=log,
     )
     if choice.provider == "anthropic" and is_bedrock_model(model):
         settings = get_settings()
@@ -1775,7 +1858,7 @@ def _route_request(
             # asked for that model, so refusing would take the whole community down for
             # them (the CLI never sends a model). Run a Claude model instead.
             fallback = _claude_fallback(settings)
-            if log_fallback:
+            if log:
                 _log_bedrock_fallback(community_id, model, fallback, choice, settings)
             model = fallback
     # The offered model this is, found once here for everything keyed by offered id.
@@ -2246,6 +2329,21 @@ def _set_metrics_on_request(
     }
 
 
+class UnansweredReply(Exception):
+    """A request that is not streamed ended with no answer: the 502 to send instead.
+
+    Not an ``HTTPException``, since FastAPI's handler for that puts only ``detail`` in the
+    body and this 502 also carries the ids a client can quote (see ``error_body``). The
+    endpoint returns ``response``.
+    """
+
+    def __init__(self, problem: ReplyProblem, request_id: str | None) -> None:
+        super().__init__(problem.message)
+        self.response = JSONResponse(
+            status_code=502, content=error_body(problem, request_id=request_id)
+        )
+
+
 def _check_unstreamed_reply(
     http_request: Request,
     community_id: str,
@@ -2262,8 +2360,10 @@ def _check_unstreamed_reply(
         The warnings to put on the response: the answer was cut off, but there is one.
 
     Raises:
-        HTTPException(502): The model wrote no answer (it stopped at a limit, declined, or
-            ended with nothing), so a 200 would carry nothing. The metrics row says why.
+        UnansweredReply: The model wrote no answer (it stopped at a limit, declined, or
+            ended with nothing), so a 200 would carry nothing. Its ``response`` is the 502,
+            whose body names the error id of the log line and the request id of the
+            metrics row, which says why.
     """
     request_id = getattr(http_request.state, "request_id", None)
     agent_result.model_runs.warn_about_usage(
@@ -2282,7 +2382,7 @@ def _check_unstreamed_reply(
         return []
     if problem.event == "error":
         http_request.state.metrics_agent_data["error_message"] = problem.summary
-        raise HTTPException(status_code=502, detail=problem.message)
+        raise UnansweredReply(problem, request_id)
     return [problem.message]
 
 
@@ -2434,7 +2534,10 @@ def create_community_router(community_id: str) -> APIRouter:
             200: {"description": "Successful response"},
             400: {"description": "Invalid request"},
             500: {"description": "Internal server error"},
-            502: {"description": "The model wrote no answer (cut off, declined, or empty)"},
+            502: {
+                "model": UnansweredReplyResponse,
+                "description": "The model wrote no answer (cut off, declined, or empty)",
+            },
         },
     )
     async def ask(
@@ -2448,7 +2551,7 @@ def create_community_router(community_id: str) -> APIRouter:
             str | None, Header(alias=openrouter_key_header.model.name)
         ] = None,
         x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
-    ) -> AskResponse | StreamingResponse:
+    ) -> AskResponse | StreamingResponse | JSONResponse:
         """Ask a single question to the community assistant.
 
         This endpoint is for one-off questions without conversation history.
@@ -2518,6 +2621,8 @@ def create_community_router(community_id: str) -> APIRouter:
                 warnings=warnings,
             )
 
+        except UnansweredReply as unanswered:
+            return unanswered.response
         except HTTPException:
             raise
         except Exception as e:
@@ -2539,7 +2644,10 @@ def create_community_router(community_id: str) -> APIRouter:
             200: {"description": "Successful response"},
             400: {"description": "Invalid request"},
             500: {"description": "Internal server error"},
-            502: {"description": "The model wrote no answer (cut off, declined, or empty)"},
+            502: {
+                "model": UnansweredReplyResponse,
+                "description": "The model wrote no answer (cut off, declined, or empty)",
+            },
         },
     )
     async def chat(
@@ -2553,7 +2661,7 @@ def create_community_router(community_id: str) -> APIRouter:
             str | None, Header(alias=openrouter_key_header.model.name)
         ] = None,
         x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
-    ) -> ChatResponse | StreamingResponse:
+    ) -> ChatResponse | StreamingResponse | JSONResponse:
         """Chat with the community assistant.
 
         Supports multi-turn conversations with session persistence.
@@ -2634,7 +2742,7 @@ def create_community_router(community_id: str) -> APIRouter:
             # turn: the streamed path never stored one. Stored, it would reach the next
             # request as a "." on Bedrock, an empty string through OpenRouter (which an
             # upstream provider may refuse), and nothing on Anthropic.
-            if ar.response_content:
+            if ar.response_content.strip():
                 try:
                     session.add_assistant_message(ar.response_content)
                 except ValueError as e:
@@ -2654,6 +2762,8 @@ def create_community_router(community_id: str) -> APIRouter:
                 warnings=warnings,
             )
 
+        except UnansweredReply as unanswered:
+            return unanswered.response
         except ValueError as e:
             # Session limit errors
             raise HTTPException(status_code=400, detail=str(e)) from e
@@ -2722,7 +2832,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 raise HTTPException(status_code=404, detail="Unknown community.")
             # A probe: the stream routes this request again, and that one logs.
             allow_images = _route_request(
-                route_info, community_id, byok, origin, body.model, log_fallback=False
+                route_info, community_id, byok, origin, body.model, log=False
             ).choice.takes_native_blocks
         except HTTPException as err:
             logger.debug(
@@ -2898,8 +3008,9 @@ def create_community_router(community_id: str) -> APIRouter:
                 # A model the server cannot run would fail on first use, so it is
                 # not offered. The Bedrock ones need the deployment's Bedrock key, and
                 # are routed only from a request that resolves to the Anthropic
-                # provider, which on the platform's key needs its Anthropic key too.
-                if model_id not in BEDROCK_MODELS or _serves_bedrock_models(settings)
+                # provider: this community's own Anthropic key, or else the platform's.
+                if model_id not in BEDROCK_MODELS
+                or _serves_bedrock_models(settings, info.community_config)
             ],
             widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=conv_logo)),
             status=health_status,
@@ -3488,20 +3599,61 @@ def _log_streaming_metrics(
 # Streaming Helpers
 # ---------------------------------------------------------------------------
 
-#: Told to the reader when a model call failed in a way no retry can fix (see
-#: ``classify_model_error``): a request the provider refused, or a credential it does not
-#: accept. Short, since the widget shows an error for a few seconds; the error id that finds
-#: the log line is a field of the event (and in the log), not part of this text. A
-#: retryable or unrecognized failure keeps the stream's own text, which says nothing the
-#: log does not back up.
+
+@dataclass(frozen=True)
+class _FailureWording:
+    """What one stream tells the reader when a model call fails.
+
+    Attributes:
+        retryable: When a retry can succeed, or nothing is known. Says nothing the log does
+            not back up.
+        cannot_retry: When the provider refused the request outright (see
+            ``classify_model_error``), which fails the same way every time. Short, since
+            the widget shows an error for a few seconds; the error id that finds the log
+            line is a field of the event (and in the log), not part of this text.
+    """
+
+    retryable: str
+    cannot_retry: str
+
+
 _CANNOT_RETRY_MESSAGE = (
-    "The assistant could not process this request, and trying again will not help. "
-    "Start a new conversation."
+    "The assistant could not process this request, and trying again will not help."
 )
 
-#: What each stream tells the reader when a retry can succeed, or when nothing is known.
-_ASK_FAILURE_MESSAGE = "An error occurred while generating the response. Please try again."
-_CHAT_FAILURE_MESSAGE = "An error occurred while processing your request."
+#: ``/ask`` has no conversation to start, so it offers nothing; a chat does.
+_ASK_WORDING = _FailureWording(
+    retryable="An error occurred while generating the response. Please try again.",
+    cannot_retry=_CANNOT_RETRY_MESSAGE,
+)
+_CHAT_WORDING = _FailureWording(
+    retryable="An error occurred while processing your request.",
+    cannot_retry=f"{_CANNOT_RETRY_MESSAGE} Start a new conversation.",
+)
+
+#: Told to the reader when the provider refused a credential, by whose it was. A caller's
+#: own key is theirs to check. The platform's or a community's is the operator's to fix, and
+#: a new conversation helps with neither.
+_KEY_REFUSED_MESSAGE = (
+    "The provider refused your API key. Check that it is valid and can use this model."
+)
+_SERVER_KEY_MESSAGE = (
+    "The assistant is unavailable because of a server problem, and trying again will not "
+    "help. Please contact support."
+)
+
+
+class _StreamFailure(NamedTuple):
+    """A failure that ended a stream, as the stream reports it.
+
+    Attributes:
+        event: The ``error`` event to send.
+        detail: What failed (the exception class and the provider's code or status, none of
+            the provider's message), for the request's metrics row to say why it is an error.
+    """
+
+    event: dict[str, Any]
+    detail: str
 
 
 def _stream_failure_event(
@@ -3511,18 +3663,21 @@ def _stream_failure_event(
     model: str | None,
     endpoint: str,
     request_id: str | None,
-    retryable_message: str,
+    wording: _FailureWording,
+    key_source: Literal["byok", "community", "platform"] | None,
     session_id: str | None = None,
-) -> dict[str, Any]:
+) -> _StreamFailure:
     """Log a failure that ended a stream and build the ``error`` event the reader gets.
 
     A throttle, a read timeout and a request the provider refuses as invalid used to be one
     log line and one message. Now the log says which it was (the exception class, the
     provider's code or status, and whether a retry can succeed) at WARNING for a model
-    failure that can clear by itself and ERROR, with the traceback, for everything else:
-    one that cannot clear, and any exception that is not a recognized model-provider
-    error (a tool of ours failing is one, and its traceback is the only clue). The reader
-    is told to try again only when that is honest: a failure no retry can fix says so.
+    failure that can clear by itself, or that is the caller's own key being refused (theirs
+    to fix, and nothing the operator did), and ERROR, with the traceback, for everything
+    else: one that cannot clear, a platform or community key the provider refused, and any
+    exception that is not a recognized model-provider error (a tool of ours failing is one,
+    and its traceback is the only clue). The reader is told to try again only when that is
+    honest: a failure no retry can fix says so, and a refused credential says whose it is.
 
     Args:
         error: What the stream raised.
@@ -3530,24 +3685,30 @@ def _stream_failure_event(
         model: The model the request ran, for the log.
         endpoint: The endpoint, for the log.
         request_id: The request's id, for the log.
-        retryable_message: What the reader is told when a retry can succeed or it is not
-            known; the stream's own wording.
+        wording: What the reader is told, in this stream's words.
+        key_source: Whose key paid for the request, or None when it never got as far as
+            choosing one.
         session_id: The chat session, for the log.
 
     Returns:
         The event to send: ``message``, an ``error_id`` (the key of the log line) and the
         ``request_id`` (the key of the metrics row), which are for a report and not part of
-        what the reader is shown, and ``retryable`` when known.
+        what the reader is shown, and ``retryable`` when known. And the failure's detail,
+        for that row's ``error_message``.
     """
     failure = classify_model_error(error)
     error_id = str(uuid.uuid4())
-    if failure.from_provider:
+    refused_callers_key = failure.kind == "unauthorized" and key_source == "byok"
+    if refused_callers_key:
+        summary = "Model call failed while streaming, the caller's own API key was refused"
+    elif failure.from_provider:
         summary = "Model call failed while streaming"
     else:
         summary = "Unexpected streaming error"
     clears_by_itself = failure.from_provider and bool(failure.retryable)
+    needs_traceback = not (clears_by_itself or refused_callers_key)
     logger.log(
-        logging.WARNING if clears_by_itself else logging.ERROR,
+        logging.ERROR if needs_traceback else logging.WARNING,
         "%s (ID: %s) for %s (community=%s, model=%s, request_id=%s, session=%s): "
         "%s [retryable=%s]: %s",
         summary,
@@ -3560,7 +3721,7 @@ def _stream_failure_event(
         failure.detail,
         failure.retryable_label,
         error,
-        exc_info=not clears_by_itself,
+        exc_info=needs_traceback,
         extra={
             "error_id": error_id,
             "community_id": community_id,
@@ -3570,17 +3731,24 @@ def _stream_failure_event(
             "error_type": type(error).__name__,
             "failure_kind": failure.kind,
             "retryable": failure.retryable,
+            "key_source": key_source,
         },
     )
+    if failure.retryable is not False:
+        message = wording.retryable
+    elif failure.kind == "unauthorized":
+        message = _KEY_REFUSED_MESSAGE if refused_callers_key else _SERVER_KEY_MESSAGE
+    else:
+        message = wording.cannot_retry
     event: dict[str, Any] = {
         "event": "error",
-        "message": _CANNOT_RETRY_MESSAGE if failure.retryable is False else retryable_message,
+        "message": message,
         "error_id": error_id,
         "request_id": request_id,
     }
     if failure.retryable is not None:
         event["retryable"] = failure.retryable
-    return event
+    return _StreamFailure(event, failure.detail)
 
 
 async def _stream_ask_response(
@@ -3816,23 +3984,27 @@ async def _stream_ask_response(
             # A provider failure that langchain-aws raised as a ValueError (a service
             # exception event it could not make a ClientError, a permissions error about
             # system tools) is the provider's, not the reader's.
-            sse_event = _stream_failure_event(
+            failure = _stream_failure_event(
                 e,
                 community_id=community_id,
                 model=awm.model if awm else None,
                 endpoint=f"/{community_id}/ask",
                 request_id=request_id,
-                retryable_message=_ASK_FAILURE_MESSAGE,
+                wording=_ASK_WORDING,
+                key_source=awm.key_source if awm else None,
             )
+            sse_event = failure.event
+            error_message = failure.detail
             status_code = 500
         else:
-            # Input validation errors - user's fault
+            # Input validation errors - user's fault, so not an error of the agent's
             logger.warning("Invalid input in streaming for community %s: %s", community_id, e)
             sse_event = {
                 "event": "error",
                 "message": f"Invalid request: {str(e)}",
                 "retryable": False,
             }
+            error_message = None
             status_code = 400
         yield f"data: {json.dumps(sse_event)}\n\n"
         _log_streaming_metrics(
@@ -3847,17 +4019,19 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            error_message=error_message,
         )
     except Exception as e:
-        sse_event = _stream_failure_event(
+        failure = _stream_failure_event(
             e,
             community_id=community_id,
             model=awm.model if awm else None,
             endpoint=f"/{community_id}/ask",
             request_id=request_id,
-            retryable_message=_ASK_FAILURE_MESSAGE,
+            wording=_ASK_WORDING,
+            key_source=awm.key_source if awm else None,
         )
-        yield f"data: {json.dumps(sse_event)}\n\n"
+        yield f"data: {json.dumps(failure.event)}\n\n"
         _log_streaming_metrics(
             http_request=http_request,
             community_id=community_id,
@@ -3870,6 +4044,7 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            error_message=failure.detail,
         )
 
 
@@ -4270,7 +4445,11 @@ async def _stream_chat_response(
             )
             return
 
-        if final_response:
+        # Text that is only whitespace is nothing to keep, however the reply was judged:
+        # one that ran code counts as answered with no text at all. Stored, it would be
+        # replayed on every later request, and Anthropic rejects a whitespace-only text
+        # block, so the session would fail from then on.
+        if final_response.strip():
             try:
                 session.add_assistant_message(final_response)
             except ValueError as e:
@@ -4356,20 +4535,24 @@ async def _stream_chat_response(
             # A provider failure that langchain-aws raised as a ValueError (a service
             # exception event it could not make a ClientError, a permissions error about
             # system tools) is the provider's, not a session limit the reader hit.
-            sse_event = _stream_failure_event(
+            failure = _stream_failure_event(
                 e,
                 community_id=community_id,
                 model=awm.model if awm else None,
                 endpoint=metrics_endpoint,
                 request_id=request_id,
-                retryable_message=_CHAT_FAILURE_MESSAGE,
+                wording=_CHAT_WORDING,
+                key_source=awm.key_source if awm else None,
                 session_id=session.session_id,
             )
+            sse_event = failure.event
+            error_message = failure.detail
             status_code = 500
         else:
-            # Session limit errors
+            # Session limit errors: the reader's, so not an error of the agent's
             logger.error("Session limit error: %s", e)
             sse_event = {"event": "error", "message": str(e)}
+            error_message = None
             status_code = 400
         yield f"data: {json.dumps(sse_event)}\n\n"
         _log_streaming_metrics(
@@ -4384,18 +4567,20 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            error_message=error_message,
         )
     except Exception as e:
-        sse_event = _stream_failure_event(
+        failure = _stream_failure_event(
             e,
             community_id=community_id,
             model=awm.model if awm else None,
             endpoint=metrics_endpoint,
             request_id=request_id,
-            retryable_message=_CHAT_FAILURE_MESSAGE,
+            wording=_CHAT_WORDING,
+            key_source=awm.key_source if awm else None,
             session_id=session.session_id,
         )
-        yield f"data: {json.dumps(sse_event)}\n\n"
+        yield f"data: {json.dumps(failure.event)}\n\n"
         _log_streaming_metrics(
             http_request=http_request,
             community_id=community_id,
@@ -4408,6 +4593,7 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            error_message=failure.detail,
         )
     finally:
         # Released however this generator ends: normal return, error, or the client

@@ -339,6 +339,16 @@ def error_event(problem: ReplyProblem, *, request_id: str | None) -> dict[str, A
     }
 
 
+def error_body(problem: ReplyProblem, *, request_id: str | None) -> dict[str, Any]:
+    """The body of the 502 a reply that was not streamed gets when it has nothing to show.
+
+    Carries the same two ids ``error_event`` does. ``detail`` is the text to show, which is
+    where FastAPI puts every other error's (the CLI reads it from there); the ids are for a
+    report, and for a client that retries on a 502 to tell its attempts apart.
+    """
+    return {"detail": problem.message, "error_id": problem.error_id, "request_id": request_id}
+
+
 def warning_event(
     problem: ReplyProblem | None, *, conversation_is_long: bool
 ) -> dict[str, Any] | None:

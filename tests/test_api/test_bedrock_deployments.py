@@ -79,7 +79,7 @@ class TestTheWidgetDefaultIsWhatTheServerRuns:
         for info in registry.list_all():
             data = _config(info.id)
             try:
-                route = _route_request(info, info.id, None, _origin(info), None, log_fallback=False)
+                route = _route_request(info, info.id, None, _origin(info), None, log=False)
             except HTTPException as err:
                 # No platform key: nothing runs. What is reported is still a model the
                 # menu offers, never a Bedrock model the server has no way to run.
@@ -113,7 +113,9 @@ class TestTheWidgetDefaultIsWhatTheServerRuns:
             data = _config(info.id)
             assert data["default_model"] == expected, info.id
             assert data["default_model"] in _offered_ids(data), info.id
-            assert data["default_model_provider"] == settings.default_model_provider, info.id
+            # OpenRouter's upstream-host hint is for the model the platform default names,
+            # not for a Claude model: a bare Claude id has none (`_select_model`).
+            assert data["default_model_provider"] is None, info.id
 
     @pytest.mark.parametrize("deployment", ["openrouter_only", "bedrock_and_openrouter"])
     def test_on_openrouter_the_community_default_really_runs_and_is_reported(
@@ -126,7 +128,7 @@ class TestTheWidgetDefaultIsWhatTheServerRuns:
 
         for info in _bedrock_communities():
             default = normalize_model(info.community_config.default_model)
-            route = _route_request(info, info.id, None, _origin(info), None, log_fallback=False)
+            route = _route_request(info, info.id, None, _origin(info), None, log=False)
             assert route.choice.provider == "openrouter"
             assert route.model == OPENROUTER_MODEL_IDS[default]
             assert _config(info.id)["default_model"] == default
@@ -145,6 +147,142 @@ class TestTheWidgetDefaultIsWhatTheServerRuns:
             assert _config(info.id)["default_model"] == normalize_model(
                 info.community_config.default_model
             )
+
+
+KEY_STATES = ("unnamed", "unset", "set")
+
+
+def _name_community_keys(monkeypatch, info, *, anthropic: str, openrouter: str) -> None:
+    """Have a community fund itself: name the env vars its keys are read from, and give
+    each the state a deployment could leave it in (not named, named but unset, named and
+    set)."""
+    for kind, state, attr in (
+        ("ANTHROPIC", anthropic, "anthropic_api_key_env_var"),
+        ("OPENROUTER", openrouter, "openrouter_api_key_env_var"),
+    ):
+        if state == "unnamed":
+            continue
+        var = f"OSA_TEST_{info.id.upper()}_{kind}_KEY"
+        monkeypatch.setattr(info.community_config, attr, var)
+        if state == "set":
+            monkeypatch.setenv(var, "community-key")
+        else:
+            monkeypatch.delenv(var, raising=False)
+
+
+class TestACommunityThatFundsItself:
+    """A community's own key decides where its requests go, as much as the platform's
+    does (``_resolve_provider``), so the widget's default, the model menu and the startup
+    log must read the same key. Every combination of platform keys and of the community's
+    two keys, against the route a request really takes."""
+
+    @pytest.mark.parametrize("openrouter", KEY_STATES)
+    @pytest.mark.parametrize("anthropic", KEY_STATES)
+    @pytest.mark.parametrize("deployment", sorted(DEPLOYMENTS))
+    def test_what_is_reported_is_what_the_request_runs(
+        self, monkeypatch, caplog, deployment, anthropic, openrouter
+    ):
+        platform_anthropic, platform_openrouter, platform_bedrock = DEPLOYMENTS[deployment]
+        set_platform_keys(
+            monkeypatch,
+            anthropic=platform_anthropic,
+            openrouter=platform_openrouter,
+            bedrock=platform_bedrock,
+        )
+        info = _bedrock_communities()[0]
+        _name_community_keys(monkeypatch, info, anthropic=anthropic, openrouter=openrouter)
+        caplog.set_level(logging.WARNING)
+        settings = get_settings()
+
+        data = _config(info.id)
+        logged = log_unserved_bedrock_defaults(settings)
+        records = [
+            r
+            for r in caplog.records
+            if hasattr(r, "outcome") and getattr(r, "community_id", None) == info.id
+        ]
+        bedrock_menu = BEDROCK_MODELS.keys() & _offered_ids(data)
+        try:
+            route = _route_request(info, info.id, None, _origin(info), None, log=False)
+        except HTTPException as err:
+            assert err.status_code == 500
+            assert data["default_model"] == _claude_fallback(settings)
+            assert not bedrock_menu
+            assert [r.outcome for r in records] == ["unavailable"]
+            return
+
+        default = normalize_model(info.community_config.default_model)
+        if route.choice.provider == "bedrock":
+            assert data["default_model"] == default == route.model
+            assert bedrock_menu == set(BEDROCK_MODELS)
+            assert records == [] and info.id not in logged
+        elif route.choice.provider == "openrouter":
+            # OpenRouter runs the model under its slug, and is not offered the Bedrock menu.
+            assert data["default_model"] == default
+            assert route.model == OPENROUTER_MODEL_IDS[default]
+            assert not bedrock_menu
+            assert [r.outcome for r in records] == ["openrouter"]
+        else:
+            assert data["default_model"] == route.model == _claude_fallback(settings)
+            assert not bedrock_menu
+            assert [r.outcome for r in records] == ["claude_fallback"]
+
+    def test_its_own_anthropic_key_serves_bedrock_without_a_platform_anthropic_key(
+        self, monkeypatch
+    ):
+        """The case the platform-only reading got wrong: a Bedrock key and nothing else on
+        the platform, and a community with its own Anthropic key, runs Bedrock."""
+        set_platform_keys(monkeypatch, anthropic=None, openrouter=None, bedrock="bedrock-key")
+        info = _bedrock_communities()[0]
+        _name_community_keys(monkeypatch, info, anthropic="set", openrouter="unnamed")
+
+        route = _route_request(info, info.id, None, _origin(info), None, log=False)
+
+        assert route.choice.provider == "bedrock"
+        assert _config(info.id)["default_model"] == normalize_model(
+            info.community_config.default_model
+        )
+        assert info.id not in log_unserved_bedrock_defaults(get_settings())
+
+    @pytest.mark.parametrize(
+        ("anthropic", "openrouter", "outcome", "needs"),
+        [
+            ("set", "unnamed", "claude_fallback", "It needs AWS_BEARER_TOKEN_BEDROCK."),
+            ("unnamed", "set", "openrouter", "anthropic_api_key_env_var"),
+        ],
+    )
+    def test_the_startup_log_names_the_key_the_community_funds_itself_with(
+        self, monkeypatch, caplog, anthropic, openrouter, outcome, needs
+    ):
+        set_platform_keys(monkeypatch, anthropic=None, openrouter=None, bedrock=None)
+        info = _bedrock_communities()[0]
+        _name_community_keys(monkeypatch, info, anthropic=anthropic, openrouter=openrouter)
+        caplog.set_level(logging.WARNING)
+
+        log_unserved_bedrock_defaults(get_settings())
+
+        (record,) = [
+            r
+            for r in caplog.records
+            if hasattr(r, "outcome") and getattr(r, "community_id", None) == info.id
+        ]
+        message = record.getMessage()
+        assert record.outcome == outcome
+        assert f"OSA_TEST_{info.id.upper()}_" in message, "it names the variable that funds it"
+        assert needs in message
+        assert "platform-funded" not in message.split(":", 1)[1], message
+
+    def test_a_named_anthropic_key_that_is_unset_does_not_fall_on_to_openrouters(self, monkeypatch):
+        """Naming an Anthropic variable settles it (see ``_resolve_provider``): a community
+        whose variable is unset goes to the platform key, not to its OpenRouter variable."""
+        set_platform_keys(monkeypatch, anthropic="platform-key", openrouter=None, bedrock=None)
+        info = _bedrock_communities()[0]
+        _name_community_keys(monkeypatch, info, anthropic="unset", openrouter="set")
+
+        route = _route_request(info, info.id, None, _origin(info), None, log=False)
+
+        assert route.choice.provider == "anthropic" and route.choice.key_source == "platform"
+        assert _config(info.id)["default_model"] == _claude_fallback(get_settings())
 
 
 class TestAnOpenRouterOnlyPlatform:
@@ -278,3 +416,34 @@ class TestTheStartupCheck:
 
         ids = [r.community_id for r in self._records(caplog)]
         assert ids == [info.id for info in _bedrock_communities()]
+
+    async def test_a_check_that_fails_does_not_stop_the_app_starting(
+        self, monkeypatch, caplog, tmp_path
+    ):
+        """The check is a diagnostic. Nothing real makes it raise today, so the failure is
+        injected where the app calls it: the rest of startup (the metrics database, the
+        scheduler) must still run, and the failure must be logged with its traceback."""
+        from src.api import main as app_main
+        from src.metrics.db import metrics_connection
+
+        def broken(_settings):
+            raise RuntimeError("the registry changed under the check")
+
+        set_platform_keys(monkeypatch, anthropic="a", openrouter=None, bedrock=None)
+        monkeypatch.setattr(get_settings(), "sync_enabled", False)
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(app_main, "log_unserved_bedrock_defaults", broken)
+        caplog.set_level(logging.WARNING)
+
+        async with lifespan(create_app()):
+            with metrics_connection() as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
+
+        assert "request_log" in tables, "startup went on to the metrics database"
+        (record,) = [r for r in caplog.records if "Bedrock" in r.getMessage()]
+        assert record.levelno == logging.ERROR
+        assert record.exc_info and record.exc_info[0] is RuntimeError
+        assert "startup" in record.getMessage()
