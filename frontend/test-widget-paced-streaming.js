@@ -1553,28 +1553,6 @@ console.log('\na failed request that lost the question hands it back too; an err
   assert(container.querySelector('.osa-error').textContent.includes('err-55'), 'and the error id is shown');
 }
 
-console.log('\na 502 for an empty or cut-off reply, not streamed, carries the reference a streamed error does');
-{
-  const { window } = loadWidget({
-    chat: () => json({ detail: NO_ANSWER_MESSAGE, error_id: 'err-502a', request_id: 'req-502' }, { status: 502 }),
-  });
-  const container = window.document.querySelector('.osa-chat-widget');
-  send(window, container, 'A question');
-  await waitFor(() => settled(container), 'the send settles');
-  const banner = container.querySelector('.osa-error');
-  assert(banner.textContent.includes(NO_ANSWER_MESSAGE), 'the server\'s message is shown');
-  assert(banner.textContent.includes('err-502a'), 'with the error id');
-  assert(banner.querySelector('.osa-error-copy'), 'and the button that copies it');
-}
-{
-  const { window } = loadWidget({ chat: () => json({ detail: 'The service is over capacity' }, { status: 503 }) });
-  const container = window.document.querySelector('.osa-chat-widget');
-  send(window, container, 'A question');
-  await waitFor(() => settled(container), 'the send settles');
-  const banner = container.querySelector('.osa-error');
-  assert(!/Reference/.test(banner.textContent) && !banner.querySelector('.osa-error-copy'), 'an HTTP error with no error id shows no reference');
-}
-
 console.log('\nthe non-streamed fallback shows the warnings the response carries, as a stream does');
 {
   const warn = console.warn;

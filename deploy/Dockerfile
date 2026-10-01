@@ -90,11 +90,8 @@ CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "38528"]
 #                             served only when ANTHROPIC_API_KEY (above) is set too.
 #                             Without the Bedrock key they are left out of the model
 #                             menu, a request naming one is answered with a 400, and
-#                             a request to those four communities that names no model
-#                             runs the deployment's Claude default (DEFAULT_MODEL, Haiku
-#                             4.5 unless changed), logging an error naming the community.
-#                             With no ANTHROPIC_API_KEY it goes to OpenRouter's Luna slug,
-#                             or fails with HTTP 500.
+#                             those four communities run Claude Haiku 4.5 instead,
+#                             logging an error on every request.
 #   BEDROCK_REGION          - Region the models are called in (default: us-east-2;
 #                             Qwen3 Next is pinned to us-east-1, see anthropic_models.py)
 #

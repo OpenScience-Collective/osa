@@ -38,7 +38,7 @@ Calling them showed what a Claude-shaped request cannot assume:
   GPT-6 Luna caches a repeated prompt prefix on its own and reports the tokens written and read (10,855 written, then read back, in the test run); the other two do no caching.
 - **Sampling.** GPT-6 Luna rejects `temperature` and `topP`.
 - **Search loops.** GPT-6 Luna (measured at maximum effort) and gpt-oss-120b, given the same retrieval tools as Claude, kept searching with reworded queries until they ran out of tokens.
-  A three-sentence prompt note fixed it for both; Claude and Qwen3 Next did not need it.
+  A two-sentence prompt note fixed it for both; Claude and Qwen3 Next did not need it.
 - **Region.** Qwen3 Next accepts the request in Ohio and never answers (nothing after 180 s; its siblings answer in under a second), while N. Virginia and Oregon answer normally.
 - **The `global.` inference profile is denied** by a service control policy on this account, and would route outside the United States.
   GPT-6 Luna's `us.` profile carries a 10% premium over global pricing, which the table above includes.
@@ -63,11 +63,9 @@ Serve the three models from Bedrock through the Converse API, one transport for 
   not its own: the community's key is an Anthropic key, and the models are not Anthropic's.
   That is a policy choice, not an accident; a community that wants Bedrock spend attributed to itself needs a Bedrock key of its own, which this record does not add.
 - **A default nobody chose is not a refusal.** When a community's `default_model` is a Bedrock model and the request cannot have it (the caller has an Anthropic key of their own and named no model, which is every CLI request,
-  or the deployment has no Bedrock key), the request runs the deployment's Claude default (`DEFAULT_MODEL`, Claude Haiku 4.5 unless the deployment changes it)
-  and logs an error naming the community, or a warning when the only cause is the caller's own Anthropic key.
+  or the deployment has no Bedrock key), the request runs the deployment's Claude default and logs an error naming the community.
   Refusing would take the whole community down for those callers.
   A caller who names the model still gets the 403 or 400, and `osa validate` warns about such a default.
-  With no `ANTHROPIC_API_KEY` on the deployment, a platform-funded request does not take the Claude path at all: it goes to OpenRouter's slug for the model, or fails with HTTP 500 when there is no OpenRouter key either.
 - **Tagged citations.** Tool results are rewritten as `[src:N] Title` text on the way to the model, the system prompt asks it to write the tag after each claim it draws from a source,
   and the tags are cut from the reply and returned as the citations the Anthropic path produces (`src/core/services/tagged_citations.py`).
   The layer sits at the model boundary, so `CitationAssembler`, the server-sent events (SSE) and the marker placement are unchanged.
@@ -106,7 +104,7 @@ Serve the three models from Bedrock through the Converse API, one transport for 
   Until then they are not offered, but that is not a safe default for every community.
   HED, EEGLAB, Brain Imaging Data Structure (BIDS) and NWB default to GPT-6 Luna,
   so on a deployment with an Anthropic key and no Bedrock key they run the deployment's Claude default (Claude Haiku 4.5 unless `DEFAULT_MODEL` names another)
-  and log an error naming the community on every request that names no model.
+  and log an error naming the community on every request.
   A deployment that serves them should treat the Bedrock key as required, and one that accepts Haiku for those four communities may leave it out.
 - **A bearer-token client relies on botocore internals** (`auth_scheme_preference` and a replaced token-provider component).
   `langchain-aws` does the same, and is capped below 2.x for it; an upstream botocore change would show up in `tests/test_core/test_bedrock_llm.py`,

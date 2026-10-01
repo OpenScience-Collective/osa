@@ -13,8 +13,6 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
-## [0.8.16] - 2026-09-30
-
 ### Added
 
 - **A new community, NWB** (issue #514, pull requests #517, #520 and #521): an assistant for Neurodata Without Borders (NWB), the data standard for neurophysiology, and the software around it (PyNWB, the Hierarchical Data Modeling Framework (HDMF), NeuroConv and NWB Inspector), to replace the separately maintained assistant embedded in the PyNWB documentation.
@@ -27,7 +25,7 @@ the version being released and start a new `[Unreleased]` section above it.
   GitHub, docstring, Discourse and citation sync are not enabled yet.
   Its default model is GPT-6 Luna (see below).
 - **BIDS launcher, 20% larger and clear of the page's own buttons** (issue #553, bids-standard/bids-specification#2541): the BIDS community's launcher is 67px instead of 56px and sits 104px up, above the Read the Docs version bar and the footer's social icons that it covered on bids-specification.readthedocs.io.
-  It reaches the specification site with this release, since the stable release is what serves `demo.osc.earth`; the site itself needs no change, because it takes the launcher's size and place from this config.
+  It reaches the specification site with the next stable release, which is what serves `demo.osc.earth`; the site itself needs no change, because it takes the launcher's size and place from this config.
   The values were applied by hand to the live page, since the settings that carry them ship in this release, and measured there at 1280px and 1920px wide and on a phone:
   the launcher clears the version bar (by 15px, and 11px at 1920px), the footer icons and the copyright line, and an opened version menu keeps every link and its search box uncovered.
 - **Launcher position, size and offsets** (issue #553, from the BIDS site's feedback that the launcher is too small and covers the page's own buttons):
@@ -43,18 +41,13 @@ the version being released and start a new `[Unreleased]` section above it.
   three non-Anthropic models served from Amazon Bedrock, each priced at or below Claude Haiku 4.5
   ($0.11 / $0.55, $0.14 / $1.20 and $0.15 / $0.60 per 1M input / output tokens; Haiku is $1 / $5).
   They appear in the widget's model menu and can be a community's `default_model`.
-  GPT-6 Luna's default reasoning effort is high, not maximum (issue #543), and a community may set another level with `reasoning_effort` (below): at maximum, a tool-using turn took 15 to 50 seconds before its first word, all of it the model's own silent reasoning.
-  On real community questions, NWB took 7 to 9 seconds to answer at high against about 27 at maximum, with one or two searches, cited sources and no tag leaks; the 48 seconds at maximum under `reasoning_effort` below is a different measurement, the median time to first text on one documentation question.
+  GPT-6 Luna runs at high reasoning effort, never at maximum (issue #543): at maximum, a tool-using turn took 15 to 50 seconds before its first word, all of it the model's own silent reasoning.
+  On real community questions at high, NWB answered in 7 to 9 seconds against about 27 at maximum, with one or two searches, cited sources and no tag leaks.
   The accepted levels, measured on Bedrock, are none, low, medium, high, xhigh and max (`minimal` is rejected).
   A deployment turns them on with `AWS_BEARER_TOKEN_BEDROCK`, and needs the platform's `ANTHROPIC_API_KEY` as well, since a request reaches Bedrock only from the platform's Claude path; without the Bedrock key they are not listed and a request naming one gets a 400.
   Requests run in Ohio (`us-east-2`, `BEDROCK_REGION`), except Qwen3 Next, whose Ohio endpoint does not answer, so it runs in N. Virginia.
   A caller's own Anthropic key cannot select them, because the platform pays for Bedrock; an OpenRouter key runs the same model there.
-  When a community's `default_model` is one of them and a request that names no model cannot have it, what runs depends on the keys.
-  With the Bedrock key missing but `ANTHROPIC_API_KEY` set, the request runs the deployment's Claude default (`DEFAULT_MODEL`, Claude Haiku 4.5 unless the deployment changes it) and an error naming the community is logged.
-  A caller's own Anthropic key (every CLI request) runs the same default, and logs a warning instead when the cause is only that key.
-  With no `ANTHROPIC_API_KEY`, the request goes to OpenRouter's slug for the model, or fails with HTTP 500 when there is no OpenRouter key either.
-  The server also logs one record per such community at startup, an error when requests run Claude or fail and a warning when they go to OpenRouter, naming the keys that would serve the model from Bedrock.
-  `osa validate` warns about such a default.
+  When a community's `default_model` is one of them and a request cannot have it (the caller's own key with no model named, or no Bedrock key on the deployment), the request runs the deployment's Claude default and an error naming the community is logged; `osa validate` warns about such a default.
   The widget shows them as unavailable next to an Anthropic key.
   FAQ generation stays on Claude.
 - **Numbered citations for the Bedrock models**: they reject Anthropic's `search_result` blocks, so retrieved sources are tagged `[src:N]` and the model writes the tag after each claim it draws from one.
@@ -91,27 +84,6 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
-- **A reply with no answer, or one that stopped short, is reported instead of returned as a success** (pull requests #566, #568 and #572):
-  the model can end a reply without raising anything: it spends its output budget on reasoning (GPT-6 Luna and gpt-oss-120b can), fills its context window, declines, or writes nothing.
-  0.8.15 answered such a request with HTTP 200 and an empty answer, or with a `done` event with empty content, and logged nothing.
-  Streamed, a reply with no text and no code run is now an `error` event with no `done` after it, and one that has text but stopped short is a `warning` event before `done`.
-  An `error` carries `message`, `error_id` (the id its log line carries) and `request_id` (the key of the request's row in the metrics).
-  A `warning` carries `message` and `code` (`cut_off` or `long_conversation`); a reply gets at most one, and when it was cut off in a long conversation the one event has `code` `cut_off` and `codes` listing both.
-  Not streamed, `/ask` and `/chat` answer HTTP 502 with `{"detail", "error_id", "request_id"}` where 0.8.15 returned 200, and a cut-off reply that has text stays a 200 with the same text in a new `warnings` list on `AskResponse` and `ChatResponse`.
-  A client that retries on a 5xx status will now retry these requests, and each attempt is billed, since the model ran each time and a retry often ends the same way; `error_id` tells the attempts apart.
-  Each case logs one warning naming the community, model, request id and the provider's stop reason, and an error's row in the metrics is a 502 with an `error_message`.
-- **A stream that fails says what failed** (pull requests #566, #568 and #572): the exception that ended it is classified as throttled, timeout, unavailable, connection, rejected (the provider refused the request, which fails the same way every time) or unauthorized, whether it came from Amazon Bedrock, the Claude Platform or OpenRouter; an error of OSA's own, such as a tool failing, is not claimed to be the model's.
-  The log line names the kind, the provider's code or status and whether a retry can succeed; it is a warning when the failure can clear by itself or is a caller's own key being refused, and an error with the traceback otherwise.
-  The `error` event adds `retryable` (`true` or `false`; absent when not known), and the reader is told to try again only when that is honest: a refused request says trying again will not help, a refused caller's key says to check it, and a refused platform or community key says to contact support.
-- **A message that got no reply stays in the session** (pull requests #568 and #572): a chat turn that ends in an error or with no answer leaves the reader's message in the session with nothing after it, and the next message lands behind it, so the model still sees what was asked.
-  A non-streamed `/chat` no longer stores an empty assistant message in the reply's place, as the streamed path never did.
-- **Missing token usage is logged once per request, and an estimated cost is flagged** (pull requests #566 and #568): a model run that reports no tokens adds nothing to the request's cost row, and one whose usage is LiteLLM's own estimate (OpenRouter, when the provider sent none) is priced without cache or reasoning counts.
-  Neither raises, so nothing showed it; a request now logs one warning when either happened, naming the community, model and request id and saying whether the recorded cost is missing (NULL), too low or approximate.
-  A non-streamed chat request's cost row also sums only its own turn's model runs, not those the session's history carries.
-- **The command-line interface (CLI) prints a reply's warnings and an error's reference** (pull requests #566 and #568): `osa ask` and `osa chat` print each warning, from a `warning` event or a response's `warnings`, to stderr under the answer, and a streamed error is followed by the hint "When reporting this, quote request ID ... and error ID ...", so a report finds the request's row and its log line.
-- **The widget keeps a failed request's error and marks a cut-off reply** (pull requests #567 and #570): the error banner stays until the reader dismisses it or sends again, where it went after five seconds, and shows the error's reference (`error_id`) with a button that copies it.
-  Warnings stack one line each, every line up for ten seconds, where the latest replaced the earlier before it could be read.
-  A reply the server says was cut off carries a `cutOff` mark in the saved conversation, so the note that it may be incomplete (or the server's own explanation, when it has no text) is still there after the conversation is reloaded, and a reply with no text is kept for it.
 - **Every model runs at high reasoning effort by default, Claude Haiku included** (issue #548): a community that sets no `reasoning_effort` gets `high` on every provider for Claude Sonnet 5.5, Claude Haiku 4.5, GPT-6 Luna and gpt-oss-120b (Qwen3 Next has no control).
   Claude Haiku has no effort field, so its level is a thinking budget: low 1024, medium 2048, high 4096 tokens, none no thinking, and its default goes from 2048 to 4096 tokens, so it can think up to twice as long before answering (more output tokens billed and a longer wait before the first word).
   A community that wants the old behavior sets `reasoning_effort: medium`.
@@ -162,9 +134,7 @@ the version being released and start a new `[Unreleased]` section above it.
   NEMAR's budget ($5 a day, $50 a month) was sized for Haiku and is unchanged.
 - **HED, EEGLAB and BIDS answer with GPT-6 Luna by default** (issue #559): `default_model` is now `openai.gpt-6-luna`, as NWB's is, with `reasoning_effort: high`; it was `claude-haiku-4-5`.
   Luna is priced at or below Haiku 4.5 ($0.11 / $0.55 against $1 / $5 per 1M input / output tokens).
-  A caller with their own Anthropic key who names no model (the command-line interface, CLI) runs the deployment's Claude default (`DEFAULT_MODEL`, Claude Haiku 4.5 unless the deployment changes it) as before,
-  and so does every request on a deployment that has `ANTHROPIC_API_KEY` but no Bedrock key, which also logs an error naming the community;
-  with no `ANTHROPIC_API_KEY` a request goes to OpenRouter's Luna slug, or fails with HTTP 500 when there is no OpenRouter key either.
+  A caller with their own Anthropic key who names no model (the command-line interface, CLI), and every request on a deployment with no Bedrock key, run Claude Haiku 4.5 as before.
   None of the three has a tool that returns an image, so Luna's lack of image blocks loses nothing.
   NEMAR stays on Sonnet rather than moving to Luna as issue #530 proposed; Luna cannot take the images that `nemar_render_overview` and browser-run figures produce.
 - **The logs keep the Bedrock key, and a caller's key, out** (pull requests #527 and #528): the log formatter now redacts Amazon Bedrock keys (`ABSK...` and `bedrock-api-key-...`) and any bearer credential in an `Authorization` header dump, and the botocore and LiteLLM loggers are held at WARNING even when the log level is DEBUG, because each prints its requests with their credentials.
@@ -173,22 +143,6 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Fixed
 
-- **A stream that failed was not counted as an agent error** (pull requests #566 and #568): it wrote its row in the metrics with status 500 and no `error_message`, which is what `agent_errors` counts, so the figure left out every failed stream.
-  A failed stream's row now carries an `error_message`: the exception class and the provider's code or status (none of the provider's own message), or, for a reply with no answer, why there is none.
-  After the upgrade `agent_errors` counts the failed streams it used to miss, so it rises with nothing new failing; rows written before the upgrade keep no `error_message`.
-- **An Anthropic error that arrives in the middle of a stream was not classified** (final review of this release): a stream that fails part way has already answered 200, so the SDK raises it with status 200 and the kind only in the error body (`overloaded_error`, `rate_limit_error`, ...).
-  It was logged as an unexpected error with a traceback and sent with no `retryable`; it is now classified from the body's error type, as a failure with an HTTP status is.
-  The `ValueError` that `langchain-aws` raises for a stream event it has no parser for is now the provider's too, where it was answered as a 400 "Invalid request" carrying the event.
-- **A reply that ended empty after the model had written a sentence before calling a tool was reported as answered when streamed** (final review): the streamed paths judged the text of every model run, so "Let me look that up" made an empty last run look like an answer and the reader got a `done` holding only that sentence.
-  They now judge the last run's text, as the non-streamed paths did, so the reply is an `error` event (or, when the last run was cut off with no text, the "ran out of room" error and not a cut-off warning); the sentence the reader already saw stays on the page.
-- **A model's reply over 10,000 characters was refused and thrown away** (final review): the session held a model's text to the 10,000 characters a person may send, so a long reply, and above all one cut off at the output limit, ended a streamed chat in an `error` event with no `done` and no cut-off warning, and a non-streamed one in HTTP 500, after the model was paid for.
-  A model's reply may now be up to 100,000 characters (`MAX_ASSISTANT_MESSAGE_LENGTH`); a person's message is still limited to 10,000.
-  Luna's 16,000-token output limit makes such replies likelier than they were on Haiku.
-- **A non-streamed request that reported no token usage recorded zero tokens and a cost of 0.0** (final review), where a streamed one records NULL, so the warning's "missing (NULL)" was not what the row held and a query for `IS NULL` missed it.
-  Both now record NULL.
-- **A non-streamed `/chat` answered a provider's `ValueError` as the caller's bad request** (final review): `langchain-aws` raises one for a service exception event, and the endpoint returned it as HTTP 400 with the provider's text.
-  It is now logged with its traceback and answered as the generic HTTP 500, like any other model error; a `ValueError` of OSA's own is still a 400.
-- **The widget showed no reference for an empty-reply 502** (final review): with `streamingEnabled: false`, or any non-streamed response, the banner showed the message without the `error_id` and its copy button that a streamed error shows.
 - **The widget's Settings dialog refused an OpenRouter slug with a variant suffix, such as `openai/gpt-oss-120b:nitro`** (issue #552).
   Its model-name check had no room for `:variant`, while the server's own check for a community's ids has, so a caller with their own OpenRouter key could not save `:nitro`, `:floor` or `:free` slugs, and a saved one was dropped on load.
   The widget now applies the server's pattern and its 100-character limit, both allow any number of variants (OpenRouter lets them be stacked, as in `:nitro:exacto`), and both are held to one shared list of valid and invalid ids.
@@ -209,13 +163,6 @@ the version being released and start a new `[Unreleased]` section above it.
   Every place that renders inline text now does, with the code's own text escaped and not read as bold, italics or a `[1]` citation marker.
   An indented list item, as models write a nested list, stays in its list instead of becoming a paragraph that starts with a literal `*`; nesting is flattened.
   Tested by `frontend/test-markdown.js`, which runs the widget's own renderer.
-
-### Security
-
-- **The widget's markdown renderer could put a model's text into the page as HTML** (pull request #571): when a reply rendered to nothing (it was only an opening code fence), its text was returned unescaped for `innerHTML`, so a fence whose info string is HTML, such as an `<img>` with an `onerror` attribute, became a live element in the page; the model, or a document steering it, controls that text.
-  The text is now escaped.
-  The 0.8.15 widget also passed a `<` in a paragraph through unescaped; the paragraph rendering rewritten for this release already escapes it, and a test now pins both.
-  A page that pins the widget by Subresource Integrity (SRI) hash, such as nemar.org, keeps serving the unfixed widget and stays exposed until it is re-pinned to the 0.8.16 widget.
 
 ## [0.8.15] - 2026-09-25
 

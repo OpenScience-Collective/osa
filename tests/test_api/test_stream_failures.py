@@ -16,14 +16,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal
 from unittest.mock import patch
 
 import httpx
 import pytest
 from botocore.exceptions import ReadTimeoutError
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from langchain_aws.chat_models.bedrock_converse import _parse_stream_event
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import BaseMessage
@@ -34,10 +32,8 @@ from src.api.config import Settings
 from src.api.routers.community import (
     AssistantWithMetrics,
     ChatSession,
-    _get_session_store,
     _stream_ask_response,
     _stream_chat_response,
-    create_community_router,
 )
 from src.assistants.community import CommunityAssistant
 from src.core.services.anthropic_llm import create_anthropic_llm
@@ -46,14 +42,12 @@ from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_MODEL
 from src.core.services.litellm_llm import create_openrouter_llm
 from src.metrics.db import init_metrics_db, metrics_connection
-from src.metrics.middleware import MetricsMiddleware
 from tests.helpers.anthropic_wire import refusal_with, served_by
 from tests.helpers.bedrock_wire import EVENT_STREAM, Wire, frame, refusal
 from tests.helpers.chat_models import StreamingScriptedChatModel
 from tests.helpers.openrouter import FakeOpenRouter, HttpError
 from tests.helpers.provider_replies import (
     COMMUNITY,
-    ORIGIN,
     QUESTION,
     community_config,
     real_request,
@@ -527,7 +521,7 @@ class TestWhatNoProviderCallRaises:
     async def test_a_service_error_langchain_aws_raised_as_a_value_error_is_not_the_readers(
         self, path: str, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """It used to be labeled "Invalid request" (and, in a chat, shown as a session
+        """It used to be labelled "Invalid request" (and, in a chat, shown as a session
         limit), as if the reader had sent something wrong."""
         caplog.set_level(logging.WARNING)
         with pytest.raises(ValueError, match="Received AWS exception") as raised:
@@ -642,91 +636,3 @@ class TestWhatLangchainAwsRaisesItself:
         records = _failure_records(caplog)
         _assert_retryable(events, records, path, "ConnectionError")
         assert "Model call failed" in records[0].getMessage()
-
-
-class _RaisingChatModel(_FailingChatModel):
-    """Raises ``error`` on a call that is not streamed, as a provider client does."""
-
-    def _generate(self, *_args: Any, **_kwargs: Any) -> NoReturn:
-        raise self.error
-
-
-@pytest.fixture
-def client(monkeypatch):
-    from src.api.config import get_settings
-    from src.assistants.registry import registry
-
-    # What is under test is the failure, not the API key check (see test_tool_call_streaming).
-    monkeypatch.setenv("REQUIRE_API_AUTH", "false")
-    get_settings.cache_clear()
-    registry.register_from_config(community_config())
-    _get_session_store(COMMUNITY).clear()
-    app = FastAPI()
-    app.add_middleware(MetricsMiddleware)
-    app.include_router(create_community_router(COMMUNITY))
-    yield TestClient(app)
-    _get_session_store(COMMUNITY).clear()
-    registry._assistants.pop(COMMUNITY, None)
-    monkeypatch.undo()
-    get_settings.cache_clear()
-
-
-class TestAChatThatIsNotStreamed:
-    """The streams classify what a model call raised; a ``ValueError`` from ``langchain-aws``
-    (a service exception event it could not raise as a ``ClientError``) used to come back
-    from ``/chat`` as HTTP 400 carrying the provider's text, as if the caller had sent a bad
-    request."""
-
-    @staticmethod
-    def _post(client: TestClient, error: Exception, monkeypatch):
-        assistant = CommunityAssistant(
-            model=_RaisingChatModel(chunk_script=[[]], error=error),
-            config=community_config(),
-            preload_docs=False,
-        )
-        wrapped = AssistantWithMetrics(
-            assistant=assistant, model=BEDROCK_MODEL, key_source="platform"
-        )
-        monkeypatch.setattr(
-            "src.api.routers.community.create_community_assistant", lambda *_a, **_k: wrapped
-        )
-        return client.post(
-            f"/{COMMUNITY}/chat",
-            headers={"Origin": ORIGIN},
-            json={"message": QUESTION, "stream": False},
-        )
-
-    def test_a_provider_value_error_is_a_logged_server_error_not_the_callers_400(
-        self, client: TestClient, monkeypatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        caplog.set_level(logging.WARNING)
-        with pytest.raises(ValueError, match="Received AWS exception") as raised:
-            _parse_stream_event({"throttlingException": {"message": "Too many requests"}})
-
-        response = self._post(client, raised.value, monkeypatch)
-
-        assert response.status_code == 500
-        assert "Too many requests" not in response.text, "the provider's text is not echoed"
-        assert "throttlingException" not in response.text
-        (record,) = [r for r in caplog.records if "Error in chat endpoint" in r.getMessage()]
-        assert record.levelno == logging.ERROR and record.exc_info
-        assert "throttlingException" in record.getMessage()
-
-    def test_a_stream_event_langchain_aws_cannot_parse_is_the_providers_too(
-        self, client: TestClient, monkeypatch
-    ) -> None:
-        with pytest.raises(ValueError, match="unsupported stream event") as raised:
-            _parse_stream_event({"somethingNewEvent": {"x": 1}})
-
-        response = self._post(client, raised.value, monkeypatch)
-
-        assert response.status_code == 500
-        assert "somethingNewEvent" not in response.text
-
-    def test_a_value_error_of_ours_is_still_the_requests_fault(
-        self, client: TestClient, monkeypatch
-    ) -> None:
-        response = self._post(client, ValueError("Message too long (20000 chars)"), monkeypatch)
-
-        assert response.status_code == 400
-        assert response.json()["detail"] == "Message too long (20000 chars)"

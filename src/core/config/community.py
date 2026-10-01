@@ -91,7 +91,7 @@ class SSRFViolationError(ValueError):
 # Shared regex for model identifiers. Accepts both the OpenRouter
 # creator/model-name form (e.g. "anthropic/claude-3.5-sonnet") and a bare
 # first-party id with no provider prefix (e.g. "claude-haiku-4-5", one of
-# src.core.services.anthropic_models.OFFERED_MODELS), since the Claude Platform on
+# src.core.services.anthropic_models.OFFERED_MODELS) -- the Claude Platform on
 # AWS path has no separate "creator" segment. Any number of ":variant" suffixes may
 # end either form: Bedrock's own invoke id for gpt-oss-120b, "openai.gpt-oss-120b-1:0",
 # is an alias of an offered model, and OpenRouter slugs carry ":free", ":nitro" and the
@@ -1323,15 +1323,12 @@ class FAQGenerationConfig(BaseModel):
         id ("anthropic/claude-sonnet-4.5") is judged as the model it will
         actually bill (``claude-sonnet-5-5``).
 
-        Four things are worth saying at config load, all as warnings rather
+        Three things are worth saying at config load, all as warnings rather
         than errors so that a config keeps parsing (this schema backs the whole
         community, not just FAQ generation):
 
         - An unresolvable model, which would otherwise fail at the first
           FAQ run rather than at ``osa validate`` time.
-        - A model served from Amazon Bedrock. FAQ generation builds its agents on
-          Claude models only, so it would fail at the first FAQ run for the same
-          reason; the warning names the two Claude models to use instead.
         - The expensive model on the evaluation agent. The two-agent split
           exists so the thousands of scoring calls run on something cheap and
           only the few hundred surviving threads pay for quality. With two
@@ -2523,10 +2520,10 @@ class CommunityConfig(BaseModel):
 
         Communities using expensive models should provide their own API key
         to avoid unexpected platform costs. This guard only concerns
-        OpenRouter-format ids: the offered models
-        (src.core.services.anthropic_models.OFFERED_MODELS: two Claude models
-        and three Bedrock-served ones) are deliberately all cost-capped, so
-        there is no ultra-expensive id a bare default_model could resolve to.
+        OpenRouter-format ids: the Anthropic offering
+        (src.core.services.anthropic_models.OFFERED_MODELS) is deliberately
+        limited to two cost-capped models, so there is no ultra-expensive
+        Anthropic id a community's default_model could resolve to.
         """
         if (
             not self.default_model

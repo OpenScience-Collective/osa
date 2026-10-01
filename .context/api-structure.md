@@ -2,11 +2,6 @@
 
 This document describes how the OSA API is structured around communities, how routes are dynamically created, and implementation details for maintaining the API.
 
-> **Provider routing and models:** the examples below are from the OpenRouter era (OpenRouter model ids, `X-OpenRouter-Key`).
-> What a request goes through today, on the Claude Platform on AWS and Amazon Bedrock, is in [Provider Routing and the Bedrock Models](#provider-routing-and-the-bedrock-models) at the end of this file,
-> and the reasons are in `docs/adr/0004-anthropic-claude-platform-migration.md` and `docs/adr/0014-bedrock-models-alongside-claude.md`.
-> The response examples also predate the `warnings` list and the 502 an unanswered reply gets (see the 0.8.16 entries in `CHANGELOG.md`).
-
 ## Core Principle: Community-Based Routing
 
 **Each community gets its own namespace at the root level:**
@@ -409,11 +404,7 @@ The section above predates the move to the Claude Platform on AWS (ADR 0004) and
    Anthropic provider). A community's Anthropic key (`anthropic_api_key_env_var`) does not pay for
    Bedrock either: the platform does. When the model came from a community's `default_model`
    rather than the request, and the caller cannot have it, the request runs the deployment's Claude
-   default instead (`_claude_fallback`: `DEFAULT_MODEL`, Haiku 4.5 unless the deployment changes it)
-   and logs an error naming the community (`_log_bedrock_fallback`), or a warning when the only cause
-   is the caller's own Anthropic key (the CLI); naming the model gets the 403 or 400. With no
-   `ANTHROPIC_API_KEY` a platform-funded request is not on the Anthropic provider at all: it goes to
-   OpenRouter's slug for the model, or fails with HTTP 500 when there is no OpenRouter key either.
+   default instead (`_claude_fallback`) and logs an error; naming the model gets the 403 or 400.
 4. On Bedrock, `create_bedrock_llm` (`src/core/services/bedrock_llm.py`) builds the chat model. Tools return
    `search_result` blocks as on the Anthropic path; the model layer turns them into `[src:N]` tags
    and the model's tags back into citations (`src/core/services/tagged_citations.py`).

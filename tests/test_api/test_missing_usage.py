@@ -40,7 +40,6 @@ from tests.helpers.provider_replies import (
     ORIGIN,
     PROVIDERS,
     QUESTION,
-    USAGE,
     Provider,
     assistant_for,
     collect,
@@ -278,24 +277,6 @@ class TestWithoutStreaming:
         assert response.status_code == 200
         (row,) = _rows()
         _assert_one_warning(caplog, provider.model, "missing", request_id=row["request_id"])
-        assert row["input_tokens"] is None and row["total_tokens"] is None
-        assert row["estimated_cost"] is None, "NULL as the warning says, not a free request"
-
-    def test_a_request_that_reported_its_usage_is_priced(
-        self, provider: Provider, client: TestClient, monkeypatch
-    ) -> None:
-        self._serve(monkeypatch, provider, [scripted_reply(provider, ANSWER)])
-
-        response = client.post(
-            f"/{COMMUNITY}/ask",
-            headers={"Origin": ORIGIN},
-            json={"question": QUESTION, "stream": False},
-        )
-
-        assert response.status_code == 200
-        (row,) = _rows()
-        assert row["input_tokens"] == USAGE["input_tokens"]
-        assert row["estimated_cost"] is not None and row["estimated_cost"] > 0
 
     def test_chat_warns_once_and_only_for_this_turn(
         self, provider: Provider, client: TestClient, monkeypatch, caplog

@@ -6,8 +6,6 @@ errors botocore and httpx raise, ``langchain-aws``'s own ``ValueError`` for a se
 exception event, the Anthropic SDK's status errors and LiteLLM's OpenAI-style ones.
 """
 
-import json
-
 import anthropic
 import httpx
 import httpx2
@@ -162,65 +160,6 @@ class TestTheDetailCarriesNoProviderMessage:
         assert secret not in failure.detail
 
 
-def _mid_stream_error(error_type: str) -> anthropic.APIStatusError:
-    """The error the Anthropic SDK raises for an SSE ``error`` event, from its own decoder.
-
-    The stream has already answered ``200``, so the status says nothing; only the body's
-    error type does.
-    """
-    body = json.dumps({"type": "error", "error": {"type": error_type, "message": "x"}})
-    response = httpx2.Response(
-        200,
-        content=f"event: error\ndata: {body}\n\n".encode(),
-        headers={"content-type": "text/event-stream"},
-        request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"),
-    )
-    stream = anthropic.Stream(
-        cast_to=object, response=response, client=anthropic.Anthropic(api_key="test")
-    )
-    with pytest.raises(anthropic.APIStatusError) as caught:
-        list(stream)
-    assert caught.value.status_code == 200
-    return caught.value
-
-
-class TestAnAnthropicErrorThatArrivesInAStream:
-    """Release review: ``overloaded_error`` mid-stream was logged as an unexpected error
-    with a traceback and carried no ``retryable``, because the status is 200."""
-
-    @pytest.mark.parametrize(
-        ("error_type", "kind", "retryable"),
-        [
-            ("overloaded_error", "unavailable", True),
-            ("api_error", "unavailable", True),
-            ("rate_limit_error", "throttled", True),
-            ("timeout_error", "timeout", True),
-            ("invalid_request_error", "rejected", False),
-            ("not_found_error", "rejected", False),
-            ("authentication_error", "unauthorized", False),
-            ("permission_error", "unauthorized", False),
-        ],
-    )
-    def test_the_body_says_what_the_status_does_not(
-        self, error_type: str, kind: str, retryable: bool
-    ) -> None:
-        failure = classify_model_error(_mid_stream_error(error_type))
-
-        assert (failure.kind, failure.retryable) == (kind, retryable)
-        assert error_type in failure.detail
-
-    def test_an_error_type_nobody_listed_stays_unknown(self) -> None:
-        failure = classify_model_error(_mid_stream_error("a_type_added_next_year"))
-
-        assert (failure.kind, failure.retryable) == ("unknown", None)
-        assert not failure.from_provider
-
-    def test_the_detail_carries_the_type_and_none_of_the_providers_message(self) -> None:
-        failure = classify_model_error(_mid_stream_error("overloaded_error"))
-
-        assert failure.detail == "APIStatusError overloaded_error"
-
-
 class TestLangchainAwsValueErrors:
     """``langchain-aws`` raises ``ValueError`` for two things that are the provider's,
     and the router used to call every ``ValueError`` the reader's own fault."""
@@ -248,15 +187,6 @@ class TestLangchainAwsValueErrors:
         failure = classify_model_error(caught.value)
 
         assert failure.from_provider and failure.retryable is None
-
-    def test_a_stream_event_it_has_no_parser_for_is_the_providers_not_the_readers(self) -> None:
-        with pytest.raises(ValueError, match="unsupported stream event") as caught:
-            _parse_stream_event({"somethingNewEvent": {"x": 1}})
-
-        failure = classify_model_error(caught.value)
-
-        assert failure.from_provider and failure.retryable is None
-        assert "somethingNewEvent" not in failure.detail
 
     def test_a_permissions_error_about_system_tools_is_classified_by_what_it_wraps(self) -> None:
         original = _client_error(

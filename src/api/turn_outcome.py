@@ -65,10 +65,9 @@ LONG_CONVERSATION_MESSAGE = (
 )
 
 #: The one warning a reply gets when it was cut off at its output limit and the
-#: conversation is also getting long. A widget from before warnings stacked (an embed
-#: pinned by its integrity hash is one) keeps a single warning element, so two warnings in
-#: a row would show only the second, and a cut-off answer is likeliest in exactly the
-#: conversations that are long. The current widget stacks them; one event serves both.
+#: conversation is also getting long. The widget keeps a single warning element, so two
+#: warnings in a row would show only the second, and a cut-off answer is likeliest in
+#: exactly the conversations that are long.
 CUT_OFF_LONG_MESSAGE = (
     "This answer was cut off because the assistant reached its length limit, and the "
     "conversation is getting long. Start a new chat and ask a narrower question."
@@ -238,8 +237,7 @@ def _cut_off(reason: str, *, has_answer: bool) -> tuple[ReplyProblem, str]:
         event="warning" if has_answer else "error",
         message=message,
         reason=reason,
-        summary=f"{cause} {'after an answer' if has_answer else 'with no answer'} "
-        f"(stop reason {reason})",
+        summary=f"{cause} with no answer (stop reason {reason})",
     )
     return problem, headline
 
@@ -285,9 +283,7 @@ def reply_problem(
 
     Args:
         runs: The request's model runs.
-        reply_text: The text of the last model run, which is the reader's answer. A
-            streamed reply passes only that run's text, not what the model wrote before
-            a tool call.
+        reply_text: The text the reader was shown for this turn.
         code_ran: Whether the reply already ran code the widget keeps. A reply that ran
             such code is kept by the widget even with no text, so it is not an empty one.
         community_id: For the log.
@@ -359,9 +355,8 @@ def warning_event(
     """The one ``warning`` event a finished reply gets, or None when it needs none.
 
     A reply can need two: it was cut off (``problem``, a warning-level one), and the
-    conversation is getting long. A widget that predates stacked warnings (an embed pinned
-    by its integrity hash is one) keeps a single warning element, so a second event
-    overwrites the first before it can be read. One event carries both instead.
+    conversation is getting long. The widget keeps a single warning element, so a second
+    event overwrites the first before it can be read. One event carries both instead.
 
     Args:
         problem: What ``reply_problem`` found, or None. An error-level one is not a warning
