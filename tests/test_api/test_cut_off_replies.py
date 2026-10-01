@@ -1336,6 +1336,25 @@ class TestAModelsReplyIsNotAPersonsMessage:
         (row,) = _rows()
         assert row["status_code"] == 200
 
+    async def test_a_reply_over_the_models_own_limit_still_gets_its_request_id_and_its_row(
+        self,
+    ) -> None:
+        """The branch that still refuses a reply tells the reader which request it was and
+        records the request: before, it sent a bare message and wrote no row at all."""
+        provider = PROVIDERS[0]
+        too_long = "x" * (MAX_ASSISTANT_MESSAGE_LENGTH + 1)
+
+        events, session = await _chat(provider, [scripted_reply(provider, too_long)])
+
+        assert _names(events)[-1] == "error" and "done" not in _names(events)
+        assert "too long" in events[-1]["message"]
+        assert events[-1]["request_id"] == "req-cutoff"
+        assert [type(m).__name__ for m in session.messages] == ["HumanMessage"]
+        (row,) = _rows()
+        assert row["status_code"] == 500
+        assert row["error_message"].startswith("session limit:")
+        assert row["input_tokens"] == USAGE["input_tokens"], "what the reply cost is recorded"
+
     @provider_param
     def test_not_streamed_it_is_a_200_with_the_warning(
         self, provider: Provider, client: TestClient, monkeypatch

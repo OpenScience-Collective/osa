@@ -1403,8 +1403,9 @@ def _select_model(
     picked one of those onto the Bedrock provider. ``default_model_provider``
     is ignored here: it is OpenRouter-only routing.
 
-    **OpenRouter** (reached via BYOK, or a community's own funded
-    OpenRouter key, see ``_resolve_provider``): a custom model requires
+    **OpenRouter** (reached via BYOK, a community's own funded OpenRouter key, or
+    the platform's when it has no ``ANTHROPIC_API_KEY``, see ``_resolve_provider``
+    and ``_platform_choice``): a custom model requires
     BYOK, otherwise the community or platform default (and its
     provider-routing hint) is used.
 
@@ -2323,7 +2324,8 @@ def _set_metrics_on_request(
     as for a streamed one (``_log_streaming_metrics``): a zero would read as a free
     request, and ``warn_about_usage`` says the cost is missing.
     """
-    has_tokens = agent_result.total_tokens > 0
+    # The test _log_streaming_metrics and ModelRuns use: some token count, not the total field.
+    has_tokens = (agent_result.input_tokens + agent_result.output_tokens) > 0
     http_request.state.metrics_agent_data = {
         "model": awm.model,
         "key_source": awm.key_source,

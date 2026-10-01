@@ -4233,7 +4233,7 @@
       typeof msg.role === 'string' &&
       (msg.role === 'user' || msg.role === 'assistant') &&
       typeof msg.content === 'string' &&
-      msg.content.length < 100000; // Prevent DoS
+      msg.content.length <= 100000; // Prevent DoS; the server keeps a reply up to this long
   }
 
   // Older history entries may not have citations, and corrupted storage can

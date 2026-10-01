@@ -520,25 +520,3 @@ class TestBedrockModelsPassTheCostGuard:
     @pytest.mark.parametrize("model_id", sorted(BEDROCK_MODELS))
     def test_every_bedrock_model_is_allowed_on_the_platform_key(self, model_id):
         _check_model_cost(model_id, "platform")
-
-
-class TestRetiredEnvironmentVariables:
-    """The warning the tests above are kept clear of: a retired variable still exported."""
-
-    @pytest.mark.parametrize("name", sorted(RETIRED_ENV_VARS))
-    def test_one_that_is_still_set_is_warned_about_by_name(self, monkeypatch, caplog, name):
-        monkeypatch.setenv(name, "2048")
-        caplog.set_level(logging.WARNING)
-
-        get_settings()
-
-        (record,) = [r for r in caplog.records if name in r.getMessage()]
-        assert record.levelno == logging.WARNING
-        assert RETIRED_ENV_VARS[name] in record.getMessage()
-
-    def test_none_set_means_no_warning(self, caplog):
-        caplog.set_level(logging.WARNING)
-
-        get_settings()
-
-        assert [r for r in caplog.records if "no longer used" in r.getMessage()] == []

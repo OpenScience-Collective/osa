@@ -285,7 +285,9 @@ def reply_problem(
 
     Args:
         runs: The request's model runs.
-        reply_text: The text the reader was shown for this turn.
+        reply_text: The text of the last model run, which is the reader's answer. A
+            streamed reply passes only that run's text, not what the model wrote before
+            a tool call.
         code_ran: Whether the reply already ran code the widget keeps. A reply that ran
             such code is kept by the widget even with no text, so it is not an empty one.
         community_id: For the log.
