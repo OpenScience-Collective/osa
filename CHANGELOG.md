@@ -19,6 +19,18 @@ the version being released and start a new `[Unreleased]` section above it.
   Its short welcome says where the code runs, what is installed, that the latest MNE does not install in this runtime, and that the Zarr copy is lossy.
 - **NEMAR: a curated first plot** (pull request #577): the chat's guidance for power spectra and event-related potential (ERP) images now sets the plot range before drawing.
   It orders ERP image rows (by response time, else by each epoch's amplitude in a window), and describes what a plot shows rather than calling the recording noise.
+- **A failed model is called unavailable** (issue #578): when a model call fails in a way that is not the request's fault, the `error` event now says "The current model (name) is not available right now. Please choose another model."
+  It used to say "An error occurred while processing your request."
+  There is no automatic switch to another model, which would change what a community chose and what a request costs.
+  A failure that is not a model's (a tool of ours failing) keeps its wording, and a refused request or key keeps its own.
+
+### Fixed
+
+- **A Bedrock stream that is cut short is tried once more, and a stall is classified** (issue #578): GPT-6 Luna streams sometimes ended almost at once with no `messageStop` event, and others stalled until the read timeout.
+  A stall came out of botocore as urllib3's own error, which the classifier did not know, so it was logged as an unexpected error with no `retryable` field; it is now a retryable timeout.
+  A stream that fails within ten seconds, before the reader has been shown any text, reasoning, tool call or tool result, is run once more after about a second.
+  A throttle and a timeout are not retried: the clients already retry a throttle with backoff, and a timeout has waited out its limit.
+  The log says when a request was retried and whether the second try worked, and a failure that survived it is logged at ERROR.
 
 ## [0.8.16] - 2026-09-30
 
