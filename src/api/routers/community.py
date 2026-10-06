@@ -101,6 +101,7 @@ from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MO
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
 from src.core.services.litellm_llm import create_openrouter_llm, to_openrouter_model
 from src.core.services.model_errors import classify_model_error
+from src.core.services.stream_retry import astream_events_with_retry
 from src.knowledge.search import FAQResult, get_citation_stats, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
@@ -3857,7 +3858,15 @@ async def _stream_ask_response(
         # run ended (or with no run end at all) is a run's too, so it comes first.
         run_start = 0
         last_run_text = ""
-        async for event in graph.astream_events(state, version="v2", config=stream_config):
+        async for event in astream_events_with_retry(
+            graph,
+            state,
+            stream_config,
+            community_id=community_id,
+            model=awm.model,
+            endpoint=f"/{community_id}/ask",
+            request_id=request_id,
+        ):
             kind = event.get("event")
 
             if kind == "on_chat_model_stream":
@@ -4305,7 +4314,15 @@ async def _stream_chat_response(
         # calls started going back to the model.
         ended_on_client_tools_node = False
 
-        async for event in graph.astream_events(state, version="v2", config=stream_config):
+        async for event in astream_events_with_retry(
+            graph,
+            state,
+            stream_config,
+            community_id=community_id,
+            model=awm.model,
+            endpoint=metrics_endpoint,
+            request_id=request_id,
+        ):
             kind = event.get("event")
 
             if kind == "on_chat_model_stream":

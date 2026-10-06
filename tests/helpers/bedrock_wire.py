@@ -11,6 +11,7 @@ failure is staged the same way, so the real client's error handling runs too.
 import json
 import struct
 import zlib
+from collections.abc import Sequence
 from typing import Any
 
 from botocore.awsrequest import AWSResponse
@@ -55,6 +56,10 @@ class Wire:
         then_raises: An exception to raise from the response body after ``body`` has been
             read, which is how a stream that stalls or drops part way surfaces: botocore
             iterates urllib3's response itself, so urllib3's own error comes out.
+        then: Answers for the requests after the first, each the keyword arguments above
+            (``body``, ``content_type``, ``status``, ``headers``, ``raises``,
+            ``then_raises``) as a dict. The last one is repeated for any request after it.
+            A caller that retries sees the first answer fail and a later one succeed.
     """
 
     def __init__(
@@ -67,22 +72,29 @@ class Wire:
         headers: dict[str, str] | None = None,
         raises: Exception | None = None,
         then_raises: Exception | None = None,
+        then: Sequence[dict[str, Any]] = (),
     ) -> None:
         self.requests: list[Any] = []
-        self._body = body
-        self._status = status
-        self._headers = {"content-type": content_type, **(headers or {})}
-        self._raises = raises
-        self._then_raises = then_raises
+        first = {
+            "body": body,
+            "content_type": content_type,
+            "status": status,
+            "headers": headers,
+            "raises": raises,
+            "then_raises": then_raises,
+        }
+        self._answers = [first, *then]
         llm.client.meta.events.register("before-send.bedrock-runtime.*", self._answer)
 
     def _answer(self, request: Any, **_kwargs: Any) -> AWSResponse:
         self.requests.append(request)
-        if self._raises is not None:
-            raise self._raises
-        return AWSResponse(
-            request.url, self._status, self._headers, Raw(self._body, self._then_raises)
-        )
+        spec = self._answers[min(len(self.requests), len(self._answers)) - 1]
+        if spec.get("raises") is not None:
+            raise spec["raises"]
+        headers = {"content-type": spec.get("content_type", "application/json")}
+        headers.update(spec.get("headers") or {})
+        raw = Raw(spec.get("body", b""), spec.get("then_raises"))
+        return AWSResponse(request.url, spec.get("status", 200), headers, raw)
 
     @property
     def sent(self) -> Any:

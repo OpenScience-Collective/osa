@@ -132,6 +132,17 @@ class ModelFailure:
         return self.kind != "unknown"
 
     @property
+    def worth_retrying_now(self) -> bool:
+        """Whether a second try right away is likely to work.
+
+        True for a failure that can clear by itself and that fails fast: a throttle, a
+        stream the service cut short, a dropped connection. A timeout is left out even
+        though a retry can succeed, since it has already spent the whole read timeout and
+        a second one would double the reader's wait.
+        """
+        return self.retryable is True and self.kind != "timeout"
+
+    @property
     def retryable_label(self) -> str:
         """``yes``, ``no`` or ``unknown``, for a log line."""
         return {True: "yes", False: "no", None: "unknown"}[self.retryable]
