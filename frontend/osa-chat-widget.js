@@ -1583,9 +1583,17 @@
       border-bottom-left-radius: 4px;
     }
 
-    /* Markdown styling */
+    /* Markdown styling.
+       The widget lives in the host page's document, so a host rule on a bare element
+       (a docs theme's \`code\`, \`p\`, \`li\` or \`h2\`) reaches a reply wherever the rules
+       below leave a property unset. The Read the Docs theme turned inline code red,
+       gave it a border and put a code block on one line (white-space: nowrap); the
+       PyData theme colored inline code purple. So each property such a theme sets is
+       set here too. */
     .osa-message-content p {
       margin: 0 0 8px 0;
+      font-size: inherit;
+      line-height: inherit;
     }
 
     .osa-message-content p:last-child {
@@ -1595,8 +1603,10 @@
     .osa-message-content h1, .osa-message-content h2, .osa-message-content h3,
     .osa-message-content h4, .osa-message-content h5, .osa-message-content h6 {
       margin: 16px 0 8px 0;
+      font-family: inherit;
       font-weight: 600;
       line-height: 1.3;
+      color: inherit;
     }
 
     .osa-message-content h1:first-child, .osa-message-content h2:first-child,
@@ -1615,27 +1625,47 @@
       border-radius: 4px;
       font-size: 13px;
       font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+      line-height: 1.5;
+      color: inherit;
+      border: 0;
+      max-width: none;
+      overflow: visible;
+      white-space: normal;
     }
 
     .osa-message-content pre {
       background: #1f2937;
       color: #f9fafb;
       padding: 12px;
+      border: 0;
       border-radius: 8px;
       overflow-x: auto;
       margin: 8px 0;
       position: relative;
+      font-family: monospace;
+      font-size: 14px;
+      line-height: 1.5;
+      clear: none;
     }
 
     .osa-message-content pre code {
       background: transparent;
       padding: 0;
       color: inherit;
+      white-space: pre;
     }
 
     .osa-message-content ul, .osa-message-content ol {
       margin: 8px 0;
       padding-left: 20px;
+    }
+
+    .osa-message-content ul, .osa-message-content ul > li {
+      list-style-type: disc;
+    }
+
+    .osa-message-content ol, .osa-message-content ol > li {
+      list-style-type: decimal;
     }
 
     .osa-message-content li {
