@@ -5,7 +5,9 @@ authenticated and addressed them, and answered with fixture bytes: the same idea
 ``httpx`` response fixture, one layer down. So what a test asserts about a request is
 what the real client would have sent, and the reply goes through the real parser,
 including the binary event stream ConverseStream answers in. A refusal or a network
-failure is staged the same way, so the real client's error handling runs too.
+failure is staged the same way, so the real client's error handling runs too, and so is a
+stream that dies part way (``then_raises``) and a run of answers where an early request
+fails and a later one succeeds (``then``).
 """
 
 import json
@@ -15,15 +17,24 @@ from collections.abc import Sequence
 from typing import Any
 
 from botocore.awsrequest import AWSResponse
+from urllib3 import HTTPSConnectionPool
+from urllib3.exceptions import ReadTimeoutError
 
 EVENT_STREAM = "application/vnd.amazon.eventstream"
+
+
+def stalled_stream_error(host: str = "bedrock-runtime.us-east-2.amazonaws.com") -> ReadTimeoutError:
+    """The error urllib3 raises when a response stalls past the read timeout, built the way
+    urllib3 builds it, on a connection pool for ``host``."""
+    return ReadTimeoutError(HTTPSConnectionPool(host, port=443), "/", "Read timed out.")
 
 
 class Raw:
     """The minimum urllib3-shaped body botocore reads a response from.
 
     ``then_raises`` is raised from ``stream()`` once the body has been delivered, which is
-    how urllib3 ends a response whose connection stalled or dropped part way.
+    how urllib3 ends a response whose connection stalled or dropped part way. ``read()``
+    ignores it: only the streaming path raises.
     """
 
     def __init__(self, body: bytes, then_raises: Exception | None = None) -> None:
@@ -43,7 +54,8 @@ class Raw:
 
 
 class Wire:
-    """Captures what a client sends and answers with a fixed response.
+    """Captures what a client sends and answers each request with a staged response: the
+    same one every time, unless ``then`` stages later ones.
 
     Args:
         llm: A model built by ``create_bedrock_llm``; its runtime client is hooked.
@@ -58,8 +70,9 @@ class Wire:
             iterates urllib3's response itself, so urllib3's own error comes out.
         then: Answers for the requests after the first, each the keyword arguments above
             (``body``, ``content_type``, ``status``, ``headers``, ``raises``,
-            ``then_raises``) as a dict. The last one is repeated for any request after it.
-            A caller that retries sees the first answer fail and a later one succeed.
+            ``then_raises``) as a dict, and keys left out take the defaults above. The last
+            one is repeated for any request after it. A caller that retries sees the first
+            answer fail and a later one succeed.
     """
 
     def __init__(
@@ -75,7 +88,7 @@ class Wire:
         then: Sequence[dict[str, Any]] = (),
     ) -> None:
         self.requests: list[Any] = []
-        first = {
+        first: dict[str, Any] = {
             "body": body,
             "content_type": content_type,
             "status": status,
@@ -83,7 +96,7 @@ class Wire:
             "raises": raises,
             "then_raises": then_raises,
         }
-        self._answers = [first, *then]
+        self._answers: list[dict[str, Any]] = [first, *then]
         llm.client.meta.events.register("before-send.bedrock-runtime.*", self._answer)
 
     def _answer(self, request: Any, **_kwargs: Any) -> AWSResponse:

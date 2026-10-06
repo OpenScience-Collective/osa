@@ -22,10 +22,10 @@ from botocore.exceptions import (
 )
 from langchain_aws.chat_models.bedrock_converse import _handle_bedrock_error, _parse_stream_event
 from urllib3.exceptions import ProtocolError as Urllib3ProtocolError
-from urllib3.exceptions import ReadTimeoutError as Urllib3ReadTimeoutError
 
 from src.core.services.anthropic_models import BEDROCK_MODELS
-from src.core.services.model_errors import classify_model_error
+from src.core.services.model_errors import FailureKind, ModelFailure, classify_model_error
+from tests.helpers.bedrock_wire import stalled_stream_error
 
 
 def _client_error(code: str, status: int, message: str = "no") -> ClientError:
@@ -439,51 +439,55 @@ class TestOnlyAModelCallsErrorsAreTheModels:
         )
 
 
-class TestAStreamThatDiedInsideBotocore:
-    """Once Bedrock's stream is open, botocore iterates urllib3's response itself, so a
-    stall past the read timeout or a dropped connection comes out as urllib3's own error,
-    not botocore's. Production logged the stall as an unrecognized "Unexpected streaming
-    error" with no ``retryable`` field (issue 578)."""
+def _error_from_a_bedrock_stream(then_raises: Exception | None = None) -> Exception:
+    """The exception the real Bedrock client raises for a stream that opens with
+    ``messageStart`` and then ends: with no ``messageStop`` when ``then_raises`` is None
+    (``langchain-aws`` raises ``ConnectionError``), or by raising ``then_raises`` from the
+    response body the way urllib3 does for a stall or a dropped connection."""
+    from src.api.config import Settings
+    from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
+    from tests.helpers.bedrock_wire import EVENT_STREAM, Wire, frame
 
-    @staticmethod
-    def _error_from_a_stream_that(raises: Exception) -> Exception:
-        """The exception the real Bedrock client raises when its stream ends this way."""
-        from src.api.config import Settings
-        from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
-        from tests.helpers.bedrock_wire import EVENT_STREAM, Wire, frame
-
+    _bedrock_client.cache_clear()
+    try:
+        llm = create_bedrock_llm(
+            sorted(BEDROCK_MODELS)[0],
+            settings=Settings(
+                _env_file=None,
+                bedrock_api_key="test-bedrock-key",
+                bedrock_region="us-east-2",
+                bedrock_max_output_tokens=16000,
+            ),
+        )
+        Wire(
+            llm,
+            frame("messageStart", {"role": "assistant"}),
+            EVENT_STREAM,
+            then_raises=then_raises,
+        )
+        with pytest.raises(type(then_raises) if then_raises else ConnectionError) as caught:
+            list(llm.stream("hello"))
+    finally:
         _bedrock_client.cache_clear()
-        try:
-            llm = create_bedrock_llm(
-                sorted(BEDROCK_MODELS)[0],
-                settings=Settings(
-                    _env_file=None,
-                    bedrock_api_key="test-bedrock-key",
-                    bedrock_region="us-east-2",
-                    bedrock_max_output_tokens=16000,
-                ),
-            )
-            Wire(
-                llm, frame("messageStart", {"role": "assistant"}), EVENT_STREAM, then_raises=raises
-            )
-            with pytest.raises(type(raises)) as caught:
-                list(llm.stream("hello"))
-        finally:
-            _bedrock_client.cache_clear()
-        return caught.value
+    return caught.value
+
+
+class TestAStreamThatDiedInsideBotocore:
+    """Regression test for issue #578: once Bedrock's stream is open, botocore iterates
+    urllib3's response itself, so a stall past the read timeout or a dropped connection
+    comes out as urllib3's own error, not botocore's. Those used to be logged as an
+    unrecognized "Unexpected streaming error" with no ``retryable`` field."""
 
     def test_a_stall_past_the_read_timeout_is_a_timeout(self) -> None:
-        error = self._error_from_a_stream_that(
-            Urllib3ReadTimeoutError(None, None, "Read timed out.")
-        )
+        error = _error_from_a_bedrock_stream(stalled_stream_error())
 
         failure = classify_model_error(error)
 
         assert (failure.kind, failure.retryable, failure.from_provider) == ("timeout", True, True)
-        assert failure.detail == "ReadTimeoutError"
+        assert failure.detail == "urllib3.ReadTimeoutError", "not confused with botocore's own"
 
     def test_a_connection_that_dropped_part_way_is_a_connection_failure(self) -> None:
-        error = self._error_from_a_stream_that(
+        error = _error_from_a_bedrock_stream(
             Urllib3ProtocolError("Connection broken: IncompleteRead(0 bytes read)")
         )
 
@@ -497,15 +501,12 @@ class TestAStreamThatDiedInsideBotocore:
 
     @pytest.mark.parametrize(
         "error",
-        [
-            Urllib3ReadTimeoutError(None, None, "Read timed out."),
-            Urllib3ProtocolError("Connection broken"),
-        ],
+        [stalled_stream_error(), Urllib3ProtocolError("Connection broken")],
         ids=lambda e: type(e).__name__,
     )
     def test_the_same_errors_from_a_tool_of_ours_are_not_the_models(self, error: Exception) -> None:
-        """urllib3 sits under other clients too. Raised anywhere but through botocore, the
-        same class says nothing about a model call."""
+        """urllib3 sits under other clients too. Raised anywhere but through the Bedrock
+        model call, the same class says nothing about a model call."""
 
         def ours() -> None:
             raise error
@@ -517,3 +518,36 @@ class TestAStreamThatDiedInsideBotocore:
 
         assert failure.kind == "unknown"
         assert not failure.from_provider
+
+
+class TestWhatIsWorthRetryingNow:
+    """A second try a moment later is for a stream the service cut short, a dropped
+    connection or a service error. Not for what has already waited out its limit (a
+    timeout), what the clients already retried with backoff (a throttle), what fails the
+    same way every time, or what nothing is known about."""
+
+    @pytest.mark.parametrize(
+        ("kind", "retryable", "expected"),
+        [
+            ("connection", True, True),
+            ("unavailable", True, True),
+            ("throttled", True, False),
+            ("timeout", True, False),
+            ("unavailable", None, False),
+            ("rejected", False, False),
+            ("unauthorized", False, False),
+            ("unknown", None, False),
+        ],
+    )
+    def test_each_kind(self, kind: FailureKind, retryable: bool | None, expected: bool) -> None:
+        assert ModelFailure(kind, retryable, "x").worth_retrying_now is expected
+
+    def test_a_stream_cut_short_and_a_dropped_connection_are_worth_it(self) -> None:
+        """The two this exists for, through the real client."""
+        cut = _error_from_a_bedrock_stream()
+        dropped = _error_from_a_bedrock_stream(
+            Urllib3ProtocolError("Connection broken: IncompleteRead(0 bytes read)")
+        )
+
+        assert classify_model_error(cut).worth_retrying_now
+        assert classify_model_error(dropped).worth_retrying_now

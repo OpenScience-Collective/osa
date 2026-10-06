@@ -1,15 +1,18 @@
-"""A stream that fails says what failed, and only promises a retry that can work
-(release review, finding 3).
+"""A stream that fails says what failed, tries a failure that is worth it once more, and
+tells the reader the truth about it (release review, finding 3; issue #578).
 
 A throttle, a read timeout and a request the provider refused as invalid (a 400 for a
-reasoning field the model does not take) all used to reach the reader as "try again" and
-the log as one undifferentiated error. A refusal fails the same way every time, so telling
-the reader to retry is wrong, and the log did not say which failure it was.
+reasoning field the model does not take) are different failures. A refusal fails the same
+way every time, so the reader is told so; a model that failed in a way that can clear is
+reported as unavailable, with the ask to choose another; and the log says which failure it
+was. A stream that fails fast before the reader has seen anything is run once more.
 
 What is real: the graph, the router's two streams, the metrics database, and the provider
-clients. Bedrock's goes through botocore with the network hook staged to refuse, time out or
-send an exception event; Anthropic's and OpenRouter's through their real clients with only
-the HTTP answer staged. A scripted model raises the exceptions no provider call produces.
+clients. Bedrock's goes through botocore with the network hook staged to refuse, time out,
+send an exception event, end with no ``messageStop``, or die part way with urllib3's own
+error, and to answer differently the second time; Anthropic's and OpenRouter's through
+their real clients with only the HTTP answer staged. A scripted model raises the exceptions
+no provider call produces.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.tools import tool
-from urllib3.exceptions import ReadTimeoutError as Urllib3ReadTimeoutError
+from urllib3.exceptions import ProtocolError as Urllib3ProtocolError
 
 from src.api.config import Settings
 from src.api.routers.community import (
@@ -51,7 +54,14 @@ from src.core.services.litellm_llm import create_openrouter_llm
 from src.metrics.db import init_metrics_db, metrics_connection
 from src.metrics.middleware import MetricsMiddleware
 from tests.helpers.anthropic_wire import refusal_with, served_by
-from tests.helpers.bedrock_wire import EVENT_STREAM, Wire, converse_stream, frame, refusal
+from tests.helpers.bedrock_wire import (
+    EVENT_STREAM,
+    Wire,
+    converse_stream,
+    frame,
+    refusal,
+    stalled_stream_error,
+)
 from tests.helpers.chat_models import StreamingScriptedChatModel
 from tests.helpers.openrouter import FakeOpenRouter, HttpError
 from tests.helpers.provider_replies import (
@@ -85,7 +95,7 @@ paths = pytest.mark.parametrize("path", ["ask", "chat"])
 
 @pytest.fixture(autouse=True)
 def _no_wait_before_a_retry(monkeypatch):
-    """The second try waits a second so a throttle can clear; a test has nothing to wait for."""
+    """The second try waits so a failure can clear; a test has nothing to wait for."""
     monkeypatch.setattr(stream_retry, "RETRY_DELAY_SECONDS", 0.0)
 
 
@@ -274,10 +284,16 @@ class TestBedrock:
         _assert_permanent(events, _failure_records(caplog), "AccessDeniedException")
 
 
-#: A stream that opens and then ends with no ``messageStop``: what Bedrock sent for GPT-6
-#: Luna in issue 578, and what ``langchain-aws`` raises as ``ConnectionError``.
-CUT_SHORT = {"body": frame("messageStart", {"role": "assistant"}), "content_type": EVENT_STREAM}
-ANSWER = {"body": converse_stream(["Hello", " there"]), "content_type": EVENT_STREAM}
+#: A stream that opens and ends with no ``messageStop``, which ``langchain-aws`` raises as
+#: ``ConnectionError`` (issue #578), and a whole answer.
+CUT_SHORT: dict[str, Any] = {
+    "body": frame("messageStart", {"role": "assistant"}),
+    "content_type": EVENT_STREAM,
+}
+ANSWER: dict[str, Any] = {
+    "body": converse_stream(["Hello", " there"]),
+    "content_type": EVENT_STREAM,
+}
 
 
 def _retry_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -289,14 +305,14 @@ def _retry_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 
 
 class TestARetryBeforeTheReaderSawAnything:
-    """A model call that fails fast before any output is run once more (issue 578), and
+    """A model call that fails fast before any output is run once more (issue #578), and
     nothing is retried that the reader has already seen part of."""
 
     @paths
     async def test_a_stream_cut_short_is_answered_by_the_second_try(
         self, path: str, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.WARNING)
+        caplog.set_level(logging.INFO)
         llm = _bedrock_llm()
         wire = Wire(llm, **CUT_SHORT, then=[ANSWER])
 
@@ -310,8 +326,22 @@ class TestARetryBeforeTheReaderSawAnything:
         (record,) = _retry_records(caplog)
         assert record.levelno == logging.WARNING
         text = record.getMessage()
-        for expected in (COMMUNITY, BEDROCK_MODEL, "req-failure", "ConnectionError"):
+        expected_in_log = [COMMUNITY, BEDROCK_MODEL, "req-failure", "ConnectionError"]
+        expected_in_log += ["missing messageStop", "connection"]
+        if path == "chat":
+            expected_in_log.append("sess-failure")
+        for expected in expected_in_log:
             assert expected in text, f"{expected!r} missing from {text!r}"
+        assert (record.__dict__["error_type"], record.__dict__["failure_kind"]) == (
+            "ConnectionError",
+            "connection",
+        )
+        recovered = [
+            r
+            for r in caplog.records
+            if r.name == "src.core.services.stream_retry" and "succeeded" in r.getMessage()
+        ]
+        assert [r.levelno for r in recovered] == [logging.INFO]
         assert [r["status_code"] for r in _rows()] == [200]
 
     @paths
@@ -329,8 +359,14 @@ class TestARetryBeforeTheReaderSawAnything:
         assert events[-1]["retryable"] is True
         assert len(wire.requests) == 2, "one retry and no more"
         assert len(_retry_records(caplog)) == 1
-        assert len(_failure_records(caplog)) == 1, "the reader's error is logged once"
-        assert [r["status_code"] for r in _rows()] == [500]
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.ERROR and record.exc_info, (
+            "a failure that did not clear when tried again is not one that clears by itself"
+        )
+        assert "(after one retry)" in record.getMessage()
+        (row,) = _rows()
+        assert row["status_code"] == 500
+        assert row["error_message"] == "ConnectionError (after one retry)"
 
     @paths
     async def test_a_stall_is_not_retried(
@@ -343,14 +379,16 @@ class TestARetryBeforeTheReaderSawAnything:
             llm,
             frame("messageStart", {"role": "assistant"}),
             EVENT_STREAM,
-            then_raises=Urllib3ReadTimeoutError(None, None, "Read timed out."),
+            then_raises=stalled_stream_error(),
         )
 
         events = await _run(path, llm, BEDROCK_MODEL)
 
         assert events[-1]["event"] == "error", events
         assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
-        assert events[-1]["retryable"] is True, "classified, so the reader is told it can clear"
+        assert events[-1]["retryable"] is True, (
+            "classified as a model failure, so the event carries retryable"
+        )
         assert len(wire.requests) == 1
         assert _retry_records(caplog) == []
         (record,) = _failure_records(caplog)
@@ -369,6 +407,57 @@ class TestARetryBeforeTheReaderSawAnything:
         assert events[-1]["retryable"] is False
         assert len(wire.requests) == 1
         assert _retry_records(caplog) == []
+
+    @paths
+    async def test_a_connection_that_dropped_part_way_is_tried_again(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+        llm = _bedrock_llm()
+        wire = Wire(
+            llm,
+            **CUT_SHORT,
+            then_raises=Urllib3ProtocolError("Connection broken: IncompleteRead(0 bytes read)"),
+            then=[ANSWER],
+        )
+
+        events = await _run(path, llm, BEDROCK_MODEL)
+
+        assert events[-1]["event"] == "done", events
+        assert len(wire.requests) == 2
+        assert len(_retry_records(caplog)) == 1
+
+    @paths
+    async def test_a_failure_that_took_long_to_arrive_is_not_retried(
+        self, path: str, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reader has waited that long already; a second try could take as long again."""
+        monkeypatch.setattr(stream_retry, "RETRY_WINDOW_SECONDS", -1.0)
+        caplog.set_level(logging.WARNING)
+        llm = _bedrock_llm()
+        wire = Wire(llm, **CUT_SHORT, then=[ANSWER])
+
+        events = await _run(path, llm, BEDROCK_MODEL)
+
+        assert events[-1]["event"] == "error", events
+        assert len(wire.requests) == 1
+        assert _retry_records(caplog) == []
+
+    @paths
+    async def test_a_throttle_is_not_retried_here(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """botocore and the Anthropic SDK retry one with backoff before the response
+        begins; a second try a second later only adds load to the account being throttled."""
+        caplog.set_level(logging.WARNING)
+        llm = _bedrock_llm()
+        Wire(llm, **refusal("ThrottlingException", "Too many requests"))
+
+        events = await _run(path, llm, BEDROCK_MODEL)
+
+        assert events[-1]["event"] == "error", events
+        assert _retry_records(caplog) == []
+        assert len(_failure_records(caplog)) == 1
 
     @paths
     async def test_a_reply_that_began_is_not_run_again(
@@ -919,11 +1008,59 @@ class TestNoRetryOnceAToolHasRun:
 
 class TestTheUnavailableModelMessage:
     def test_it_names_the_model_and_asks_for_another(self) -> None:
-        assert _model_unavailable("openai.gpt-6-luna") == UNAVAILABLE_TEXT.format(
-            model="openai.gpt-6-luna"
-        )
+        assert _model_unavailable(BEDROCK_MODEL) == UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
 
     def test_it_still_reads_when_the_model_is_not_known(self) -> None:
         assert _model_unavailable(None) == (
             "The current model is not available right now. Please choose another model."
         )
+
+
+class TestTheReaderLeavesDuringTheWait:
+    async def test_cancelling_during_the_delay_stops_cleanly_with_one_call(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disconnect while the second try waits is the reader leaving: no second call
+        starts, the cancellation propagates, and the log says why the retry never ran."""
+        import asyncio
+
+        from langchain_core.messages import HumanMessage
+
+        monkeypatch.setattr(stream_retry, "RETRY_DELAY_SECONDS", 30.0)
+        caplog.set_level(logging.INFO)
+        model = _failing(EndpointConnectionError(endpoint_url=ENDPOINT))
+        assistant = CommunityAssistant(model=model, config=community_config(), preload_docs=False)
+        graph = assistant.build_graph()
+        state = {
+            "messages": [HumanMessage(content=QUESTION)],
+            "retrieved_docs": [],
+            "tool_calls": [],
+        }
+
+        async def consume() -> None:
+            events = stream_retry.astream_events_with_retry(
+                graph,
+                state,
+                {},
+                community_id=COMMUNITY,
+                model="some-model",
+                endpoint="/x/ask",
+                request_id="req-cancel",
+            )
+            async for _ in events:
+                pass
+
+        task = asyncio.create_task(consume())
+        for _ in range(100):
+            if _retry_records(caplog):
+                break
+            await asyncio.sleep(0.05)
+        assert _retry_records(caplog), "the first try failed and the wait began"
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert model.calls == 1, "no second call started"
+        left = [r for r in caplog.records if "The reader left" in r.getMessage()]
+        assert len(left) == 1 and "req-cancel" in left[0].getMessage()

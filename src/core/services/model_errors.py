@@ -1,10 +1,9 @@
 """Telling a model call's failures apart: which can succeed on a retry, which cannot.
 
 A throttle, a read timeout and a request the provider rejects as invalid all end a
-stream with an exception, and all used to reach the reader as the same "try again". Only
-the first two can succeed on a retry; a request the provider refused outright (a 400 for a
-field the model does not take, say) fails the same way every time, and the operator is the
-one who has to act on it.
+stream with an exception. Only the first two can succeed on a retry; a request the
+provider refused outright (a 400 for a field the model does not take, say) fails the same
+way every time, and the operator is the one who has to act on it.
 
 ``classify_model_error`` reads an exception from any of the three provider paths, each of
 which raises differently:
@@ -27,8 +26,10 @@ a page fails with ``httpx`` errors and the built-in ``TimeoutError`` and
 an error reaches the same handlers as a model call's. Reading it as the model's would put
 the wrong name on it, call it retryable (or, for a 404, not retryable), and leave its
 traceback out of the log. So an exception is the model call's only when its class comes
-from a model provider's library, or, for the one built-in exception a provider library
-raises on its own, when that library raised it.
+from a model provider's library, or, for a class that is not a provider's, when its
+traceback shows a provider library raised it (the one built-in exception ``langchain-aws``
+raises on its own) or carried it up (urllib3's timeout and protocol errors, which botocore
+lets out of an open stream raw).
 """
 
 import re
@@ -49,6 +50,9 @@ from urllib3.exceptions import TimeoutError as Urllib3TimeoutError
 FailureKind = Literal[
     "throttled", "timeout", "unavailable", "connection", "rejected", "unauthorized", "unknown"
 ]
+
+#: The kinds ``ModelFailure.worth_retrying_now`` allows.
+_WORTH_RETRYING_NOW: frozenset[FailureKind] = frozenset({"unavailable", "connection"})
 
 #: Bedrock error codes whose request can succeed later, and what each one is. Looked up
 #: with the first letter upper-cased, since an exception event inside a stream names its
@@ -133,14 +137,16 @@ class ModelFailure:
 
     @property
     def worth_retrying_now(self) -> bool:
-        """Whether a second try right away is likely to work.
+        """Whether a second try a moment later is likely to work.
 
-        True for a failure that can clear by itself and that fails fast: a throttle, a
-        stream the service cut short, a dropped connection. A timeout is left out even
-        though a retry can succeed, since it has already spent the whole read timeout and
-        a second one would double the reader's wait.
+        True for a failure that can clear by itself and is not already covered: a stream
+        the service cut short, a dropped connection, a service error. A throttle is left
+        out, since the clients retry one with backoff before the response begins, and a
+        second try a second later only adds load to the account being throttled. A timeout
+        is left out even though a retry can succeed: it has already waited out its limit,
+        so a second try would double the reader's wait.
         """
-        return self.retryable is True and self.kind != "timeout"
+        return self.retryable is True and self.kind in _WORTH_RETRYING_NOW
 
     @property
     def retryable_label(self) -> str:
@@ -218,8 +224,9 @@ def _raised_in(error: BaseException, package: str) -> bool:
 
 def _passed_through(error: BaseException, package: str) -> bool:
     """Whether the error's traceback has a frame in ``package``, that is, whether it
-    travelled through that library's code on its way up. False for an error that was never
-    raised."""
+    traveled through that library's code on its way up. False for an error that was never
+    raised. Unlike ``_raised_in``, any frame counts: a urllib3 error's innermost frame is
+    urllib3's own."""
     frame: TracebackType | None = error.__traceback__
     while frame is not None:
         module = str(frame.tb_frame.f_globals.get("__name__", ""))
@@ -246,14 +253,15 @@ def _classify_one(error: BaseException) -> ModelFailure | None:
     if isinstance(error, HTTPClientError | BotocoreConnectionError):
         return ModelFailure("connection", True, name)
     if isinstance(error, Urllib3TimeoutError | Urllib3ProtocolError) and _passed_through(
-        error, "botocore"
+        error, "langchain_aws"
     ):
         # urllib3's own errors, which botocore lets out raw when it iterates a stream's
         # response (a Bedrock stream that stalled past the read timeout, or whose
         # connection dropped part way). urllib3 sits under other clients too, so only an
-        # error that came up through botocore is the model call's.
+        # error that came up through langchain-aws, the Bedrock model call, is the model's.
+        # The detail names urllib3, since botocore has classes of the same names.
         kind: FailureKind = "timeout" if isinstance(error, Urllib3TimeoutError) else "connection"
-        return ModelFailure(kind, True, name)
+        return ModelFailure(kind, True, f"urllib3.{name}")
     if isinstance(error, ValueError):
         match = _RECEIVED_AWS_EXCEPTION.match(str(error))
         if match:
