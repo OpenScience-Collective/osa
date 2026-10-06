@@ -140,8 +140,10 @@ class ModelFailure:
         """Whether a second try a moment later is likely to work.
 
         True for a failure that can clear by itself: a stream the service cut short, a
-        dropped connection, a service error. A throttle is left out, since the clients retry one with backoff before the response begins, and a
-        second try a second later only adds load to the account being throttled. A timeout
+        dropped connection, a service error. A throttle is left out: botocore and the Anthropic SDK retry one with backoff
+        before the response begins (OpenRouter's client does not, and its reader is asked
+        to choose another model instead), and a second try a moment later only adds load to
+        the account being throttled. A timeout
         is left out even though a retry can succeed: it has already waited out its limit,
         so a second try would double the reader's wait.
         """

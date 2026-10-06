@@ -495,6 +495,30 @@ class TestAStreamThatDiedInsideBotocore:
         assert failure.kind == "unknown"
         assert not failure.from_provider
 
+    def test_a_urllib3_error_through_botocore_alone_is_not_the_models(self) -> None:
+        """botocore is not only the model call's: any boto3 client of ours would pass a
+        urllib3 error through it. It is the Bedrock model call, langchain-aws, that makes
+        one the model's."""
+        client = _bedrock_client("bedrock-runtime", "us-east-2", "test-bedrock-key", 10.0, 10.0)
+
+        def dies(**_kwargs: object) -> None:
+            raise dropped_stream_error()
+
+        client.meta.events.register("before-send.bedrock-runtime.*", dies)
+        try:
+            with pytest.raises(type(dropped_stream_error())) as caught:
+                client.converse_stream(
+                    modelId=sorted(BEDROCK_MODELS)[0],
+                    messages=[{"role": "user", "content": [{"text": "hello"}]}],
+                )
+        finally:
+            _bedrock_client.cache_clear()
+
+        failure = classify_model_error(caught.value)
+
+        assert failure.kind == "unknown"
+        assert not failure.from_provider
+
 
 class TestWhatIsWorthRetryingNow:
     """A second try a moment later is for a stream the service cut short, a dropped
