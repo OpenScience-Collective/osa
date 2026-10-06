@@ -36,6 +36,7 @@ from src.api.routers.community import (
     AssistantWithMetrics,
     ChatSession,
     _get_session_store,
+    _model_unavailable,
     _stream_ask_response,
     _stream_chat_response,
     create_community_router,
@@ -65,12 +66,19 @@ from tests.helpers.provider_replies import (
 BEDROCK_MODEL = sorted(BEDROCK_MODELS)[0]
 ENDPOINT = "https://bedrock-runtime.us-east-2.amazonaws.com"
 
-#: What each stream tells a reader when a retry can work or nothing is known. Spelled out
-#: here, not imported: it is the wording a reader sees, and a change to it should fail.
+#: What each stream tells a reader when a failure was not a model call's and nothing is
+#: known about retrying (a tool of ours failed, say). Spelled out here, not imported: it is
+#: the wording a reader sees, and a change to it should fail.
 RETRYABLE_TEXT = {
     "ask": "An error occurred while generating the response. Please try again.",
     "chat": "An error occurred while processing your request.",
 }
+
+#: What either stream tells a reader when their model failed in a way that can clear by
+#: itself: there is no automatic switch to another model, so they are asked to make it.
+UNAVAILABLE_TEXT = (
+    "The current model ({model}) is not available right now. Please choose another model."
+)
 
 paths = pytest.mark.parametrize("path", ["ask", "chat"])
 
@@ -152,12 +160,13 @@ def _fresh_bedrock_clients():
     _bedrock_client.cache_clear()
 
 
-def _assert_retryable(
-    events: list[dict], records: list[logging.LogRecord], path: str, detail: str
-) -> None:
-    """The reader's text is what it always was; the log says what happened, at WARNING."""
+def _assert_retryable(events: list[dict], records: list[logging.LogRecord], detail: str) -> None:
+    """The reader is told their model is unavailable and to choose another; the log says
+    what happened, at WARNING."""
     assert events[-1]["event"] == "error", events
-    assert events[-1]["message"] == RETRYABLE_TEXT[path]
+    assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
+    # The widget shows the message for a few seconds, so it has to be read at a glance.
+    assert len(events[-1]["message"]) <= 120, events[-1]["message"]
     assert events[-1]["retryable"] is True
     assert events[-1]["error_id"]
     assert events[-1]["request_id"] == "req-failure", "the reader's report finds its row"
@@ -206,7 +215,7 @@ class TestBedrock:
 
         events = await _run(path, llm, BEDROCK_MODEL)
 
-        _assert_retryable(events, _failure_records(caplog), path, "ThrottlingException")
+        _assert_retryable(events, _failure_records(caplog), "ThrottlingException")
         assert [r["status_code"] for r in _rows()] == [500]
 
     @paths
@@ -219,7 +228,7 @@ class TestBedrock:
 
         events = await _run(path, llm, BEDROCK_MODEL)
 
-        _assert_retryable(events, _failure_records(caplog), path, "ReadTimeoutError")
+        _assert_retryable(events, _failure_records(caplog), "ReadTimeoutError")
 
     @paths
     async def test_a_service_exception_inside_the_stream_is_retryable(
@@ -234,7 +243,7 @@ class TestBedrock:
 
         events = await _run(path, llm, BEDROCK_MODEL)
 
-        _assert_retryable(events, _failure_records(caplog), path, "throttlingException")
+        _assert_retryable(events, _failure_records(caplog), "throttlingException")
 
     @paths
     async def test_a_validation_error_is_not(
@@ -316,6 +325,7 @@ class TestARetryBeforeTheReaderSawAnything:
         events = await _run(path, llm, BEDROCK_MODEL)
 
         assert events[-1]["event"] == "error", events
+        assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
         assert events[-1]["retryable"] is True
         assert len(wire.requests) == 2, "one retry and no more"
         assert len(_retry_records(caplog)) == 1
@@ -339,6 +349,7 @@ class TestARetryBeforeTheReaderSawAnything:
         events = await _run(path, llm, BEDROCK_MODEL)
 
         assert events[-1]["event"] == "error", events
+        assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
         assert events[-1]["retryable"] is True, "classified, so the reader is told it can clear"
         assert len(wire.requests) == 1
         assert _retry_records(caplog) == []
@@ -391,7 +402,7 @@ class TestAnthropic:
             )
             events = await _run(path, llm, DEFAULT_MODEL)
 
-        assert events[-1]["message"] == RETRYABLE_TEXT[path]
+        assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=DEFAULT_MODEL)
         assert events[-1]["retryable"] is True
         (record,) = _failure_records(caplog)
         assert record.levelno == logging.WARNING
@@ -657,7 +668,7 @@ class TestWhatNoProviderCallRaises:
 
         events = await _run(path, _failing(raised.value), BEDROCK_MODEL)
 
-        assert events[-1]["message"] == RETRYABLE_TEXT[path]
+        assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
         assert events[-1]["retryable"] is True
         assert "Invalid request" not in events[-1]["message"]
         (record,) = _failure_records(caplog)
@@ -762,7 +773,7 @@ class TestWhatLangchainAwsRaisesItself:
         events = await _run(path, llm, BEDROCK_MODEL)
 
         records = _failure_records(caplog)
-        _assert_retryable(events, records, path, "ConnectionError")
+        _assert_retryable(events, records, "ConnectionError")
         assert "Model call failed" in records[0].getMessage()
 
 
@@ -904,3 +915,15 @@ class TestNoRetryOnceAToolHasRun:
         assert events[-1]["retryable"] is True
         assert model.calls == 2, "the failed call was not tried again"
         assert _retry_records(caplog) == []
+
+
+class TestTheUnavailableModelMessage:
+    def test_it_names_the_model_and_asks_for_another(self) -> None:
+        assert _model_unavailable("openai.gpt-6-luna") == UNAVAILABLE_TEXT.format(
+            model="openai.gpt-6-luna"
+        )
+
+    def test_it_still_reads_when_the_model_is_not_known(self) -> None:
+        assert _model_unavailable(None) == (
+            "The current model is not available right now. Please choose another model."
+        )

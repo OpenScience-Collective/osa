@@ -3630,8 +3630,9 @@ class _FailureWording:
     """What one stream tells the reader when a model call fails.
 
     Attributes:
-        retryable: When a retry can succeed, or nothing is known. Says nothing the log does
-            not back up.
+        retryable: When the failure was not a model call's (a tool of ours failed, say) and
+            nothing is known about retrying. Says nothing the log does not back up. A model
+            call that can succeed on a retry has its own message (``_model_unavailable``).
         cannot_retry: When the provider refused the request outright (see
             ``classify_model_error``), which fails the same way every time. Short, since
             the widget shows an error for a few seconds; the error id that finds the log
@@ -3668,6 +3669,15 @@ _SERVER_KEY_MESSAGE = (
 )
 
 
+def _model_unavailable(model: str | None) -> str:
+    """What the reader is told when the model they are using failed in a way that can clear
+    by itself (a throttle, a stream the service cut short, a stall, a dropped connection).
+    There is no automatic switch to another model, which would change what the community
+    chose and what a request costs, so the reader is asked to make it."""
+    name = f" ({model})" if model else ""
+    return f"The current model{name} is not available right now. Please choose another model."
+
+
 class _StreamFailure(NamedTuple):
     """A failure that ended a stream, as the stream reports it.
 
@@ -3702,7 +3712,9 @@ def _stream_failure_event(
     else: one that cannot clear, a platform or community key the provider refused, and any
     exception that is not a recognized model-provider error (a tool of ours failing is one,
     and its traceback is the only clue). The reader is told to try again only when that is
-    honest: a failure no retry can fix says so, and a refused credential says whose it is.
+    honest: a failure no retry can fix says so, a refused credential says whose it is, and a
+    model that failed in a way that can clear by itself is called unavailable, with the ask
+    to choose another model.
 
     Args:
         error: What the stream raised.
@@ -3759,7 +3771,9 @@ def _stream_failure_event(
             "key_source": key_source,
         },
     )
-    if failure.retryable is not False:
+    if failure.from_provider and failure.retryable is not False:
+        message = _model_unavailable(model)
+    elif failure.retryable is not False:
         message = wording.retryable
     elif failure.kind == "unauthorized":
         message = _KEY_REFUSED_MESSAGE if refused_callers_key else _SERVER_KEY_MESSAGE
