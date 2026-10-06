@@ -21,11 +21,17 @@ from botocore.exceptions import (
     ReadTimeoutError,
 )
 from langchain_aws.chat_models.bedrock_converse import _handle_bedrock_error, _parse_stream_event
-from urllib3.exceptions import ProtocolError as Urllib3ProtocolError
 
+from src.api.config import Settings
 from src.core.services.anthropic_models import BEDROCK_MODELS
+from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
 from src.core.services.model_errors import FailureKind, ModelFailure, classify_model_error
-from tests.helpers.bedrock_wire import stalled_stream_error
+from tests.helpers.bedrock_wire import (
+    CUT_SHORT,
+    Wire,
+    dropped_stream_error,
+    stalled_stream_error,
+)
 
 
 def _client_error(code: str, status: int, message: str = "no") -> ClientError:
@@ -40,6 +46,33 @@ def _client_error(code: str, status: int, message: str = "no") -> ClientError:
 
 def _anthropic_response(status: int) -> httpx2.Response:
     return httpx2.Response(status, request=httpx2.Request("POST", "https://api.anthropic.com"))
+
+
+def _error_from_a_bedrock_stream(then_raises: Exception | None = None) -> Exception:
+    """The exception the real Bedrock client raises for a stream that opens with
+    ``messageStart`` and then ends: with no ``messageStop`` when ``then_raises`` is None
+    (``langchain-aws`` raises ``ConnectionError``), or by raising ``then_raises`` from the
+    response body the way urllib3 does for a stall or a dropped connection."""
+    _bedrock_client.cache_clear()
+    try:
+        llm = create_bedrock_llm(
+            sorted(BEDROCK_MODELS)[0],
+            settings=Settings(
+                _env_file=None,
+                bedrock_api_key="test-bedrock-key",
+                bedrock_region="us-east-2",
+                bedrock_max_output_tokens=16000,
+            ),
+        )
+        Wire(llm, **CUT_SHORT, then_raises=then_raises)
+        expected = type(then_raises) if then_raises else ConnectionError
+        with pytest.raises(
+            expected, match=None if then_raises else "missing messageStop"
+        ) as caught:
+            list(llm.stream("hello"))
+    finally:
+        _bedrock_client.cache_clear()
+    return caught.value
 
 
 RETRYABLE = [
@@ -409,67 +442,14 @@ class TestOnlyAModelCallsErrorsAreTheModels:
     def test_the_connection_error_langchain_aws_raises_is_a_retryable_model_failure(self) -> None:
         """Through the real client: the stream ends after ``messageStart`` with no
         ``messageStop``, and langchain-aws raises the built-in ``ConnectionError``."""
-        from src.api.config import Settings
-        from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
-        from tests.helpers.bedrock_wire import EVENT_STREAM, Wire, frame
+        failure = classify_model_error(_error_from_a_bedrock_stream())
 
-        _bedrock_client.cache_clear()
-        try:
-            llm = create_bedrock_llm(
-                sorted(BEDROCK_MODELS)[0],
-                settings=Settings(
-                    _env_file=None,
-                    bedrock_api_key="test-bedrock-key",
-                    bedrock_region="us-east-2",
-                    bedrock_max_output_tokens=16000,
-                ),
-            )
-            Wire(llm, frame("messageStart", {"role": "assistant"}), EVENT_STREAM)
-
-            with pytest.raises(ConnectionError, match="missing messageStop") as caught:
-                list(llm.stream("hello"))
-        finally:
-            _bedrock_client.cache_clear()
-
-        failure = classify_model_error(caught.value)
         assert (failure.kind, failure.retryable, failure.from_provider) == (
             "connection",
             True,
             True,
         )
-
-
-def _error_from_a_bedrock_stream(then_raises: Exception | None = None) -> Exception:
-    """The exception the real Bedrock client raises for a stream that opens with
-    ``messageStart`` and then ends: with no ``messageStop`` when ``then_raises`` is None
-    (``langchain-aws`` raises ``ConnectionError``), or by raising ``then_raises`` from the
-    response body the way urllib3 does for a stall or a dropped connection."""
-    from src.api.config import Settings
-    from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
-    from tests.helpers.bedrock_wire import EVENT_STREAM, Wire, frame
-
-    _bedrock_client.cache_clear()
-    try:
-        llm = create_bedrock_llm(
-            sorted(BEDROCK_MODELS)[0],
-            settings=Settings(
-                _env_file=None,
-                bedrock_api_key="test-bedrock-key",
-                bedrock_region="us-east-2",
-                bedrock_max_output_tokens=16000,
-            ),
-        )
-        Wire(
-            llm,
-            frame("messageStart", {"role": "assistant"}),
-            EVENT_STREAM,
-            then_raises=then_raises,
-        )
-        with pytest.raises(type(then_raises) if then_raises else ConnectionError) as caught:
-            list(llm.stream("hello"))
-    finally:
-        _bedrock_client.cache_clear()
-    return caught.value
+        assert failure.worth_retrying_now
 
 
 class TestAStreamThatDiedInsideBotocore:
@@ -479,29 +459,25 @@ class TestAStreamThatDiedInsideBotocore:
     unrecognized "Unexpected streaming error" with no ``retryable`` field."""
 
     def test_a_stall_past_the_read_timeout_is_a_timeout(self) -> None:
-        error = _error_from_a_bedrock_stream(stalled_stream_error())
-
-        failure = classify_model_error(error)
+        failure = classify_model_error(_error_from_a_bedrock_stream(stalled_stream_error()))
 
         assert (failure.kind, failure.retryable, failure.from_provider) == ("timeout", True, True)
+        assert not failure.worth_retrying_now, "it has already waited out its limit"
         assert failure.detail == "urllib3.ReadTimeoutError", "not confused with botocore's own"
 
     def test_a_connection_that_dropped_part_way_is_a_connection_failure(self) -> None:
-        error = _error_from_a_bedrock_stream(
-            Urllib3ProtocolError("Connection broken: IncompleteRead(0 bytes read)")
-        )
-
-        failure = classify_model_error(error)
+        failure = classify_model_error(_error_from_a_bedrock_stream(dropped_stream_error()))
 
         assert (failure.kind, failure.retryable, failure.from_provider) == (
             "connection",
             True,
             True,
         )
+        assert failure.worth_retrying_now
 
     @pytest.mark.parametrize(
         "error",
-        [stalled_stream_error(), Urllib3ProtocolError("Connection broken")],
+        [stalled_stream_error(), dropped_stream_error()],
         ids=lambda e: type(e).__name__,
     )
     def test_the_same_errors_from_a_tool_of_ours_are_not_the_models(self, error: Exception) -> None:
@@ -541,13 +517,3 @@ class TestWhatIsWorthRetryingNow:
     )
     def test_each_kind(self, kind: FailureKind, retryable: bool | None, expected: bool) -> None:
         assert ModelFailure(kind, retryable, "x").worth_retrying_now is expected
-
-    def test_a_stream_cut_short_and_a_dropped_connection_are_worth_it(self) -> None:
-        """The two this exists for, through the real client."""
-        cut = _error_from_a_bedrock_stream()
-        dropped = _error_from_a_bedrock_stream(
-            Urllib3ProtocolError("Connection broken: IncompleteRead(0 bytes read)")
-        )
-
-        assert classify_model_error(cut).worth_retrying_now
-        assert classify_model_error(dropped).worth_retrying_now

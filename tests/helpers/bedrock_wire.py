@@ -14,19 +14,26 @@ import json
 import struct
 import zlib
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from botocore.awsrequest import AWSResponse
 from urllib3 import HTTPSConnectionPool
-from urllib3.exceptions import ReadTimeoutError
+from urllib3.exceptions import ProtocolError, ReadTimeoutError
 
 EVENT_STREAM = "application/vnd.amazon.eventstream"
 
 
-def stalled_stream_error(host: str = "bedrock-runtime.us-east-2.amazonaws.com") -> ReadTimeoutError:
+def stalled_stream_error() -> ReadTimeoutError:
     """The error urllib3 raises when a response stalls past the read timeout, built the way
-    urllib3 builds it, on a connection pool for ``host``."""
-    return ReadTimeoutError(HTTPSConnectionPool(host, port=443), "/", "Read timed out.")
+    urllib3 builds it, on a connection pool for Bedrock's endpoint."""
+    pool = HTTPSConnectionPool("bedrock-runtime.us-east-2.amazonaws.com", port=443)
+    return ReadTimeoutError(pool, "/", "Read timed out.")
+
+
+def dropped_stream_error() -> ProtocolError:
+    """The error urllib3 raises when a connection drops part way through a response."""
+    return ProtocolError("Connection broken: IncompleteRead(0 bytes read)")
 
 
 class Raw:
@@ -51,6 +58,18 @@ class Raw:
 
     def close(self) -> None:
         """Nothing to release: the body is already in memory."""
+
+
+@dataclass(frozen=True)
+class _Answer:
+    """One staged response; the fields are ``Wire``'s arguments of the same names."""
+
+    body: bytes = b""
+    content_type: str = "application/json"
+    status: int = 200
+    headers: dict[str, str] | None = None
+    raises: Exception | None = None
+    then_raises: Exception | None = None
 
 
 class Wire:
@@ -88,26 +107,20 @@ class Wire:
         then: Sequence[dict[str, Any]] = (),
     ) -> None:
         self.requests: list[Any] = []
-        first: dict[str, Any] = {
-            "body": body,
-            "content_type": content_type,
-            "status": status,
-            "headers": headers,
-            "raises": raises,
-            "then_raises": then_raises,
-        }
-        self._answers: list[dict[str, Any]] = [first, *then]
+        self._answers = [
+            _Answer(body, content_type, status, headers, raises, then_raises),
+            *(_Answer(**spec) for spec in then),
+        ]
         llm.client.meta.events.register("before-send.bedrock-runtime.*", self._answer)
 
     def _answer(self, request: Any, **_kwargs: Any) -> AWSResponse:
         self.requests.append(request)
-        spec = self._answers[min(len(self.requests), len(self._answers)) - 1]
-        if spec.get("raises") is not None:
-            raise spec["raises"]
-        headers = {"content-type": spec.get("content_type", "application/json")}
-        headers.update(spec.get("headers") or {})
-        raw = Raw(spec.get("body", b""), spec.get("then_raises"))
-        return AWSResponse(request.url, spec.get("status", 200), headers, raw)
+        answer = self._answers[min(len(self.requests), len(self._answers)) - 1]
+        if answer.raises is not None:
+            raise answer.raises
+        headers = {"content-type": answer.content_type, **(answer.headers or {})}
+        raw = Raw(answer.body, answer.then_raises)
+        return AWSResponse(request.url, answer.status, headers, raw)
 
     @property
     def sent(self) -> Any:
@@ -213,3 +226,11 @@ def converse_stream(
     if counts:
         frames.append(frame("metadata", {"usage": counts, "metrics": {"latencyMs": 1}}))
     return b"".join(frames)
+
+
+#: A stream that opens and ends with no ``messageStop``; ``langchain-aws`` raises
+#: ``ConnectionError`` (issue #578). The keyword arguments of ``Wire``.
+CUT_SHORT: dict[str, Any] = {
+    "body": frame("messageStart", {"role": "assistant"}),
+    "content_type": EVENT_STREAM,
+}

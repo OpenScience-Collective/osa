@@ -17,6 +17,7 @@ no provider call produces.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterator
 from typing import Any, Literal, NoReturn
@@ -29,10 +30,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_aws.chat_models.bedrock_converse import _parse_stream_event
 from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.tools import tool
-from urllib3.exceptions import ProtocolError as Urllib3ProtocolError
 
 from src.api.config import Settings
 from src.api.routers.community import (
@@ -51,13 +51,16 @@ from src.core.services.anthropic_models import BEDROCK_MODELS, DEFAULT_MODEL
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_MODEL
 from src.core.services.litellm_llm import create_openrouter_llm
+from src.core.services.stream_retry import RetryOutcome
 from src.metrics.db import init_metrics_db, metrics_connection
 from src.metrics.middleware import MetricsMiddleware
 from tests.helpers.anthropic_wire import refusal_with, served_by
 from tests.helpers.bedrock_wire import (
+    CUT_SHORT,
     EVENT_STREAM,
     Wire,
     converse_stream,
+    dropped_stream_error,
     frame,
     refusal,
     stalled_stream_error,
@@ -76,10 +79,10 @@ from tests.helpers.provider_replies import (
 BEDROCK_MODEL = sorted(BEDROCK_MODELS)[0]
 ENDPOINT = "https://bedrock-runtime.us-east-2.amazonaws.com"
 
-#: What each stream tells a reader when a failure was not a model call's and nothing is
-#: known about retrying (a tool of ours failed, say). Spelled out here, not imported: it is
+#: What each stream tells a reader when a failure was not a model call's (a tool of ours
+#: failed, say), so nothing is known about retrying. Spelled out here, not imported: it is
 #: the wording a reader sees, and a change to it should fail.
-RETRYABLE_TEXT = {
+UNRECOGNIZED_TEXT = {
     "ask": "An error occurred while generating the response. Please try again.",
     "chat": "An error occurred while processing your request.",
 }
@@ -89,6 +92,7 @@ RETRYABLE_TEXT = {
 UNAVAILABLE_TEXT = (
     "The current model ({model}) is not available right now. Please choose another model."
 )
+BEDROCK_UNAVAILABLE = UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
 
 paths = pytest.mark.parametrize("path", ["ask", "chat"])
 
@@ -174,7 +178,7 @@ def _assert_retryable(events: list[dict], records: list[logging.LogRecord], deta
     """The reader is told their model is unavailable and to choose another; the log says
     what happened, at WARNING."""
     assert events[-1]["event"] == "error", events
-    assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
+    assert events[-1]["message"] == BEDROCK_UNAVAILABLE
     # The widget shows the message for a few seconds, so it has to be read at a glance.
     assert len(events[-1]["message"]) <= 120, events[-1]["message"]
     assert events[-1]["retryable"] is True
@@ -284,24 +288,24 @@ class TestBedrock:
         _assert_permanent(events, _failure_records(caplog), "AccessDeniedException")
 
 
-#: A stream that opens and ends with no ``messageStop``, which ``langchain-aws`` raises as
-#: ``ConnectionError`` (issue #578), and a whole answer.
-CUT_SHORT: dict[str, Any] = {
-    "body": frame("messageStart", {"role": "assistant"}),
-    "content_type": EVENT_STREAM,
-}
+#: A whole answer, the second try's reply when the first was ``CUT_SHORT``.
 ANSWER: dict[str, Any] = {
     "body": converse_stream(["Hello", " there"]),
     "content_type": EVENT_STREAM,
 }
 
 
-def _retry_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+def _retry_logs(caplog: pytest.LogCaptureFixture, starts_with: str) -> list[logging.LogRecord]:
     return [
         r
         for r in caplog.records
-        if r.name == "src.core.services.stream_retry" and r.getMessage().startswith("Retrying")
+        if r.name == "src.core.services.stream_retry" and r.getMessage().startswith(starts_with)
     ]
+
+
+def _retry_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """The records that say a request is being tried a second time."""
+    return _retry_logs(caplog, "Retrying")
 
 
 class TestARetryBeforeTheReaderSawAnything:
@@ -318,7 +322,7 @@ class TestARetryBeforeTheReaderSawAnything:
 
         events = await _run(path, llm, BEDROCK_MODEL)
 
-        assert [e["event"] for e in events if e["event"] == "error"] == []
+        assert "error" not in [e["event"] for e in events]
         assert events[-1]["event"] == "done", events
         assert events[-1]["content"] == "Hello there"
         assert len(wire.requests) == 2
@@ -326,21 +330,22 @@ class TestARetryBeforeTheReaderSawAnything:
         (record,) = _retry_records(caplog)
         assert record.levelno == logging.WARNING
         text = record.getMessage()
-        expected_in_log = [COMMUNITY, BEDROCK_MODEL, "req-failure", "ConnectionError"]
-        expected_in_log += ["missing messageStop", "connection"]
-        if path == "chat":
-            expected_in_log.append("sess-failure")
+        expected_in_log = [
+            COMMUNITY,
+            BEDROCK_MODEL,
+            "req-failure",
+            "ConnectionError",
+            "missing messageStop",
+            "connection",
+            *(["sess-failure"] if path == "chat" else []),
+        ]
         for expected in expected_in_log:
             assert expected in text, f"{expected!r} missing from {text!r}"
         assert (record.__dict__["error_type"], record.__dict__["failure_kind"]) == (
             "ConnectionError",
             "connection",
         )
-        recovered = [
-            r
-            for r in caplog.records
-            if r.name == "src.core.services.stream_retry" and "succeeded" in r.getMessage()
-        ]
+        recovered = _retry_logs(caplog, "The second try")
         assert [r.levelno for r in recovered] == [logging.INFO]
         assert [r["status_code"] for r in _rows()] == [200]
 
@@ -355,7 +360,7 @@ class TestARetryBeforeTheReaderSawAnything:
         events = await _run(path, llm, BEDROCK_MODEL)
 
         assert events[-1]["event"] == "error", events
-        assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
+        assert events[-1]["message"] == BEDROCK_UNAVAILABLE
         assert events[-1]["retryable"] is True
         assert len(wire.requests) == 2, "one retry and no more"
         assert len(_retry_records(caplog)) == 1
@@ -375,17 +380,12 @@ class TestARetryBeforeTheReaderSawAnything:
         """It has spent the whole read timeout; a second one would double the wait."""
         caplog.set_level(logging.WARNING)
         llm = _bedrock_llm()
-        wire = Wire(
-            llm,
-            frame("messageStart", {"role": "assistant"}),
-            EVENT_STREAM,
-            then_raises=stalled_stream_error(),
-        )
+        wire = Wire(llm, **CUT_SHORT, then_raises=stalled_stream_error())
 
         events = await _run(path, llm, BEDROCK_MODEL)
 
         assert events[-1]["event"] == "error", events
-        assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
+        assert events[-1]["message"] == BEDROCK_UNAVAILABLE
         assert events[-1]["retryable"] is True, (
             "classified as a model failure, so the event carries retryable"
         )
@@ -417,7 +417,7 @@ class TestARetryBeforeTheReaderSawAnything:
         wire = Wire(
             llm,
             **CUT_SHORT,
-            then_raises=Urllib3ProtocolError("Connection broken: IncompleteRead(0 bytes read)"),
+            then_raises=dropped_stream_error(),
             then=[ANSWER],
         )
 
@@ -729,7 +729,7 @@ class TestWhatNoProviderCallRaises:
 
         events = await _run(path, _failing(RuntimeError("a bug of ours")), "some-model")
 
-        assert events[-1]["message"] == RETRYABLE_TEXT[path]
+        assert events[-1]["message"] == UNRECOGNIZED_TEXT[path]
         assert "retryable" not in events[-1], "nothing is claimed about an unknown failure"
         (record,) = _failure_records(caplog)
         assert record.levelno == logging.ERROR and record.exc_info
@@ -757,7 +757,7 @@ class TestWhatNoProviderCallRaises:
 
         events = await _run(path, _failing(raised.value), BEDROCK_MODEL)
 
-        assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
+        assert events[-1]["message"] == BEDROCK_UNAVAILABLE
         assert events[-1]["retryable"] is True
         assert "Invalid request" not in events[-1]["message"]
         (record,) = _failure_records(caplog)
@@ -832,7 +832,7 @@ class TestAToolFailureIsNotAModelFailure:
         events = await _run(path, _calls_the_tool(), "some-model", [_flaky_tool(error)])
 
         assert events[-1]["event"] == "error"
-        assert events[-1]["message"] == RETRYABLE_TEXT[path]
+        assert events[-1]["message"] == UNRECOGNIZED_TEXT[path]
         assert "retryable" not in events[-1], "nothing is claimed about a failure of ours"
         (record,) = _failure_records(caplog)
         assert record.levelno == logging.ERROR
@@ -1008,7 +1008,7 @@ class TestNoRetryOnceAToolHasRun:
 
 class TestTheUnavailableModelMessage:
     def test_it_names_the_model_and_asks_for_another(self) -> None:
-        assert _model_unavailable(BEDROCK_MODEL) == UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
+        assert _model_unavailable(BEDROCK_MODEL) == BEDROCK_UNAVAILABLE
 
     def test_it_still_reads_when_the_model_is_not_known(self) -> None:
         assert _model_unavailable(None) == (
@@ -1022,10 +1022,6 @@ class TestTheReaderLeavesDuringTheWait:
     ) -> None:
         """A disconnect while the second try waits is the reader leaving: no second call
         starts, the cancellation propagates, and the log says why the retry never ran."""
-        import asyncio
-
-        from langchain_core.messages import HumanMessage
-
         monkeypatch.setattr(stream_retry, "RETRY_DELAY_SECONDS", 30.0)
         caplog.set_level(logging.INFO)
         model = _failing(EndpointConnectionError(endpoint_url=ENDPOINT))
@@ -1046,6 +1042,7 @@ class TestTheReaderLeavesDuringTheWait:
                 model="some-model",
                 endpoint="/x/ask",
                 request_id="req-cancel",
+                outcome=RetryOutcome(),
             )
             async for _ in events:
                 pass

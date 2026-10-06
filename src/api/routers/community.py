@@ -3670,11 +3670,12 @@ _SERVER_KEY_MESSAGE = (
 
 
 def _model_unavailable(model: str | None) -> str:
-    """What the reader is told when the model call failed and nothing says a retry would
-    fail the same way (a throttle, a stream the service cut short, a stall, a dropped
-    connection, a service error this code does not recognize). There is no automatic switch
-    to another model, which would change what the community chose and what a request costs,
-    so the reader is asked to make it."""
+    """The reader's message for a model call that failed with no sign a retry would fail
+    the same way.
+
+    There is no automatic switch to another model (it would change what the community
+    chose and what a request costs), so the reader is asked to choose.
+    """
     name = f" ({model})" if model else ""
     return f"The current model{name} is not available right now. Please choose another model."
 
@@ -3702,7 +3703,7 @@ def _stream_failure_event(
     wording: _FailureWording,
     key_source: Literal["byok", "community", "platform"] | None,
     session_id: str | None = None,
-    retried: bool = False,
+    retried: bool,
 ) -> _StreamFailure:
     """Log a failure that ended a stream and build the ``error`` event the reader gets.
 
@@ -3776,10 +3777,8 @@ def _stream_failure_event(
             "key_source": key_source,
         },
     )
-    if failure.from_provider and failure.retryable is not False:
-        message = _model_unavailable(model)
-    elif failure.retryable is not False:
-        message = wording.unrecognized
+    if failure.retryable is not False:
+        message = _model_unavailable(model) if failure.from_provider else wording.unrecognized
     elif failure.kind == "unauthorized":
         message = _KEY_REFUSED_MESSAGE if refused_callers_key else _SERVER_KEY_MESSAGE
     else:

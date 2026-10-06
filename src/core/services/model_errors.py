@@ -139,9 +139,8 @@ class ModelFailure:
     def worth_retrying_now(self) -> bool:
         """Whether a second try a moment later is likely to work.
 
-        True for a failure that can clear by itself and is not already covered: a stream
-        the service cut short, a dropped connection, a service error. A throttle is left
-        out, since the clients retry one with backoff before the response begins, and a
+        True for a failure that can clear by itself: a stream the service cut short, a
+        dropped connection, a service error. A throttle is left out, since the clients retry one with backoff before the response begins, and a
         second try a second later only adds load to the account being throttled. A timeout
         is left out even though a retry can succeed: it has already waited out its limit,
         so a second try would double the reader's wait.
@@ -210,16 +209,19 @@ def _is_provider_class(error: BaseException) -> bool:
     return any(cls.__module__.split(".")[0] in _PROVIDER_PACKAGES for cls in type(error).__mro__)
 
 
+def _frame_in(frame: TracebackType, package: str) -> bool:
+    """Whether the frame's code is in ``package``."""
+    module = str(frame.tb_frame.f_globals.get("__name__", ""))
+    return module == package or module.startswith(f"{package}.")
+
+
 def _raised_in(error: BaseException, package: str) -> bool:
     """Whether the innermost frame of the error's traceback is in ``package``, that is,
     whether that library's own code raised it. False for an error that was never raised."""
     frame: TracebackType | None = error.__traceback__
     while frame is not None and frame.tb_next is not None:
         frame = frame.tb_next
-    if frame is None:
-        return False
-    module = str(frame.tb_frame.f_globals.get("__name__", ""))
-    return module == package or module.startswith(f"{package}.")
+    return frame is not None and _frame_in(frame, package)
 
 
 def _passed_through(error: BaseException, package: str) -> bool:
@@ -229,8 +231,7 @@ def _passed_through(error: BaseException, package: str) -> bool:
     urllib3's own."""
     frame: TracebackType | None = error.__traceback__
     while frame is not None:
-        module = str(frame.tb_frame.f_globals.get("__name__", ""))
-        if module == package or module.startswith(f"{package}."):
+        if _frame_in(frame, package):
             return True
         frame = frame.tb_next
     return False
@@ -255,11 +256,9 @@ def _classify_one(error: BaseException) -> ModelFailure | None:
     if isinstance(error, Urllib3TimeoutError | Urllib3ProtocolError) and _passed_through(
         error, "langchain_aws"
     ):
-        # urllib3's own errors, which botocore lets out raw when it iterates a stream's
-        # response (a Bedrock stream that stalled past the read timeout, or whose
-        # connection dropped part way). urllib3 sits under other clients too, so only an
-        # error that came up through langchain-aws, the Bedrock model call, is the model's.
-        # The detail names urllib3, since botocore has classes of the same names.
+        # urllib3 sits under other clients too, so only an error that came up through
+        # langchain-aws, the Bedrock model call, is the model's. The detail names urllib3,
+        # since botocore has classes of the same names.
         kind: FailureKind = "timeout" if isinstance(error, Urllib3TimeoutError) else "connection"
         return ModelFailure(kind, True, f"urllib3.{name}")
     if isinstance(error, ValueError):
