@@ -26,7 +26,7 @@ from unittest.mock import patch
 import httpx
 import httpx2
 import pytest
-from botocore.exceptions import EndpointConnectionError, ReadTimeoutError
+from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_aws.chat_models.bedrock_converse import _parse_stream_event
@@ -58,7 +58,7 @@ from src.core.services.anthropic_models import BEDROCK_MODELS, DEFAULT_MODEL
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_MODEL
 from src.core.services.litellm_llm import create_openrouter_llm
-from src.core.services.stream_retry import RetryOutcome
+from src.core.services.stream_retry import RetryState
 from src.metrics.db import init_metrics_db, metrics_connection
 from src.metrics.middleware import MetricsMiddleware
 from tests.helpers.anthropic_wire import message_stream, refusal_with, served_by
@@ -1059,7 +1059,7 @@ class TestTheReaderLeavesDuringTheWait:
                 model="some-model",
                 endpoint="/x/ask",
                 request_id="req-cancel",
-                outcome=RetryOutcome(),
+                retry_state=RetryState(),
             )
             async for _ in events:
                 pass
@@ -1383,3 +1383,149 @@ class TestTheReaderLeavesTheRouterDuringTheWait:
 
         assert len(wire.requests) == 1
         assert session.begin_turn() is True, "the turn was released"
+
+
+class _FailsOnCalls(StreamingScriptedChatModel):
+    """Raises ``error`` on the calls whose index (from 0, counting failures too) is in
+    ``fail_on``; the other calls replay the script in order."""
+
+    error: Exception
+    fail_on: set[int]
+    attempts: int = 0
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        index = self.attempts
+        self.attempts += 1
+        if index in self.fail_on:
+            raise self.error
+        yield from super()._stream(messages, stop, run_manager, **kwargs)
+
+
+async def _drain(model: Any, retry_state: RetryState) -> list[Any]:
+    """Every event the retry helper yields for one turn over ``model``, through the real
+    graph."""
+    assistant = CommunityAssistant(model=model, config=community_config(), preload_docs=False)
+    state = {"messages": [HumanMessage(content=QUESTION)], "retrieved_docs": [], "tool_calls": []}
+    return [
+        event
+        async for event in stream_retry.astream_events_with_retry(
+            assistant.build_graph(),
+            state,
+            {},
+            community_id=COMMUNITY,
+            model="some-model",
+            endpoint="/x/ask",
+            request_id="req-state",
+            retry_state=retry_state,
+        )
+    ]
+
+
+class TestWhatTheHelperReports:
+    """``RetryState.failed_after_retry`` says one thing: the failure raised came from the
+    second try before it produced any output. The helper writes it and resets it, so a
+    state that is reused cannot disable a retry or claim a success."""
+
+    async def test_a_state_left_over_from_another_stream_does_not_disable_the_retry(self) -> None:
+        stale = RetryState(failed_after_retry=True)
+        model = _FailsOnCalls(
+            chunk_script=[[text_chunk("Hi")]],
+            error=EndpointConnectionError(endpoint_url=ENDPOINT),
+            fail_on={0},
+        )
+
+        events = await _drain(model, stale)
+
+        assert any(e["event"] == "on_chat_model_end" for e in events), "the second try answered"
+        assert model.attempts == 2
+        assert stale.failed_after_retry is False
+
+    async def test_a_state_left_over_does_not_make_a_clean_stream_claim_a_retry(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        stale = RetryState(failed_after_retry=True)
+        model = _FailsOnCalls(
+            chunk_script=[[text_chunk("Hi")]],
+            error=EndpointConnectionError(endpoint_url=ENDPOINT),
+            fail_on=set(),
+        )
+
+        await _drain(model, stale)
+
+        assert stale.failed_after_retry is False
+        assert _retry_logs(caplog, "The second try") == []
+
+    async def test_a_failure_of_the_second_try_is_reported_as_one(self) -> None:
+        state = RetryState()
+        model = _FailsOnCalls(
+            chunk_script=[[]],
+            error=EndpointConnectionError(endpoint_url=ENDPOINT),
+            fail_on={0, 1, 2},
+        )
+
+        with pytest.raises(EndpointConnectionError):
+            await _drain(model, state)
+
+        assert model.attempts == 2
+        assert state.failed_after_retry is True
+
+    async def test_a_failure_that_was_not_retried_is_not_reported_as_one(self) -> None:
+        state = RetryState()
+        model = _FailsOnCalls(
+            chunk_script=[[]],
+            error=ClientError(
+                {
+                    "Error": {"Code": "ValidationException", "Message": "no"},
+                    "ResponseMetadata": {"HTTPStatusCode": 400},
+                },
+                "ConverseStream",
+            ),
+            fail_on={0, 1},
+        )
+
+        with pytest.raises(ClientError):
+            await _drain(model, state)
+
+        assert model.attempts == 1
+        assert state.failed_after_retry is False
+
+    @paths
+    async def test_a_later_failure_in_a_run_that_was_retried_is_not_labeled_a_retry_failure(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The first call failed fast and the retry worked: a tool ran, and then the next
+        model call failed. That call was never tried twice, and the log must not say so."""
+        from tests.test_api.test_tool_call_streaming import _anthropic_call
+
+        caplog.set_level(logging.WARNING)
+        runs: list[str] = []
+
+        @tool
+        def lookup(query: str) -> str:
+            """Look something up."""
+            runs.append(query)
+            return "found"
+
+        model = _FailsOnCalls(
+            chunk_script=[_anthropic_call("lookup", "toolu_01lookup", {"query": "x"})],
+            error=EndpointConnectionError(endpoint_url=ENDPOINT),
+            fail_on={0, 2},
+        )
+
+        events = await _run(path, model, "some-model", [lookup])
+
+        assert runs == ["x"], "the tool ran once"
+        assert len(_retry_records(caplog)) == 1, "the first call was tried again"
+        assert events[-1]["event"] == "error"
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.WARNING
+        assert "after one retry" not in record.getMessage()
+        (row,) = _rows()
+        assert row["error_message"] == "EndpointConnectionError"

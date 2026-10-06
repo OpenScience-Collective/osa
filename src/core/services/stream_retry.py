@@ -53,14 +53,19 @@ _PROGRESS_EVENTS = frozenset({"on_tool_start", "on_tool_end", "on_chat_model_end
 
 
 @dataclass
-class RetryOutcome:
-    """What the helper did, for the caller to read when the stream ends or fails.
+class RetryState:
+    """What the helper reports to its caller, one per stream.
+
+    Written by the helper alone, and reset when it starts, so an instance that is reused
+    cannot carry one stream's report into the next.
 
     Attributes:
-        retried: True once the model call was tried a second time.
+        failed_after_retry: True when the failure the helper raised came from the second
+            try before that try produced any output, that is, the failure survived a
+            retry. Read when the caller reports the failure.
     """
 
-    retried: bool = False
+    failed_after_retry: bool = False
 
 
 def _made_progress(event: Mapping[str, Any]) -> bool:
@@ -90,7 +95,7 @@ async def astream_events_with_retry(
     endpoint: str,
     request_id: str | None,
     session_id: str | None = None,
-    outcome: RetryOutcome,
+    retry_state: RetryState,
 ) -> AsyncIterator[Any]:
     """Stream ``graph.astream_events``, once more if the first try fails fast before any output.
 
@@ -106,8 +111,8 @@ async def astream_events_with_retry(
         request_id: The request's id, for the log, which is how it is found next to the
             error the reader gets if the second try fails too.
         session_id: The chat session, for the log. None for ``/ask``, which has none.
-        outcome: A fresh one per stream, which this sets when it makes the second try, and
-            which the caller reads when it reports a failure that survived it.
+        retry_state: Set by this when it raises a failure that survived the second try; the
+            caller reads it when it reports the failure.
 
     Yields:
         The graph's events, the same ones ``astream_events`` yields. After a retry the
@@ -119,6 +124,8 @@ async def astream_events_with_retry(
         been made, when it took too long to arrive, or when the second try failed too.
     """
     run_config = cast("RunnableConfig", config)
+    retry_state.failed_after_retry = False
+    retried = False
     while True:
         made_progress = False
         started = time.monotonic()
@@ -129,7 +136,7 @@ async def astream_events_with_retry(
                 async for event in events:
                     made_progress = made_progress or _made_progress(event)
                     yield event
-            if outcome.retried:
+            if retried:
                 logger.info(
                     "The second try of %s succeeded (community=%s, model=%s, request_id=%s)",
                     endpoint,
@@ -141,13 +148,14 @@ async def astream_events_with_retry(
         except Exception as error:
             failure = classify_model_error(error)
             if (
-                outcome.retried
+                retried
                 or made_progress
                 or time.monotonic() - started > RETRY_WINDOW_SECONDS
                 or not failure.worth_retrying_now
             ):
+                retry_state.failed_after_retry = retried and not made_progress
                 raise
-            outcome.retried = True
+            retried = True
             logger.warning(
                 "Retrying %s once after a model failure that had shown the reader nothing "
                 "(community=%s, model=%s, request_id=%s, session=%s): %s [%s]: %s",

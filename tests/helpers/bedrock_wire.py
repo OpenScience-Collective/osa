@@ -91,16 +91,18 @@ class Wire:
             (``body``, ``content_type``, ``status``, ``headers``, ``raises``,
             ``then_raises``) as a dict, and keys left out take the defaults above. The last
             one is repeated for any request after it. A caller that retries sees the first
-            answer fail and a later one succeed.
+            answer fail and a later one succeed. The sequence is indexed by transport request,
+            so botocore's own retries of a refused request consume answers too: stage a
+            failure for ``then`` to recover from inside a 200 stream, as ``CUT_SHORT`` is.
     """
 
     def __init__(
         self,
         llm: Any,
-        body: bytes = b"",
-        content_type: str = "application/json",
+        body: bytes = _Answer.body,
+        content_type: str = _Answer.content_type,
         *,
-        status: int = 200,
+        status: int = _Answer.status,
         headers: dict[str, str] | None = None,
         raises: Exception | None = None,
         then_raises: Exception | None = None,

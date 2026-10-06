@@ -7,6 +7,7 @@ exception event, the Anthropic SDK's status errors and LiteLLM's OpenAI-style on
 """
 
 import json
+from typing import get_args
 
 import anthropic
 import httpx
@@ -23,6 +24,7 @@ from botocore.exceptions import (
 from langchain_aws.chat_models.bedrock_converse import _handle_bedrock_error, _parse_stream_event
 
 from src.api.config import Settings
+from src.core.services import model_errors
 from src.core.services.anthropic_models import BEDROCK_MODELS
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
 from src.core.services.model_errors import FailureKind, ModelFailure, classify_model_error
@@ -520,24 +522,60 @@ class TestAStreamThatDiedInsideBotocore:
         assert not failure.from_provider
 
 
+#: Every kind, with the retryable values it may carry, and what ``worth_retrying_now`` says.
+KINDS_AND_RETRYABLE: dict[str, set[bool | None]] = {
+    "throttled": {True},
+    "timeout": {True},
+    "unavailable": {True, None},
+    "connection": {True},
+    "rejected": {False},
+    "unauthorized": {False},
+    "unknown": {None},
+}
+
+
+class TestKindAndRetryableAgree:
+    """``ModelFailure`` is a frozen pair of facts that the classifier keeps consistent, which
+    nothing in the type enforces (a check in its constructor would raise inside the handler
+    of the very error being classified). So the classifier's own tables are walked here."""
+
+    def test_the_table_here_names_every_kind(self) -> None:
+        assert set(KINDS_AND_RETRYABLE) == set(get_args(FailureKind))
+
+    def test_every_code_type_and_status_the_classifier_knows_gives_a_consistent_pair(self) -> None:
+        pairs = [(kind, True) for kind in model_errors._BEDROCK_TRANSIENT.values()]
+        pairs += [(kind, False) for kind in model_errors._BEDROCK_PERMANENT.values()]
+        pairs += list(model_errors._ANTHROPIC_ERROR_TYPES.values())
+        pairs += [pair for status in range(100, 600) if (pair := model_errors._by_status(status))]
+
+        for kind, retryable in pairs:
+            assert retryable in KINDS_AND_RETRYABLE[kind], (kind, retryable)
+
+    def test_the_retry_policy_names_only_real_kinds(self) -> None:
+        assert set(get_args(FailureKind)) >= model_errors._WORTH_RETRYING_NOW
+
+
+WORTH_RETRYING_NOW = [
+    ("connection", True, True),
+    ("unavailable", True, True),
+    ("throttled", True, False),
+    ("timeout", True, False),
+    ("unavailable", None, False),
+    ("rejected", False, False),
+    ("unauthorized", False, False),
+    ("unknown", None, False),
+]
+
+
 class TestWhatIsWorthRetryingNow:
     """A second try a moment later is for a stream the service cut short, a dropped
     connection or a service error. Not for what has already waited out its limit (a
-    timeout), what the clients already retried with backoff (a throttle), what fails the
+    timeout), what the clients already retry with backoff (a throttle), what fails the
     same way every time, or what nothing is known about."""
 
-    @pytest.mark.parametrize(
-        ("kind", "retryable", "expected"),
-        [
-            ("connection", True, True),
-            ("unavailable", True, True),
-            ("throttled", True, False),
-            ("timeout", True, False),
-            ("unavailable", None, False),
-            ("rejected", False, False),
-            ("unauthorized", False, False),
-            ("unknown", None, False),
-        ],
-    )
+    def test_the_cases_here_cover_every_kind(self) -> None:
+        assert {kind for kind, _, _ in WORTH_RETRYING_NOW} == set(get_args(FailureKind))
+
+    @pytest.mark.parametrize(("kind", "retryable", "expected"), WORTH_RETRYING_NOW)
     def test_each_kind(self, kind: FailureKind, retryable: bool | None, expected: bool) -> None:
         assert ModelFailure(kind, retryable, "x").worth_retrying_now is expected

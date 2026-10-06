@@ -137,15 +137,19 @@ class ModelFailure:
 
     @property
     def worth_retrying_now(self) -> bool:
-        """Whether a second try a moment later is likely to work.
+        """Whether the stream helper (``stream_retry``) should try again a moment later.
 
-        True for a failure that can clear by itself: a stream the service cut short, a
-        dropped connection, a service error. A throttle is left out: botocore and the Anthropic SDK retry one with backoff
+        This is that helper's policy, narrower than ``retryable``, which says only whether
+        a retry can ever succeed. True for a failure that can clear by itself: a stream the
+        service cut short, a dropped connection, a service error. ``retryable is True``
+        also excludes a service error whose code is not recognized, where nothing is known.
+
+        A throttle is left out: botocore and the Anthropic SDK retry one with backoff
         before the response begins (OpenRouter's client does not, and its reader is asked
-        to choose another model instead), and a second try a moment later only adds load to
-        the account being throttled. A timeout
-        is left out even though a retry can succeed: it has already waited out its limit,
-        so a second try would double the reader's wait.
+        to choose another model instead), and a second try a moment later only adds load
+        to the account being throttled. A timeout is left out even though a retry can
+        succeed: it has already waited out its limit, so a second try would double the
+        reader's wait.
         """
         return self.retryable is True and self.kind in _WORTH_RETRYING_NOW
 
