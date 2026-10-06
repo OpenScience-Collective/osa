@@ -13,7 +13,9 @@ which raises differently:
   ``response["Error"]["Code"]``; the service's own exception events that arrive inside a
   stream carry the code in lowerCamelCase), ``ReadTimeoutError`` and friends for the
   network, and, from ``langchain-aws``, a ``ValueError`` for an exception event it could
-  not turn into a ``ClientError`` and for a permissions error about system tools.
+  not turn into a ``ClientError`` and for a permissions error about system tools. Once a
+  stream is open, botocore iterates urllib3's response itself, so a stall or a dropped
+  connection there is urllib3's ``ReadTimeoutError`` or ``ProtocolError``, not botocore's.
 - Anthropic raises the SDK's ``APIStatusError`` family (``status_code``) and
   ``APITimeoutError`` / ``APIConnectionError``.
 - LiteLLM raises OpenAI-style exceptions (``status_code``, ``Timeout``).
@@ -41,6 +43,8 @@ from botocore.exceptions import (
     ReadTimeoutError,
 )
 from botocore.exceptions import ConnectionError as BotocoreConnectionError
+from urllib3.exceptions import ProtocolError as Urllib3ProtocolError
+from urllib3.exceptions import TimeoutError as Urllib3TimeoutError
 
 FailureKind = Literal[
     "throttled", "timeout", "unavailable", "connection", "rejected", "unauthorized", "unknown"
@@ -201,6 +205,19 @@ def _raised_in(error: BaseException, package: str) -> bool:
     return module == package or module.startswith(f"{package}.")
 
 
+def _passed_through(error: BaseException, package: str) -> bool:
+    """Whether the error's traceback has a frame in ``package``, that is, whether it
+    travelled through that library's code on its way up. False for an error that was never
+    raised."""
+    frame: TracebackType | None = error.__traceback__
+    while frame is not None:
+        module = str(frame.tb_frame.f_globals.get("__name__", ""))
+        if module == package or module.startswith(f"{package}."):
+            return True
+        frame = frame.tb_next
+    return False
+
+
 def _classify_one(error: BaseException) -> ModelFailure | None:
     name = type(error).__name__
     if isinstance(error, ClientError):
@@ -217,6 +234,15 @@ def _classify_one(error: BaseException) -> ModelFailure | None:
         return ModelFailure("timeout", True, name)
     if isinstance(error, HTTPClientError | BotocoreConnectionError):
         return ModelFailure("connection", True, name)
+    if isinstance(error, Urllib3TimeoutError | Urllib3ProtocolError) and _passed_through(
+        error, "botocore"
+    ):
+        # urllib3's own errors, which botocore lets out raw when it iterates a stream's
+        # response (a Bedrock stream that stalled past the read timeout, or whose
+        # connection dropped part way). urllib3 sits under other clients too, so only an
+        # error that came up through botocore is the model call's.
+        kind: FailureKind = "timeout" if isinstance(error, Urllib3TimeoutError) else "connection"
+        return ModelFailure(kind, True, name)
     if isinstance(error, ValueError):
         match = _RECEIVED_AWS_EXCEPTION.match(str(error))
         if match:

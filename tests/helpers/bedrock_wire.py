@@ -19,13 +19,20 @@ EVENT_STREAM = "application/vnd.amazon.eventstream"
 
 
 class Raw:
-    """The minimum urllib3-shaped body botocore reads a response from."""
+    """The minimum urllib3-shaped body botocore reads a response from.
 
-    def __init__(self, body: bytes) -> None:
+    ``then_raises`` is raised from ``stream()`` once the body has been delivered, which is
+    how urllib3 ends a response whose connection stalled or dropped part way.
+    """
+
+    def __init__(self, body: bytes, then_raises: Exception | None = None) -> None:
         self._body = body
+        self._then_raises = then_raises
 
     def stream(self, *_args: Any, **_kwargs: Any):
         yield self._body
+        if self._then_raises is not None:
+            raise self._then_raises
 
     def read(self, *_args: Any, **_kwargs: Any) -> bytes:
         return self._body
@@ -45,6 +52,9 @@ class Wire:
         headers: More response headers, such as ``x-amzn-errortype`` on a refusal.
         raises: An exception to raise from the transport instead of answering, which is
             how botocore sees a timeout or a dropped connection.
+        then_raises: An exception to raise from the response body after ``body`` has been
+            read, which is how a stream that stalls or drops part way surfaces: botocore
+            iterates urllib3's response itself, so urllib3's own error comes out.
     """
 
     def __init__(
@@ -56,19 +66,23 @@ class Wire:
         status: int = 200,
         headers: dict[str, str] | None = None,
         raises: Exception | None = None,
+        then_raises: Exception | None = None,
     ) -> None:
         self.requests: list[Any] = []
         self._body = body
         self._status = status
         self._headers = {"content-type": content_type, **(headers or {})}
         self._raises = raises
+        self._then_raises = then_raises
         llm.client.meta.events.register("before-send.bedrock-runtime.*", self._answer)
 
     def _answer(self, request: Any, **_kwargs: Any) -> AWSResponse:
         self.requests.append(request)
         if self._raises is not None:
             raise self._raises
-        return AWSResponse(request.url, self._status, self._headers, Raw(self._body))
+        return AWSResponse(
+            request.url, self._status, self._headers, Raw(self._body, self._then_raises)
+        )
 
     @property
     def sent(self) -> Any:
