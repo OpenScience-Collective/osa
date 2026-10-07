@@ -138,6 +138,16 @@
     "malformed": true
   },
   {
+    "name": "just under the largest cost shown",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 999999999.99, "partial": false},
+    "line": "100 in, 10 out, about $999999999.99"
+  },
+  {
+    "name": "the smallest cost that is too large to be real is no cost",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 1000000000.0, "partial": false},
+    "line": "100 in, 10 out"
+  },
+  {
     "name": "an absurd cost is no cost",
     "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 1e+305, "partial": false},
     "line": "100 in, 10 out",
