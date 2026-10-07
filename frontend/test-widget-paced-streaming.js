@@ -1083,6 +1083,147 @@ console.log('\nsources appear with the sentence that cites them, not ahead of it
   assertEqual([...window.document.querySelectorAll('.osa-message.assistant .osa-message-sources li')].length, 3, 'and once done, all three are listed');
 }
 
+console.log('\nwhat a reply used and cost is shown under it, between its sources and the feedback buttons');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const citations = [{ marker: 1, source: 'https://example.org/1', title: 'Source 1', cited_text: 'x' }];
+  const usage = { input_tokens: 1240, output_tokens: 310, cache_read_tokens: 980, cache_creation_tokens: 0, estimated_cost: 0.0021, partial: false };
+  const text = 'The first claim is stated plainly here, with a marker after it.[1]';
+  const lastReply = () => [...window.document.querySelectorAll('.osa-message.assistant')].at(-1);
+  const started = api.getMessages().length;
+  const stream = api.handleStreamingResponse(sse([
+    { event: 'content', content: text },
+    { event: 'done', content: text, citations, usage },
+  ]), container);
+  let shownWhileOpen = false;
+  let over = false;
+  stream.then(() => { over = true; }, () => { over = true; });
+  while (!over) {
+    shownWhileOpen = shownWhileOpen || (lastReply() !== undefined && lastReply().querySelector('.osa-message-usage') !== null);
+    await new Promise((resolve) => setTimeout(resolve, 8));
+  }
+  await stream;
+  const line = lastReply().querySelector('.osa-message-usage');
+  assert(line !== null, 'the reply has a usage line once it is done');
+  assertEqual(line.textContent, '1,240 in (980 cached), 310 out, about $0.0021', 'saying tokens, cache and cost');
+  assert(!shownWhileOpen, 'and no line was on the page while the stream was open');
+  assert(/price table/.test(line.getAttribute('title')), 'its tooltip says the cost is an estimate from the price table');
+  const order = [...lastReply().children].map((el) => el.className.split(' ')[0]);
+  assert(
+    order.indexOf('osa-message-sources') < order.indexOf('osa-message-usage')
+      && order.indexOf('osa-message-usage') < order.indexOf('osa-message-feedback'),
+    `it sits under the sources and above the feedback buttons (${order.join(', ')})`
+  );
+  assertEqual(api.getMessages()[started].usage, usage, 'and the message keeps it, so a reload shows it again');
+}
+
+console.log('\na reply with no usage has no usage line');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  for (const usage of [undefined, null]) {
+    await api.handleStreamingResponse(sse([
+      { event: 'content', content: 'Fine.' },
+      { event: 'done', content: 'Fine.', ...(usage === undefined ? {} : { usage }) },
+    ]), container);
+  }
+  assertEqual(window.document.querySelectorAll('.osa-message-usage').length, 0, 'whether the server sent null or left it out');
+}
+
+console.log('\na browser-execution reply shows what all of its runs used, and says so when one reported none');
+{
+  const run = (input, output, cost) => ({
+    input_tokens: input, output_tokens: output, cache_read_tokens: 0, cache_creation_tokens: 0, estimated_cost: cost, partial: false,
+  });
+  const twoRuns = async (firstUsage, lastUsage) => {
+    const { window, api } = loadWidget();
+    const container = window.document.querySelector('.osa-chat-widget');
+    const first = await api.handleStreamingResponse(sse([
+      { event: 'content', content: 'Let me check that for you.' },
+      { event: 'tool_request', call_id: 'c1', tool: 'execute_code', args: {}, content: 'Let me check that for you.', usage: firstUsage },
+    ]), container);
+    const whileUnfinished = window.document.querySelectorAll('.osa-message-usage').length;
+    await api.handleStreamingResponse(sse([
+      { event: 'content', content: 'The peak is at ten hertz.' },
+      { event: 'done', content: 'The peak is at ten hertz.', usage: lastUsage },
+    ]), container, { messageIndex: first.messageIndex });
+    const lines = [...window.document.querySelectorAll('.osa-message-usage')].map((el) => el.textContent);
+    return { whileUnfinished, lines, saved: window.localStorage.getItem('osa-test-paced') };
+  };
+
+  const both = await twoRuns(run(1000, 100, 0.0010), run(1500, 200, 0.0015));
+  assertEqual(both.whileUnfinished, 0, 'nothing is shown while the reply is unfinished');
+  assertEqual(both.lines, ['2,500 in, 300 out, about $0.0025'], 'one line, the sum of the two runs');
+
+  assertEqual((await twoRuns(run(1000, 100, 0.0010), null)).lines, ['at least 1,000 in, 100 out, about $0.0010'],
+    'a last run that reported none leaves the first run\'s figures, marked "at least"');
+  assertEqual((await twoRuns(null, run(1500, 200, 0.0015))).lines, ['at least 1,500 in, 200 out, about $0.0015'],
+    'and so does a first run that reported none');
+  assertEqual((await twoRuns(null, null)).lines, [], 'while two runs that both reported none have nothing to show');
+  assertEqual((await twoRuns({ ...run(1000, 100, 0.0010), partial: true }, run(1500, 200, 0.0015))).lines,
+    ['at least 2,500 in, 300 out, about $0.0025'], 'and a run the server marked partial makes the sum partial');
+}
+
+console.log('\nthe usage in a saved conversation is read back, and only as the widget writes it');
+{
+  const warns = [];
+  const warn = console.warn;
+  console.warn = (...args) => warns.push(args.join(' '));
+  try {
+    const usage = { input_tokens: 5, output_tokens: 1, cache_read_tokens: 0, cache_creation_tokens: 0, estimated_cost: 0.0001, partial: false };
+    const history = (message) => JSON.stringify({ version: 99, messages: [{ role: 'assistant', content: 'Hi.', ...message }], sessionId: null });
+    const lineOf = (loaded) => [...loaded.window.document.querySelectorAll('.osa-message-usage')].map((el) => el.textContent);
+
+    const good = loadWidget({ saved: history({ usage }) });
+    assertEqual(lineOf(good), ['5 in, 1 out, about $0.0001'], 'a saved usage is shown again after a reload');
+
+    const forged = loadWidget({ saved: history({ usage: { ...usage, evil: '<img src=x onerror=alert(1)>', cache_read_tokens: -4 } }) });
+    assertEqual(forged.api.getMessages().at(-1).usage, usage, 'unknown fields are dropped and a negative count is zero');
+
+    const junk = loadWidget({ saved: history({ usage: '5 tokens' }) });
+    assertEqual(lineOf(junk), [], 'a usage that is not an object shows nothing');
+    assert(!('usage' in junk.api.getMessages().at(-1)), 'and is not kept');
+    assertEqual(warns.filter((w) => /cannot read/.test(w)).length, 1, 'a usage this version cannot read is reported on the console, once');
+    loadWidget({ saved: history({ usage: { input_tokens: 'many' } }) });
+    assertEqual(warns.filter((w) => /cannot read/.test(w)).length, 2, 'once for each page load, not once for every redraw of it');
+  } finally {
+    console.warn = warn;
+  }
+}
+
+console.log('\na reply saved with its usage shows it again after a reload, and a failed second run saves nothing kept aside');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const usage = { input_tokens: 1240, output_tokens: 310, cache_read_tokens: 980, cache_creation_tokens: 0, estimated_cost: 0.0021, partial: false };
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: 'Fine.' },
+    { event: 'done', content: 'Fine.', usage },
+  ]), container);
+  const again = loadWidget({ saved: window.localStorage.getItem('osa-test-paced') });
+  assertEqual([...again.window.document.querySelectorAll('.osa-message-usage')].map((el) => el.textContent),
+    ['1,240 in (980 cached), 310 out, about $0.0021'], 'what the widget itself saved is shown again after a reload');
+}
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const usage = { input_tokens: 1000, output_tokens: 100, cache_read_tokens: 0, cache_creation_tokens: 0, estimated_cost: 0.001, partial: false };
+  const first = await api.handleStreamingResponse(sse([
+    { event: 'content', content: 'Let me check.' },
+    { event: 'tool_request', call_id: 'c1', tool: 'execute_code', args: {}, content: 'Let me check.', usage },
+  ]), container);
+  let failed = null;
+  try {
+    await api.handleStreamingResponse(sse([{ event: 'error', message: 'The model is unavailable.' }]), container, { messageIndex: first.messageIndex });
+  } catch (error) { failed = error; }
+  assert(failed !== null, 'the second run fails');
+  assertEqual(window.document.querySelectorAll('.osa-message-usage').length, 0, 'a reply that did not finish shows no usage');
+  const saved = window.localStorage.getItem('osa-test-paced') || '';
+  assert(saved.includes('The model is unavailable.'), 'the failed reply was saved');
+  assert(!/_usageSoFar|_usageRuns|"input_tokens"/.test(saved), 'with no usage in it, and nothing kept aside between the runs');
+}
+
 console.log('\na reader typing in a message keeps their caret through the reveal');
 {
   const { window, api } = loadWidget();
@@ -1637,6 +1778,20 @@ console.log('\nthe non-streamed fallback shows the warnings the response carries
   } finally {
     console.warn = warn;
   }
+}
+
+console.log('\na response that is not streamed shows its usage too');
+{
+  const usage = { input_tokens: 1240, output_tokens: 310, cache_read_tokens: 980, cache_creation_tokens: 0, estimated_cost: 0.0021, partial: false };
+  const { window, api } = loadWidget({
+    chat: () => json({ message: { content: 'A short answer.' }, session_id: 's', usage: { ...usage, evil: '<img src=x onerror=alert(1)>' } }),
+  });
+  const container = window.document.querySelector('.osa-chat-widget');
+  send(window, container, 'A question');
+  await waitFor(() => settled(container), 'the send settles');
+  const lines = [...window.document.querySelectorAll('.osa-message-usage')].map((el) => el.textContent);
+  assertEqual(lines, ['1,240 in (980 cached), 310 out, about $0.0021'], 'the line is there');
+  assertEqual(api.getMessages().at(-1).usage, usage, 'and the message keeps only the fields the widget reads');
 }
 
 console.log('\n' + '='.repeat(60));

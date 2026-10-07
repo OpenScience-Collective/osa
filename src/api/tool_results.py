@@ -493,7 +493,12 @@ class PendingClientCall:
         moment = now or datetime.now(UTC)
         return moment - self.created_at > timedelta(seconds=PENDING_CALL_TTL_SECONDS)
 
-    def to_request_event(self, session_id: str, content: str = "") -> ToolRequestEvent:
+    def to_request_event(
+        self,
+        session_id: str,
+        content: str = "",
+        usage: dict[str, Any] | None = None,
+    ) -> ToolRequestEvent:
         """The `tool_request` SSE payload.
 
         Carries `event`, which the widget's dispatcher requires; the design note's own
@@ -503,6 +508,10 @@ class PendingClientCall:
         finished one: the text the run streamed, with its markers normalized, and every
         citation the reply has so far. Such a run never sends `done`, so without these
         the reader would keep the raw streamed text, whose markers can sit mid-word.
+
+        `usage` is the tokens and estimated cost of the run that ends here (see
+        `ReplyUsage`), or None: the next run's `done` carries its own, so a client adds
+        the runs up.
         """
         return {
             "event": "tool_request",
@@ -513,6 +522,7 @@ class PendingClientCall:
             "requires_permission": self.requires_permission,
             "content": content,
             "citations": [asdict(mark) for mark in self.carried_citations],
+            "usage": usage,
         }
 
 
@@ -532,3 +542,4 @@ class ToolRequestEvent(TypedDict):
     requires_permission: bool
     content: str
     citations: list[dict[str, Any]]
+    usage: dict[str, Any] | None
