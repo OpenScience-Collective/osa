@@ -38,6 +38,60 @@ def print_success(message: str) -> None:
     err_console.print(f"[bold green]OK:[/] {message}")
 
 
+def _format_cost(dollars: float) -> str:
+    """A cost in US dollars, with as many decimals as its size needs to say something."""
+    if dollars < 0.0001:
+        return "under $0.0001"
+    if dollars < 0.01:
+        return f"about ${dollars:.4f}"
+    if dollars < 1:
+        return f"about ${dollars:.3f}"
+    return f"about ${dollars:.2f}"
+
+
+def format_usage(usage: dict[str, Any] | None) -> str | None:
+    """What a reply used, in one line, from the ``usage`` object the server sends.
+
+    For example ``1,240 in (980 cached), 310 out, about $0.0021``. The input count includes
+    the cached tokens. The widget words it the same way (``formatUsage`` in
+    ``frontend/osa-chat-widget.js``), and the two are tested against one table.
+
+    Args:
+        usage: The server's ``usage`` object, or None when it sent none.
+
+    Returns:
+        The line, or None when there is nothing to say (no usage, or one that is not an
+        object, which a server of another version could send).
+    """
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        return None
+    cache_parts = []
+    cache_read = usage.get("cache_read_tokens")
+    cache_written = usage.get("cache_creation_tokens")
+    if isinstance(cache_read, int) and cache_read > 0:
+        cache_parts.append(f"{cache_read:,} cached")
+    if isinstance(cache_written, int) and cache_written > 0:
+        cache_parts.append(f"{cache_written:,} written to cache")
+    cache = f" ({', '.join(cache_parts)})" if cache_parts else ""
+    parts = [f"{input_tokens:,} in{cache}", f"{output_tokens:,} out"]
+    cost = usage.get("estimated_cost")
+    if isinstance(cost, int | float) and not isinstance(cost, bool):
+        parts.append(_format_cost(float(cost)))
+    return ", ".join(parts)
+
+
+def print_usage(usage: dict[str, Any] | None) -> None:
+    """Print what a reply used, under it, to stderr: a status line, so stdout stays the
+    answer alone for a pipe."""
+    line = format_usage(usage)
+    if line:
+        err_console.print(f"Usage: {line}", style="dim", markup=False, highlight=False)
+
+
 def print_info(message: str) -> None:
     """Print info message to stderr."""
     err_console.print(f"[dim]{message}[/]")

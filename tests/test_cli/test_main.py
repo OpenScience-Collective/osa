@@ -5,11 +5,13 @@ with real output verification.
 """
 
 import io
+import json
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
 import httpx
+import pytest
 import respx
 from click import unstyle
 from typer.testing import CliRunner
@@ -529,6 +531,134 @@ class TestAWarningReachesTheReader:
         assert result.exit_code == 0, result.output
         assert "HED is a sys" in result.output
         assert self.WARNING in result.output
+
+
+USAGE_LINES = json.loads(
+    (Path(__file__).parent.parent / "fixtures" / "usage_lines.json").read_text()
+)
+USAGE = USAGE_LINES[0]["usage"]
+USAGE_LINE = USAGE_LINES[0]["line"]
+
+
+class TestWhatAReplyUsedIsShownUnderIt:
+    """The server sends ``usage`` with each reply (issue #582): tokens, cache and an
+    estimated cost. It goes to stderr under the answer, so stdout stays the answer alone."""
+
+    @pytest.mark.parametrize("case", USAGE_LINES, ids=lambda c: c["name"])
+    def test_the_line_for_each_usage(self, case: dict) -> None:
+        from src.cli import output
+
+        assert output.format_usage(case["usage"]) == case["line"]
+
+    def test_ask_stream_prints_usage_to_stderr_and_not_to_stdout(self, capsys) -> None:
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/ask").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"content","content":"HED is a sys"}\n\n'
+                        b'data: {"event":"done","content":"HED is a sys","usage":'
+                        + json.dumps(USAGE).encode()
+                        + b"}\n\n"
+                    ),
+                )
+            )
+            _ask_streaming(OSAClient("https://test.example", user_id="test-user"), "hed", "How?")
+
+        captured = capsys.readouterr()
+        assert "HED is a sys" in captured.out
+        assert "Usage:" not in captured.out
+        assert f"Usage: {USAGE_LINE}" in captured.err
+
+    def test_chat_stream_prints_usage_under_the_answer(self, capsys) -> None:
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/chat").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"done","session_id":"s-1","content":"HED is a sys",'
+                        b'"usage":' + json.dumps(USAGE).encode() + b"}\n\n"
+                    ),
+                )
+            )
+            _chat_turn_streaming(
+                OSAClient("https://test.example", user_id="test-user"), "hed", "How?", None
+            )
+
+        captured = capsys.readouterr()
+        assert "HED is a sys" in captured.out
+        assert f"Usage: {USAGE_LINE}" in captured.err
+
+    def test_a_reply_with_no_usage_prints_no_usage_line(self, capsys) -> None:
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/ask").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=b'data: {"event":"done","content":"HED is a sys","usage":null}\n\n',
+                )
+            )
+            _ask_streaming(OSAClient("https://test.example", user_id="test-user"), "hed", "How?")
+
+        captured = capsys.readouterr()
+        assert "HED is a sys" in captured.out
+        assert "Usage:" not in captured.err
+
+    def test_ask_without_streaming_prints_usage(self, tmp_path: Path) -> None:
+        from src.api.routers.community import AskResponse
+
+        body = AskResponse(answer="HED is a sys", model="m", usage=USAGE)
+
+        with (
+            patched_config_paths(tmp_path),
+            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-cli-test-key"}, clear=True),
+            respx.mock,
+        ):
+            respx.post("https://api.osc.earth/osa/hed/ask").mock(
+                return_value=httpx.Response(200, json=body.model_dump(mode="json"))
+            )
+            result = runner.invoke(cli, ["ask", "How?", "-a", "hed", "--no-stream"])
+
+        assert result.exit_code == 0, result.output
+        assert f"Usage: {USAGE_LINE}" in result.output
+
+    def test_chat_without_streaming_prints_usage(self, tmp_path: Path) -> None:
+        from src.api.routers.community import ChatMessage, ChatResponse
+
+        body = ChatResponse(
+            session_id="s-1",
+            message=ChatMessage(role="assistant", content="HED is a sys"),
+            model="m",
+            usage=USAGE,
+        )
+
+        with (
+            patched_config_paths(tmp_path),
+            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-cli-test-key"}, clear=True),
+            respx.mock,
+        ):
+            respx.post("https://api.osc.earth/osa/hed/chat").mock(
+                return_value=httpx.Response(200, json=body.model_dump(mode="json"))
+            )
+            result = runner.invoke(
+                cli, ["chat", "-a", "hed", "--no-stream"], input="question\nquit\n"
+            )
+
+        assert result.exit_code == 0, result.output
+        assert f"Usage: {USAGE_LINE}" in result.output
 
 
 class TestTheWarningIsReadAfterTheAnswer:
