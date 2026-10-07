@@ -14,6 +14,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 import respx
+import typer
 from click import unstyle
 from typer.testing import CliRunner
 
@@ -489,14 +490,59 @@ class TestAWarningReachesTheReader:
         assert "foo[/bar]" in capsys.readouterr().err
 
     def test_an_error_or_warning_that_is_not_a_string_still_prints(self, capsys) -> None:
-        """A server's JSON can send ``null`` for a message; the CLI shows an error, not a
+        """A server's JSON can send any value for a message; the CLI shows an error, not a
         traceback of its own."""
         from src.cli import output
 
-        output.print_error(None)  # ty: ignore[invalid-argument-type]
-        output.print_warning(None)  # ty: ignore[invalid-argument-type]
+        output.print_error(42)  # ty: ignore[invalid-argument-type]
+        output.print_warning(["a", "list"])  # ty: ignore[invalid-argument-type]
 
-        assert capsys.readouterr().err.count("None") == 2
+        err = capsys.readouterr().err
+        assert "42" in err and "list" in err
+
+    def test_a_stream_error_with_a_null_message_says_the_error_is_unknown(self, capsys) -> None:
+        """``data.get("message", default)`` keeps an explicit null: the reader would be told
+        "Error: None"."""
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/ask").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=b'data: {"event":"error","message":null}\n\n',
+                )
+            )
+            with pytest.raises(typer.Exit):
+                _ask_streaming(
+                    OSAClient("https://test.example", user_id="test-user"), "hed", "How?"
+                )
+
+        err = capsys.readouterr().err
+        assert "Unknown error" in err and "None" not in err
+
+    def test_a_stream_warning_with_a_null_message_says_the_warning_is_unknown(self, capsys) -> None:
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/chat").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"warning","message":null}\n\n'
+                        b'data: {"event":"done","session_id":"s-1","content":"HED is a sys"}\n\n'
+                    ),
+                )
+            )
+            _chat_turn_streaming(
+                OSAClient("https://test.example", user_id="test-user"), "hed", "How?", None
+            )
+
+        err = capsys.readouterr().err
+        assert "Unknown warning" in err and "None" not in err
 
     def test_a_warning_with_markup_characters_prints_as_written(self, capsys) -> None:
         from src.cli import output

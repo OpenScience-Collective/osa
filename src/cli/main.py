@@ -270,9 +270,9 @@ def _ask_streaming(client: OSAClient, assistant: str, question: str) -> None:
                 tool_name = data.get("name", "").replace("_", " ").title()
                 status.update(f"[dim]Using tool: {tool_name}[/dim]")
             elif event_type == "warning":
-                warnings.append(data.get("message", "Unknown warning"))
+                warnings.append(data.get("message") or "Unknown warning")
             elif event_type == "error":
-                output.print_error(data.get("message", "Unknown error"), hint=_report_hint(data))
+                output.print_error(data.get("message") or "Unknown error", hint=_report_hint(data))
                 raise typer.Exit(code=1)
 
     if full_content:
@@ -428,9 +428,9 @@ def _chat_turn_streaming(
                     full_content = final_content
                 usage = data.get("usage")
             elif event_type == "warning":
-                warnings.append(data.get("message", "Unknown warning"))
+                warnings.append(data.get("message") or "Unknown warning")
             elif event_type == "error":
-                output.print_error(data.get("message", "Unknown error"), hint=_report_hint(data))
+                output.print_error(data.get("message") or "Unknown error", hint=_report_hint(data))
                 return new_session_id
 
     if full_content:
