@@ -16,9 +16,11 @@ the version being released and start a new `[Unreleased]` section above it.
 ### Changed
 
 - **HED runs Claude Haiku 4.5** (issue #591): HED's `default_model` is `claude-haiku-4-5`, where it was GPT-6 Luna.
-  HED's annotation questions are a tag, validate and correct loop, and on dev Luna did not finish it: 2 of 3 requests failed (a dropped stream and a stall past the read timeout, each on the model call after a tool result), GPT-OSS hit the recursion limit, and Haiku answered all 3 in 12 to 24 s.
+  HED's annotation questions are a tag, validate and correct loop.
+  On dev, Luna answered 1 of 3 of them (the others ended in a dropped stream and in a stall past the read timeout, each after tool calls), GPT-OSS answered 1 of 2 (the other hit the recursion limit), and Haiku answered all 3 in 12 to 24 s.
   Luna stays the default of NWB, EEGLAB and BIDS, whose questions are document lookups, and a reader can still choose Luna for HED from the model menu.
-  A HED request costs about nine times as much on Haiku (an estimated $0.05 to $0.11 on the three dev requests).
+  Haiku costs about nine times Luna's price per token (an estimated $0.05 to $0.11 for each of the three dev requests, before caching).
+  HED's budget (`$5` a day, `$50` a month) only alerts, and is unchanged, so it will alert at about a ninth of the traffic.
   The reasoning level stays `high`, which is a 4,096-token thinking budget on Haiku.
 
 ## [0.8.17] - 2026-10-06

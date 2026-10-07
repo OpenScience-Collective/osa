@@ -50,12 +50,13 @@ widget:
 # Default model for this community (optional)
 # If specified, overrides the platform-level default model
 # Claude Haiku 4.5 (issue #591). HED's annotation questions are a tag, validate and correct
-# loop, and GPT-6 Luna does not finish it: on dev, 2 of 3 requests failed (a dropped stream
-# and a stall past the read timeout, both on the model call after a tool result), and
-# GPT-OSS hit the recursion limit, while Haiku answered all 3 in 12 to 24 s. Luna stays the
+# loop. On dev, GPT-6 Luna answered 1 of 3 of them (the others ended in a dropped stream and
+# in a stall past the read timeout, each after tool calls), GPT-OSS answered 1 of 2 (the
+# other hit the recursion limit), and Haiku answered all 3 in 12 to 24 s. Luna stays the
 # default of the communities whose questions are document lookups (NWB, EEGLAB, BIDS), and a
 # reader can still pick it for HED from the model menu. Haiku is about nine times Luna's
-# price per request. See src.core.services.anthropic_models.OFFERED_MODELS for the ids.
+# price per token, so the budget below, which only alerts, will alert at about a ninth of the
+# traffic. See src.core.services.anthropic_models.OFFERED_MODELS for the ids.
 default_model: "claude-haiku-4-5"
 # The level every model this community runs is asked to reason at, on every provider
 # (issue #545, ADR 0015). On Haiku 4.5, which has no effort field, high is a 4096-token
