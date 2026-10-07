@@ -50,7 +50,13 @@ the version being released and start a new `[Unreleased]` section above it.
   A failure before the response began is not retried here, because the provider's client already retried it with backoff (botocore, the Anthropic SDK): a second try would only multiply the calls a degraded provider gets.
   A throttle is not retried either (botocore and the Anthropic SDK retry one with backoff; OpenRouter's client does not), nor a timeout (it has waited out its limit), a refused request or key, an error of our own, or a non-streamed request.
   The log says when a request was retried and whether the second try worked.
-  A failure that was worth a retry and reached the reader anyway (the retry failed, or a tool had run so there was none to make) is logged at ERROR, where such a failure was logged as a warning.
+  A provider outage (the service unavailable, the connection lost, a read that timed out) is logged at ERROR whether or not a retry was possible, with the traceback when a retry would have covered it and it reached the reader anyway (the retry failed, or a tool had run so there was none to make), so an alert on ERROR sees the outage and not only some of its requests.
+  Such a failure was logged as a warning, or as an error only for a reply that used no tool.
+- **The widget names its own request timeout** (issue #578): `AbortSignal.timeout` aborts with a `TimeoutError`, not the `AbortError` the widget checked for, so a stalled request fell through to the widget's generic failure text instead of "Connection timeout" (streamed) or "Request timed out. Please try again." (not streamed).
+  Both names now read as the request timeout they are.
+- **A bad error message cannot break the CLI**: `osa` escapes any server message before printing it, including one that is not text, and a cost too large to be real (above one billion dollars) is shown as no cost by the widget and the CLI.
+- **The classifier cannot raise**: an unexpected shape of provider error is "unknown" in the log, not a second failure inside the handler that reports the first.
+- **A stream the reader closes is not retried**: a failure that surfaces as the reader closes the stream no longer starts a second model call that nobody will read.
 
 ## [0.8.16] - 2026-09-30
 
