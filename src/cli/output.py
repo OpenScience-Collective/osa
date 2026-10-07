@@ -47,8 +47,10 @@ def print_success(message: str) -> None:
     err_console.print(f"[bold green]OK:[/] {message}")
 
 
-#: A cost this large is not one OSA computes; past it the line leaves the cost out rather than
-#: format a number the integer arithmetic below cannot take.
+#: A cost this large is not one OSA computes. The widget's ``formatCost`` does the same sums
+#: in doubles, which are exact only below 2**53 micro-dollars (about nine billion dollars),
+#: and the two must print the same digits, so both leave the cost out from one billion
+#: dollars up (and an infinity could not be rounded at all).
 _MAX_COST = 1e9
 
 
