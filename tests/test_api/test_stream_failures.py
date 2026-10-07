@@ -1076,6 +1076,9 @@ class TestARunThatUsesAllItsSteps:
             "the model's behavior, not an outage: nothing for an operator to chase"
         )
         assert record.failure_kind == "step_limit"
+        assert record.getMessage().startswith("A run used all its steps (ID: "), (
+            "named for what it is"
+        )
         assert record.error_id == events[-1]["error_id"]
         (row,) = [r for r in _rows() if r["error_message"]]
         assert "GraphRecursionError" in row["error_message"]
@@ -1102,11 +1105,12 @@ class TestARunThatUsesAllItsStepsOnAnEndpointThatIsNotStreamed:
     ) -> None:
         caplog.set_level(logging.WARNING)
         model = TestARunThatUsesAllItsSteps._looping_model()
+        runs: list[str] = []
         assistant = CommunityAssistant(
             model=model,
             config=community_config(),
             preload_docs=False,
-            additional_tools=[TestARunThatUsesAllItsSteps._lookup_tool([])],
+            additional_tools=[TestARunThatUsesAllItsSteps._lookup_tool(runs)],
         )
         wrapped = AssistantWithMetrics(
             assistant=assistant, model="openai.gpt-oss-120b", key_source="platform"
@@ -1117,6 +1121,7 @@ class TestARunThatUsesAllItsStepsOnAnEndpointThatIsNotStreamed:
 
         response = client.post(f"/{COMMUNITY}/{path}", headers={"Origin": ORIGIN}, json=payload)
 
+        assert len(runs) > 5, "the tool ran again and again until the step limit"
         assert response.status_code == 500
         assert response.json()["detail"] == (
             "The current model (openai.gpt-oss-120b) used all its steps without finishing. "
@@ -1337,6 +1342,21 @@ class TestNoRetryOnceAToolHasRun:
 class TestTheUnavailableModelMessage:
     def test_it_names_the_model_and_the_one_to_try(self) -> None:
         assert _model_unavailable(BEDROCK_MODEL) == BEDROCK_UNAVAILABLE
+
+    def test_with_no_other_model_left_to_suggest_the_messages_still_read(self, monkeypatch) -> None:
+        from src.api.routers.community import _step_limit_reached
+        from src.core.services import anthropic_models
+
+        monkeypatch.setattr(anthropic_models, "SUGGESTED_MODELS", ("claude-haiku-4-5",))
+
+        assert _model_unavailable("claude-haiku-4-5") == (
+            "The current model (claude-haiku-4-5) is not available right now. "
+            "Please choose another model."
+        )
+        assert _step_limit_reached("claude-haiku-4-5") == (
+            "The current model (claude-haiku-4-5) used all its steps without finishing. "
+            "Try another model, or ask for a smaller part of the task."
+        )
 
     @pytest.mark.parametrize(
         ("failed", "suggested"),
