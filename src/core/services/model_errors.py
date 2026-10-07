@@ -137,7 +137,8 @@ class ModelFailure:
             botocore or the Anthropic SDK; one inside an open stream was not, since no
             client retries a stream it has started to hand back. Only Bedrock, Anthropic
             and the SDK's httpx errors are recognized as mid-stream: OpenRouter's client
-            does not retry, and its failures are never marked, so they are not retried here.
+            does not retry, and the errors it raises inside a stream carry no status, so
+            they are not marked (and not retried) here.
     """
 
     kind: FailureKind
@@ -335,6 +336,35 @@ def _arrived_mid_stream(error: BaseException) -> bool:
     return type(error).__module__.split(".")[0] == "httpx2"
 
 
+def exception_text(error: BaseException) -> str:
+    """``str(error)``, or a placeholder when the exception cannot say what it is.
+
+    For a log line or a message built while reporting a failure: a ``__str__`` that raises
+    would otherwise drop the line (the logging module prints "--- Logging error ---" and
+    moves on) or cut the stream.
+    """
+    try:
+        return str(error)
+    except Exception:
+        return f"<{type(error).__name__}: text unreadable>"
+
+
+#: Set on an exception the classifier could not read, so that the several handlers that
+#: classify one failure log it once.
+_UNREADABLE_LOGGED = "_osa_unreadable_logged"
+
+
+def _report_unreadable(error: BaseException) -> None:
+    """Log, once per exception, that it could not be classified."""
+    try:
+        if getattr(error, _UNREADABLE_LOGGED, False):
+            return
+        setattr(error, _UNREADABLE_LOGGED, True)
+    except Exception:
+        pass  # An exception that refuses attributes is logged each time.
+    logger.error("Could not classify a model error (%s)", type(error).__name__, exc_info=True)
+
+
 def classify_model_error(error: BaseException) -> ModelFailure:
     """Classify an exception a model call raised.
 
@@ -342,18 +372,30 @@ def classify_model_error(error: BaseException) -> ModelFailure:
     levels), since a library that wraps a provider error keeps the original there.
 
     Never raises: it runs inside the handlers that report a failure, and an exception from
-    it would cut the stream with no ``error`` event, no log line and no metrics row. An
-    exception it cannot read is ``unknown``, and the reason is logged.
+    it would cut the stream with no ``error`` event, no log line and no metrics row. A link
+    it cannot read is skipped, so a readable cause behind it still classifies the failure;
+    an exception none of whose links it can read is ``unknown``, and the reason is logged
+    once.
     """
     try:
         current: BaseException | None = error
         for _ in range(4):
             if current is None:
                 break
-            failure = _classify_one(current)
+            try:
+                failure = _classify_one(current)
+            except Exception:
+                _report_unreadable(error)
+                failure = None
             if failure is not None:
-                return replace(failure, mid_stream=_arrived_mid_stream(current))
+                try:
+                    mid_stream = _arrived_mid_stream(current)
+                except Exception:
+                    # The kind is known and where it came from is not: not retried.
+                    _report_unreadable(error)
+                    mid_stream = False
+                return replace(failure, mid_stream=mid_stream)
             current = current.__cause__
     except Exception:
-        logger.error("Could not classify a model error (%s)", type(error).__name__, exc_info=True)
+        _report_unreadable(error)
     return ModelFailure("unknown", None, type(error).__name__)

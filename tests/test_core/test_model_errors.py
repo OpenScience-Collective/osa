@@ -7,6 +7,7 @@ exception event, the Anthropic SDK's status errors and LiteLLM's OpenAI-style on
 """
 
 import json
+import logging
 from typing import get_args
 
 import anthropic
@@ -27,7 +28,12 @@ from src.api.config import Settings
 from src.core.services import model_errors
 from src.core.services.anthropic_models import BEDROCK_MODELS
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
-from src.core.services.model_errors import FailureKind, ModelFailure, classify_model_error
+from src.core.services.model_errors import (
+    FailureKind,
+    ModelFailure,
+    classify_model_error,
+    exception_text,
+)
 from tests.helpers.bedrock_wire import (
     CUT_SHORT,
     Wire,
@@ -727,3 +733,43 @@ class TestItNeverRaises:
         error = BadStatus.__new__(BadStatus)
 
         assert classify_model_error(error).kind == "unknown"
+
+    def test_a_wrapper_it_cannot_read_does_not_hide_the_cause_it_can(self) -> None:
+        class Unreadable(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        try:
+            try:
+                raise _client_error("ThrottlingException", 429)
+            except ClientError as inner:
+                raise Unreadable() from inner
+        except Unreadable as wrapped:
+            failure = classify_model_error(wrapped)
+
+        assert (failure.kind, failure.retryable) == ("throttled", True)
+
+    def test_an_error_it_cannot_read_is_logged_once_however_often_it_is_classified(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The helper, the router's handler and its ValueError check each classify one
+        failure; a classifier that cannot read it says so once, not once per handler."""
+
+        class Unreadable(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        error = Unreadable()
+        with caplog.at_level(logging.ERROR, logger="src.core.services.model_errors"):
+            for _ in range(3):
+                assert classify_model_error(error).kind == "unknown"
+
+        assert len([r for r in caplog.records if "Could not classify" in r.getMessage()]) == 1
+
+    def test_the_text_of_an_exception_that_cannot_say_it_is_a_placeholder(self) -> None:
+        class Unreadable(RuntimeError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        assert exception_text(ValueError("plain")) == "plain"
+        assert exception_text(Unreadable()) == "<Unreadable: text unreadable>"
