@@ -326,6 +326,7 @@ test('Usage is cut down to what the widget reads, and nothing else comes through
   assertEqual(clean({ input_tokens: 1.5, output_tokens: 1 }), undefined, 'Nor is a fractional one');
   assertEqual(clean({ input_tokens: 5, output_tokens: 1, estimated_cost: Infinity }).estimated_cost, null, 'A cost that is not finite is no cost');
   assertEqual(clean('12 tokens'), undefined, 'A string is not a usage');
+  assertEqual(clean({ input_tokens: 5, output_tokens: 1, estimated_cost: -0.5 }).estimated_cost, null, 'A negative cost is no cost');
 });
 
 test('Done reducer keeps a reply\'s usage, and adds the last run\'s to the earlier ones', () => {
@@ -337,18 +338,18 @@ test('Done reducer keeps a reply\'s usage, and adds the last run\'s to the earli
   assertEqual(one[0].usage, usage, 'A reply with one run carries that run\'s usage');
 
   const earlier = { ...usage, input_tokens: 80, output_tokens: 20, cache_read_tokens: 0, estimated_cost: 0.0001 };
-  const two = [{ role: 'assistant', content: 'earlier', _usageSoFar: earlier, _runs: 1 }];
+  const two = [{ role: 'assistant', content: 'earlier', _usageSoFar: earlier, _usageRuns: 1 }];
   applyDoneEvent(two, 0, { event: 'done', content: 'Final.', usage }, 'raw');
   assertEqual(two[0].usage.input_tokens, 200, 'The final run joins the earlier ones');
   assertEqual(two[0].usage.estimated_cost, 0.0003, 'And so does its cost');
   assertEqual(two[0].usage.partial, false, 'Whole, since every run reported');
-  assert(!('_usageSoFar' in two[0]) && !('_runs' in two[0]), 'And what was kept aside is no longer kept');
+  assert(!('_usageSoFar' in two[0]) && !('_usageRuns' in two[0]), 'And what was kept aside is no longer kept');
 
-  const lastSaidNothing = [{ role: 'assistant', content: 'earlier', _usageSoFar: earlier, _runs: 1 }];
+  const lastSaidNothing = [{ role: 'assistant', content: 'earlier', _usageSoFar: earlier, _usageRuns: 1 }];
   applyDoneEvent(lastSaidNothing, 0, { event: 'done', content: 'Final.', usage: null }, 'raw');
   assertEqual(lastSaidNothing[0].usage, { ...earlier, partial: true }, 'A last run that reported none leaves the earlier runs, marked partial');
 
-  const firstSaidNothing = [{ role: 'assistant', content: 'earlier', _runs: 1 }];
+  const firstSaidNothing = [{ role: 'assistant', content: 'earlier', _usageRuns: 1 }];
   applyDoneEvent(firstSaidNothing, 0, { event: 'done', content: 'Final.', usage }, 'raw');
   assertEqual(firstSaidNothing[0].usage.partial, true, 'And a first run that reported none makes the last run\'s usage partial');
 

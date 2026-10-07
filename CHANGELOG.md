@@ -20,7 +20,7 @@ the version being released and start a new `[Unreleased]` section above it.
   On a stream the object covers one run, so a client that drives `/chat/resume` itself adds up the runs of a reply; the widget does.
   The widget shows one line under each finished reply and keeps it in the saved history, with "at least" in front when a model run reported no tokens, since the figures then leave that run out.
   `osa ask` and `osa chat` print the same wording after "Usage:" on stderr, so a pipe still carries the answer alone.
-  `usage` is null when the provider reported no tokens, which is not the same as a free reply, for requests served through OpenRouter, which are not covered yet, and when OSA could not build it (a warning is logged).
+  `usage` is null when the provider reported no tokens (which is not the same as a free reply), when the request was served through OpenRouter (not covered yet), and when OSA could not build it (a warning is logged).
   A reply that ends in an error shows none, and the tokens of a model call that failed and was tried again are not counted.
   The cost is an estimate from OSA's price table, with cache writes priced at the five-minute rate, not an invoice.
 

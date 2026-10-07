@@ -1155,7 +1155,7 @@ console.log('\na browser-execution reply shows what all of its runs used, and sa
   const both = await twoRuns(run(1000, 100, 0.0010), run(1500, 200, 0.0015));
   assertEqual(both.whileUnfinished, 0, 'nothing is shown while the reply is unfinished');
   assertEqual(both.lines, ['2,500 in, 300 out, about $0.0025'], 'one line, the sum of the two runs');
-  assert(!/_usageSoFar|_runs/.test(both.saved), 'and what was kept aside between runs is not saved');
+  assert(!/_usageSoFar|_usageRuns/.test(both.saved), 'and what was kept aside between runs is not saved');
 
   assertEqual((await twoRuns(run(1000, 100, 0.0010), null)).lines, ['at least 1,000 in, 100 out, about $0.0010'],
     'a last run that reported none leaves the first run\'s figures, marked "at least"');
@@ -1185,10 +1185,9 @@ console.log('\nthe usage in a saved conversation is read back, and only as the w
     const junk = loadWidget({ saved: history({ usage: '5 tokens' }) });
     assertEqual(lineOf(junk), [], 'a usage that is not an object shows nothing');
     assert(!('usage' in junk.api.getMessages().at(-1)), 'and is not kept');
-    const unreadable = loadWidget({ saved: history({ usage: { input_tokens: 'many' } }) });
-    unreadable.window.OSAChatWidget.__usage.format({ input_tokens: 'many' });
-    unreadable.window.OSAChatWidget.__usage.format({ input_tokens: 'many' });
-    assertEqual(warns.filter((w) => /cannot read/.test(w)).length, 1, 'a usage this version cannot read is reported on the console once');
+    assertEqual(warns.filter((w) => /cannot read/.test(w)).length, 1, 'a usage this version cannot read is reported on the console, once');
+    loadWidget({ saved: history({ usage: { input_tokens: 'many' } }) });
+    assertEqual(warns.filter((w) => /cannot read/.test(w)).length, 2, 'once for each page load, not once for every redraw of it');
   } finally {
     console.warn = warn;
   }

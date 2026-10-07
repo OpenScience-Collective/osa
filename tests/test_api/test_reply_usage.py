@@ -35,7 +35,9 @@ from tests.helpers.provider_replies import (
     scripted_reply,
 )
 from tests.test_api.test_missing_usage import _ask, _chat, client, metrics_db  # noqa: F401
+from tests.test_api.test_tool_call_streaming import COMMUNITY as BROWSER_COMMUNITY
 from tests.test_api.test_tool_call_streaming import _anthropic_call
+from tests.test_api.test_tool_call_streaming import _assistant as browser_assistant
 
 OFFERED = [p for p in PROVIDERS if p.name != "openrouter"]
 OPENROUTER = next(p for p in PROVIDERS if p.name == "openrouter")
@@ -133,9 +135,6 @@ class TestAParkedBrowserRun:
     async def test_the_run_that_ends_on_a_browser_call_reports_its_own_usage(self) -> None:
         """The reply goes on in the next run, whose ``done`` carries that run's; a client
         adds them up."""
-        from tests.test_api.test_tool_call_streaming import COMMUNITY as BROWSER_COMMUNITY
-        from tests.test_api.test_tool_call_streaming import _assistant as browser_assistant
-
         call = _anthropic_call("execute_code", "toolu_01usage", {"code": "x", "description": "d"})
         run = [*call, AIMessageChunk(content=[], usage_metadata=USAGE)]
         session = ChatSession("sess-parked-usage", BROWSER_COMMUNITY)
@@ -160,27 +159,33 @@ class TestAParkedBrowserRun:
         assert events[-1]["usage"] == _usage("claude-haiku-4-5")
 
 
-class TestWithoutStreaming:
-    @pytest.fixture(autouse=True)
-    def _serve(self, monkeypatch: pytest.MonkeyPatch):
-        self.serve = lambda provider, script: monkeypatch.setattr(
-            "src.api.routers.community.create_community_assistant",
-            lambda *_a, **_k: assistant_for(provider, script),
-        )
+def _serve(monkeypatch: pytest.MonkeyPatch, provider: Provider, script: list) -> None:
+    """Make the next request's assistant the real one over a model that replays ``script``."""
+    monkeypatch.setattr(
+        "src.api.routers.community.create_community_assistant",
+        lambda *_a, **_k: assistant_for(provider, script),
+    )
 
+
+def _ask_without_streaming(client: TestClient):  # noqa: F811
+    return client.post(
+        f"/{COMMUNITY}/ask",
+        headers={"Origin": ORIGIN},
+        json={"question": QUESTION, "stream": False},
+    )
+
+
+class TestWithoutStreaming:
     @offered
     def test_an_ask_response_carries_its_usage(
         self,
         provider: Provider,
         client: TestClient,  # noqa: F811
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        self.serve(provider, [scripted_reply(provider, ANSWER)])
+        _serve(monkeypatch, provider, [scripted_reply(provider, ANSWER)])
 
-        response = client.post(
-            f"/{COMMUNITY}/ask",
-            headers={"Origin": ORIGIN},
-            json={"question": QUESTION, "stream": False},
-        )
+        response = _ask_without_streaming(client)
 
         assert response.status_code == 200
         assert response.json()["usage"] == _usage(provider.model)
@@ -190,6 +195,7 @@ class TestWithoutStreaming:
         self,
         provider: Provider,
         client: TestClient,  # noqa: F811
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         def post():
             return client.post(
@@ -198,23 +204,23 @@ class TestWithoutStreaming:
                 json={"message": QUESTION, "session_id": "sess-usage-turns", "stream": False},
             )
 
-        self.serve(provider, [scripted_reply(provider, ANSWER)])
+        _serve(monkeypatch, provider, [scripted_reply(provider, ANSWER)])
         assert post().json()["usage"] == _usage(provider.model)
 
-        self.serve(provider, [scripted_reply(provider, ANSWER)])
+        _serve(monkeypatch, provider, [scripted_reply(provider, ANSWER)])
         second = post()
 
         assert second.status_code == 200
         assert second.json()["usage"] == _usage(provider.model), "not the two turns added up"
 
-    def test_openrouter_is_left_out(self, client: TestClient) -> None:  # noqa: F811
-        self.serve(OPENROUTER, [scripted_reply(OPENROUTER, ANSWER)])
+    def test_openrouter_is_left_out(
+        self,
+        client: TestClient,  # noqa: F811
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _serve(monkeypatch, OPENROUTER, [scripted_reply(OPENROUTER, ANSWER)])
 
-        response = client.post(
-            f"/{COMMUNITY}/ask",
-            headers={"Origin": ORIGIN},
-            json={"question": QUESTION, "stream": False},
-        )
+        response = _ask_without_streaming(client)
 
         assert response.status_code == 200
         assert response.json()["usage"] is None
@@ -255,20 +261,16 @@ class TestARunThatReportedNothing:
         client: TestClient,  # noqa: F811
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        script = [
-            [*LOOKUP, *scripted_reply(provider, "", usage=False)],
-            scripted_reply(provider, ANSWER),
-        ]
-        monkeypatch.setattr(
-            "src.api.routers.community.create_community_assistant",
-            lambda *_a, **_k: assistant_for(provider, script),
+        _serve(
+            monkeypatch,
+            provider,
+            [
+                [*LOOKUP, *scripted_reply(provider, "", usage=False)],
+                scripted_reply(provider, ANSWER),
+            ],
         )
 
-        response = client.post(
-            f"/{COMMUNITY}/ask",
-            headers={"Origin": ORIGIN},
-            json={"question": QUESTION, "stream": False},
-        )
+        response = _ask_without_streaming(client)
 
         assert response.status_code == 200
         assert response.json()["usage"] == _usage(provider.model) | {"partial": True}

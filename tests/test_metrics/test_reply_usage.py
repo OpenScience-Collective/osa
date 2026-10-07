@@ -3,6 +3,7 @@
 import json
 import math
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -105,16 +106,10 @@ class TestWhatCannotBeUsage:
     def test_negative_counts_and_cached_tokens_above_the_input_are_refused(
         self, counts: dict[str, int]
     ) -> None:
-        arguments = {"input_tokens": 100, "output_tokens": 10} | counts
+        arguments: dict[str, Any] = {"input_tokens": 100, "output_tokens": 10} | counts
 
         with pytest.raises(ValidationError):
-            reply_usage(
-                "claude-haiku-4-5",
-                arguments["input_tokens"],
-                arguments["output_tokens"],
-                arguments.get("cache_read_tokens", 0),
-                arguments.get("cache_creation_tokens", 0),
-            )
+            reply_usage("claude-haiku-4-5", **arguments)
 
     @pytest.mark.parametrize("cost", [-0.01, math.nan, math.inf])
     def test_a_cost_that_is_negative_or_not_a_number_is_refused(self, cost: float) -> None:
@@ -140,7 +135,9 @@ class TestTheSharedTable:
         [
             c
             for c in USAGE_LINES
-            if isinstance(c["usage"], dict) and "cache_read_tokens" in c["usage"]
+            if isinstance(c["usage"], dict)
+            and "cache_read_tokens" in c["usage"]
+            and not c.get("malformed")
         ],
         ids=lambda c: c["name"],
     )

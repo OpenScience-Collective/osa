@@ -54,15 +54,21 @@ def _format_cost(dollars: float) -> str:
     micro = math.floor(dollars * 1_000_000 + 0.5)
     if micro < 100:
         return "under $0.0001"
-    decimals = 4 if micro < 10_000 else 3 if micro < 1_000_000 else 2
+    if micro < 10_000:
+        decimals = 4
+    elif micro < 1_000_000:
+        decimals = 3
+    else:
+        decimals = 2
     unit = 10 ** (6 - decimals)
-    whole, fraction = divmod((micro + unit // 2) // unit * unit, 1_000_000)
-    return f"about ${whole}.{str(fraction).zfill(6)[:decimals]}"
+    whole, fraction = divmod((micro + unit // 2) // unit, 10**decimals)
+    return f"about ${whole}.{fraction:0{decimals}d}"
 
 
 def _count(value: Any) -> int | None:
-    """``value`` if it is a token count (a whole number, and not a boolean), else None."""
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
+    """``value`` if it is a token count (a whole number, not a boolean, not negative)."""
+    ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return value if ok else None
 
 
 def format_usage(usage: dict[str, Any] | None) -> str | None:
@@ -84,8 +90,9 @@ def format_usage(usage: dict[str, Any] | None) -> str | None:
     """
     if usage is None:
         return None
-    input_tokens = _count(usage.get("input_tokens")) if isinstance(usage, dict) else None
-    output_tokens = _count(usage.get("output_tokens")) if isinstance(usage, dict) else None
+    fields = usage if isinstance(usage, dict) else {}
+    input_tokens = _count(fields.get("input_tokens"))
+    output_tokens = _count(fields.get("output_tokens"))
     if input_tokens is None or output_tokens is None:
         logger.debug("Ignoring a usage object this version cannot read: %r", usage)
         return None
@@ -99,7 +106,7 @@ def format_usage(usage: dict[str, Any] | None) -> str | None:
     cache = f" ({', '.join(cache_parts)})" if cache_parts else ""
     parts = [f"{input_tokens:,} in{cache}", f"{output_tokens:,} out"]
     cost = usage.get("estimated_cost")
-    if isinstance(cost, int | float) and not isinstance(cost, bool):
+    if isinstance(cost, int | float) and not isinstance(cost, bool) and 0 <= cost < math.inf:
         parts.append(_format_cost(float(cost)))
     line = ", ".join(parts)
     return f"at least {line}" if usage.get("partial") is True else line

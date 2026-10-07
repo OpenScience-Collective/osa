@@ -2319,22 +2319,23 @@ def _extract_agent_result(result: dict) -> AgentResult:
 
 def _safe_reply_usage(
     model: str | None,
+    *,
     input_tokens: int,
     output_tokens: int,
     cache_read_tokens: int,
     cache_creation_tokens: int,
-    *,
-    partial: bool,
+    model_runs: ModelRuns,
     community_id: str,
     request_id: str | None,
 ) -> ReplyUsage | None:
     """``reply_usage``, but None instead of an exception.
 
-    The usage is only a note beside the answer, and counts a provider reported badly (a
-    fractional token count, say) must not cost the reader the answer; ``_extract_token_usage``
+    The usage is only a note beside the answer, and counts a provider reported badly (cached
+    tokens above the input, say) must not cost the reader the answer; ``_extract_token_usage``
     follows the same rule for the metrics. Counts that cannot be usage are a provider's
     anomaly and are logged at WARNING; anything else is a defect here and is logged at
-    ERROR, since it would take the usage line from every reply.
+    ERROR, since it would take the usage line from every reply. A model run that reported no
+    tokens makes the usage ``partial``.
     """
     context = {
         "community_id": community_id,
@@ -2352,7 +2353,7 @@ def _safe_reply_usage(
             output_tokens,
             cache_read_tokens,
             cache_creation_tokens,
-            partial=partial,
+            partial=model_runs.without_usage > 0,
         )
     except ValidationError:
         logger.warning(
@@ -2381,23 +2382,22 @@ def _safe_reply_usage(
 
 
 def _reply_usage_of(
+    http_request: Request,
+    community_id: str,
     awm: AssistantWithMetrics,
     agent_result: AgentResult,
-    *,
-    community_id: str,
-    request_id: str | None,
 ) -> ReplyUsage | None:
     """The usage for the response to a request that is not streamed, from the tokens of
     this request's own messages only (``_extract_agent_result``)."""
     return _safe_reply_usage(
         awm.model,
-        agent_result.input_tokens,
-        agent_result.output_tokens,
-        agent_result.cache_read_tokens,
-        agent_result.cache_creation_tokens,
-        partial=agent_result.model_runs.without_usage > 0,
+        input_tokens=agent_result.input_tokens,
+        output_tokens=agent_result.output_tokens,
+        cache_read_tokens=agent_result.cache_read_tokens,
+        cache_creation_tokens=agent_result.cache_creation_tokens,
+        model_runs=agent_result.model_runs,
         community_id=community_id,
-        request_id=request_id,
+        request_id=getattr(http_request.state, "request_id", None),
     )
 
 
@@ -2417,11 +2417,11 @@ def _usage_for_event(
     a request ``reply_usage`` leaves out)."""
     usage = _safe_reply_usage(
         awm.model if awm else None,
-        input_tokens,
-        output_tokens,
-        cache_read_tokens,
-        cache_creation_tokens,
-        partial=model_runs.without_usage > 0,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        model_runs=model_runs,
         community_id=community_id,
         request_id=request_id,
     )
@@ -2755,12 +2755,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 request_id=getattr(http_request.state, "request_id", None),
                 model=awm.model,
                 warnings=warnings,
-                usage=_reply_usage_of(
-                    awm,
-                    ar,
-                    community_id=community_id,
-                    request_id=getattr(http_request.state, "request_id", None),
-                ),
+                usage=_reply_usage_of(http_request, community_id, awm, ar),
             )
 
         except UnansweredReply as unanswered:
@@ -2902,12 +2897,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 request_id=getattr(http_request.state, "request_id", None),
                 model=awm.model,
                 warnings=warnings,
-                usage=_reply_usage_of(
-                    awm,
-                    ar,
-                    community_id=community_id,
-                    request_id=getattr(http_request.state, "request_id", None),
-                ),
+                usage=_reply_usage_of(http_request, community_id, awm, ar),
             )
 
         except UnansweredReply as unanswered:

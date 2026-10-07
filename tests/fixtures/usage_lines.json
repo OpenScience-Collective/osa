@@ -65,6 +65,24 @@
     "line": "at least 10 in, 2 out, about $0.0021"
   },
   {
+    "name": "a negative input count",
+    "usage": {"input_tokens": -5, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": null, "partial": false},
+    "line": null,
+    "malformed": true
+  },
+  {
+    "name": "a negative cache count is ignored",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": -3, "cache_creation_tokens": 0, "estimated_cost": 0.0021, "partial": false},
+    "line": "100 in, 10 out, about $0.0021",
+    "malformed": true
+  },
+  {
+    "name": "a negative cost is no cost",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": -0.5, "partial": false},
+    "line": "100 in, 10 out",
+    "malformed": true
+  },
+  {
     "name": "no usage",
     "usage": null,
     "line": null

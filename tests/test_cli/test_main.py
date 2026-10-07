@@ -6,6 +6,7 @@ with real output verification.
 
 import io
 import json
+import logging
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
@@ -536,8 +537,9 @@ class TestAWarningReachesTheReader:
 USAGE_LINES = json.loads(
     (Path(__file__).parent.parent / "fixtures" / "usage_lines.json").read_text()
 )
-USAGE = USAGE_LINES[0]["usage"]
-USAGE_LINE = USAGE_LINES[0]["line"]
+_CACHED = next(case for case in USAGE_LINES if case["name"] == "cached input")
+USAGE = _CACHED["usage"]
+USAGE_LINE = _CACHED["line"]
 
 
 class TestWhatAReplyUsedIsShownUnderIt:
@@ -553,8 +555,6 @@ class TestWhatAReplyUsedIsShownUnderIt:
     def test_a_usage_this_version_cannot_read_is_logged_at_debug_and_not_shown(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        import logging
-
         from src.cli import output
 
         with caplog.at_level(logging.DEBUG, logger="src.cli.output"):
