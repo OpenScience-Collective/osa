@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterator
+import time
+from collections.abc import AsyncIterator, Iterator
 from typing import Any, Literal, NoReturn
 from unittest.mock import patch
 
+import botocore.endpoint
 import httpx
 import httpx2
 import pytest
@@ -109,11 +111,37 @@ BEDROCK_UNAVAILABLE = UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
 
 paths = pytest.mark.parametrize("path", ["ask", "chat"])
 
+#: Longer than any turn here takes even on a loaded machine, and short enough to fail a run
+#: that retries forever.
+STREAM_DEADLINE_SECONDS = 60
+
+#: How many 50 ms polls a test gives the first try to fail and the wait to begin (30 s).
+POLLS_FOR_THE_WAIT = 600
+
 
 @pytest.fixture(autouse=True)
 def _no_wait_before_a_retry(monkeypatch):
     """The second try waits so a failure can clear; a test has nothing to wait for."""
     monkeypatch.setattr(stream_retry, "RETRY_DELAY_SECONDS", 0.0)
+
+
+class _NoBackoff:
+    """``time`` as botocore sees it, with ``sleep`` skipped: its standard retry mode waits
+    between the tries of a refused request, and those waits are the clock (they run for
+    seconds across this file), not the behavior under test. The requests still happen, so
+    the count of them is still the count of botocore's tries."""
+
+    @staticmethod
+    def sleep(_seconds: float) -> None:
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
+@pytest.fixture(autouse=True)
+def _no_botocore_backoff(monkeypatch):
+    monkeypatch.setattr(botocore.endpoint, "time", _NoBackoff())
 
 
 @pytest.fixture(autouse=True)
@@ -145,14 +173,18 @@ async def _run(
     request = real_request("req-failure")
     with patch("src.api.routers.community.create_community_assistant", return_value=wrapped):
         if path == "ask":
-            return await collect(
-                _stream_ask_response(COMMUNITY, QUESTION, None, None, None, http_request=request)
+            stream = _stream_ask_response(
+                COMMUNITY, QUESTION, None, None, None, http_request=request
             )
-        session = ChatSession("sess-failure", COMMUNITY)
-        session.add_user_message(QUESTION)
-        return await collect(
-            _stream_chat_response(COMMUNITY, session, None, None, None, http_request=request)
-        )
+        else:
+            session = ChatSession("sess-failure", COMMUNITY)
+            session.add_user_message(QUESTION)
+            stream = _stream_chat_response(
+                COMMUNITY, session, None, None, None, http_request=request
+            )
+        # A retry that never stops (a regression in the guards) fails here instead of
+        # hanging the suite: no turn in this file takes anything near this long.
+        return await asyncio.wait_for(collect(stream), STREAM_DEADLINE_SECONDS)
 
 
 def _failure_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -471,6 +503,10 @@ class TestARetryBeforeTheReaderSawAnything:
         assert events[-1]["event"] == "error", events
         assert len(wire.requests) == 1
         assert _retry_records(caplog) == []
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.ERROR and record.exc_info, (
+            "it was worth a retry and reached the reader anyway: an error, with its traceback"
+        )
 
     @paths
     async def test_a_throttle_is_not_retried_here(
@@ -583,13 +619,27 @@ class TestAThrottleOnTheCallersOwnKey:
         assert events[-1]["retryable"] is True
 
     @paths
-    async def test_the_platforms_own_key_throttled_still_says_the_model_is_unavailable(
-        self, path: str
+    @pytest.mark.parametrize("key_source", ["platform", "community"])
+    async def test_the_operators_own_key_throttled_still_says_the_model_is_unavailable(
+        self, path: str, key_source: Literal["community", "platform"]
     ) -> None:
+        """A community's key is the operator's, not the reader's: nothing to tell them about it."""
         llm = _bedrock_llm()
         Wire(llm, **refusal("ThrottlingException", "Too many requests"))
 
-        events = await _run(path, llm, BEDROCK_MODEL, key_source="platform")
+        events = await _run(path, llm, BEDROCK_MODEL, key_source=key_source)
+
+        assert events[-1]["message"] == BEDROCK_UNAVAILABLE
+
+    @paths
+    async def test_another_failure_on_the_callers_key_is_not_called_a_throttle(
+        self, path: str
+    ) -> None:
+        """A key is rate limited when the provider says so, not whenever a call on it fails."""
+        llm = _bedrock_llm()
+        Wire(llm, **_service_error_in_the_stream("serviceUnavailableException"))
+
+        events = await _run(path, llm, BEDROCK_MODEL, key_source="byok")
 
         assert events[-1]["message"] == BEDROCK_UNAVAILABLE
 
@@ -1077,6 +1127,10 @@ class TestNoRetryOnceAToolHasRun:
         assert events[-1]["retryable"] is True
         assert model.calls == 2, "the failed call was not tried again"
         assert _retry_records(caplog) == []
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.ERROR and record.exc_info, (
+            "a retry would have covered it had no tool run, so it is an error with a traceback"
+        )
 
 
 class TestTheUnavailableModelMessage:
@@ -1157,13 +1211,14 @@ class TestTheReaderLeavesDuringTheWait:
                 model="some-model",
                 endpoint="/x/ask",
                 request_id="req-cancel",
+                session_id="sess-cancel",
                 retry_state=RetryState(),
             )
             async for _ in events:
                 pass
 
         task = asyncio.create_task(consume())
-        for _ in range(100):
+        for _ in range(POLLS_FOR_THE_WAIT):
             assert not task.done(), task.exception()
             if _retry_records(caplog):
                 break
@@ -1177,7 +1232,7 @@ class TestTheReaderLeavesDuringTheWait:
         assert model.calls == 1, "no second call started"
         left = [r for r in caplog.records if "The reader left" in r.getMessage()]
         assert len(left) == 1
-        for expected in ("req-cancel", "some-model", "unavailable failure"):
+        for expected in ("req-cancel", "sess-cancel", "some-model", "unavailable failure"):
             assert expected in left[0].getMessage(), left[0].getMessage()
 
 
@@ -1245,6 +1300,10 @@ class TestWhatElseIsTriedAgain:
         assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=OPENROUTER_MODEL)
         assert requests == 1
         assert _retry_records(caplog) == []
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.ERROR and not record.exc_info, (
+            "an outage before the response is an outage, and its line names the class"
+        )
 
     @paths
     async def test_a_bedrock_refusal_before_the_response_is_not_tried_again_here(
@@ -1333,6 +1392,53 @@ class TestWhatElseIsTriedAgain:
             usage["input_tokens"],
             usage["estimated_cost"],
         )
+
+    @paths
+    async def test_a_connection_lost_inside_an_anthropic_stream_is_answered_by_the_second_try(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The SDK's own httpx lets a network error out of an open stream raw, not as an
+        ``anthropic`` exception; it is the same stream cut short as Bedrock's."""
+        caplog.set_level(logging.WARNING)
+        calls: list[int] = []
+
+        class DiesAfterTheOpening(httpx2.AsyncByteStream, httpx2.SyncByteStream):
+            def __init__(self, opening: bytes) -> None:
+                self.opening = opening
+
+            def __iter__(self) -> Iterator[bytes]:
+                yield self.opening
+                raise httpx2.RemoteProtocolError("peer closed connection without a complete body")
+
+            async def __aiter__(self) -> AsyncIterator[bytes]:
+                yield self.opening
+                raise httpx2.RemoteProtocolError("peer closed connection without a complete body")
+
+        def handler(_request):
+            calls.append(1)
+            if len(calls) == 1:
+                opening = message_stream([]).decode().split("\n\n")[0] + "\n\n"
+                return httpx2.Response(
+                    200,
+                    headers={"content-type": "text/event-stream", "x-should-retry": "false"},
+                    stream=DiesAfterTheOpening(opening.encode()),
+                )
+            return httpx2.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=message_stream(["Hello", " there"]),
+            )
+
+        with served_by(handler):
+            llm = create_anthropic_llm(
+                DEFAULT_MODEL, api_key="sk-ant-test", settings=Settings(_env_file=None)
+            )
+            events = await _run(path, llm, DEFAULT_MODEL)
+
+        assert events[-1]["event"] == "done", events
+        assert len(calls) == 2
+        (record,) = _retry_records(caplog)
+        assert record.__dict__["failure_kind"] == "connection"
 
 
 class TestWordingForAProviderFailureNobodyRecognizes:
@@ -1514,7 +1620,7 @@ class TestTheReaderLeavesTheRouterDuringTheWait:
                 COMMUNITY, session, None, None, None, http_request=real_request("req-cancel")
             )
             task = asyncio.create_task(collect(stream))
-            for _ in range(100):
+            for _ in range(POLLS_FOR_THE_WAIT):
                 assert not task.done(), task.exception()
                 if _retry_records(caplog):
                     break
@@ -1526,8 +1632,9 @@ class TestTheReaderLeavesTheRouterDuringTheWait:
 
         assert len(wire.requests) == 1
         assert session.begin_turn() is True, "the turn was released"
-        assert any("The reader left" in r.getMessage() for r in caplog.records), (
-            "and it was the wait that the cancellation landed in"
+        (left,) = [r for r in caplog.records if "The reader left" in r.getMessage()]
+        assert "sess-cancel" in left.getMessage(), (
+            "it was the wait that the cancellation landed in, and the line names the session"
         )
 
 
