@@ -7869,10 +7869,21 @@
   const ERROR_VISIBLE_MS = 5000;
   const errorTimers = new WeakMap();
   // Whether `error` is the widget's own request limit firing. `AbortSignal.timeout` aborts
-  // with a `TimeoutError` (an abort by hand, or an older browser, is an `AbortError`), so
-  // both name the same thing: the request outlived its limit.
+  // with a `TimeoutError`; a browser that aborts with an `AbortError` instead means the same,
+  // since the widget aborts a request only by its own timeout.
   function isRequestTimeout(error) {
     return !!error && (error.name === 'AbortError' || error.name === 'TimeoutError');
+  }
+
+  // Whether `error` is the browser saying the request got no response, or the body of one was
+  // cut short. A failed `fetch` throws a `TypeError` worded by the browser: "Failed to fetch"
+  // (Chrome), "NetworkError when attempting to fetch resource." (Firefox) or "Load failed"
+  // (Safari); a body read that ends early says "network error" (Chrome) or "The network
+  // connection was lost." (Safari). Other `TypeError`s are the page's own bugs and keep
+  // their own text.
+  const NETWORK_FAILURE = /\bfetch\b|^load failed$|^network error$|network connection was lost|internet connection appears to be offline/i;
+  function isNetworkFailure(error) {
+    return !!error && error.name === 'TypeError' && NETWORK_FAILURE.test(String(error.message));
   }
 
   function showError(container, message, { persist = false, errorId = null } = {}) {
@@ -9031,7 +9042,7 @@
         userMessage = error.message.replace('Backend streaming error: ', '');
       } else if (isRequestTimeout(error)) {
         userMessage = 'Request timed out. Please try again.';
-      } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
+      } else if (isNetworkFailure(error)) {
         userMessage = 'Network error. Please check your connection.';
       } else if (error.message && error.message.includes('JSON')) {
         userMessage = 'Invalid response from server. Please try again.';

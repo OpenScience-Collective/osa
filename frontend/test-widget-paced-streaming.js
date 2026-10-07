@@ -1835,6 +1835,49 @@ console.log('\nthe widget\'s own 120 s limit is described as a timeout, not show
   }
 }
 
+console.log('\nwhat the browsers say when the network fails is described, not shown as they word it');
+{
+  // Chrome, Firefox and Safari each word a failed or cut-short request their own way; the
+  // banner used to repeat "Load failed" or "network error" to the reader.
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    for (const message of [
+      'Failed to fetch',
+      'NetworkError when attempting to fetch resource.',
+      'Load failed',
+      'network error',
+      'The network connection was lost.',
+      'The Internet connection appears to be offline.',
+    ]) {
+      const { window } = loadWidget({ chat: () => { throw new TypeError(message); } });
+      const container = window.document.querySelector('.osa-chat-widget');
+      send(window, container, 'A question');
+      await waitFor(() => settled(container), 'the send settles');
+      assertEqual(container.querySelector('.osa-error').textContent, 'Network error. Please check your connection.',
+        `"${message}" is a network error`);
+    }
+
+    // A bug of the page's own is a TypeError too, and is not a network error.
+    const { window } = loadWidget({ chat: () => { throw new TypeError("Cannot read properties of undefined (reading 'network')"); } });
+    const container = window.document.querySelector('.osa-chat-widget');
+    send(window, container, 'A question');
+    await waitFor(() => settled(container), 'the send settles');
+    assertEqual(container.querySelector('.osa-error').textContent, "Cannot read properties of undefined (reading 'network')",
+      'a TypeError that only mentions "network" keeps its own text');
+
+    // Only the browser's own failure, a TypeError, is taken for the network.
+    const other = loadWidget({ chat: () => { throw new Error('Load failed'); } });
+    const otherContainer = other.window.document.querySelector('.osa-chat-widget');
+    send(other.window, otherContainer, 'A question');
+    await waitFor(() => settled(otherContainer), 'the send settles');
+    assertEqual(otherContainer.querySelector('.osa-error').textContent, 'Load failed',
+      'an error of another kind with the same words keeps its own text');
+  } finally {
+    console.error = warn;
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed} checks, passed: ${passed}, failed: ${failed}`);
 process.exit(failed === 0 ? 0 : 1);
