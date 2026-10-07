@@ -24,9 +24,11 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
-- **A streamed request in the widget is bounded by its silence, not its length** (issue #593): it was aborted 120 s after it was sent, however much the run had done since, which cut off a long tool loop that was making progress.
-  It is now given up 60 s after the last thing it did (an event, text, a tool starting or finishing), for each run of a reply that runs code, and a reply that keeps working is never cut off.
-  A request with no stream keeps its fixed 2 minutes.
+- **A streamed request is bounded by its silence, not its length** (issue #593): the widget aborted it 120 s after it was sent, and the Cloudflare worker gave the backend 2 minutes in all (its `AbortSignal.timeout` also ends the body of a stream), however much the run had done since, which cut off a long tool loop that was making progress.
+  The widget now gives a request up 60 s after the last thing it did (an event, text, a tool starting or finishing), for each run of a reply that runs code.
+  The worker gives a stream up after 2 minutes with nothing from the backend, counted from the last chunk, and a reply it gives up on ends with one `error` event ("The assistant stopped responding. Please try again, or choose another model.") instead of a cut connection.
+  A reply that keeps working is never cut off.
+  A request with no stream keeps its fixed 2 minutes, and the backend still has 2 minutes to answer.
   The CLI already bounds silence (its 120 s read timeout is between chunks) and is unchanged.
 
 ### Fixed
