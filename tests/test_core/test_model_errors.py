@@ -543,6 +543,7 @@ KINDS_AND_RETRYABLE: dict[str, set[bool | None]] = {
     "connection": {True},
     "rejected": {False},
     "unauthorized": {False},
+    "step_limit": {True},
     "unknown": {None},
 }
 
@@ -579,6 +580,8 @@ WORTH_RETRYING_NOW = [
     ("unavailable", None, True, False),
     ("rejected", False, True, False),
     ("unauthorized", False, True, False),
+    ("step_limit", True, True, False),
+    ("step_limit", True, False, False),
     ("unknown", None, True, False),
 ]
 
@@ -701,6 +704,35 @@ class TestWhereInTheCallItFailed:
             ours()
 
         assert classify_model_error(caught.value).mid_stream is False
+
+
+class TestAModelThatUsesAllItsSteps:
+    """langgraph's ``GraphRecursionError`` is not a provider's error, and it is the model's:
+    it keeps calling tools until the step limit. Another model may finish."""
+
+    def test_it_is_the_step_limit_and_retryable(self) -> None:
+        from langgraph.errors import GraphRecursionError
+
+        failure = classify_model_error(GraphRecursionError("Recursion limit of 25 reached"))
+
+        assert (failure.kind, failure.retryable) == ("step_limit", True)
+        assert failure.from_provider and failure.worth_retrying_now is False
+        assert failure.detail == "GraphRecursionError", "no message of the run's in the detail"
+
+    def test_the_same_run_wrapped_is_still_the_step_limit(self) -> None:
+        from langgraph.errors import GraphRecursionError
+
+        try:
+            try:
+                raise GraphRecursionError("Recursion limit of 25 reached")
+            except GraphRecursionError as inner:
+                raise RuntimeError("the agent failed") from inner
+        except RuntimeError as wrapped:
+            assert classify_model_error(wrapped).kind == "step_limit"
+
+    def test_an_error_of_ours_that_is_a_recursion_error_is_not(self) -> None:
+        assert classify_model_error(RecursionError("maximum recursion depth")).kind == "unknown"
+        assert classify_model_error(RuntimeError("Recursion limit")).kind == "unknown"
 
 
 class TestItNeverRaises:

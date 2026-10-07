@@ -30,6 +30,10 @@ from a model provider's library, or, for a class that is not a provider's, when 
 traceback shows a provider library raised it (the one built-in exception ``langchain-aws``
 raises on its own) or carried it up (urllib3's timeout and protocol errors, which botocore
 lets out of an open stream raw).
+
+One error that is not a provider's is read as the model's: langgraph's
+``GraphRecursionError``, which says the model kept calling tools until the step limit
+(kind ``step_limit``).
 """
 
 import logging
@@ -46,6 +50,7 @@ from botocore.exceptions import (
     ReadTimeoutError,
 )
 from botocore.exceptions import ConnectionError as BotocoreConnectionError
+from langgraph.errors import GraphRecursionError
 
 # urllib3 is botocore's own hard dependency, so it is always installed alongside botocore,
 # which this module already imports without declaring either.
@@ -55,7 +60,14 @@ from urllib3.exceptions import TimeoutError as Urllib3TimeoutError
 logger = logging.getLogger(__name__)
 
 FailureKind = Literal[
-    "throttled", "timeout", "unavailable", "connection", "rejected", "unauthorized", "unknown"
+    "throttled",
+    "timeout",
+    "unavailable",
+    "connection",
+    "rejected",
+    "unauthorized",
+    "step_limit",
+    "unknown",
 ]
 
 #: The kinds ``ModelFailure.worth_retrying_now`` allows.
@@ -262,6 +274,11 @@ def _passed_through(error: BaseException, package: str) -> bool:
 
 def _classify_one(error: BaseException) -> ModelFailure | None:
     name = type(error).__name__
+    if isinstance(error, GraphRecursionError):
+        # Not a provider's error: the graph's, when the model keeps calling tools (a check,
+        # fix, check loop it does not converge in) until the step limit. It is the model's
+        # behavior, and a different model may finish, so it is retryable in that sense.
+        return ModelFailure("step_limit", True, name)
     if isinstance(error, ClientError):
         code = str(error.response.get("Error", {}).get("Code", ""))
         status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
