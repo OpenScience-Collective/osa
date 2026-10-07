@@ -41,17 +41,44 @@ def _strips_html(source_url: str) -> bool:
 
     - reStructuredText: the target of every ``\`text <https://...>\`_`` link.
     - Python (sphinx-gallery examples): ``a<b and c>d`` becomes ``ad``.
-    - An HTML page: it was converted to markdown before it reached the cleaner (see
-      ``_html_to_markdown``), so no tags are left, only the page's own text, such as a
-      ``<Raw | sample_audvis_raw.fif>`` repr in a tutorial's output.
+    - An HTML page (``_is_html``, or labeled HTML by its server): it was converted to
+      markdown before it reached the cleaner (see ``_html_to_markdown``), so no tags are
+      left, only the page's own text, such as a ``<Raw | sample_audvis_raw.fif>`` repr in
+      a tutorial's output.
     """
     return urlparse(source_url).path.lower().endswith(_MARKDOWN_SUFFIXES)
 
 
+#: The start of an HTML document: the first tag, after whatever may precede it
+#: (whitespace, a byte order mark that ``response.text`` keeps when a server sends UTF-8
+#: with one, an XML prolog, comments). ``\b`` keeps ``<header>`` from matching ``<head``.
+#: The ``*+`` is possessive, so a run of comments is read once, not re-split on failure.
+_HTML_START = re.compile(
+    r"(?:\s|﻿|<\?xml[^>]*\?>|<!--.*?-->)*+<(?:!doctype|html|head|body)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: Media types a server uses for HTML.
+_HTML_MEDIA_TYPES = ("text/html", "application/xhtml+xml")
+
+
 def _is_html(content: str) -> bool:
-    """Check if content appears to be HTML."""
-    stripped = content.lstrip()
-    return stripped.startswith(("<!DOCTYPE", "<!doctype", "<html", "<HTML"))
+    """Check if content appears to be HTML, from its first tag.
+
+    A bare ``<div>`` or ``<p>`` does not count: a markdown README often starts with
+    ``<p align="center">``. A fragment like that is recognized by ``_served_as_html``.
+    """
+    return _HTML_START.match(content) is not None
+
+
+def _served_as_html(content_type: str, source_url: str) -> bool:
+    """Whether the server labels the response HTML, for a source that is not markdown.
+
+    Catches an HTML fragment that ``_is_html`` cannot tell from markdown by its first
+    tag. A markdown source (by its URL) is never converted on the server's say-so.
+    """
+    media_type = content_type.split(";")[0].strip().lower()
+    return media_type in _HTML_MEDIA_TYPES and not _strips_html(source_url)
 
 
 def _html_to_markdown(html: str) -> str:
@@ -268,7 +295,9 @@ class DocumentFetcher:
                 content = response.text
 
                 # Convert HTML to markdown before caching
-                if _is_html(content):
+                if _is_html(content) or _served_as_html(
+                    response.headers.get("content-type", ""), doc.source_url
+                ):
                     logger.debug(
                         "Detected HTML content, converting to markdown: %s", doc.source_url
                     )
