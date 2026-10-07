@@ -13,6 +13,8 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+## [0.8.17] - 2026-10-06
+
 ### Added
 
 - **What a reply used and cost, shown with it** (issue #582): each reply now tells the reader its tokens, how many were cached, and an estimated cost, for example "1,240 in (980 cached), 310 out, about $0.0021".
@@ -26,6 +28,9 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
+- **NWB: documentation pull request previews can use the widget** (pull request #579, issue #514): six Read the Docs preview origins (`pynwb--2266`, `neuroconv--2064`, `nwbinspector--768`, `hdmf--1587`, `nwb-overview--197` and `matnwb--891`, each `.org.readthedocs.build`) are on the NWB community's `cors_origins`, so reviewers can try the assistant on a preview before the documentation pull request merges.
+  They are exact origins, not a wildcard, so no other Read the Docs project can use the community's platform key, and they are temporary: the config comment names the pull requests, and the entries go once those merge.
+  The Cloudflare worker's allowed origins carry them too.
 - **NEMAR: a clearer notebook welcome** (pull request #577): the starter notebook now opens as a "Python playground".
   Its short welcome says where the code runs, what is installed, that the latest MNE does not install in this runtime, and that the Zarr copy is lossy.
 - **NEMAR: a curated first plot** (pull request #577): the chat's guidance for power spectra and event-related potential (ERP) images now sets the plot range before drawing.
