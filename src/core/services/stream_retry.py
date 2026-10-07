@@ -6,8 +6,9 @@ or drops the connection part way. botocore retries a request that fails before t
 response begins (``retries`` in ``bedrock_llm._bedrock_client``), but not a stream that
 fails after, so these reached the reader as an error although a second call can succeed.
 Every provider's stream goes through this helper; ``classify_model_error`` decides what is
-worth a second try, and only a failure that came after the response began is (the clients
-already retried the rest).
+worth a second try, and only a failure that came after the response began is (botocore and
+the Anthropic SDK already retried the rest). Only Bedrock and Anthropic failures are
+recognized as that, so an OpenRouter-served model gets no retry here.
 
 A second try is safe only while nothing has happened that the first one cannot undo. The
 reader has seen no text, reasoning signal, tool call or tool result, and no model call has
@@ -127,6 +128,7 @@ async def astream_events_with_retry(
     run_config = cast("RunnableConfig", config)
     retry_state.failed_after_retry = False
     retried = False
+    closing = False
     while True:
         made_progress = False
         started = time.monotonic()
@@ -136,7 +138,11 @@ async def astream_events_with_retry(
             ) as events:
                 async for event in events:
                     made_progress = made_progress or _made_progress(event)
-                    yield event
+                    try:
+                        yield event
+                    except GeneratorExit:
+                        closing = True
+                        raise
             if retried:
                 logger.info(
                     "The second try of %s succeeded (community=%s, model=%s, request_id=%s)",
@@ -147,6 +153,11 @@ async def astream_events_with_retry(
                 )
             return
         except Exception as error:
+            if closing:
+                # The reader has gone: closing the inner stream can surface a model failure
+                # that the background task already hit, and trying again would make a call
+                # nobody is listening to.
+                raise
             failure = classify_model_error(error)
             if (
                 retried

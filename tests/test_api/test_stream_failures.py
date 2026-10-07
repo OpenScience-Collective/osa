@@ -1083,8 +1083,50 @@ class TestTheUnavailableModelMessage:
         )
 
 
+class _EventsThatFailAsTheyClose:
+    """The shape of a graph's event stream when the model failed in the background: closing
+    it raises that failure. langchain's does this by awaiting the task it ran the model in,
+    and the real graph cannot be made to on demand (it depends on where the task is when the
+    reader leaves), so this is the one input the real graph cannot give."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.runs = 0
+
+    async def astream_events(self, _state: Any, **_kwargs: Any):
+        self.runs += 1
+        try:
+            yield {"event": "on_chain_start", "data": {}}
+            await asyncio.sleep(3600)
+        finally:
+            raise self.error
+
+
+class TestTheReaderClosesTheStream:
+    async def test_a_failure_that_surfaces_as_it_closes_is_not_tried_again(self) -> None:
+        """The reader has gone: a retry would make a billable call nobody is listening to,
+        and the generator would then ignore its own closing."""
+        graph = _EventsThatFailAsTheyClose(_stream_error())
+        events = stream_retry.astream_events_with_retry(
+            graph,  # ty: ignore[invalid-argument-type]
+            {},
+            {},
+            community_id=COMMUNITY,
+            model="some-model",
+            endpoint="/x/ask",
+            request_id="req-close",
+            retry_state=RetryState(),
+        )
+
+        await events.__anext__()
+        with pytest.raises(EventStreamError):
+            await events.aclose()
+
+        assert graph.runs == 1, "no second call was made"
+
+
 class TestTheReaderLeavesDuringTheWait:
-    async def test_cancelling_during_the_delay_stops_cleanly_with_one_call(
+    async def test_canceling_during_the_delay_stops_cleanly_with_one_call(
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A disconnect while the second try waits is the reader leaving: no second call
