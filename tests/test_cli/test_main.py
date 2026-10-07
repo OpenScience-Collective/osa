@@ -488,6 +488,16 @@ class TestAWarningReachesTheReader:
 
         assert "foo[/bar]" in capsys.readouterr().err
 
+    def test_an_error_or_warning_that_is_not_a_string_still_prints(self, capsys) -> None:
+        """A server's JSON can send ``null`` for a message; the CLI shows an error, not a
+        traceback of its own."""
+        from src.cli import output
+
+        output.print_error(None)  # ty: ignore[invalid-argument-type]
+        output.print_warning(None)  # ty: ignore[invalid-argument-type]
+
+        assert capsys.readouterr().err.count("None") == 2
+
     def test_a_warning_with_markup_characters_prints_as_written(self, capsys) -> None:
         from src.cli import output
 

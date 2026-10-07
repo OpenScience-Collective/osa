@@ -8085,8 +8085,9 @@
   // `usage` cut down to the six fields this widget reads, or undefined when it is not a
   // usage (it lacks whole, non-negative input and output counts). What the server sent and
   // what localStorage held are both untrusted, and nothing else comes through: a count it
-  // lacks is zero, a cost that is negative or not finite is no cost. Something that is not
-  // a usage, but is not nothing either, is reported on the console once.
+  // lacks is zero, a cost that is negative, not finite or absurdly large is no cost.
+  // Something that is not a usage, but is not nothing either, is reported on the console
+  // once.
   function cleanUsage(usage) {
     const isCount = (n) => Number.isInteger(n) && n >= 0;
     if (!usage || typeof usage !== 'object' || !isCount(usage.input_tokens) || !isCount(usage.output_tokens)) {
@@ -8098,7 +8099,7 @@
     }
     const clean = {};
     for (const key of USAGE_COUNTS) clean[key] = isCount(usage[key]) ? usage[key] : 0;
-    clean.estimated_cost = typeof usage.estimated_cost === 'number' && Number.isFinite(usage.estimated_cost) && usage.estimated_cost >= 0
+    clean.estimated_cost = typeof usage.estimated_cost === 'number' && usage.estimated_cost >= 0 && usage.estimated_cost < 1e9
       ? usage.estimated_cost
       : null;
     clean.partial = usage.partial === true;
