@@ -9,6 +9,12 @@
 # no network at run time and no model download. onnxruntime and sharp serve only the
 # optional --semantic mode, which the tool does not use, and are most of the install
 # (about 340 MB of 450 MB), so they are removed.
+#
+# The last line of the RUN below is the build gate: it runs the program once and fails
+# the build unless "button press" returns `Press`, a tag in HED 8.4.0. Do not assert
+# `Button` there: it is the first keyword hit for "button", but it is not a tag in
+# 8.4.0. hed-lsp's keyword map is not filtered against the schema, so some suggestions
+# are not valid tags, and the HED assistant must still run validate_hed_string.
 FROM node:22-bookworm-slim AS hed-lsp
 ARG HED_LSP_REF=36447afb5e48bfecc45af0464b652614ba571414
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
@@ -21,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && pnpm install --frozen-lockfile --prod --filter "hed-lsp-server..." \
     && rm -rf node_modules/.pnpm/onnxruntime-* node_modules/.pnpm/sharp@* node_modules/.pnpm/@img+sharp* \
         .git client docs images server/src \
-    && node server/out/cli.js --json --top 1 "button press" | grep -q '"Button"'
+    && node server/out/cli.js --json --top 10 "button press" | grep -q '"Press"'
 
 FROM python:3.12-slim-bookworm
 
