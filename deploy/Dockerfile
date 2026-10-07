@@ -85,12 +85,12 @@ CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "38528"]
 #                             See ../.env.example for the optional tuning vars.
 #
 # To offer GPT-6 Luna, Qwen3 Next and gpt-oss-120b (Amazon Bedrock). Optional only if
-# Claude Haiku will do for HED, EEGLAB, BIDS and NWB, which default to GPT-6 Luna:
+# Claude Haiku will do for EEGLAB, BIDS and NWB, which default to GPT-6 Luna:
 #   AWS_BEARER_TOKEN_BEDROCK - Bedrock API key that pays for those models. They are
 #                             served only when ANTHROPIC_API_KEY (above) is set too.
 #                             Without the Bedrock key they are left out of the model
 #                             menu, a request naming one is answered with a 400, and
-#                             a request to those four communities that names no model
+#                             a request to those three communities that names no model
 #                             runs the deployment's Claude default (DEFAULT_MODEL, Haiku
 #                             4.5 unless changed), logging an error naming the community.
 #                             With no ANTHROPIC_API_KEY it goes to OpenRouter's Luna slug,

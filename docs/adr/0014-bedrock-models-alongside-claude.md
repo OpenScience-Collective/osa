@@ -108,6 +108,7 @@ Serve the three models from Bedrock through the Converse API, one transport for 
   so on a deployment with an Anthropic key and no Bedrock key they run the deployment's Claude default (Claude Haiku 4.5 unless `DEFAULT_MODEL` names another)
   and log an error naming the community on every request that names no model.
   A deployment that serves them should treat the Bedrock key as required, and one that accepts Haiku for those four communities may leave it out.
+  (Update, 2026-10-07, issue #591: HED now defaults to Claude Haiku 4.5, because Luna answered 1 of 3 of its annotation questions, a validate-and-fix loop, on dev; the other three still default to Luna.)
 - **A bearer-token client relies on botocore internals** (`auth_scheme_preference` and a replaced token-provider component).
   `langchain-aws` does the same, and is capped below 2.x for it; an upstream botocore change would show up in `tests/test_core/test_bedrock_llm.py`,
   which asserts the outgoing `Authorization` header and runs in continuous integration (CI).

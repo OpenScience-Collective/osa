@@ -398,7 +398,7 @@ for (const modelId of ['openai.gpt-oss-120b', 'us.openai.gpt-6-luna', 'openai/gp
 
 console.log('\nwith Default chosen, no model is named, so the key is saved: the server swaps a default it cannot run for Claude');
 {
-  // Luna is what HED, EEGLAB, BIDS and NWB default to, and the service's own key alone runs
+  // Luna is what EEGLAB, BIDS and NWB default to, and the service's own key alone runs
   // it. _route_request does not refuse a request that names no model, and so has no model
   // to refuse: it runs a Claude model in its place. Only a model the request names is refused.
   const seed = { apiKey: ANTHROPIC_KEY, model: null };

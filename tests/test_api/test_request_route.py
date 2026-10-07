@@ -19,7 +19,7 @@ from src.api.routers.community import (
 )
 from src.api.security import ByokCredential
 from src.assistants import discover_assistants, registry
-from src.core.services.anthropic_models import BEDROCK_MODELS, OFFERED_MODELS
+from src.core.services.anthropic_models import BEDROCK_MODELS, OFFERED_MODELS, normalize_model
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
 
 NOTES_HEADING = "Working Notes For This Model"
@@ -37,14 +37,13 @@ def _fresh_settings():
     get_settings.cache_clear()
 
 
-@pytest.fixture
-def hed(monkeypatch):
-    """The real hed community on a deployment with every platform key."""
+def _on_a_deployment_with_every_platform_key(monkeypatch, community_id: str):
+    """A real community, on a deployment with every platform key."""
     settings = get_settings()
     monkeypatch.setattr(settings, "anthropic_api_key", "platform-anthropic-key")
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     monkeypatch.setattr(settings, "bedrock_api_key", "bedrock-key")
-    info = registry.get("hed")
+    info = registry.get(community_id)
     assert info is not None
     monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
     monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
@@ -55,6 +54,24 @@ def hed(monkeypatch):
     return info
 
 
+@pytest.fixture
+def hed(monkeypatch):
+    """The real hed community on a deployment with every platform key."""
+    return _on_a_deployment_with_every_platform_key(monkeypatch, "hed")
+
+
+@pytest.fixture
+def a_bedrock_default_community(monkeypatch):
+    """A real community whose default model is one of the Bedrock models, on a deployment
+    with every platform key (which communities those are is the configs' to say)."""
+    info = next(
+        info
+        for info in registry.list_all()
+        if normalize_model(info.community_config.default_model) in BEDROCK_MODELS
+    )
+    return _on_a_deployment_with_every_platform_key(monkeypatch, info.id)
+
+
 def _origin(info) -> str:
     return next(o for o in info.community_config.cors_origins if "*" not in o)
 
@@ -63,9 +80,9 @@ OPENROUTER_BYOK = ByokCredential(key="sk-or-fake-test-key", provider="openrouter
 ANTHROPIC_BYOK = ByokCredential(key="sk-ant-" + "x" * 40, provider="anthropic")
 
 
-def _prompt_on_openrouter(requested_model: str | None) -> str:
+def _prompt_on_openrouter(requested_model: str | None, community_id: str = "hed") -> str:
     awm = create_community_assistant(
-        "hed", byok=OPENROUTER_BYOK, requested_model=requested_model, preload_docs=False
+        community_id, byok=OPENROUTER_BYOK, requested_model=requested_model, preload_docs=False
     )
     assert type(awm.assistant.model).__name__ == "TaggedCitationChatLiteLLM"
     return awm.assistant.get_system_prompt()
@@ -161,10 +178,14 @@ class TestTheRoutesOfferedModel:
         assert route.model == "some-lab/their-own-model"
         assert route.offered_model_id is None
 
-    def test_the_fallback_model_is_the_offered_one(self, hed, monkeypatch):
+    def test_the_fallback_model_is_the_offered_one(self, a_bedrock_default_community, monkeypatch):
         """A Bedrock default that cannot be served runs Claude, and is that model's id."""
+        community = a_bedrock_default_community
+        assert community.community_config.default_model in BEDROCK_MODELS, (
+            "nothing to fall back from"
+        )
         monkeypatch.setattr(get_settings(), "bedrock_api_key", None)
-        route = _route_request(hed, "hed", ANTHROPIC_BYOK, None, None)
+        route = _route_request(community, community.id, ANTHROPIC_BYOK, None, None)
         assert route.choice.provider == "anthropic"
         assert route.offered_model_id == route.model
         assert route.model not in BEDROCK_MODELS
@@ -173,10 +194,11 @@ class TestTheRoutesOfferedModel:
 class TestPerModelNotesFollowTheModelOnEveryProvider:
     """The notes are keyed by offered id, which an OpenRouter slug is not (#562 review)."""
 
-    def test_the_default_model_gets_its_note_on_openrouter(self, hed):
-        default = hed.community_config.default_model
+    def test_the_default_model_gets_its_note_on_openrouter(self, a_bedrock_default_community):
+        community = a_bedrock_default_community
+        default = community.community_config.default_model
         assert BEDROCK_MODELS[default].prompt_addendum, "the shipped default has no note"
-        prompt = _prompt_on_openrouter(None)
+        prompt = _prompt_on_openrouter(None, community.id)
         assert NOTES_HEADING in prompt
         assert BEDROCK_MODELS[default].prompt_addendum in prompt
 
