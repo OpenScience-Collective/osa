@@ -5664,8 +5664,7 @@
         idle.stop();
         throw error;
       }
-      if (response.status === 429 && attempt < waits.length && await isPerMinuteLimit(response)) {
-        idle.stop();
+      if (response.status === 429 && attempt < waits.length && await isPerMinuteLimit(response).finally(() => idle.stop())) {
         const container = document.querySelector('.osa-chat-widget');
         if (container) {
           showWarning(container, 'Many code runs in a short time: waiting briefly before continuing the reply.');
@@ -5674,8 +5673,11 @@
         continue;
       }
       if (!response.ok) {
-        idle.stop();
-        throw await responseError(response);
+        try {
+          throw await responseError(response);
+        } finally {
+          idle.stop();
+        }
       }
       const contentType = response.headers.get('content-type') || '';
       if (!contentType.includes('text/event-stream')) {
@@ -7926,40 +7928,54 @@
     return !!error && error.name === 'TypeError' && NETWORK_FAILURE.test(String(error.message));
   }
 
-  // How long a streamed request may go without anything happening (a first event, text, a
-  // tool starting or finishing) before the widget gives it up. It bounds silence, not the
-  // run: a reply that keeps working is never cut off, however long it takes (#564, #593).
-  // Settable only by a test (window.__OSA_TEST__).
+  // How long a streamed request may go without the server sending anything (text,
+  // thinking, a tool call starting, running or finishing) before the widget gives it up,
+  // counted from the last data. It bounds silence, not the run: a reply that keeps sending
+  // data is not cut off by a time limit (the step limit and the cap on browser runs still
+  // bound it) (#564, #593). While a server tool is running, which sends nothing until it
+  // ends and has a limit of its own (a minute for an MCP tool), the allowance is longer.
+  // Both are settable only by a test (window.__OSA_TEST__).
   let requestIdleMs = 60000;
+  let requestToolMs = 120000;
   // The idle timer of the request a response answers, so the stream reader can touch it.
   const idleTimers = new WeakMap();
 
-  // An abort signal that fires `requestIdleMs` after the last `touch()` (or after it was
-  // made), with a `TimeoutError` like AbortSignal.timeout's, so it reads as a timeout.
+  // An abort signal that fires `ms` (default `requestIdleMs`) after the last `touch(ms)`, or
+  // after it was made, with a `TimeoutError` like AbortSignal.timeout's, so it reads as a
+  // timeout.
   function createIdleTimeout() {
     const controller = new AbortController();
     let timer = null;
-    const touch = () => {
+    const touch = (ms = requestIdleMs) => {
       clearTimeout(timer);
       timer = setTimeout(() => {
-        controller.abort(new DOMException(`No response for ${Math.round(requestIdleMs / 1000)} s`, 'TimeoutError'));
-      }, requestIdleMs);
+        controller.abort(new DOMException(`No response for ${Math.round(ms / 1000)} s`, 'TimeoutError'));
+      }, ms);
     };
     touch();
     return { signal: controller.signal, touch, stop: () => clearTimeout(timer) };
   }
 
+  // The models to suggest, in this order: the same two as SUGGESTED_MODELS in
+  // src/core/services/anthropic_models.py (test_widget_drift.py keeps them equal).
+  const SUGGESTED_MODELS = ['claude-haiku-4-5', 'claude-sonnet-5-5'];
+  // The model a failed reply's button named for the request being sent, or null. It wins
+  // over the saved setting, which wins over the community's default, and is cleared when
+  // the request ends.
+  let modelOverride = null;
+
+  // A model id without its OpenRouter routing variants (":nitro"), so a saved
+  // "anthropic/claude-haiku-4.5:nitro" is read as the Haiku it runs.
+  function withoutVariants(model) {
+    const id = String(model || '');
+    return id.includes('/') ? id.split(':')[0] : id;
+  }
+
   // The model to name when a request fails: the server's suggestion when it sent one the
   // widget can send (offered, not the model that failed, allowed with the reader's key),
-  // otherwise the first of these that is. The same two, in the same order, as
-  // SUGGESTED_MODELS in src/core/services/anthropic_models.py (test_widget_drift.py keeps
-  // them equal).
-  const SUGGESTED_MODELS = ['claude-haiku-4-5', 'claude-sonnet-5-5'];
-  // The model this request runs on: the one a failed reply's button named, else the saved
-  // setting, else the community's default.
-  let modelOverride = null;
+  // otherwise the first of SUGGESTED_MODELS that is usable. Null when none is.
   function suggestAnotherModel(fromServer) {
-    const failed = canonicalModelId(modelOverride || userSettings.model || communityDefaultModel || '');
+    const failed = canonicalModelId(withoutVariants(modelOverride || userSettings.model || communityDefaultModel));
     const usable = (id) => typeof id === 'string'
       && id !== failed
       && getModelMenuOptions().some((m) => m.value === id)
@@ -7969,8 +7985,10 @@
     return id ? { id, label: getModelLabel(id) } : null;
   }
 
-  // Beside a failed request's message, a button that sends the same question again on the
-  // suggested model, once: the reader's saved model setting is not changed.
+  // Beside a failed request's message, a button that sends the question again on the
+  // suggested model, once: the reader's saved model setting is not changed. It sends what
+  // is in the box when it is clicked (the failed question was put back there, and the
+  // reader may have narrowed it, as the step-limit message suggests), else the question.
   function addModelSuggestion(container, suggestion, question) {
     const errorEl = container.querySelector('.osa-error');
     if (!errorEl || !errorEl.classList.contains('osa-error-persistent')) return;
@@ -7981,7 +7999,8 @@
     button.title = `Send the question again with ${suggestion.label}, this once`;
     button.addEventListener('click', (event) => {
       event.stopPropagation();
-      sendMessage(container, question, { model: suggestion.id });
+      const box = container.querySelector('.osa-chat-input input');
+      sendMessage(container, (box && box.value.trim()) || question, { model: suggestion.id });
     });
     errorEl.insertBefore(button, errorEl.querySelector('.osa-error-dismiss'));
   }
@@ -8883,6 +8902,10 @@
             console.warn('[OSA] Unknown SSE event type:', event.event, event);
           }
         }
+
+        // A server tool that is running sends nothing until it ends: it gets its longer
+        // allowance, counted from this data.
+        if (idle) idle.touch(toolsRunning > 0 ? requestToolMs : requestIdleMs);
       }
 
       if (toolRequest) {
@@ -9013,6 +9036,9 @@
     let questionRemoved = false;
     // The model to offer for the failure's banner, when the failure is a model's.
     let suggestion = null;
+    // Whether the server answered (its response began): a request that timed out before
+    // that is a backend or a network that is down, which another model does not help.
+    let serverAnswered = false;
 
     renderMessages(container);
     renderSuggestions(container);
@@ -9068,9 +9094,9 @@
         }
       }
 
-      // A streamed request is bounded by its silence (60 s after the last thing it did),
-      // not by its length; one that is not streamed has no progress to measure, so it keeps
-      // a fixed 2 minutes.
+      // A streamed request is bounded by its silence (60 s after the last data from the
+      // server), not by its length; one sent with streaming off has no progress to
+      // measure, so it keeps a fixed 2 minutes.
       const idle = CONFIG.streamingEnabled ? createIdleTimeout() : null;
 
       // BYOK keys ride on the header matching their provider (inferred from the
@@ -9089,9 +9115,14 @@
       }
 
       if (!response.ok) {
-        if (idle) idle.stop();
-        throw await responseError(response);
+        // The error's body is read under the same limit as the request was.
+        try {
+          throw await responseError(response);
+        } finally {
+          if (idle) idle.stop();
+        }
       }
+      serverAnswered = true;
       if (idle) idleTimers.set(response, idle);
 
       // Extract session ID from response header (set by streaming responses)
@@ -9107,8 +9138,8 @@
         assistantMessageCreated = true; // handleStreamingResponse creates assistant message
         const outcome = await handleStreamingResponse(response, container);
         // A reply that runs code in this page is several runs. Each run is a
-        // new request with a silence bound of its own, so the reply's length is not
-        // bounded at all.
+        // new request with a silence bound of its own, so time does not bound the reply's
+        // length (the step limit and the cap on browser runs still do).
         await continueBrowserReply(outcome, {
           answer: (request, index) => answerToolRequest(container, request, index),
           resume: postResume,
@@ -9121,8 +9152,14 @@
           console.warn('[OSA] Falling back to non-streaming mode');
         }
 
-        const data = await response.json();
-        if (idle) idle.stop();
+        // A body that is not a stream has no progress to measure: it has 2 minutes from now.
+        if (idle) idle.touch(120000);
+        let data;
+        try {
+          data = await response.json();
+        } finally {
+          if (idle) idle.stop();
+        }
         if (data && typeof data.session_id === 'string') {
           sessionId = data.session_id;
         }
@@ -9179,11 +9216,12 @@
       showError(container, userMessage, { persist: true, errorId: error.errorId });
       // A model that could not finish: the server says so by naming another (an error of
       // another kind, a refused request or a limit, names none), and the widget picks one
-      // for a silence it timed out on itself. A network failure is not the model's, so
-      // another model is no help.
+      // when it gave up on a stream that had begun and went quiet. A network failure, or a
+      // timeout before the server answered, is not the model's, so another model is no
+      // help.
       if (error.serverReported) {
         if (error.suggestedModel) suggestion = suggestAnotherModel(error.suggestedModel);
-      } else if (isRequestTimeout(error)) {
+      } else if (isRequestTimeout(error) && serverAnswered) {
         suggestion = suggestAnotherModel(null);
       }
 
@@ -9810,7 +9848,9 @@
     // The settings in memory, as the next request would read them (a copy).
     window.OSAChatWidget.__settings = { get: () => ({ ...userSettings }) };
     // How long a streamed request may be silent, for a test that cannot wait a minute.
-    window.OSAChatWidget.__idle = { set: (ms) => { requestIdleMs = ms; } };
+    window.OSAChatWidget.__idle = {
+      set: (ms, toolMs = ms * 2) => { requestIdleMs = ms; requestToolMs = toolMs; },
+    };
     window.OSAChatWidget.__reveal = {
       fencedRanges,
       nextRevealEnd,
