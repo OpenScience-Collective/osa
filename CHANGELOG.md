@@ -26,6 +26,13 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
+- **HED runs Claude Haiku 4.5** (issue #591): HED's `default_model` is `claude-haiku-4-5`, where it was GPT-6 Luna.
+  HED's annotation questions are a tag, validate and correct loop.
+  On dev, Luna answered 1 of 3 of them (the others ended in a dropped stream and in a stall past the read timeout, each after tool calls), GPT-OSS answered 1 of 2 (the other hit the recursion limit), and Haiku answered all 3 in 12 to 24 s.
+  Luna stays the default of NWB, EEGLAB and BIDS, whose questions are document lookups, and a reader can still choose Luna for HED from the model menu.
+  Haiku costs about nine times Luna's price per token (an estimated $0.05 to $0.11 for each of the three dev requests, before caching).
+  HED's budget (`$5` a day, `$50` a month) only alerts, and is unchanged, so it will alert at about a ninth of the traffic.
+  The reasoning level stays `high`, which is a 4,096-token thinking budget on Haiku.
 - **A streamed request in the widget is bounded by its silence, not its length** (issue #593): it was aborted 120 s after it was sent, however much the run had done since, which cut off a long tool loop that was making progress.
   It is now given up 60 s after the last data from the server (text, thinking, a tool call starting, running or finishing), for each run of a reply that runs code.
   While a server tool is running, which sends nothing until it ends and has a limit of its own (a minute for an MCP tool), the widget allows 2 minutes.

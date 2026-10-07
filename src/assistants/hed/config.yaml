@@ -49,15 +49,18 @@ widget:
 
 # Default model for this community (optional)
 # If specified, overrides the platform-level default model
-# GPT-6 Luna, served from Amazon Bedrock on the platform's key (issue #559). With the Bedrock key
-# missing but ANTHROPIC_API_KEY set, a request that names no model runs the deployment's Claude
-# default (DEFAULT_MODEL, Claude Haiku 4.5 unless changed) and logs an error naming this community;
-# a caller's own Anthropic key (the CLI) runs it too, with a warning if that is the only cause.
-# With no ANTHROPIC_API_KEY it goes to OpenRouter's Luna slug, or fails with HTTP 500.
-# See src.core.services.anthropic_models.OFFERED_MODELS for the ids.
-default_model: "openai.gpt-6-luna"
+# Claude Haiku 4.5 (issue #591). HED's annotation questions are a tag, validate and correct
+# loop. On dev, GPT-6 Luna answered 1 of 3 of them (the others ended in a dropped stream and
+# in a stall past the read timeout, each after tool calls), GPT-OSS answered 1 of 2 (the
+# other hit the recursion limit), and Haiku answered all 3 in 12 to 24 s. Luna stays the
+# default of the communities whose questions are document lookups (NWB, EEGLAB, BIDS), and a
+# reader can still pick it for HED from the model menu. Haiku is about nine times Luna's
+# price per token, so the budget below, which only alerts, will alert at about a ninth of the
+# traffic. See src.core.services.anthropic_models.OFFERED_MODELS for the ids.
+default_model: "claude-haiku-4-5"
 # The level every model this community runs is asked to reason at, on every provider
-# (issue #545, ADR 0015). Luna at max took 15 to 50 s to a first word, so this community runs high.
+# (issue #545, ADR 0015). On Haiku 4.5, which has no effort field, high is a 4096-token
+# thinking budget; on Luna it took 15 to 50 s to a first word at max, so this stays high.
 reasoning_effort: high
 
 # System prompt template

@@ -312,7 +312,7 @@ class TestAnOpenRouterOnlyPlatform:
     @pytest.mark.parametrize(
         ("community_id", "slug"),
         [
-            ("hed", "openai/gpt-6-luna"),
+            ("hed", "anthropic/claude-haiku-4.5"),
             ("nwb", "openai/gpt-6-luna"),
             ("nemar", "anthropic/claude-sonnet-5.5"),
         ],
@@ -324,9 +324,10 @@ class TestAnOpenRouterOnlyPlatform:
 
     def test_the_default_model_notes_reach_the_prompt_on_openrouter(self):
         """The Bedrock default's anti-search-loop note follows it onto OpenRouter."""
-        info = registry.get("hed")
+        info = _bedrock_communities()[0]
         default = normalize_model(info.community_config.default_model)
-        awm = create_community_assistant("hed", origin=_origin(info), preload_docs=False)
+        assert BEDROCK_MODELS[default].prompt_addendum, "the default has no note to follow"
+        awm = create_community_assistant(info.id, origin=_origin(info), preload_docs=False)
         assert BEDROCK_MODELS[default].prompt_addendum in awm.assistant.get_system_prompt()
 
 

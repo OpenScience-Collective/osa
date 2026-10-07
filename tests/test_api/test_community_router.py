@@ -737,14 +737,21 @@ class TestCommunityConfigOfferedModels:
         self, client: TestClient, monkeypatch
     ) -> None:
         """On a deployment that serves the Bedrock models: a community whose default is
-        one (HED runs GPT-6 Luna) is otherwise listed without it, and the request falls
+        one (the Luna communities) is otherwise listed without it, and the request falls
         back to the deployment's Claude default."""
         from src.api.config import get_settings
+        from src.assistants import registry
+        from src.core.services.anthropic_models import BEDROCK_MODELS, normalize_model
 
         monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
         monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
+        community = next(
+            info.id
+            for info in registry.list_all()
+            if normalize_model(info.community_config.default_model) in BEDROCK_MODELS
+        )
 
-        response = client.get("/hed/")
+        response = client.get(f"/{community}/")
         data = response.json()
 
         offered_ids = {entry["id"] for entry in data["offered_models"]}
