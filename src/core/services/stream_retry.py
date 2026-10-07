@@ -54,6 +54,16 @@ RETRY_WINDOW_SECONDS = 10.0
 _PROGRESS_EVENTS = frozenset({"on_tool_start", "on_tool_end", "on_chat_model_end"})
 
 
+def _being_canceled() -> bool:
+    """Whether the task running the helper has been canceled and has not yet taken it back.
+
+    langchain awaits the task it ran the model in when its stream is closed or canceled, and
+    that task's failure can replace the ``CancelledError`` on the way out, so the helper sees
+    an ordinary model failure while the task is still being canceled."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
 @dataclass
 class RetryState:
     """What the helper reports to its caller, one per stream.
@@ -123,7 +133,9 @@ async def astream_events_with_retry(
 
     Raises:
         Whatever the run raised, when it is not worth retrying, when output had already
-        been made, when it took too long to arrive, or when the second try failed too.
+        been made, when it took too long to arrive, when the second try failed too, or when
+        the reader closed or canceled the stream (a failure that surfaces as it goes is
+        re-raised, with a log line, and not tried again).
     """
     run_config = cast("RunnableConfig", config)
     retry_state.failed_after_retry = False
@@ -153,12 +165,25 @@ async def astream_events_with_retry(
                 )
             return
         except Exception as error:
-            if closing:
-                # The reader has gone: closing the inner stream can surface a model failure
-                # that the background task already hit, and trying again would make a call
-                # nobody is listening to.
-                raise
             failure = classify_model_error(error)
+            if closing or _being_canceled():
+                # The reader has gone: closing (or canceling) the inner stream can surface a
+                # model failure that the background task already hit, in place of the
+                # closing or the cancellation, and trying again would make a call nobody is
+                # listening to. Nothing else will say what failed: the router's handler
+                # does not run for a reader who left, so the line carries the context.
+                logger.warning(
+                    "A model failure surfaced as the reader left %s (community=%s, model=%s, "
+                    "request_id=%s, session=%s): %s [%s]",
+                    endpoint,
+                    community_id,
+                    model,
+                    request_id,
+                    session_id,
+                    failure.kind,
+                    failure.detail,
+                )
+                raise
             if (
                 retried
                 or made_progress

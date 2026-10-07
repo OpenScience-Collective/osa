@@ -1184,6 +1184,74 @@ class TestTheReaderClosesTheStream:
 
         assert graph.runs == 1, "no second call was made"
 
+    async def test_the_failure_that_surfaced_is_logged_with_the_requests_context(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Nothing else says what failed for a reader who left: the router's handler does not
+        run, and without this line the operator gets an asyncio "never retrieved" traceback."""
+        caplog.set_level(logging.WARNING)
+        events = stream_retry.astream_events_with_retry(
+            _EventsThatFailAsTheyClose(_stream_error()),  # ty: ignore[invalid-argument-type]
+            {},
+            {},
+            community_id=COMMUNITY,
+            model="some-model",
+            endpoint="/x/chat",
+            request_id="req-close",
+            session_id="sess-close",
+            retry_state=RetryState(),
+        )
+
+        await events.__anext__()
+        with pytest.raises(EventStreamError):
+            await events.aclose()
+
+        (record,) = [r for r in caplog.records if "as the reader left" in r.getMessage()]
+        assert record.levelno == logging.WARNING
+        for expected in (
+            COMMUNITY,
+            "some-model",
+            "/x/chat",
+            "req-close",
+            "sess-close",
+            "unavailable",
+        ):
+            assert expected in record.getMessage(), record.getMessage()
+
+    async def test_a_failure_that_takes_the_place_of_a_cancellation_is_not_tried_again(
+        self,
+    ) -> None:
+        """A task canceled while the model's stream is open can end in the stream's own
+        failure instead of the ``CancelledError``; the helper then sees an ordinary model
+        failure, and a retry would run a billable call from a task that was told to stop."""
+        graph = _EventsThatFailAsTheyClose(_stream_error())
+
+        async def consume() -> None:
+            async for _ in stream_retry.astream_events_with_retry(
+                graph,  # ty: ignore[invalid-argument-type]
+                {},
+                {},
+                community_id=COMMUNITY,
+                model="some-model",
+                endpoint="/x/ask",
+                request_id="req-cancel-failure",
+                retry_state=RetryState(),
+            ):
+                pass
+
+        task = asyncio.create_task(consume())
+        for _ in range(POLLS_FOR_THE_WAIT):
+            if graph.runs:
+                break
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.05)
+        task.cancel()
+
+        with pytest.raises(EventStreamError):
+            await asyncio.wait_for(task, 10)
+
+        assert graph.runs == 1, "no second call was made"
+
 
 class TestTheReaderLeavesDuringTheWait:
     async def test_canceling_during_the_delay_stops_cleanly_with_one_call(
