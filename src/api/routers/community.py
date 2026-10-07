@@ -100,7 +100,7 @@ from src.core.services.bedrock_llm import create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
 from src.core.services.litellm_llm import create_openrouter_llm, to_openrouter_model
-from src.core.services.model_errors import classify_model_error
+from src.core.services.model_errors import classify_model_error, exception_text
 from src.core.services.stream_retry import RetryState, astream_events_with_retry
 from src.knowledge.search import FAQResult, get_citation_stats, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
@@ -3921,7 +3921,7 @@ def _stream_failure_event(
         session_id,
         detail,
         failure.retryable_label,
-        error,
+        exception_text(error),
         exc_info=needs_traceback,
         extra={
             "error_id": error_id,
@@ -4236,10 +4236,12 @@ async def _stream_ask_response(
             status_code = 500
         else:
             # Input validation errors - user's fault, so not an error of the agent's
-            logger.warning("Invalid input in streaming for community %s: %s", community_id, e)
+            logger.warning(
+                "Invalid input in streaming for community %s: %s", community_id, exception_text(e)
+            )
             sse_event = {
                 "event": "error",
-                "message": f"Invalid request: {str(e)}",
+                "message": f"Invalid request: {exception_text(e)}",
                 "retryable": False,
             }
             error_message = None
@@ -4855,8 +4857,8 @@ async def _stream_chat_response(
             status_code = 500
         else:
             # Session limit errors: the reader's, so not an error of the agent's
-            logger.error("Session limit error: %s", e)
-            sse_event = {"event": "error", "message": str(e)}
+            logger.error("Session limit error: %s", exception_text(e))
+            sse_event = {"event": "error", "message": exception_text(e)}
             error_message = None
             status_code = 400
         yield f"data: {json.dumps(sse_event)}\n\n"

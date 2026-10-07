@@ -859,6 +859,26 @@ class TestWhatNoProviderCallRaises:
         assert "retryable=unknown" in text and "RuntimeError" in text and "some-model" in text
 
     @paths
+    async def test_an_error_that_cannot_say_what_it_is_still_gets_its_line_and_its_event(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A ``__str__`` that raises would drop the log line (and leave the reader's error
+        id matching nothing), so the line carries a placeholder for the text."""
+
+        class Unreadable(RuntimeError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        caplog.set_level(logging.WARNING)
+
+        events = await _run(path, _failing(Unreadable()), "some-model")
+
+        assert events[-1]["event"] == "error", events
+        (record,) = _failure_records(caplog)
+        assert "<Unreadable: text unreadable>" in record.getMessage()
+        assert record.error_id == events[-1]["error_id"]
+
+    @paths
     async def test_the_text_already_streamed_is_kept_before_the_error(self, path: str) -> None:
         events = await _run(path, _failing(RuntimeError("late"), said="Part of it. "), "m")
 
