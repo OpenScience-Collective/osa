@@ -1,38 +1,68 @@
 [
   {
     "name": "cached input",
-    "usage": {"input_tokens": 1240, "output_tokens": 310, "cache_read_tokens": 980, "cache_creation_tokens": 0, "estimated_cost": 0.0021},
+    "usage": {"input_tokens": 1240, "output_tokens": 310, "cache_read_tokens": 980, "cache_creation_tokens": 0, "estimated_cost": 0.0021, "partial": false},
     "line": "1,240 in (980 cached), 310 out, about $0.0021"
   },
   {
     "name": "cache reads and writes",
-    "usage": {"input_tokens": 120, "output_tokens": 30, "cache_read_tokens": 80, "cache_creation_tokens": 10, "estimated_cost": 0.000141},
+    "usage": {"input_tokens": 120, "output_tokens": 30, "cache_read_tokens": 80, "cache_creation_tokens": 10, "estimated_cost": 0.000141, "partial": false},
     "line": "120 in (80 cached, 10 written to cache), 30 out, about $0.0001"
   },
   {
     "name": "nothing cached",
-    "usage": {"input_tokens": 120, "output_tokens": 30, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.00036},
+    "usage": {"input_tokens": 120, "output_tokens": 30, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.00036, "partial": false},
     "line": "120 in, 30 out, about $0.0004"
   },
   {
     "name": "less than a hundredth of a cent",
-    "usage": {"input_tokens": 5, "output_tokens": 1, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.00001},
+    "usage": {"input_tokens": 5, "output_tokens": 1, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 1e-05, "partial": false},
     "line": "5 in, 1 out, under $0.0001"
   },
   {
     "name": "a cent or more",
-    "usage": {"input_tokens": 52000, "output_tokens": 4000, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.0123},
+    "usage": {"input_tokens": 52000, "output_tokens": 4000, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.0123, "partial": false},
     "line": "52,000 in, 4,000 out, about $0.012"
   },
   {
     "name": "a dollar or more",
-    "usage": {"input_tokens": 1000000, "output_tokens": 200000, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 1.5},
+    "usage": {"input_tokens": 1000000, "output_tokens": 200000, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 1.5, "partial": false},
     "line": "1,000,000 in, 200,000 out, about $1.50"
   },
   {
+    "name": "a tie below a dollar rounds up",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.0625, "partial": false},
+    "line": "100 in, 10 out, about $0.063"
+  },
+  {
+    "name": "a tie above a dollar rounds up",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 1.125, "partial": false},
+    "line": "100 in, 10 out, about $1.13"
+  },
+  {
+    "name": "a tie below a cent rounds up",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.00125, "partial": false},
+    "line": "100 in, 10 out, about $0.0013"
+  },
+  {
+    "name": "half of the last place rounds up, 150 micro-dollars",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.00015, "partial": false},
+    "line": "100 in, 10 out, about $0.0002"
+  },
+  {
+    "name": "half of the last place rounds up, 450 micro-dollars",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.00045, "partial": false},
+    "line": "100 in, 10 out, about $0.0005"
+  },
+  {
     "name": "a model with no price",
-    "usage": {"input_tokens": 10, "output_tokens": 2, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": null},
+    "usage": {"input_tokens": 10, "output_tokens": 2, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": null, "partial": false},
     "line": "10 in, 2 out"
+  },
+  {
+    "name": "a reply some of whose runs reported no tokens",
+    "usage": {"input_tokens": 10, "output_tokens": 2, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.0021, "partial": true},
+    "line": "at least 10 in, 2 out, about $0.0021"
   },
   {
     "name": "no usage",
@@ -47,6 +77,11 @@
   {
     "name": "an object without counts",
     "usage": {"estimated_cost": 0.5},
+    "line": null
+  },
+  {
+    "name": "counts that are booleans",
+    "usage": {"input_tokens": true, "output_tokens": false},
     "line": null
   }
 ]

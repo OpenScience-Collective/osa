@@ -4253,9 +4253,11 @@
     }
     // The cut-off mark is kept only as the boolean the widget writes, and the server's
     // words for it only as a bounded string.
-    const { cutOff, cutOffMessage, ...rest } = msg;
+    const { cutOff, cutOffMessage, usage, ...rest } = msg;
+    const cleanedUsage = cleanUsage(usage);
     return {
       ...rest,
+      ...(cleanedUsage ? { usage: cleanedUsage } : {}),
       ...(cutOff === true ? { cutOff: true } : {}),
       ...(cutOff === true && typeof cutOffMessage === 'string' && cutOffMessage
         ? { cutOffMessage: cutOffMessage.slice(0, CUT_OFF_MESSAGE_LIMIT) }
@@ -4460,9 +4462,11 @@
     try {
       // Persist only durable feedback state: drop transient flags and the
       // in-progress draft, and never persist a vote that has not been confirmed
-      // by the server (so a reload can't show a false "recorded" state).
+      // by the server (so a reload can't show a false "recorded" state). The usage of
+      // a reply's earlier runs (`_usageSoFar`, `_runs`) only means something while the
+      // reply is unfinished, so it is dropped too.
       const persistable = messages.map((m) => {
-        const { _feedbackCommitting, _feedbackJustOpened, _responseId, _usageSoFar, feedbackDraft, ...rest } = m;
+        const { _feedbackCommitting, _feedbackJustOpened, _responseId, _usageSoFar, _runs, feedbackDraft, ...rest } = m;
         if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
         // Figures are shown for the life of the page and not stored. An open
         // "Edit and run" editor, its draft and its live echo, and an opened
@@ -7509,8 +7513,13 @@
       // What the reply used and cost (#582), under its text and sources. It arrives with
       // the `done` event, so it appears when the reply is whole.
       const usageLine = msg.role === 'assistant' ? formatUsage(msg.usage) : null;
+      const usageNote = usageLine ? cleanUsage(msg.usage) : null;
+      const usageTitle = !usageNote ? ''
+        : usageNote.partial ? 'At least this much: a model run of this reply reported no usage.'
+        : usageNote.estimated_cost === null ? 'Tokens this reply used.'
+        : "An estimate from OSA's price table, not an invoice.";
       const usageRow = usageLine
-        ? `<div class="osa-message-usage" title="An estimate from OSA's price list, not an invoice">${escapeHtml(usageLine)}</div>`
+        ? `<div class="osa-message-usage" title="${escapeHtml(usageTitle)}">${escapeHtml(usageLine)}</div>`
         : '';
 
       // Add copy button for assistant messages
@@ -8069,58 +8078,92 @@
     return typeof text === 'string' && /\S/.test(text);
   }
 
-  // What a reply used and cost (#582), from the `usage` object the server sends on a
-  // `done` or `tool_request` event: input tokens (cached ones included), output tokens,
-  // cache reads and writes, and an estimated cost in US dollars, or null when the model
-  // has no price. A reply that spans browser runs is the sum of its runs.
+  // What a reply used and cost (#582): the `usage` object the server sends on a `done` or
+  // `tool_request` event, which is one run's worth. Input tokens include the cached ones;
+  // `estimated_cost` is in US dollars, or null when the model has no price; `partial` is
+  // true when a model run reported no tokens, so the figures leave it out and are a lower
+  // bound. A reply that spans browser runs shows the sum of its runs.
+  const USAGE_COUNTS = ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens'];
+  let warnedAboutUsage = false;
+
+  // Whether `usage` has the two counts the rest of it is read beside.
   function isUsage(usage) {
     return !!usage && typeof usage === 'object'
-      && Number.isInteger(usage.input_tokens) && Number.isInteger(usage.output_tokens);
+      && Number.isInteger(usage.input_tokens) && usage.input_tokens >= 0
+      && Number.isInteger(usage.output_tokens) && usage.output_tokens >= 0;
   }
 
-  // `total` and `next` added, as a new object. Whichever is not a usage is left out, and
-  // undefined comes back when neither is. The cost is unknown when either run's is.
-  function addUsage(total, next) {
-    if (!isUsage(next)) return isUsage(total) ? total : undefined;
-    if (!isUsage(total)) return { ...next };
-    const count = (key) => (Number.isInteger(total[key]) ? total[key] : 0)
-      + (Number.isInteger(next[key]) ? next[key] : 0);
-    const priced = typeof total.estimated_cost === 'number' && typeof next.estimated_cost === 'number';
-    return {
-      input_tokens: count('input_tokens'),
-      output_tokens: count('output_tokens'),
-      cache_read_tokens: count('cache_read_tokens'),
-      cache_creation_tokens: count('cache_creation_tokens'),
-      estimated_cost: priced ? Math.round((total.estimated_cost + next.estimated_cost) * 1e6) / 1e6 : null,
-    };
+  // `usage` cut down to the six fields this widget reads, or undefined when it is not a
+  // usage. What the server sent and what localStorage held are both untrusted, and
+  // nothing else comes through.
+  function cleanUsage(usage) {
+    if (!isUsage(usage)) return undefined;
+    const clean = {};
+    for (const key of USAGE_COUNTS) {
+      clean[key] = Number.isInteger(usage[key]) && usage[key] >= 0 ? usage[key] : 0;
+    }
+    clean.estimated_cost = typeof usage.estimated_cost === 'number' && Number.isFinite(usage.estimated_cost)
+      ? usage.estimated_cost
+      : null;
+    clean.partial = usage.partial === true;
+    return clean;
   }
 
+  // The sum of two runs' usage, a new object (undefined when neither is a usage). Counts
+  // add; the cost adds to six places, as the server rounds it, and is null when either
+  // run's is. A run that reported nothing makes the sum partial: `runsBefore` is how many
+  // runs of the reply came before `next`, so a missing first run is noticed too.
+  function addUsage(total, next, runsBefore = 0) {
+    const have = cleanUsage(total);
+    const add = cleanUsage(next);
+    if (!add) return have ? { ...have, partial: true } : undefined;
+    if (!have) return runsBefore > 0 ? { ...add, partial: true } : add;
+    const sum = {};
+    for (const key of USAGE_COUNTS) sum[key] = have[key] + add[key];
+    const priced = have.estimated_cost !== null && add.estimated_cost !== null;
+    sum.estimated_cost = priced ? Math.round((have.estimated_cost + add.estimated_cost) * 1e6) / 1e6 : null;
+    sum.partial = have.partial || add.partial;
+    return sum;
+  }
+
+  // "about $0.0021": four decimals below a cent, three below a dollar, two from a dollar
+  // up, "under $0.0001" for less. Rounded half up on whole micro-dollars with integer
+  // arithmetic, the same sums as `_format_cost` in src/cli/output.py, so a tie that
+  // `toFixed` and Python's formatter round differently comes out the same on both.
   function formatCost(dollars) {
-    if (dollars < 0.0001) return 'under $0.0001';
-    if (dollars < 0.01) return `about $${dollars.toFixed(4)}`;
-    if (dollars < 1) return `about $${dollars.toFixed(3)}`;
-    return `about $${dollars.toFixed(2)}`;
+    const micro = Math.floor(dollars * 1e6 + 0.5);
+    if (micro < 100) return 'under $0.0001';
+    const decimals = micro < 10000 ? 4 : micro < 1000000 ? 3 : 2;
+    const unit = 10 ** (6 - decimals);
+    const rounded = Math.floor((micro + unit / 2) / unit) * unit;
+    const fraction = String(rounded % 1000000).padStart(6, '0').slice(0, decimals);
+    return `about $${Math.floor(rounded / 1000000)}.${fraction}`;
   }
 
   // One line for a reply's usage, for example "1,240 in (980 cached), 310 out, about
-  // $0.0021", or null when there is none to show. The CLI words it the same way
-  // (`format_usage` in src/cli/output.py), and both are tested against one table.
+  // $0.0021", starting "at least" when it is partial, or null when there is none to show.
+  // The CLI words it the same way (`format_usage` in src/cli/output.py), and both are
+  // tested against every row of tests/fixtures/usage_lines.json. A usage this version
+  // cannot read is not shown, and the console says so once.
   function formatUsage(usage) {
-    if (!isUsage(usage)) return null;
+    const clean = cleanUsage(usage);
+    if (!clean) {
+      if (usage != null && !warnedAboutUsage) {
+        warnedAboutUsage = true;
+        console.warn('[OSA] Ignoring a usage object this version cannot read:', usage);
+      }
+      return null;
+    }
     const number = (n) => n.toLocaleString('en-US');
     const cache = [];
-    if (Number.isInteger(usage.cache_read_tokens) && usage.cache_read_tokens > 0) {
-      cache.push(`${number(usage.cache_read_tokens)} cached`);
-    }
-    if (Number.isInteger(usage.cache_creation_tokens) && usage.cache_creation_tokens > 0) {
-      cache.push(`${number(usage.cache_creation_tokens)} written to cache`);
-    }
+    if (clean.cache_read_tokens > 0) cache.push(`${number(clean.cache_read_tokens)} cached`);
+    if (clean.cache_creation_tokens > 0) cache.push(`${number(clean.cache_creation_tokens)} written to cache`);
     const parts = [
-      `${number(usage.input_tokens)} in${cache.length ? ` (${cache.join(', ')})` : ''}`,
-      `${number(usage.output_tokens)} out`,
+      `${number(clean.input_tokens)} in${cache.length ? ` (${cache.join(', ')})` : ''}`,
+      `${number(clean.output_tokens)} out`,
     ];
-    if (typeof usage.estimated_cost === 'number') parts.push(formatCost(usage.estimated_cost));
-    return parts.join(', ');
+    if (clean.estimated_cost !== null) parts.push(formatCost(clean.estimated_cost));
+    return `${clean.partial ? 'at least ' : ''}${parts.join(', ')}`;
   }
 
   // Apply the authoritative completion payload to the active assistant
@@ -8138,8 +8181,10 @@
     }
     // This run's usage joins what earlier runs of the reply used (kept aside by the
     // tool_request branch until now), so the reply shows its total, and only once whole.
-    const usage = addUsage(message._usageSoFar, event.usage);
+    // A run that reported none makes the total partial, not a quiet understatement.
+    const usage = addUsage(message._usageSoFar, event.usage, message._runs || 0);
     delete message._usageSoFar;
+    delete message._runs;
     if (usage) message.usage = usage;
 
     const finalContent = typeof event.content === 'string'
@@ -8417,7 +8462,7 @@
   //          done; `codes` lists every kind when more than one applies)
   //   data: {"event": "done", "content": "final answer", "citations": [...],
   //          "usage": {...}}  (`usage`: this run's tokens, cache tokens and estimated cost,
-  //          or null; the reply shows the sum of its runs)
+  //          or null; the reply shows the sum of its runs, "at least" when one reported none)
   //   data: {"event": "tool_request", "call_id": "...", "tool": "...", "args": {...},
   //          "content": "text so far", "citations": [...], "usage": {...}}  (instead of done)
   //   data: {"event": "error", "message": "error description", "error_id": "...",
@@ -8680,10 +8725,11 @@
             if (Array.isArray(event.citations)) {
               messages[messageIndex].citations = event.citations;
             }
-            // Kept aside, not shown: the reply is unfinished, and a total that changes
-            // under text still being written would read as a number to rely on.
-            const usageSoFar = addUsage(messages[messageIndex]._usageSoFar, event.usage);
+            // Held until `done`: a total shown mid-reply would look final and then change.
+            const runsBefore = messages[messageIndex]._runs || 0;
+            const usageSoFar = addUsage(messages[messageIndex]._usageSoFar, event.usage, runsBefore);
             if (usageSoFar) messages[messageIndex]._usageSoFar = usageSoFar;
+            messages[messageIndex]._runs = runsBefore + 1;
             accumulatedContent = runText;
           } else if (event.event === 'error') {
             // Backend sent an error event
@@ -8952,6 +8998,8 @@
         if (data && Array.isArray(data.citations)) {
           assistantMsg.citations = data.citations;
         }
+        const usage = cleanUsage(data && data.usage);
+        if (usage) assistantMsg.usage = usage;
         // The warnings the response carries, as a stream's warning events are shown.
         for (const warning of warningsOf(data)) {
           noticeWarning(container, assistantMsg, warning);
@@ -9601,7 +9649,7 @@
       waiting: () => launcherWaiting,
     };
     window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
-    window.OSAChatWidget.__usage = { format: formatUsage, add: addUsage };
+    window.OSAChatWidget.__usage = { format: formatUsage, add: addUsage, clean: cleanUsage };
     // The settings in memory, as the next request would read them (a copy).
     window.OSAChatWidget.__settings = { get: () => ({ ...userSettings }) };
     window.OSAChatWidget.__reveal = {

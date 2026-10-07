@@ -295,40 +295,66 @@ test('The usage line reads the same as the CLI: both are tested against one tabl
   }
 });
 
-test('Usage adds up across the runs of a reply, and the cost is unknown if any run has none', () => {
+test('Usage adds up across the runs of a reply, and a run that reported none makes the sum partial', () => {
   const { add } = testWidgetWindow.OSAChatWidget.__usage;
-  const first = { input_tokens: 100, output_tokens: 10, cache_read_tokens: 40, cache_creation_tokens: 5, estimated_cost: 0.000401 };
-  const second = { input_tokens: 150, output_tokens: 20, cache_read_tokens: 0, cache_creation_tokens: 0, estimated_cost: 0.000602 };
+  const first = { input_tokens: 100, output_tokens: 10, cache_read_tokens: 40, cache_creation_tokens: 5, estimated_cost: 0.000401, partial: false };
+  const second = { input_tokens: 150, output_tokens: 20, cache_read_tokens: 0, cache_creation_tokens: 0, estimated_cost: 0.000602, partial: false };
   assertEqual(
-    add(first, second),
-    { input_tokens: 250, output_tokens: 30, cache_read_tokens: 40, cache_creation_tokens: 5, estimated_cost: 0.001003 },
+    add(first, second, 1),
+    { input_tokens: 250, output_tokens: 30, cache_read_tokens: 40, cache_creation_tokens: 5, estimated_cost: 0.001003, partial: false },
     'Tokens and cost add, with the cost kept to six places'
   );
-  assertEqual(add(undefined, second), second, 'A reply with no earlier run has the new run\'s usage');
+  assertEqual(add(undefined, second), second, 'The first run of a reply is its usage');
   assert(add(undefined, second) !== second, 'And it is a copy, not the event\'s own object');
-  assertEqual(add(first, null), first, 'A run that reported no usage leaves the total as it was');
-  assertEqual(add(undefined, null), undefined, 'And with nothing before it there is no usage at all');
-  assertEqual(add(first, { ...second, estimated_cost: null }).estimated_cost, null, 'One run with no price makes the sum unpriced');
-  assertEqual(add(first, 'lots'), first, 'Something that is not a usage object is left out');
+  assertEqual(add(undefined, null), undefined, 'With nothing before it and nothing in it there is no usage at all');
+  assertEqual(add(first, null, 1), { ...first, partial: true }, 'A run that reported none leaves the sum, marked partial');
+  assertEqual(add(first, 'lots', 1), { ...first, partial: true }, 'So does one that is not a usage object');
+  assertEqual(add(undefined, second, 1), { ...second, partial: true }, 'An earlier run that reported none makes a later sum partial');
+  assertEqual(add({ ...first, partial: true }, second, 2).partial, true, 'Partial stays partial');
+  assertEqual(add(first, { ...second, partial: true }, 1).partial, true, 'Whichever side it came from');
+  assertEqual(add(first, { ...second, estimated_cost: null }, 1).estimated_cost, null, 'One run with no price makes the sum unpriced');
+});
+
+test('Usage is cut down to what the widget reads, and nothing else comes through', () => {
+  const { clean } = testWidgetWindow.OSAChatWidget.__usage;
+  assertEqual(
+    clean({ input_tokens: 5, output_tokens: 1, estimated_cost: 0.5, evil: '<img onerror=x>', cache_read_tokens: -3 }),
+    { input_tokens: 5, output_tokens: 1, cache_read_tokens: 0, cache_creation_tokens: 0, estimated_cost: 0.5, partial: false },
+    'Unknown fields are dropped, a negative count is zero, and a missing one is zero'
+  );
+  assertEqual(clean({ input_tokens: -1, output_tokens: 1 }), undefined, 'A negative input count is not a usage');
+  assertEqual(clean({ input_tokens: 1.5, output_tokens: 1 }), undefined, 'Nor is a fractional one');
+  assertEqual(clean({ input_tokens: 5, output_tokens: 1, estimated_cost: Infinity }).estimated_cost, null, 'A cost that is not finite is no cost');
+  assertEqual(clean('12 tokens'), undefined, 'A string is not a usage');
 });
 
 test('Done reducer keeps a reply\'s usage, and adds the last run\'s to the earlier ones', () => {
   const applyDoneEvent = testWidgetWindow.OSAChatWidget.__applyDoneEvent;
-  const usage = { input_tokens: 120, output_tokens: 30, cache_read_tokens: 80, cache_creation_tokens: 0, estimated_cost: 0.0002 };
+  const usage = { input_tokens: 120, output_tokens: 30, cache_read_tokens: 80, cache_creation_tokens: 0, estimated_cost: 0.0002, partial: false };
 
   const one = [{ role: 'assistant', content: 'raw' }];
   applyDoneEvent(one, 0, { event: 'done', content: 'Final.', usage }, 'raw');
   assertEqual(one[0].usage, usage, 'A reply with one run carries that run\'s usage');
 
-  const two = [{ role: 'assistant', content: 'earlier', _usageSoFar: { ...usage, input_tokens: 80, output_tokens: 20, cache_read_tokens: 0, estimated_cost: 0.0001 } }];
+  const earlier = { ...usage, input_tokens: 80, output_tokens: 20, cache_read_tokens: 0, estimated_cost: 0.0001 };
+  const two = [{ role: 'assistant', content: 'earlier', _usageSoFar: earlier, _runs: 1 }];
   applyDoneEvent(two, 0, { event: 'done', content: 'Final.', usage }, 'raw');
   assertEqual(two[0].usage.input_tokens, 200, 'The final run joins the earlier ones');
   assertEqual(two[0].usage.estimated_cost, 0.0003, 'And so does its cost');
-  assert(!('_usageSoFar' in two[0]), 'And the earlier runs\' total is no longer kept aside');
+  assertEqual(two[0].usage.partial, false, 'Whole, since every run reported');
+  assert(!('_usageSoFar' in two[0]) && !('_runs' in two[0]), 'And what was kept aside is no longer kept');
+
+  const lastSaidNothing = [{ role: 'assistant', content: 'earlier', _usageSoFar: earlier, _runs: 1 }];
+  applyDoneEvent(lastSaidNothing, 0, { event: 'done', content: 'Final.', usage: null }, 'raw');
+  assertEqual(lastSaidNothing[0].usage, { ...earlier, partial: true }, 'A last run that reported none leaves the earlier runs, marked partial');
+
+  const firstSaidNothing = [{ role: 'assistant', content: 'earlier', _runs: 1 }];
+  applyDoneEvent(firstSaidNothing, 0, { event: 'done', content: 'Final.', usage }, 'raw');
+  assertEqual(firstSaidNothing[0].usage.partial, true, 'And a first run that reported none makes the last run\'s usage partial');
 
   const none = [{ role: 'assistant', content: 'raw' }];
   applyDoneEvent(none, 0, { event: 'done', content: 'Final.', usage: null }, 'raw');
-  assert(!('usage' in none[0]), 'A done with no usage leaves the message without any');
+  assert(!('usage' in none[0]), 'A done with no usage, and no earlier run, leaves the message without any');
 });
 
 test('Done reducer keeps a reply that ran code even when it ends with no text', () => {

@@ -5,6 +5,8 @@ This keeps piped output clean (e.g., osa ask "..." -o json | jq).
 """
 
 import json
+import logging
+import math
 import sys
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -14,6 +16,8 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
+
+logger = logging.getLogger(__name__)
 
 # stdout for results
 console = Console()
@@ -39,49 +43,66 @@ def print_success(message: str) -> None:
 
 
 def _format_cost(dollars: float) -> str:
-    """A cost in US dollars, with as many decimals as its size needs to say something."""
-    if dollars < 0.0001:
+    """A cost in US dollars, with "about": four decimals below a cent, three below a dollar,
+    two from a dollar up, and "under $0.0001" for less.
+
+    Rounded half up on whole micro-dollars (the server's own precision) with integer
+    arithmetic, so that the widget's ``formatCost``, which cuts at the same places and does
+    the same sums, prints the same digits even where a float formatter would round a tie
+    the other way.
+    """
+    micro = math.floor(dollars * 1_000_000 + 0.5)
+    if micro < 100:
         return "under $0.0001"
-    if dollars < 0.01:
-        return f"about ${dollars:.4f}"
-    if dollars < 1:
-        return f"about ${dollars:.3f}"
-    return f"about ${dollars:.2f}"
+    decimals = 4 if micro < 10_000 else 3 if micro < 1_000_000 else 2
+    unit = 10 ** (6 - decimals)
+    whole, fraction = divmod((micro + unit // 2) // unit * unit, 1_000_000)
+    return f"about ${whole}.{str(fraction).zfill(6)[:decimals]}"
+
+
+def _count(value: Any) -> int | None:
+    """``value`` if it is a token count (a whole number, and not a boolean), else None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def format_usage(usage: dict[str, Any] | None) -> str | None:
     """What a reply used, in one line, from the ``usage`` object the server sends.
 
     For example ``1,240 in (980 cached), 310 out, about $0.0021``. The input count includes
-    the cached tokens. The widget words it the same way (``formatUsage`` in
-    ``frontend/osa-chat-widget.js``), and the two are tested against one table.
+    the cached tokens, and a reply some of whose model runs reported no tokens starts "at
+    least". The widget words it the same way (``formatUsage`` in
+    ``frontend/osa-chat-widget.js``), and the two are tested against every row of
+    ``tests/fixtures/usage_lines.json``.
 
     Args:
         usage: The server's ``usage`` object, or None when it sent none.
 
     Returns:
-        The line, or None when there is nothing to say (no usage, or one that is not an
-        object, which a server of another version could send).
+        The line, or None when there is nothing to say: no usage, or an object this version
+        cannot read (not an object, or without whole ``input_tokens`` and ``output_tokens``),
+        which a server of another version could send and which is logged at debug level.
     """
-    if not isinstance(usage, dict):
+    if usage is None:
         return None
-    input_tokens = usage.get("input_tokens")
-    output_tokens = usage.get("output_tokens")
-    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+    input_tokens = _count(usage.get("input_tokens")) if isinstance(usage, dict) else None
+    output_tokens = _count(usage.get("output_tokens")) if isinstance(usage, dict) else None
+    if input_tokens is None or output_tokens is None:
+        logger.debug("Ignoring a usage object this version cannot read: %r", usage)
         return None
     cache_parts = []
-    cache_read = usage.get("cache_read_tokens")
-    cache_written = usage.get("cache_creation_tokens")
-    if isinstance(cache_read, int) and cache_read > 0:
+    cache_read = _count(usage.get("cache_read_tokens"))
+    cache_written = _count(usage.get("cache_creation_tokens"))
+    if cache_read:
         cache_parts.append(f"{cache_read:,} cached")
-    if isinstance(cache_written, int) and cache_written > 0:
+    if cache_written:
         cache_parts.append(f"{cache_written:,} written to cache")
     cache = f" ({', '.join(cache_parts)})" if cache_parts else ""
     parts = [f"{input_tokens:,} in{cache}", f"{output_tokens:,} out"]
     cost = usage.get("estimated_cost")
     if isinstance(cost, int | float) and not isinstance(cost, bool):
         parts.append(_format_cost(float(cost)))
-    return ", ".join(parts)
+    line = ", ".join(parts)
+    return f"at least {line}" if usage.get("partial") is True else line
 
 
 def print_usage(usage: dict[str, Any] | None) -> None:

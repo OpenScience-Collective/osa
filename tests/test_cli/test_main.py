@@ -550,6 +550,18 @@ class TestWhatAReplyUsedIsShownUnderIt:
 
         assert output.format_usage(case["usage"]) == case["line"]
 
+    def test_a_usage_this_version_cannot_read_is_logged_at_debug_and_not_shown(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        from src.cli import output
+
+        with caplog.at_level(logging.DEBUG, logger="src.cli.output"):
+            assert output.format_usage({"input_tokens": "many"}) is None  # ty: ignore[invalid-argument-type]
+
+        assert [r.levelno for r in caplog.records] == [logging.DEBUG]
+
     def test_ask_stream_prints_usage_to_stderr_and_not_to_stdout(self, capsys) -> None:
         with (
             respx.mock,
