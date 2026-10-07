@@ -666,3 +666,35 @@ class TestWhereInTheCallItFailed:
             ours()
 
         assert classify_model_error(caught.value).mid_stream is False
+
+
+class TestItNeverRaises:
+    """It runs inside the handlers that report a failure: an exception from it would cut the
+    stream with no error event, no log line and no metrics row."""
+
+    def test_an_exception_whose_text_cannot_be_read(self) -> None:
+        class Unreadable(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        failure = classify_model_error(Unreadable())
+
+        assert failure.kind == "unknown" and not failure.from_provider
+
+    def test_a_class_with_no_module(self) -> None:
+        class Moduleless(Exception):
+            __module__ = None  # type: ignore[assignment]
+
+        failure = classify_model_error(Moduleless("x"))
+
+        assert failure.kind == "unknown" and failure.mid_stream is False
+
+    def test_a_provider_error_whose_status_cannot_be_read(self) -> None:
+        class BadStatus(anthropic.APIStatusError):
+            @property
+            def status_code(self) -> int:  # type: ignore[override]
+                raise RuntimeError("no status")
+
+        error = BadStatus.__new__(BadStatus)
+
+        assert classify_model_error(error).kind == "unknown"
