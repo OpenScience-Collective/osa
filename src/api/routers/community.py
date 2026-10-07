@@ -101,6 +101,7 @@ from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MO
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
 from src.core.services.litellm_llm import create_openrouter_llm, to_openrouter_model
 from src.core.services.model_errors import classify_model_error
+from src.core.services.stream_retry import RetryState, astream_events_with_retry
 from src.knowledge.search import FAQResult, get_citation_stats, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
@@ -3626,18 +3627,19 @@ def _log_streaming_metrics(
 
 @dataclass(frozen=True)
 class _FailureWording:
-    """What one stream tells the reader when a model call fails.
+    """The two messages that differ between ``/ask`` and a chat when a request fails.
 
     Attributes:
-        retryable: When a retry can succeed, or nothing is known. Says nothing the log does
-            not back up.
+        unrecognized: When the failure was not a model call's (a tool of ours failed, say),
+            so nothing is known about retrying. A model call that failed has its own
+            message (``_model_unavailable``).
         cannot_retry: When the provider refused the request outright (see
             ``classify_model_error``), which fails the same way every time. Short, since
             the widget shows an error for a few seconds; the error id that finds the log
             line is a field of the event (and in the log), not part of this text.
     """
 
-    retryable: str
+    unrecognized: str
     cannot_retry: str
 
 
@@ -3647,11 +3649,11 @@ _CANNOT_RETRY_MESSAGE = (
 
 #: ``/ask`` has no conversation to start, so it offers nothing; a chat does.
 _ASK_WORDING = _FailureWording(
-    retryable="An error occurred while generating the response. Please try again.",
+    unrecognized="An error occurred while generating the response. Please try again.",
     cannot_retry=_CANNOT_RETRY_MESSAGE,
 )
 _CHAT_WORDING = _FailureWording(
-    retryable="An error occurred while processing your request.",
+    unrecognized="An error occurred while processing your request.",
     cannot_retry=f"{_CANNOT_RETRY_MESSAGE} Start a new conversation.",
 )
 
@@ -3665,6 +3667,17 @@ _SERVER_KEY_MESSAGE = (
     "The assistant is unavailable because of a server problem, and trying again will not "
     "help. Please contact support."
 )
+
+
+def _model_unavailable(model: str | None) -> str:
+    """The reader's message for a model call that failed with no sign a retry would fail
+    the same way.
+
+    There is no automatic switch to another model (it would change what the community
+    chose and what a request costs), so the reader is asked to choose.
+    """
+    name = f" ({model})" if model else ""
+    return f"The current model{name} is not available right now. Please choose another model."
 
 
 class _StreamFailure(NamedTuple):
@@ -3690,29 +3703,34 @@ def _stream_failure_event(
     wording: _FailureWording,
     key_source: Literal["byok", "community", "platform"] | None,
     session_id: str | None = None,
+    after_retry: bool,
 ) -> _StreamFailure:
     """Log a failure that ended a stream and build the ``error`` event the reader gets.
 
-    A throttle, a read timeout and a request the provider refuses as invalid used to be one
-    log line and one message. Now the log says which it was (the exception class, the
-    provider's code or status, and whether a retry can succeed) at WARNING for a model
-    failure that can clear by itself, or that is the caller's own key being refused (theirs
-    to fix, and nothing the operator did), and ERROR, with the traceback, for everything
-    else: one that cannot clear, a platform or community key the provider refused, and any
-    exception that is not a recognized model-provider error (a tool of ours failing is one,
-    and its traceback is the only clue). The reader is told to try again only when that is
-    honest: a failure no retry can fix says so, and a refused credential says whose it is.
+    The log says which failure it was (the exception class, the provider's code or status,
+    and whether a retry can succeed) at WARNING for a model failure that can clear by
+    itself, or that is the caller's own key being refused (theirs to fix, and nothing the
+    operator did), and ERROR, with the traceback, for everything else: one that cannot
+    clear, one that did not clear when the call was tried a second time, a platform or
+    community key the provider refused, and any exception that is not a recognized
+    model-provider error (a tool of ours failing is one, and its traceback is the only
+    clue). The reader is told what is honest: a failure no retry can fix says so, a refused
+    credential says whose it is, any other model-call failure is reported as the model
+    being unavailable with the ask to choose another, and a failure that is not a model
+    call's keeps the stream's own wording.
 
     Args:
         error: What the stream raised.
         community_id: For the log.
-        model: The model the request ran, for the log.
+        model: The model the request ran, for the log and for the message that names it.
         endpoint: The endpoint, for the log.
         request_id: The request's id, for the log.
         wording: What the reader is told, in this stream's words.
         key_source: Whose key paid for the request, or None when it never got as far as
             choosing one.
         session_id: The chat session, for the log.
+        after_retry: Whether this failure survived a retry (``RetryState.failed_after_retry``),
+            which the log level and the failure's detail say.
 
     Returns:
         The event to send: ``message``, an ``error_id`` (the key of the log line) and the
@@ -3721,6 +3739,7 @@ def _stream_failure_event(
         for that row's ``error_message``.
     """
     failure = classify_model_error(error)
+    detail = f"{failure.detail} (after one retry)" if after_retry else failure.detail
     error_id = str(uuid.uuid4())
     refused_callers_key = failure.kind == "unauthorized" and key_source == "byok"
     if refused_callers_key:
@@ -3730,7 +3749,7 @@ def _stream_failure_event(
     else:
         summary = "Unexpected streaming error"
     clears_by_itself = failure.from_provider and bool(failure.retryable)
-    needs_traceback = not (clears_by_itself or refused_callers_key)
+    needs_traceback = after_retry or not (clears_by_itself or refused_callers_key)
     logger.log(
         logging.ERROR if needs_traceback else logging.WARNING,
         "%s (ID: %s) for %s (community=%s, model=%s, request_id=%s, session=%s): "
@@ -3742,7 +3761,7 @@ def _stream_failure_event(
         model,
         request_id,
         session_id,
-        failure.detail,
+        detail,
         failure.retryable_label,
         error,
         exc_info=needs_traceback,
@@ -3759,7 +3778,7 @@ def _stream_failure_event(
         },
     )
     if failure.retryable is not False:
-        message = wording.retryable
+        message = _model_unavailable(model) if failure.from_provider else wording.unrecognized
     elif failure.kind == "unauthorized":
         message = _KEY_REFUSED_MESSAGE if refused_callers_key else _SERVER_KEY_MESSAGE
     else:
@@ -3772,7 +3791,7 @@ def _stream_failure_event(
     }
     if failure.retryable is not None:
         event["retryable"] = failure.retryable
-    return _StreamFailure(event, failure.detail)
+    return _StreamFailure(event, detail)
 
 
 async def _stream_ask_response(
@@ -3827,6 +3846,7 @@ async def _stream_ask_response(
     citation_assembler = CitationAssembler()
     announced_tool_calls: set[tuple[Any, ...]] = set()
     model_runs = ModelRuns()
+    retry = RetryState()
 
     # Per-request id (set by metrics middleware) so the widget can attach feedback.
     request_id = getattr(http_request.state, "request_id", None) if http_request else None
@@ -3857,7 +3877,16 @@ async def _stream_ask_response(
         # run ended (or with no run end at all) is a run's too, so it comes first.
         run_start = 0
         last_run_text = ""
-        async for event in graph.astream_events(state, version="v2", config=stream_config):
+        async for event in astream_events_with_retry(
+            graph,
+            state,
+            stream_config,
+            community_id=community_id,
+            model=awm.model,
+            endpoint=f"/{community_id}/ask",
+            request_id=request_id,
+            retry_state=retry,
+        ):
             kind = event.get("event")
 
             if kind == "on_chat_model_stream":
@@ -4027,6 +4056,7 @@ async def _stream_ask_response(
                 endpoint=f"/{community_id}/ask",
                 request_id=request_id,
                 wording=_ASK_WORDING,
+                after_retry=retry.failed_after_retry,
                 key_source=awm.key_source if awm else None,
             )
             sse_event = failure.event
@@ -4065,6 +4095,7 @@ async def _stream_ask_response(
             endpoint=f"/{community_id}/ask",
             request_id=request_id,
             wording=_ASK_WORDING,
+            after_retry=retry.failed_after_retry,
             key_source=awm.key_source if awm else None,
         )
         yield f"data: {json.dumps(failure.event)}\n\n"
@@ -4207,6 +4238,7 @@ async def _stream_chat_response(
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
     model_runs = ModelRuns()
+    retry = RetryState()
 
     # The metrics middleware assigns a per-request UUID. The widget attaches the one on the
     # final `done` event to a reply for feedback, which joins it back to request_log, so it
@@ -4305,7 +4337,17 @@ async def _stream_chat_response(
         # calls started going back to the model.
         ended_on_client_tools_node = False
 
-        async for event in graph.astream_events(state, version="v2", config=stream_config):
+        async for event in astream_events_with_retry(
+            graph,
+            state,
+            stream_config,
+            community_id=community_id,
+            model=awm.model,
+            endpoint=metrics_endpoint,
+            request_id=request_id,
+            session_id=session.session_id,
+            retry_state=retry,
+        ):
             kind = event.get("event")
 
             if kind == "on_chat_model_stream":
@@ -4607,6 +4649,7 @@ async def _stream_chat_response(
                 endpoint=metrics_endpoint,
                 request_id=request_id,
                 wording=_CHAT_WORDING,
+                after_retry=retry.failed_after_retry,
                 key_source=awm.key_source if awm else None,
                 session_id=session.session_id,
             )
@@ -4642,6 +4685,7 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             request_id=request_id,
             wording=_CHAT_WORDING,
+            after_retry=retry.failed_after_retry,
             key_source=awm.key_source if awm else None,
             session_id=session.session_id,
         )
