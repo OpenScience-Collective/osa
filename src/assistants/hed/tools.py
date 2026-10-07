@@ -4,7 +4,7 @@ These are tools that cannot be auto-generated from YAML config because
 they require specialized logic (API calls, CLI tools, etc.):
 
 - validate_hed_string: Validate HED annotations via hedtools.org API
-- suggest_hed_tags: Suggest tags using hed-lsp semantic search
+- suggest_hed_tags: Suggest candidate tags with hed-lsp's keyword and schema lookup
 - get_hed_schema_versions: Get available HED schema versions
 
 Generic tools (doc retrieval, knowledge search) are auto-generated
@@ -169,22 +169,30 @@ def _hed_suggest_env() -> dict[str, str]:
 
 @tool
 def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, Any]:
-    """Suggest valid HED tags for natural language search terms.
+    """Suggest candidate HED tags for short search terms.
 
-    Use this tool to find valid HED tags that match natural language descriptions.
-    This uses the hed-lsp semantic search to find relevant tags from the HED schema.
+    Use this tool to find HED tags that may match a concept in an event description.
+    It runs hed-lsp's hed-suggest program, which is a keyword lookup, not an embedding
+    search: every word of a term is looked up in a map of common neuroscience words,
+    then the whole term is matched as a substring of the tag names in the HED schema.
+    Short, concrete terms of one or two words work best ("press", "button press",
+    "flash"); a sentence matches almost nothing.
 
-    **Primary Use**: Convert natural language concepts to valid HED tags.
+    The suggestions are candidates, not valid tags. The keyword map is not checked
+    against the schema, so some suggestions are not tags in HED 8.4.0 (for example
+    "Button" and "Flash"). Always check the final annotation with validate_hed_string.
 
     **Workflow**:
     1. User describes events in natural language (e.g., "button press", "visual flash")
-    2. Call this tool to get valid HED tags for each concept
-    3. Use the suggested tags to construct valid HED annotation strings
+    2. Call this tool with a short term for each concept
+    3. Use the suggested tags to construct HED annotation strings
     4. Validate the final string with validate_hed_string before showing to user
 
     Args:
-        search_terms: List of natural language terms to search for HED tags
-                     (e.g., ["button press", "visual stimulus", "response"])
+        search_terms: List of short search terms, one per concept
+                     (e.g., ["button press", "visual stimulus", "response"]).
+                     A term that starts with "-" is not looked up and gets an
+                     empty list.
         top_n: Maximum number of suggestions per term (default: 10)
 
     Returns:
