@@ -1529,3 +1529,41 @@ class TestWhatTheHelperReports:
         assert "after one retry" not in record.getMessage()
         (row,) = _rows()
         assert row["error_message"] == "EndpointConnectionError"
+
+
+class TestTheUsageOfAReplyThatWasTriedAgain:
+    @paths
+    async def test_it_is_the_second_tries_alone_with_the_cache_fields_the_adapter_reports(
+        self, path: str
+    ) -> None:
+        """Through the real Bedrock stream parser: ``langchain-aws`` reports the input as
+        the true total (fresh, read and written), and the event agrees with the request's
+        row in the metrics."""
+        counts = {
+            "inputTokens": 20,
+            "outputTokens": 7,
+            "totalTokens": 27,
+            "cacheReadInputTokens": 8,
+            "cacheWriteInputTokens": 2,
+        }
+        llm = _bedrock_llm()
+        Wire(
+            llm,
+            **CUT_SHORT,
+            then=[
+                {
+                    "body": converse_stream(["Hello", " there"], usage=counts),
+                    "content_type": EVENT_STREAM,
+                }
+            ],
+        )
+
+        events = await _run(path, llm, BEDROCK_MODEL)
+
+        assert events[-1]["event"] == "done"
+        usage = events[-1]["usage"]
+        assert (usage["input_tokens"], usage["output_tokens"]) == (30, 7)
+        assert (usage["cache_read_tokens"], usage["cache_creation_tokens"]) == (8, 2)
+        (row,) = _rows()
+        assert row["input_tokens"] == usage["input_tokens"]
+        assert row["estimated_cost"] == usage["estimated_cost"]

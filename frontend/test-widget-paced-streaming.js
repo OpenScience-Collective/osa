@@ -1155,7 +1155,6 @@ console.log('\na browser-execution reply shows what all of its runs used, and sa
   const both = await twoRuns(run(1000, 100, 0.0010), run(1500, 200, 0.0015));
   assertEqual(both.whileUnfinished, 0, 'nothing is shown while the reply is unfinished');
   assertEqual(both.lines, ['2,500 in, 300 out, about $0.0025'], 'one line, the sum of the two runs');
-  assert(!/_usageSoFar|_usageRuns/.test(both.saved), 'and what was kept aside between runs is not saved');
 
   assertEqual((await twoRuns(run(1000, 100, 0.0010), null)).lines, ['at least 1,000 in, 100 out, about $0.0010'],
     'a last run that reported none leaves the first run\'s figures, marked "at least"');
@@ -1191,6 +1190,38 @@ console.log('\nthe usage in a saved conversation is read back, and only as the w
   } finally {
     console.warn = warn;
   }
+}
+
+console.log('\na reply saved with its usage shows it again after a reload, and a failed second run saves nothing kept aside');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const usage = { input_tokens: 1240, output_tokens: 310, cache_read_tokens: 980, cache_creation_tokens: 0, estimated_cost: 0.0021, partial: false };
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: 'Fine.' },
+    { event: 'done', content: 'Fine.', usage },
+  ]), container);
+  const again = loadWidget({ saved: window.localStorage.getItem('osa-test-paced') });
+  assertEqual([...again.window.document.querySelectorAll('.osa-message-usage')].map((el) => el.textContent),
+    ['1,240 in (980 cached), 310 out, about $0.0021'], 'what the widget itself saved is shown again after a reload');
+}
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const usage = { input_tokens: 1000, output_tokens: 100, cache_read_tokens: 0, cache_creation_tokens: 0, estimated_cost: 0.001, partial: false };
+  const first = await api.handleStreamingResponse(sse([
+    { event: 'content', content: 'Let me check.' },
+    { event: 'tool_request', call_id: 'c1', tool: 'execute_code', args: {}, content: 'Let me check.', usage },
+  ]), container);
+  let failed = null;
+  try {
+    await api.handleStreamingResponse(sse([{ event: 'error', message: 'The model is unavailable.' }]), container, { messageIndex: first.messageIndex });
+  } catch (error) { failed = error; }
+  assert(failed !== null, 'the second run fails');
+  assertEqual(window.document.querySelectorAll('.osa-message-usage').length, 0, 'a reply that did not finish shows no usage');
+  const saved = window.localStorage.getItem('osa-test-paced') || '';
+  assert(saved.includes('The model is unavailable.'), 'the failed reply was saved');
+  assert(!/_usageSoFar|_usageRuns|"input_tokens"/.test(saved), 'with no usage in it, and nothing kept aside between the runs');
 }
 
 console.log('\na reader typing in a message keeps their caret through the reveal');

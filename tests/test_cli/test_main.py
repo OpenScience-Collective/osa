@@ -644,7 +644,8 @@ class TestWhatAReplyUsedIsShownUnderIt:
             result = runner.invoke(cli, ["ask", "How?", "-a", "hed", "--no-stream"])
 
         assert result.exit_code == 0, result.output
-        assert f"Usage: {USAGE_LINE}" in result.output
+        assert f"Usage: {USAGE_LINE}" in result.stderr
+        assert "Usage:" not in result.stdout, "stdout stays the answer alone for a pipe"
 
     def test_chat_without_streaming_prints_usage(self, tmp_path: Path) -> None:
         from src.api.routers.community import ChatMessage, ChatResponse
@@ -670,7 +671,45 @@ class TestWhatAReplyUsedIsShownUnderIt:
             )
 
         assert result.exit_code == 0, result.output
-        assert f"Usage: {USAGE_LINE}" in result.output
+        assert f"Usage: {USAGE_LINE}" in result.stderr
+        assert "Usage:" not in result.stdout, "stdout stays the answer alone for a pipe"
+
+    def test_a_server_that_sends_no_usage_at_all_costs_the_reader_nothing(
+        self, capsys, tmp_path: Path
+    ) -> None:
+        """An older server has no ``usage`` key, which is not the same as ``null``."""
+        from src.api.routers.community import AskResponse
+
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/ask").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=b'data: {"event":"done","content":"HED is a sys"}\n\n',
+                )
+            )
+            _ask_streaming(OSAClient("https://test.example", user_id="test-user"), "hed", "How?")
+        streamed = capsys.readouterr()
+
+        old_body = AskResponse(answer="HED is a sys", model="m").model_dump(mode="json")
+        del old_body["usage"]
+        with (
+            patched_config_paths(tmp_path),
+            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-cli-test-key"}, clear=True),
+            respx.mock,
+        ):
+            respx.post("https://api.osc.earth/osa/hed/ask").mock(
+                return_value=httpx.Response(200, json=old_body)
+            )
+            batch = runner.invoke(cli, ["ask", "How?", "-a", "hed", "--no-stream"])
+
+        assert "HED is a sys" in streamed.out and "Usage:" not in streamed.err
+        assert batch.exit_code == 0, batch.output
+        assert "HED is a sys" in batch.stdout and "Usage:" not in batch.stderr
 
 
 class TestTheWarningIsReadAfterTheAnswer:

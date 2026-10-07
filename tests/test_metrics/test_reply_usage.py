@@ -58,6 +58,13 @@ class TestWhenThereIsNothingToTell:
     def test_a_request_with_no_tokens_is_not_a_free_one(self) -> None:
         assert reply_usage("claude-haiku-4-5", 0, 0) is None
 
+    @pytest.mark.parametrize(("input_tokens", "output_tokens"), [(100, 0), (0, 10)])
+    def test_a_run_with_only_input_or_only_output_still_has_usage(
+        self, input_tokens: int, output_tokens: int
+    ) -> None:
+        """A run cut off before it wrote anything, or one that only wrote."""
+        assert reply_usage("claude-haiku-4-5", input_tokens, output_tokens) is not None
+
     @pytest.mark.parametrize(
         "model",
         [

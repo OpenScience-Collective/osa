@@ -12,6 +12,8 @@ why).
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from unittest.mock import patch
 
@@ -19,8 +21,9 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessageChunk
 
-from src.api.routers.community import ChatSession, _stream_chat_response
-from src.metrics.cost import MODEL_PRICING
+from src.api.routers.community import ChatSession, _get_session_store, _stream_chat_response
+from src.cli.output import format_usage
+from src.metrics.cost import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER, MODEL_PRICING
 from tests.helpers.provider_replies import (
     ANSWER,
     COMMUNITY,
@@ -35,8 +38,14 @@ from tests.helpers.provider_replies import (
     scripted_reply,
 )
 from tests.test_api.test_missing_usage import _ask, _chat, client, metrics_db  # noqa: F401
+from tests.test_api.test_tool_call_streaming import ALLOWED_ORIGIN as BROWSER_ORIGIN
+from tests.test_api.test_tool_call_streaming import (
+    CODE_CALL_ID,
+    _anthropic_call,
+    resume_client,  # noqa: F401
+)
 from tests.test_api.test_tool_call_streaming import COMMUNITY as BROWSER_COMMUNITY
-from tests.test_api.test_tool_call_streaming import _anthropic_call
+from tests.test_api.test_tool_call_streaming import _answer as browser_answer
 from tests.test_api.test_tool_call_streaming import _assistant as browser_assistant
 
 OFFERED = [p for p in PROVIDERS if p.name != "openrouter"]
@@ -47,18 +56,41 @@ offered = pytest.mark.parametrize("provider", OFFERED, ids=lambda p: p.name)
 def _cost(
     model: str, input_tokens: int, output_tokens: int, read: int = 0, write: int = 0
 ) -> float:
-    """The cost by hand from the price table: fresh input at the model's rate, cache
-    writes at 1.25 times it and cache reads at a tenth of it. The multipliers are written
-    out here, so a change to them fails a test."""
+    """The cost by hand from the price table: fresh input at the model's rate, cache writes
+    and reads at their multipliers of it."""
     rate = MODEL_PRICING[model]
     fresh = input_tokens - read - write
     dollars = (
         fresh * rate.input_per_1m
-        + write * rate.input_per_1m * 1.25
-        + read * rate.input_per_1m * 0.1
+        + write * rate.input_per_1m * CACHE_WRITE_MULTIPLIER
+        + read * rate.input_per_1m * CACHE_READ_MULTIPLIER
         + output_tokens * rate.output_per_1m
     )
     return round(dollars / 1_000_000, 6)
+
+
+#: A run that read 80 input tokens from the cache and wrote 10 to it, of 120 in all.
+CACHED = AIMessageChunk(
+    content="",
+    usage_metadata={
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "total_tokens": 150,
+        "input_token_details": {"cache_read": 80, "cache_creation": 10},
+    },
+)
+
+
+def _cached_usage(model: str) -> dict:
+    """What ``CACHED`` comes to."""
+    return {
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "cache_read_tokens": 80,
+        "cache_creation_tokens": 10,
+        "estimated_cost": _cost(model, 120, 30, read=80, write=10),
+        "partial": False,
+    }
 
 
 def _usage(model: str) -> dict:
@@ -89,30 +121,52 @@ class TestTheDoneEvent:
         assert events[-1]["usage"] == _usage(provider.model)
 
     @offered
+    @pytest.mark.parametrize("drive", [_chat, _ask], ids=["chat", "ask"])
     async def test_cached_tokens_are_counted_and_priced_at_their_own_rates(
-        self, provider: Provider
+        self, provider: Provider, drive
     ) -> None:
-        cached = AIMessageChunk(
+        """On both endpoints, so cache reads and writes cannot trade places in one of them."""
+        script = [[*scripted_reply(provider, ANSWER, usage=False), CACHED]]
+
+        events = await drive(provider, script)
+
+        assert events[-1]["usage"] == _cached_usage(provider.model)
+
+    async def test_the_cache_write_langchain_anthropic_reports_per_lifetime_is_counted(
+        self,
+    ) -> None:
+        """The real adapter zeroes ``cache_creation`` and reports the write under its
+        lifetime (``ephemeral_5m_input_tokens``), so a reading of ``cache_creation`` alone
+        would show no write on real Anthropic traffic."""
+        anthropic = next(p for p in OFFERED if p.name == "anthropic")
+        chunk = AIMessageChunk(
             content="",
             usage_metadata={
-                "input_tokens": 120,
+                "input_tokens": 570,
                 "output_tokens": 30,
-                "total_tokens": 150,
-                "input_token_details": {"cache_read": 80, "cache_creation": 10},
+                "total_tokens": 600,
+                "input_token_details": {
+                    "cache_read": 70,
+                    "cache_creation": 0,
+                    "ephemeral_5m_input_tokens": 500,
+                    "ephemeral_1h_input_tokens": 0,
+                },
             },
         )
-        script = [[*scripted_reply(provider, ANSWER, usage=False), cached]]
 
-        events = await _chat(provider, script)
+        events = await _chat(anthropic, [[*scripted_reply(anthropic, ANSWER, usage=False), chunk]])
 
-        assert events[-1]["usage"] == {
-            "input_tokens": 120,
-            "output_tokens": 30,
-            "cache_read_tokens": 80,
-            "cache_creation_tokens": 10,
-            "estimated_cost": _cost(provider.model, 120, 30, read=80, write=10),
-            "partial": False,
-        }
+        usage = events[-1]["usage"]
+        assert (usage["cache_read_tokens"], usage["cache_creation_tokens"]) == (70, 500)
+
+    @offered
+    async def test_the_cli_can_read_what_the_server_sends(self, provider: Provider) -> None:
+        events = await _chat(provider, [scripted_reply(provider, ANSWER)])
+
+        line = format_usage(events[-1]["usage"])
+
+        assert line is not None and line.startswith("120 in, 30 out, ")
+        assert "about $" in line or "under $" in line, "and a cost"
 
     @offered
     async def test_a_request_whose_provider_reported_no_usage_says_so(
@@ -157,6 +211,102 @@ class TestAParkedBrowserRun:
 
         assert events[-1]["event"] == "tool_request"
         assert events[-1]["usage"] == _usage("claude-haiku-4-5")
+
+    async def test_its_cache_reads_and_writes_are_its_own(self) -> None:
+        call = _anthropic_call("execute_code", "toolu_01cached", {"code": "x", "description": "d"})
+        run = [*call, AIMessageChunk(content=[], usage_metadata=CACHED.usage_metadata)]
+        session = ChatSession("sess-parked-cached", BROWSER_COMMUNITY)
+        session.add_user_message(QUESTION)
+        with patch(
+            "src.api.routers.community.create_community_assistant",
+            return_value=browser_assistant([run]),
+        ):
+            events = await collect(
+                _stream_chat_response(
+                    BROWSER_COMMUNITY,
+                    session,
+                    None,
+                    None,
+                    None,
+                    http_request=real_request("req-usage"),
+                    declared_client_tools={"execute_code"},
+                )
+            )
+
+        assert events[-1]["usage"] == _cached_usage("claude-haiku-4-5")
+
+    def test_each_run_of_a_reply_reports_only_its_own_through_the_real_endpoints(
+        self,
+        resume_client,  # noqa: F811
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Run 1 parks on a browser call over ``/chat``, run 2 answers it over
+        ``/chat/resume``. Each event carries its own run's usage: nothing held on the
+        session adds them, which would be counted twice by a client that sums the runs."""
+        run1 = [
+            *_anthropic_call("execute_code", CODE_CALL_ID, {"code": "x", "description": "d"}),
+            AIMessageChunk(
+                content=[],
+                usage_metadata={
+                    "input_tokens": 100,
+                    "output_tokens": 10,
+                    "total_tokens": 110,
+                    "input_token_details": {"cache_read": 40, "cache_creation": 5},
+                },
+            ),
+        ]
+        run2 = [
+            *browser_answer(),
+            AIMessageChunk(
+                content=[],
+                usage_metadata={"input_tokens": 150, "output_tokens": 20, "total_tokens": 170},
+            ),
+        ]
+        session = ChatSession("sess-two-runs", BROWSER_COMMUNITY)
+        session.add_user_message("Plot the alpha power.")
+        _get_session_store(BROWSER_COMMUNITY)[session.session_id] = session
+        with patch(
+            "src.api.routers.community.create_community_assistant",
+            return_value=browser_assistant([run1]),
+        ):
+            first = asyncio.run(
+                collect(
+                    _stream_chat_response(
+                        BROWSER_COMMUNITY,
+                        session,
+                        None,
+                        None,
+                        None,
+                        declared_client_tools={"execute_code"},
+                    )
+                )
+            )
+        assert first[-1]["event"] == "tool_request"
+        assert first[-1]["usage"]["input_tokens"] == 100
+        assert first[-1]["usage"]["cache_read_tokens"] == 40
+        monkeypatch.setattr(
+            "src.api.routers.community.create_community_assistant",
+            lambda *_a, **_k: browser_assistant([run2]),
+        )
+
+        response = resume_client.post(
+            f"/{BROWSER_COMMUNITY}/chat/resume",
+            headers={"Origin": BROWSER_ORIGIN},
+            json={
+                "session_id": "sess-two-runs",
+                "result": {"call_id": first[-1]["call_id"], "status": "ok", "summary": "peak"},
+                "client_tools": ["execute_code"],
+            },
+        )
+
+        assert response.status_code == 200
+        events = [
+            json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")
+        ]
+        assert events[-1]["event"] == "done"
+        assert events[-1]["usage"]["input_tokens"] == 150, "run 2's own, not run 1's added"
+        assert events[-1]["usage"]["output_tokens"] == 20
+        assert events[-1]["usage"]["cache_read_tokens"] == 0
 
 
 def _serve(monkeypatch: pytest.MonkeyPatch, provider: Provider, script: list) -> None:
@@ -212,6 +362,27 @@ class TestWithoutStreaming:
 
         assert second.status_code == 200
         assert second.json()["usage"] == _usage(provider.model), "not the two turns added up"
+
+    @offered
+    @pytest.mark.parametrize("endpoint", ["ask", "chat"])
+    def test_cached_tokens_are_each_in_their_own_field(
+        self,
+        provider: Provider,
+        endpoint: str,
+        client: TestClient,  # noqa: F811
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _serve(monkeypatch, provider, [[*scripted_reply(provider, ANSWER, usage=False), CACHED]])
+        body = (
+            {"question": QUESTION, "stream": False}
+            if endpoint == "ask"
+            else {"message": QUESTION, "session_id": "sess-usage-cached", "stream": False}
+        )
+
+        response = client.post(f"/{COMMUNITY}/{endpoint}", headers={"Origin": ORIGIN}, json=body)
+
+        assert response.status_code == 200
+        assert response.json()["usage"] == _cached_usage(provider.model)
 
     def test_openrouter_is_left_out(
         self,
