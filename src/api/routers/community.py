@@ -121,6 +121,7 @@ from src.metrics.queries import (
     get_quality_summary,
     get_usage_stats,
 )
+from src.metrics.reply_usage import ReplyUsage, reply_usage
 from src.tools.client_tools import client_tools_disabled
 
 logger = logging.getLogger(__name__)
@@ -300,6 +301,15 @@ class ChatResponse(BaseModel):
             "`warning` event."
         ),
     )
+    usage: ReplyUsage | None = Field(
+        default=None,
+        description=(
+            "Tokens this reply used, how many of them were cached, and an estimate of the "
+            "cost in US dollars. Null when the provider reported no usage, and for models "
+            "OSA does not offer itself (served through OpenRouter). The streamed endpoint "
+            "sends the same object on its `done` event."
+        ),
+    )
 
 
 class UnansweredReplyResponse(BaseModel):
@@ -346,6 +356,15 @@ class AskResponse(BaseModel):
             "because the model reached its output limit or the conversation filled its "
             "context window. The streamed endpoint sends the same text as a `warning` "
             "event."
+        ),
+    )
+    usage: ReplyUsage | None = Field(
+        default=None,
+        description=(
+            "Tokens this reply used, how many of them were cached, and an estimate of the "
+            "cost in US dollars. Null when the provider reported no usage, and for models "
+            "OSA does not offer itself (served through OpenRouter). The streamed endpoint "
+            "sends the same object on its `done` event."
         ),
     )
 
@@ -2314,6 +2333,36 @@ def _extract_agent_result(result: dict) -> AgentResult:
     )
 
 
+def _reply_usage_of(awm: AssistantWithMetrics, agent_result: AgentResult) -> ReplyUsage | None:
+    """The usage to tell the reader of a request that is not streamed (issue #582)."""
+    return reply_usage(
+        awm.model,
+        agent_result.input_tokens,
+        agent_result.output_tokens,
+        agent_result.cache_read_tokens,
+        agent_result.cache_creation_tokens,
+    )
+
+
+def _usage_for_event(
+    awm: AssistantWithMetrics | None,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_creation_tokens: int,
+) -> dict[str, Any] | None:
+    """The ``usage`` a stream's ``done`` or ``tool_request`` event carries, for the run it
+    ends: its tokens so far, or None when there is nothing to tell (see ``reply_usage``)."""
+    usage = reply_usage(
+        awm.model if awm else None,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+    )
+    return usage.model_dump() if usage else None
+
+
 def _set_metrics_on_request(
     http_request: Request,
     awm: AssistantWithMetrics,
@@ -2641,6 +2690,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 request_id=getattr(http_request.state, "request_id", None),
                 model=awm.model,
                 warnings=warnings,
+                usage=_reply_usage_of(awm, ar),
             )
 
         except UnansweredReply as unanswered:
@@ -2782,6 +2832,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 request_id=getattr(http_request.state, "request_id", None),
                 model=awm.model,
                 warnings=warnings,
+                usage=_reply_usage_of(awm, ar),
             )
 
         except UnansweredReply as unanswered:
@@ -3815,7 +3866,8 @@ async def _stream_ask_response(
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
         data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done;
                `codes` lists every kind when more than one applies)
-        data: {"event": "done", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
+        data: {"event": "done", "request_id": "...", "model": "...", "content": "final answer", "citations": [...],
+               "usage": {...}}  (`usage`: this run's tokens, cache tokens and estimated cost, or null; see ReplyUsage)
         data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
                "retryable": true}  (ends the stream, no `done`; `retryable` only when known)
 
@@ -4002,6 +4054,13 @@ async def _stream_ask_response(
                 }
                 for m in citation_assembler.marks
             ],
+            "usage": _usage_for_event(
+                awm,
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_read_tokens,
+                total_cache_creation_tokens,
+            ),
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
 
@@ -4124,6 +4183,7 @@ def _finish_with_tool_request(
     citations: Sequence[CitationMark] = (),
     runs_before: int = 0,
     code_runs_before: int = 0,
+    usage: dict[str, Any] | None = None,
 ) -> Iterator[str]:
     """End run 1 on a browser call: adopt the history, park the call, ask the client to run it.
 
@@ -4156,7 +4216,11 @@ def _finish_with_tool_request(
     )
     session.replace_history(final_state.get("messages", []) if final_state else [])
     session.set_pending_call(pending)
-    yield f"data: {json.dumps(pending.to_request_event(session.session_id, content))}\n\n"
+    event = pending.to_request_event(session.session_id, content)
+    # What this run used, so the reader's total for a reply that spans runs is the sum of
+    # its events (the widget adds them up).
+    event["usage"] = usage
+    yield f"data: {json.dumps(event)}\n\n"
 
 
 async def _stream_chat_response(
@@ -4187,7 +4251,8 @@ async def _stream_chat_response(
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
         data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done;
                `codes` lists every kind when more than one applies)
-        data: {"event": "done", "session_id": "...", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
+        data: {"event": "done", "session_id": "...", "request_id": "...", "model": "...", "content": "final answer", "citations": [...],
+               "usage": {...}}  (`usage`: this run's tokens, cache tokens and estimated cost, or null; see ReplyUsage)
         data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
                "retryable": true}  (ends the stream, no `done`; `retryable` only when known)
 
@@ -4468,6 +4533,13 @@ async def _stream_chat_response(
                 citations=citation_assembler.marks,
                 runs_before=browser_runs_answered,
                 code_runs_before=code_runs_answered,
+                usage=_usage_for_event(
+                    awm,
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cache_read_tokens,
+                    total_cache_creation_tokens,
+                ),
             ):
                 yield sse_line
             model_runs.warn_about_usage(
@@ -4594,6 +4666,13 @@ async def _stream_chat_response(
                 }
                 for m in citation_assembler.marks
             ],
+            "usage": _usage_for_event(
+                awm,
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_read_tokens,
+                total_cache_creation_tokens,
+            ),
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
 
