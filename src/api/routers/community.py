@@ -3805,7 +3805,7 @@ _SERVER_KEY_MESSAGE = (
 )
 
 #: Told to a caller whose own key hit the provider's rate limit: the model is fine, and
-#: another model on the same key would be limited the same way.
+#: another model on the same key may be limited the same way.
 _BYOK_RATE_LIMITED_MESSAGE = (
     "The provider is rate limiting your API key. Wait a moment and try again."
 )
@@ -3850,13 +3850,16 @@ def _stream_failure_event(
     """Log a failure that ended a stream and build the ``error`` event the reader gets.
 
     The log says which failure it was (the exception class, the provider's code or status,
-    and whether a retry can succeed) at WARNING for a model failure that can clear by
-    itself, or that is the caller's own key being refused (theirs to fix, and nothing the
-    operator did), and ERROR, with the traceback, for everything else: one that cannot
-    clear, one that did not clear when the call was tried a second time, a platform or
-    community key the provider refused, and any exception that is not a recognized
-    model-provider error (a tool of ours failing is one, and its traceback is the only
-    clue). The reader is told what is honest: a failure no retry can fix says so, a refused
+    and whether a retry can succeed). A provider outage (the service unavailable, the
+    connection lost, or a read that timed out) is logged at ERROR, so that an alert on ERROR
+    sees it whichever phase of the call it came in; a throttle, and the caller's own key
+    being refused (theirs to fix, and nothing the operator did), are WARNING. The traceback
+    goes with ERROR for everything but an outage that is expected to look like itself: one
+    that cannot clear, one that was worth a retry and reached the reader anyway (the retry
+    failed, or output was already shown, or it came too late), a platform or community key
+    the provider refused, and any exception that is not a recognized model-provider error (a
+    tool of ours failing is one, and its traceback is the only clue). The reader is told what
+    is honest: a failure no retry can fix says so, a refused
     credential says whose it is, any other model-call failure is reported as the model
     being unavailable with the ask to choose another, and a failure that is not a model
     call's keeps the stream's own wording.
@@ -3897,8 +3900,12 @@ def _stream_failure_event(
     needs_traceback = (
         after_retry or failure.worth_retrying_now or not (clears_by_itself or refused_callers_key)
     )
+    # An outage before the response began, or a read that timed out, is no less an outage
+    # than a stream cut short: it reaches ERROR too, without a traceback its line already
+    # names (the class and code).
+    outage = failure.from_provider and failure.kind in ("unavailable", "connection", "timeout")
     logger.log(
-        logging.ERROR if needs_traceback else logging.WARNING,
+        logging.ERROR if (needs_traceback or outage) else logging.WARNING,
         "%s (ID: %s) for %s (community=%s, model=%s, request_id=%s, session=%s): "
         "%s [retryable=%s]: %s",
         summary,

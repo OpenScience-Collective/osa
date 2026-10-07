@@ -191,10 +191,12 @@ def _assert_retryable(
     detail: str,
     *,
     level: int = logging.WARNING,
+    traceback: bool = False,
 ) -> None:
     """The reader is told their model is unavailable and to choose another; the log says
-    what happened, at WARNING for a failure that can clear by itself, or at ERROR with the
-    traceback for one a retry would have covered and that reached the reader anyway."""
+    what happened: at WARNING for a throttle, at ERROR for an outage (a service that is
+    unavailable, a lost connection, a read that timed out), and with the traceback too for
+    one a retry would have covered and that reached the reader anyway."""
     assert events[-1]["event"] == "error", events
     assert events[-1]["message"] == BEDROCK_UNAVAILABLE
     # The widget shows the message for a few seconds, so it has to be read at a glance.
@@ -208,7 +210,7 @@ def _assert_retryable(
     message = record.getMessage()
     for expected in (COMMUNITY, BEDROCK_MODEL, "req-failure", detail, "retryable=yes"):
         assert expected in message, f"{expected!r} missing from {message!r}"
-    assert bool(record.exc_info) == (level == logging.ERROR)
+    assert bool(record.exc_info) is traceback
     assert record.error_id == events[-1]["error_id"]
     assert record.retryable is True
 
@@ -260,7 +262,7 @@ class TestBedrock:
 
         events = await _run(path, llm, BEDROCK_MODEL)
 
-        _assert_retryable(events, _failure_records(caplog), "ReadTimeoutError")
+        _assert_retryable(events, _failure_records(caplog), "ReadTimeoutError", level=logging.ERROR)
 
     @paths
     async def test_a_service_exception_inside_the_stream_is_retryable(
@@ -419,6 +421,7 @@ class TestARetryBeforeTheReaderSawAnything:
         assert _retry_records(caplog) == []
         (record,) = _failure_records(caplog)
         assert "ReadTimeoutError" in record.getMessage() and "retryable=yes" in record.getMessage()
+        assert record.levelno == logging.ERROR and not record.exc_info, "an outage, by its line"
 
     @paths
     async def test_a_refusal_is_not_retried(
@@ -483,7 +486,9 @@ class TestARetryBeforeTheReaderSawAnything:
 
         assert events[-1]["event"] == "error", events
         assert _retry_records(caplog) == []
-        assert len(_failure_records(caplog)) == 1
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.WARNING, "a throttle is the account's, not an outage"
+        assert not record.exc_info
 
     @paths
     async def test_a_reply_that_began_is_not_run_again(
@@ -928,8 +933,9 @@ class TestWhatLangchainAwsRaisesItself:
         events = await _run(path, llm, BEDROCK_MODEL)
 
         records = _failure_records(caplog)
-        # Text had reached the reader, so there was no retry to make: an outage, at ERROR.
-        _assert_retryable(events, records, "ConnectionError", level=logging.ERROR)
+        # Text had reached the reader, so there was no retry to make: an outage, at ERROR
+        # with the traceback.
+        _assert_retryable(events, records, "ConnectionError", level=logging.ERROR, traceback=True)
         assert "Model call failed" in records[0].getMessage()
 
 
@@ -1254,6 +1260,9 @@ class TestWhatElseIsTriedAgain:
         assert events[-1]["event"] == "error"
         assert events[-1]["message"] == BEDROCK_UNAVAILABLE
         assert _retry_records(caplog) == []
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.ERROR, "an outage before the response is an outage"
+        assert not record.exc_info, "and its line names the class and code"
         attempts = llm.client.meta.config.retries["total_max_attempts"]
         assert len(wire.requests) == attempts, "botocore's own tries, and the helper adds none"
 
