@@ -19,7 +19,7 @@ from src.api.routers.community import (
 )
 from src.api.security import ByokCredential
 from src.assistants import discover_assistants, registry
-from src.core.services.anthropic_models import BEDROCK_MODELS, OFFERED_MODELS
+from src.core.services.anthropic_models import BEDROCK_MODELS, OFFERED_MODELS, normalize_model
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
 
 NOTES_HEADING = "Working Notes For This Model"
@@ -67,7 +67,7 @@ def a_bedrock_default_community(monkeypatch):
     info = next(
         info
         for info in registry.list_all()
-        if info.community_config.default_model in BEDROCK_MODELS
+        if normalize_model(info.community_config.default_model) in BEDROCK_MODELS
     )
     return _on_a_deployment_with_every_platform_key(monkeypatch, info.id)
 
@@ -178,10 +178,14 @@ class TestTheRoutesOfferedModel:
         assert route.model == "some-lab/their-own-model"
         assert route.offered_model_id is None
 
-    def test_the_fallback_model_is_the_offered_one(self, hed, monkeypatch):
+    def test_the_fallback_model_is_the_offered_one(self, a_bedrock_default_community, monkeypatch):
         """A Bedrock default that cannot be served runs Claude, and is that model's id."""
+        community = a_bedrock_default_community
+        assert community.community_config.default_model in BEDROCK_MODELS, (
+            "nothing to fall back from"
+        )
         monkeypatch.setattr(get_settings(), "bedrock_api_key", None)
-        route = _route_request(hed, "hed", ANTHROPIC_BYOK, None, None)
+        route = _route_request(community, community.id, ANTHROPIC_BYOK, None, None)
         assert route.choice.provider == "anthropic"
         assert route.offered_model_id == route.model
         assert route.model not in BEDROCK_MODELS

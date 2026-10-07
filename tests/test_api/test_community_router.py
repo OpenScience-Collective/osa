@@ -741,14 +741,14 @@ class TestCommunityConfigOfferedModels:
         back to the deployment's Claude default."""
         from src.api.config import get_settings
         from src.assistants import registry
-        from src.core.services.anthropic_models import BEDROCK_MODELS
+        from src.core.services.anthropic_models import BEDROCK_MODELS, normalize_model
 
         monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
         monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
         community = next(
             info.id
             for info in registry.list_all()
-            if info.community_config.default_model in BEDROCK_MODELS
+            if normalize_model(info.community_config.default_model) in BEDROCK_MODELS
         )
 
         response = client.get(f"/{community}/")
