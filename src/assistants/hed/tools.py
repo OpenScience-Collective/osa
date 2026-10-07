@@ -158,6 +158,15 @@ def validate_hed_string(hed_string: str, schema_version: str = "8.4.0") -> dict[
         }
 
 
+def _hed_suggest_env() -> dict[str, str]:
+    """Environment for the hed-suggest process: PATH, so `node` is found, and nothing else.
+
+    The server process holds the model provider keys and other secrets, and the lookup
+    needs none of them.
+    """
+    return {"PATH": os.environ.get("PATH", os.defpath)}
+
+
 @tool
 def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, Any]:
     """Suggest valid HED tags for natural language search terms.
@@ -219,11 +228,18 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, Any]
             **{term: [] for term in search_terms},
         }
 
+    # hed-suggest reads every argument that starts with "-" as an option, so a term such
+    # as "--semantic" would switch its mode. Those terms are not looked up and map to [].
+    skipped = {term: [] for term in search_terms if term.startswith("-")}
+    queries = [term for term in search_terms if term not in skipped]
+    if skipped and not queries:
+        return skipped
+
     try:
         # Build command
         cmd = ["node", cli_path] if cli_path.endswith(".js") else [cli_path]
         cmd.extend(["--json", "--top", str(top_n)])
-        cmd.extend(search_terms)
+        cmd.extend(queries)
 
         # Run CLI
         result = subprocess.run(
@@ -231,6 +247,7 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, Any]
             capture_output=True,
             text=True,
             timeout=30,
+            env=_hed_suggest_env(),
         )
 
         if result.returncode != 0:
@@ -247,7 +264,7 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, Any]
 
         # Parse JSON from stdout
         output = json.loads(result.stdout)
-        return output
+        return {**output, **skipped}
 
     except subprocess.TimeoutExpired:
         logger.error("hed-suggest CLI timed out after 30 seconds")
