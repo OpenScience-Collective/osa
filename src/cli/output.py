@@ -26,21 +26,32 @@ err_console = Console(stderr=True)
 
 
 def print_error(message: str, hint: str | None = None) -> None:
-    """Print error to stderr. The message is printed as written: it can carry a model name or
-    an exception's text, and a bracket in either is not markup."""
-    err_console.print(f"[bold red]Error:[/] {escape(message)}", highlight=False)
+    """Print error to stderr.
+
+    The message is printed as written: it can carry a model name or an exception's text, and
+    a bracket in either is not markup. Whatever it is, it is printed (a server's JSON can
+    send ``null``).
+    """
+    err_console.print(f"[bold red]Error:[/] {escape(str(message))}", highlight=False)
     if hint:
         err_console.print(f"Hint: {hint}", style="dim", markup=False)
 
 
 def print_warning(message: str) -> None:
     """Print a warning to stderr: the answer is shown, and the reader should know something."""
-    err_console.print(f"[bold yellow]Warning:[/] {escape(message)}", highlight=False)
+    err_console.print(f"[bold yellow]Warning:[/] {escape(str(message))}", highlight=False)
 
 
 def print_success(message: str) -> None:
     """Print success message to stderr."""
     err_console.print(f"[bold green]OK:[/] {message}")
+
+
+#: A cost this large is not one OSA computes. The widget's ``formatCost`` does the same sums
+#: in doubles, which are exact only below 2**53 micro-dollars (about nine billion dollars),
+#: and the two must print the same digits, so both leave the cost out from one billion
+#: dollars up (and an infinity could not be rounded at all).
+_MAX_COST = 1e9
 
 
 def _format_cost(dollars: float) -> str:
@@ -105,7 +116,7 @@ def format_usage(usage: dict[str, Any] | None) -> str | None:
     cache = f" ({', '.join(cache_parts)})" if cache_parts else ""
     parts = [f"{input_tokens:,} in{cache}", f"{output_tokens:,} out"]
     cost = usage.get("estimated_cost")
-    if isinstance(cost, int | float) and not isinstance(cost, bool) and 0 <= cost < math.inf:
+    if isinstance(cost, int | float) and not isinstance(cost, bool) and 0 <= cost < _MAX_COST:
         parts.append(_format_cost(float(cost)))
     line = ", ".join(parts)
     return f"at least {line}" if usage.get("partial") is True else line

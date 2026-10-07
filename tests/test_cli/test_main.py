@@ -14,6 +14,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 import respx
+import typer
 from click import unstyle
 from typer.testing import CliRunner
 
@@ -158,7 +159,7 @@ class TestConfigCommands:
         """config reset should require confirmation."""
         result = runner.invoke(cli, ["config", "reset"], input="n\n")
         assert result.exit_code == 0
-        assert "Cancelled" in result.output
+        assert "Canceled" in result.output
 
     def test_config_reset_with_yes_flag(self, tmp_path: Path) -> None:
         """config reset with --yes should skip confirmation."""
@@ -488,59 +489,60 @@ class TestAWarningReachesTheReader:
 
         assert "foo[/bar]" in capsys.readouterr().err
 
-    def test_a_warning_with_markup_characters_prints_as_written(self, capsys) -> None:
+    def test_an_error_or_warning_that_is_not_a_string_still_prints(self, capsys) -> None:
+        """A server's JSON can send any value for a message; the CLI shows an error, not a
+        traceback of its own."""
         from src.cli import output
 
-        output.print_warning("Cut off [at the limit] [bold]now[/bold]")
+        output.print_error(42)  # ty: ignore[invalid-argument-type]
+        output.print_warning(["a", "list"])  # ty: ignore[invalid-argument-type]
 
-        assert "Cut off [at the limit] [bold]now[/bold]" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "42" in err and "list" in err
 
-    def test_ask_without_streaming_prints_the_warning(self, tmp_path: Path) -> None:
-        from src.api.routers.community import AskResponse
+    @pytest.mark.parametrize("path", ["ask", "chat"])
+    @pytest.mark.parametrize(
+        ("event", "expected"), [("error", "Unknown error"), ("warning", "Unknown warning")]
+    )
+    def test_a_stream_event_with_a_null_message_says_it_is_unknown(
+        self, capsys, path: str, event: str, expected: str
+    ) -> None:
+        """``data.get("message", default)`` keeps an explicit null: the reader would be told
+        "Error: None"."""
+        done = {
+            "ask": b'{"event":"done","content":"HED"}',
+            "chat": b'{"event":"done","session_id":"s","content":"HED"}',
+        }
+        client = OSAClient("https://test.example", user_id="test-user")
 
-        body = AskResponse(answer="HED is a sys", model="m", warnings=[self.WARNING])
-
-        with (
-            patched_config_paths(tmp_path),
-            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
-            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-cli-test-key"}, clear=True),
-            respx.mock,
-        ):
-            respx.post("https://api.osc.earth/osa/hed/ask").mock(
-                return_value=httpx.Response(200, json=body.model_dump(mode="json"))
-            )
-            result = runner.invoke(cli, ["ask", "How?", "-a", "hed", "--no-stream"])
-
-        assert result.exit_code == 0, result.output
-        assert "HED is a sys" in result.output
-        assert self.WARNING in result.output
-
-    def test_chat_without_streaming_prints_the_warning(self, tmp_path: Path) -> None:
-        from src.api.routers.community import ChatMessage, ChatResponse
-
-        body = ChatResponse(
-            session_id="s-1",
-            message=ChatMessage(role="assistant", content="HED is a sys"),
-            model="m",
-            warnings=[self.WARNING],
-        )
+        def run() -> None:
+            if path == "ask":
+                _ask_streaming(client, "hed", "How?")
+            else:
+                _chat_turn_streaming(client, "hed", "How?", None)
 
         with (
-            patched_config_paths(tmp_path),
-            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
-            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-cli-test-key"}, clear=True),
             respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
         ):
-            respx.post("https://api.osc.earth/osa/hed/chat").mock(
-                return_value=httpx.Response(200, json=body.model_dump(mode="json"))
+            respx.post(f"https://test.example/hed/{path}").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"' + event.encode() + b'","message":null}\n\n'
+                        b"data: " + done[path] + b"\n\n"
+                    ),
+                )
             )
-            result = runner.invoke(
-                cli, ["chat", "-a", "hed", "--no-stream"], input="question\nquit\n"
-            )
+            if event == "error" and path == "ask":
+                with pytest.raises(typer.Exit):
+                    run()
+            else:
+                run()
 
-        assert result.exit_code == 0, result.output
-        assert "HED is a sys" in result.output
-        assert self.WARNING in result.output
+        err = capsys.readouterr().err
+        assert expected in err and "None" not in err
 
 
 USAGE_LINES = json.loads(

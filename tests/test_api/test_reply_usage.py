@@ -477,7 +477,14 @@ class TestABadCountDoesNotCostTheReaderTheAnswer:
         assert record.levelno == logging.WARNING
         assert not record.exc_info, "one line a reply, no traceback: the counts are in it"
         text = record.getMessage()
-        for expected in (COMMUNITY, provider.model, "req-usage", "input=20", "cache_read=80"):
+        for expected in (
+            COMMUNITY,
+            provider.model,
+            "req-usage",
+            "input=20",
+            "cache_read=80",
+            "cached tokens exceed",
+        ):
             assert expected in text, f"{expected!r} missing from {text!r}"
 
 
@@ -501,3 +508,51 @@ class TestAPriceTableDefectIsNotTheProvidersFault:
             r for r in caplog.records if "cost of a reply cannot be told" in r.getMessage()
         ]
         assert record.levelno == logging.ERROR and record.exc_info
+        assert "estimated_cost" in record.getMessage(), "the line names the field that failed"
+
+
+class TestWhatTheOperatorReads:
+    """``_safe_reply_usage`` is called with whatever the provider reported. Its log line has to
+    read as a sentence, and has to tell a provider's bad counts from a defect in OSA's own."""
+
+    @staticmethod
+    def _call(**counts: int):
+        from src.api.routers.community import _safe_reply_usage
+        from src.api.turn_outcome import ModelRuns
+
+        arguments = {
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+        } | counts
+        return _safe_reply_usage(
+            "claude-haiku-4-5",
+            model_runs=ModelRuns(),
+            community_id=COMMUNITY,
+            request_id="req-log",
+            **arguments,
+        )
+
+    def test_cached_tokens_above_the_input_are_named_as_usage_not_as_a_field(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A check on the whole object has no field to name; the line says "usage"."""
+        with caplog.at_level(logging.WARNING):
+            assert self._call(input_tokens=10, cache_read_tokens=50) is None
+
+        (record,) = caplog.records
+        assert "usage: Value error, cached tokens exceed the input" in record.getMessage()
+        assert "(: " not in record.getMessage()
+
+    def test_counts_that_also_make_the_cost_negative_are_still_the_providers(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A negative output count makes the cost negative too, but the counts were the
+        problem: a warning about the provider, not an error about the price table."""
+        with caplog.at_level(logging.WARNING):
+            assert self._call(input_tokens=0, output_tokens=-1_000_000) is None
+
+        (record,) = caplog.records
+        assert record.levelno == logging.WARNING
+        assert "output_tokens" in record.getMessage()

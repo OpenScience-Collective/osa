@@ -7,6 +7,7 @@ exception event, the Anthropic SDK's status errors and LiteLLM's OpenAI-style on
 """
 
 import json
+import logging
 from typing import get_args
 
 import anthropic
@@ -27,7 +28,12 @@ from src.api.config import Settings
 from src.core.services import model_errors
 from src.core.services.anthropic_models import BEDROCK_MODELS
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
-from src.core.services.model_errors import FailureKind, ModelFailure, classify_model_error
+from src.core.services.model_errors import (
+    FailureKind,
+    ModelFailure,
+    classify_model_error,
+    exception_text,
+)
 from tests.helpers.bedrock_wire import (
     CUT_SHORT,
     Wire,
@@ -116,7 +122,7 @@ RETRYABLE = [
         ConnectionClosedError(endpoint_url="https://bedrock-runtime.us-east-2.amazonaws.com"),
         "connection",
     ),
-    # Anthropic: its vendored httpx lets a stream's network errors out raw
+    # Anthropic: its httpx2 package lets a stream's network errors out raw
     (httpx2.ReadTimeout("slow"), "timeout"),
     (httpx2.ConnectError("refused"), "connection"),
     (httpx2.RemoteProtocolError("peer closed connection without a complete body"), "connection"),
@@ -643,11 +649,11 @@ class TestWhereInTheCallItFailed:
             lambda: ConnectionError("Incomplete Bedrock response stream: missing messageStop"),
         ],
         ids=[
-            "bedrock 503 refusal",
-            "bedrock 500 refusal",
+            "bedrock 503 answer",
+            "bedrock 500 answer",
             "never connected",
             "connect timeout",
-            "anthropic 529 refusal",
+            "anthropic 529 answer",
             "anthropic connection error",
             "a ConnectionError of our own",
         ],
@@ -658,6 +664,35 @@ class TestWhereInTheCallItFailed:
         assert failure.mid_stream is False
         assert failure.worth_retrying_now is False
 
+    @pytest.mark.parametrize(
+        ("cause", "mid_stream"),
+        [
+            (
+                EventStreamError(
+                    {"Error": {"Code": "modelStreamErrorException", "Message": "x"}},
+                    "ConverseStream",
+                ),
+                True,
+            ),
+            (_client_error("ServiceUnavailableException", 503), False),
+        ],
+        ids=["a stream exception event", "an error answer before the response"],
+    )
+    def test_a_wrapper_is_placed_by_the_error_it_was_raised_from(
+        self, cause: Exception, mid_stream: bool
+    ) -> None:
+        """The wrapper says nothing of where the call failed; its cause does."""
+        try:
+            try:
+                raise cause
+            except Exception as inner:
+                raise RuntimeError("model call failed") from inner
+        except RuntimeError as wrapped:
+            failure = classify_model_error(wrapped)
+
+        assert failure.mid_stream is mid_stream
+        assert failure.worth_retrying_now is mid_stream
+
     def test_the_same_urllib3_error_outside_the_model_call_is_not(self) -> None:
         def ours() -> None:
             raise dropped_stream_error()
@@ -666,3 +701,99 @@ class TestWhereInTheCallItFailed:
             ours()
 
         assert classify_model_error(caught.value).mid_stream is False
+
+
+class TestItNeverRaises:
+    """It runs inside the handlers that report a failure: an exception from it would cut the
+    stream with no error event, no log line and no metrics row."""
+
+    def test_an_exception_whose_text_cannot_be_read(self) -> None:
+        class Unreadable(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        failure = classify_model_error(Unreadable())
+
+        assert failure.kind == "unknown" and not failure.from_provider
+
+    def test_a_class_with_no_module(self) -> None:
+        class Moduleless(Exception):
+            __module__ = None  # type: ignore[assignment]
+
+        failure = classify_model_error(Moduleless("x"))
+
+        assert failure.kind == "unknown" and failure.mid_stream is False
+
+    def test_a_provider_error_whose_status_cannot_be_read(self) -> None:
+        class BadStatus(anthropic.APIStatusError):
+            @property
+            def status_code(self) -> int:  # type: ignore[override]
+                raise RuntimeError("no status")
+
+        error = BadStatus.__new__(BadStatus)
+
+        assert classify_model_error(error).kind == "unknown"
+
+    def test_a_wrapper_it_cannot_read_does_not_hide_the_cause_it_can(self) -> None:
+        class Unreadable(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        try:
+            try:
+                raise _client_error("ThrottlingException", 429)
+            except ClientError as inner:
+                raise Unreadable() from inner
+        except Unreadable as wrapped:
+            failure = classify_model_error(wrapped)
+
+        assert (failure.kind, failure.retryable) == ("throttled", True)
+
+    def test_an_error_it_cannot_read_is_logged_once_however_often_it_is_classified(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The helper, the router's handler and its ValueError check each classify one
+        failure; a classifier that cannot read it says so once, not once per handler."""
+
+        class Unreadable(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        error = Unreadable()
+        with caplog.at_level(logging.ERROR, logger="src.core.services.model_errors"):
+            for _ in range(3):
+                assert classify_model_error(error).kind == "unknown"
+
+        assert len([r for r in caplog.records if "Could not classify" in r.getMessage()]) == 1
+
+    def test_the_text_of_an_exception_that_cannot_say_it_is_a_placeholder(self) -> None:
+        class Unreadable(RuntimeError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        assert exception_text(ValueError("plain")) == "plain"
+        assert exception_text(Unreadable()) == "<Unreadable: text unreadable>"
+
+    def test_a_failure_it_can_name_but_not_place_keeps_its_kind_and_is_not_retried(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Where a failure came from is read from its class's module; a class with none
+        leaves that unknown, and unknown is "not mid-stream", so it is not retried."""
+
+        class Moduleless(ClientError):
+            __module__ = None  # type: ignore[assignment]
+
+        error = Moduleless(
+            {
+                "Error": {"Code": "ServiceUnavailableException", "Message": "no"},
+                "ResponseMetadata": {"HTTPStatusCode": 503},
+            },
+            "ConverseStream",
+        )
+
+        with caplog.at_level(logging.ERROR, logger="src.core.services.model_errors"):
+            failure = classify_model_error(error)
+
+        assert (failure.kind, failure.retryable) == ("unavailable", True)
+        assert failure.mid_stream is False and failure.worth_retrying_now is False
+        assert len([r for r in caplog.records if "Could not classify" in r.getMessage()]) == 1

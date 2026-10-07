@@ -1,7 +1,7 @@
 """Answer the Anthropic Messages API at the HTTP layer, for the real client stack.
 
-The Anthropic SDK carries its own copy of httpx (``httpx2``), which ``respx`` does not
-see (``tests/test_api/test_byok_http.py`` explains). So the transport is replaced where
+The Anthropic SDK builds its client on a separate package, ``httpx2``, which ``respx`` does
+not see (``tests/test_api/test_byok_http.py`` explains). So the transport is replaced where
 ``langchain-anthropic`` builds its client, the way
 ``tests/test_api/test_tool_call_anthropic_wire.py`` does, and everything above it
 (``create_anthropic_llm``, ``langchain-anthropic``, the SDK's stream parser) runs as in

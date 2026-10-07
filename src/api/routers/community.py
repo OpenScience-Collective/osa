@@ -100,7 +100,7 @@ from src.core.services.bedrock_llm import create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
 from src.core.services.litellm_llm import create_openrouter_llm, to_openrouter_model
-from src.core.services.model_errors import classify_model_error
+from src.core.services.model_errors import classify_model_error, exception_text
 from src.core.services.stream_retry import RetryState, astream_events_with_retry
 from src.knowledge.search import FAQResult, get_citation_stats, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
@@ -2357,9 +2357,10 @@ def _safe_reply_usage(
         )
     except ValidationError as error:
         problems = "; ".join(
-            f"{'.'.join(str(part) for part in e['loc'])}: {e['msg']}" for e in error.errors()
+            f"{'.'.join(str(part) for part in e['loc']) or 'usage'}: {e['msg']}"
+            for e in error.errors()
         )
-        if any(e["loc"] and e["loc"][0] == "estimated_cost" for e in error.errors()):
+        if all(e["loc"] and e["loc"][0] == "estimated_cost" for e in error.errors()):
             # The counts were fine and the price was not: a defect in the price table.
             logger.error(
                 "The cost of a reply cannot be told as usage (community=%s, model=%s, "
@@ -3804,7 +3805,7 @@ _SERVER_KEY_MESSAGE = (
 )
 
 #: Told to a caller whose own key hit the provider's rate limit: the model is fine, and
-#: another model on the same key would be limited the same way.
+#: another model on the same key may be limited the same way.
 _BYOK_RATE_LIMITED_MESSAGE = (
     "The provider is rate limiting your API key. Wait a moment and try again."
 )
@@ -3849,16 +3850,22 @@ def _stream_failure_event(
     """Log a failure that ended a stream and build the ``error`` event the reader gets.
 
     The log says which failure it was (the exception class, the provider's code or status,
-    and whether a retry can succeed) at WARNING for a model failure that can clear by
-    itself, or that is the caller's own key being refused (theirs to fix, and nothing the
-    operator did), and ERROR, with the traceback, for everything else: one that cannot
-    clear, one that did not clear when the call was tried a second time, a platform or
-    community key the provider refused, and any exception that is not a recognized
-    model-provider error (a tool of ours failing is one, and its traceback is the only
-    clue). The reader is told what is honest: a failure no retry can fix says so, a refused
-    credential says whose it is, any other model-call failure is reported as the model
-    being unavailable with the ask to choose another, and a failure that is not a model
-    call's keeps the stream's own wording.
+    and whether a retry can succeed). A throttle, and the caller's own key being refused
+    (theirs to fix, and nothing the operator did), are WARNING. Everything else is ERROR,
+    including a provider outage (the service unavailable, the connection lost, or a read
+    that timed out) in whichever phase of the call it came, so that an alert on ERROR sees
+    it. The traceback is left off where the line already says all there is: the two WARNINGs,
+    and an outage that was not worth a retry (one that came before the response began, or a
+    read that timed out). It is kept for a failure that cannot clear, one that was worth a
+    retry and reached the reader anyway (the retry failed, or output was already shown, or it
+    came too late), a platform or community key the provider refused, and any exception that
+    is not a recognized model-provider error (a tool of ours failing is one, and its
+    traceback is the only clue).
+
+    The reader is told what is honest: a failure no retry can fix says so, a refused
+    credential says whose it is, a throttle on the caller's own key says so, any other
+    model-call failure is reported as the model being unavailable with the ask to choose
+    another, and a failure that is not a model call's keeps the stream's own wording.
 
     Args:
         error: What the stream raised.
@@ -3871,7 +3878,8 @@ def _stream_failure_event(
             choosing one.
         session_id: The chat session, for the log.
         after_retry: Whether this failure survived a retry (``RetryState.failed_after_retry``),
-            which raises the log level to ERROR and adds "(after one retry)" to the detail.
+            which keeps the traceback (and makes the line an ERROR even for a throttle or a
+            refused key) and adds "(after one retry)" to the detail.
 
     Returns:
         The event to send: ``message``, an ``error_id`` (the key of the log line) and the
@@ -3892,12 +3900,16 @@ def _stream_failure_event(
     clears_by_itself = failure.from_provider and bool(failure.retryable)
     # A failure that was worth a retry and still reached the reader (the retry failed, or it
     # was too late to make one) is an outage, not a blip: the cheap remedy is spent or ruled
-    # out, so it is logged at ERROR like one that cannot clear.
+    # out, so its traceback is kept, like one that cannot clear.
     needs_traceback = (
         after_retry or failure.worth_retrying_now or not (clears_by_itself or refused_callers_key)
     )
+    # An outage before the response began, or a read that timed out, is no less an outage
+    # than a stream cut short: it reaches ERROR too, without a traceback its line already
+    # names (the class and code).
+    outage = failure.kind in ("unavailable", "connection", "timeout")
     logger.log(
-        logging.ERROR if needs_traceback else logging.WARNING,
+        logging.ERROR if (needs_traceback or outage) else logging.WARNING,
         "%s (ID: %s) for %s (community=%s, model=%s, request_id=%s, session=%s): "
         "%s [retryable=%s]: %s",
         summary,
@@ -3909,7 +3921,7 @@ def _stream_failure_event(
         session_id,
         detail,
         failure.retryable_label,
-        error,
+        exception_text(error),
         exc_info=needs_traceback,
         extra={
             "error_id": error_id,
@@ -4224,10 +4236,12 @@ async def _stream_ask_response(
             status_code = 500
         else:
             # Input validation errors - user's fault, so not an error of the agent's
-            logger.warning("Invalid input in streaming for community %s: %s", community_id, e)
+            logger.warning(
+                "Invalid input in streaming for community %s: %s", community_id, exception_text(e)
+            )
             sse_event = {
                 "event": "error",
-                "message": f"Invalid request: {str(e)}",
+                "message": f"Invalid request: {exception_text(e)}",
                 "retryable": False,
             }
             error_message = None
@@ -4843,8 +4857,8 @@ async def _stream_chat_response(
             status_code = 500
         else:
             # Session limit errors: the reader's, so not an error of the agent's
-            logger.error("Session limit error: %s", e)
-            sse_event = {"event": "error", "message": str(e)}
+            logger.error("Session limit error: %s", exception_text(e))
+            sse_event = {"event": "error", "message": exception_text(e)}
             error_message = None
             status_code = 400
         yield f"data: {json.dumps(sse_event)}\n\n"
