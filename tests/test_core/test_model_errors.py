@@ -773,3 +773,27 @@ class TestItNeverRaises:
 
         assert exception_text(ValueError("plain")) == "plain"
         assert exception_text(Unreadable()) == "<Unreadable: text unreadable>"
+
+    def test_a_failure_it_can_name_but_not_place_keeps_its_kind_and_is_not_retried(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Where a failure came from is read from its class's module; a class with none
+        leaves that unknown, and unknown is "not mid-stream", so it is not retried."""
+
+        class Moduleless(ClientError):
+            __module__ = None  # type: ignore[assignment]
+
+        error = Moduleless(
+            {
+                "Error": {"Code": "ServiceUnavailableException", "Message": "no"},
+                "ResponseMetadata": {"HTTPStatusCode": 503},
+            },
+            "ConverseStream",
+        )
+
+        with caplog.at_level(logging.ERROR, logger="src.core.services.model_errors"):
+            failure = classify_model_error(error)
+
+        assert (failure.kind, failure.retryable) == ("unavailable", True)
+        assert failure.mid_stream is False and failure.worth_retrying_now is False
+        assert len([r for r in caplog.records if "Could not classify" in r.getMessage()]) == 1

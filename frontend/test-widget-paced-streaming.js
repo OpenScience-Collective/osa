@@ -1873,6 +1873,15 @@ console.log('\nwhat the browsers say when the network fails is described, not sh
     await waitFor(() => settled(otherContainer), 'the send settles');
     assertEqual(otherContainer.querySelector('.osa-error').textContent, 'Load failed',
       'an error of another kind with the same words keeps its own text');
+
+    // The browsers' wordings are the whole message, or contain "fetch": a longer message
+    // that merely ends the same way is not one of them.
+    const longer = loadWidget({ chat: () => { throw new TypeError('x: load failed'); } });
+    const longerContainer = longer.window.document.querySelector('.osa-chat-widget');
+    send(longer.window, longerContainer, 'A question');
+    await waitFor(() => settled(longerContainer), 'the send settles');
+    assertEqual(longerContainer.querySelector('.osa-error').textContent, 'x: load failed',
+      'a TypeError that only ends in "load failed" keeps its own text');
   } finally {
     console.error = warn;
   }

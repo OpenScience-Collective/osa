@@ -29,7 +29,7 @@ import httpx
 import httpx2
 import pytest
 from botocore.eventstream import EventStreamError
-from botocore.exceptions import ClientError, ReadTimeoutError
+from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_aws.chat_models.bedrock_converse import _parse_stream_event
@@ -510,6 +510,24 @@ class TestARetryBeforeTheReaderSawAnything:
         )
 
     @paths
+    async def test_a_second_failure_of_another_kind_is_an_error_with_its_traceback(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A throttle is a warning when it comes first; one that comes after a retry is the
+        end of the cheap remedy, so it is an error with its traceback."""
+        caplog.set_level(logging.WARNING)
+        llm = _bedrock_llm()
+        wire = Wire(llm, **CUT_SHORT, then=[_service_error_in_the_stream("throttlingException")])
+
+        events = await _run(path, llm, BEDROCK_MODEL)
+
+        assert events[-1]["event"] == "error", events
+        assert len(wire.requests) == 2
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.ERROR and record.exc_info
+        assert "(after one retry)" in record.getMessage()
+
+    @paths
     async def test_a_throttle_is_not_retried_here(
         self, path: str, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -545,6 +563,20 @@ class TestARetryBeforeTheReaderSawAnything:
         assert events[-1]["event"] == "error", events
         assert len(wire.requests) == 1
         assert _retry_records(caplog) == []
+
+    @paths
+    async def test_a_connection_that_could_not_be_made_is_an_outage(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+        llm = _bedrock_llm()
+        Wire(llm, raises=EndpointConnectionError(endpoint_url="https://bedrock-runtime.example"))
+
+        events = await _run(path, llm, BEDROCK_MODEL)
+
+        _assert_retryable(
+            events, _failure_records(caplog), "EndpointConnectionError", level=logging.ERROR
+        )
 
 
 class TestAnthropic:
@@ -880,6 +912,32 @@ class TestWhatNoProviderCallRaises:
         assert record.error_id == events[-1]["error_id"]
 
     @paths
+    async def test_a_value_error_that_cannot_say_what_it_is_still_reaches_the_reader(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The branches for a ValueError of ours (an invalid request, a session limit) put its
+        text in the log line and in the event; one that cannot print would cut the stream."""
+
+        class UnreadableValueError(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        caplog.set_level(logging.WARNING)
+
+        events = await _run(path, _failing(UnreadableValueError()), "some-model")
+
+        placeholder = "<UnreadableValueError: text unreadable>"
+        assert events[-1]["event"] == "error", events
+        assert placeholder in events[-1]["message"]
+        (record,) = [
+            r
+            for r in caplog.records
+            if "Invalid input in streaming" in r.getMessage()
+            or "Session limit error" in r.getMessage()
+        ]
+        assert placeholder in record.getMessage()
+
+    @paths
     async def test_the_text_already_streamed_is_kept_before_the_error(self, path: str) -> None:
         events = await _run(path, _failing(RuntimeError("late"), said="Part of it. "), "m")
 
@@ -1166,9 +1224,10 @@ class TestTheUnavailableModelMessage:
 
 class _EventsThatFailAsTheyClose:
     """The shape of a graph's event stream when the model failed in the background: closing
-    it raises that failure. langchain's does this by awaiting the task it ran the model in,
-    and the real graph cannot be made to on demand (it depends on where the task is when the
-    reader leaves), so this is the one input the real graph cannot give."""
+    it raises that failure. langchain's does this by awaiting the task it ran the model in.
+    The real graph does it too, but only when the failure lands while the reader is between
+    events, which depends on thread scheduling; this stand-in makes that moment certain, so
+    the test cannot pass or fail by timing."""
 
     def __init__(self, error: Exception) -> None:
         self.error = error
@@ -1412,6 +1471,7 @@ class TestWhatElseIsTriedAgain:
         assert record.levelno == logging.ERROR, "an outage before the response is an outage"
         assert not record.exc_info, "and its line names the class and code"
         attempts = llm.client.meta.config.retries["total_max_attempts"]
+        assert attempts > 1, "botocore retries a refused request: the claim this test rests on"
         assert len(wire.requests) == attempts, "botocore's own tries, and the helper adds none"
 
     @paths
@@ -1803,6 +1863,32 @@ class TestWhatTheHelperReports:
 
         assert stale.failed_after_retry is False
         assert _retry_logs(caplog, "The second try") == []
+
+    async def test_a_retried_failure_that_cannot_say_what_it_is_is_still_retried_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The "Retrying" line is logged before the second try; a ``__str__`` that raises
+        would drop it and, under a handler that raises, end the stream instead of retrying."""
+
+        class UnreadableStreamError(EventStreamError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        caplog.set_level(logging.WARNING)
+        model = _FailsOnCalls(
+            chunk_script=[[text_chunk("Hi")]],
+            error=UnreadableStreamError(
+                {"Error": {"Code": "modelStreamErrorException", "Message": "boom"}},
+                "ConverseStream",
+            ),
+            fail_on={0},
+        )
+
+        events = await _drain(model, RetryState())
+
+        assert any(e["event"] == "on_chat_model_end" for e in events), "the second try answered"
+        (record,) = _retry_records(caplog)
+        assert "<UnreadableStreamError: text unreadable>" in record.getMessage()
 
     async def test_a_failure_of_the_second_try_is_reported_as_one(self) -> None:
         state = RetryState()
