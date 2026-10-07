@@ -10,6 +10,15 @@
 # optional --semantic mode, which the tool does not use, and are most of the install
 # (about 340 MB of 450 MB), so they are removed.
 #
+# --semantic cannot work in this image, so do not add it to the tool: with it the
+# program prints status lines to stdout ahead of the JSON, which breaks the tool's
+# parsing; onnxruntime is gone, so the model cannot load; and the 613 MB model
+# would download into /root/.cache, which is not a volume, on every new container.
+#
+# The Node tag floats on purpose: hed-validator needs Node 22 or newer, and a
+# rebuild should pick up Node patch releases (the Python base image floats too).
+# The hed-lsp commit and the lockfile are what pin the program itself.
+#
 # The last line of the RUN below is the build gate: it runs the program once and fails
 # the build unless "button press" returns `Press`, a tag in HED 8.4.0. Do not assert
 # `Button` there: it is the first keyword hit for "button", but it is not a tag in
