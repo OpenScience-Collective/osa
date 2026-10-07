@@ -95,6 +95,7 @@ from src.core.services.anthropic_models import (
     ProviderName,
     is_bedrock_model,
     openrouter_model_id,
+    suggest_another_model,
 )
 from src.core.services.bedrock_llm import create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
@@ -3816,10 +3817,31 @@ def _model_unavailable(model: str | None) -> str:
     the same way.
 
     There is no automatic switch to another model (it would change what the community
-    chose and what a request costs), so the reader is asked to choose.
+    chose and what a request costs), so the reader is told which one to try (see
+    ``suggest_another_model``) and asked to choose.
     """
     name = f" ({model})" if model else ""
-    return f"The current model{name} is not available right now. Please choose another model."
+    suggestion = suggest_another_model(model)
+    advice = (
+        f"Try {suggestion[1]}, or choose another model."
+        if suggestion
+        else ("Please choose another model.")
+    )
+    return f"The current model{name} is not available right now. {advice}"
+
+
+def _step_limit_reached(model: str | None) -> str:
+    """The reader's message for a run that used all its steps without finishing: the model
+    kept calling tools (a check, fix, check loop it does not converge in) until the graph's
+    step limit. Nothing was wrong with the service, so it is not called unavailable."""
+    name = f" ({model})" if model else ""
+    suggestion = suggest_another_model(model)
+    advice = (
+        f"Try {suggestion[1]}, or ask for a smaller part of the task."
+        if suggestion
+        else ("Try another model, or ask for a smaller part of the task.")
+    )
+    return f"The current model{name} used all its steps without finishing. {advice}"
 
 
 class _StreamFailure(NamedTuple):
@@ -3863,9 +3885,10 @@ def _stream_failure_event(
     traceback is the only clue).
 
     The reader is told what is honest: a failure no retry can fix says so, a refused
-    credential says whose it is, a throttle on the caller's own key says so, any other
-    model-call failure is reported as the model being unavailable with the ask to choose
-    another, and a failure that is not a model call's keeps the stream's own wording.
+    credential says whose it is, a throttle on the caller's own key says so, a run that used
+    all its steps says so, any other model-call failure is reported as the model being
+    unavailable, and the last two name another model to try (``suggested_model`` on the
+    event). A failure that is not a model call's keeps the stream's own wording.
 
     Args:
         error: What the stream raised.
@@ -3935,10 +3958,16 @@ def _stream_failure_event(
             "key_source": key_source,
         },
     )
+    suggested: tuple[str, str] | None = None
     if failure.kind == "throttled" and key_source == "byok":
         message = _BYOK_RATE_LIMITED_MESSAGE
+    elif failure.kind == "step_limit":
+        message = _step_limit_reached(model)
+        suggested = suggest_another_model(model)
     elif failure.retryable is not False:
         message = _model_unavailable(model) if failure.from_provider else wording.unrecognized
+        if failure.from_provider:
+            suggested = suggest_another_model(model)
     elif failure.kind == "unauthorized":
         message = _KEY_REFUSED_MESSAGE if refused_callers_key else _SERVER_KEY_MESSAGE
     else:
@@ -3951,6 +3980,10 @@ def _stream_failure_event(
     }
     if failure.retryable is not None:
         event["retryable"] = failure.retryable
+    if suggested:
+        # The model the message names, for a client that can offer to send the question
+        # again with it (the widget does).
+        event["suggested_model"] = {"id": suggested[0], "label": suggested[1]}
     return _StreamFailure(event, detail)
 
 
@@ -3979,7 +4012,9 @@ async def _stream_ask_response(
                "usage": {...}}  (`usage`: this request's tokens, cache tokens and estimated cost, or null;
                see ReplyUsage, whose `input_tokens` includes the cached ones)
         data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
-               "retryable": true}  (ends the stream, no `done`; `retryable` only when known)
+               "retryable": true, "suggested_model": {"id": "claude-haiku-4-5", "label": "..."}}
+               (ends the stream, no `done`; `retryable` only when known; `suggested_model` only
+               when the message tells the reader to try another model, and names it)
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
@@ -4367,7 +4402,9 @@ async def _stream_chat_response(
                "usage": {...}}  (`usage`: this run's tokens, cache tokens and estimated cost, or null;
                see ReplyUsage, whose `input_tokens` includes the cached ones)
         data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
-               "retryable": true}  (ends the stream, no `done`; `retryable` only when known)
+               "retryable": true, "suggested_model": {"id": "claude-haiku-4-5", "label": "..."}}
+               (ends the stream, no `done`; `retryable` only when known; `suggested_model` only
+               when the message tells the reader to try another model, and names it)
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);

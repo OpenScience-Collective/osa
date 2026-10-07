@@ -103,11 +103,19 @@ UNRECOGNIZED_TEXT = {
 }
 
 #: What either stream tells a reader when their model failed in a way that can clear by
-#: itself: there is no automatic switch to another model, so they are asked to make it.
-UNAVAILABLE_TEXT = (
-    "The current model ({model}) is not available right now. Please choose another model."
-)
-BEDROCK_UNAVAILABLE = UNAVAILABLE_TEXT.format(model=BEDROCK_MODEL)
+#: itself: there is no automatic switch to another model, so they are told which to try and
+#: asked to make the change (Claude Haiku 4.5, or Sonnet 5.5 when Haiku is the one that failed).
+UNAVAILABLE_TEXT = "The current model ({model}) is not available right now. Try {suggested}, or choose another model."
+
+
+def unavailable_text(model: str, suggested: str = "Claude Haiku 4.5") -> str:
+    return UNAVAILABLE_TEXT.format(model=model, suggested=suggested)
+
+
+BEDROCK_UNAVAILABLE = unavailable_text(BEDROCK_MODEL)
+
+#: What the event carries for a client that can send the question again with the model.
+HAIKU = {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"}
 
 paths = pytest.mark.parametrize("path", ["ask", "chat"])
 
@@ -234,6 +242,7 @@ def _assert_retryable(
     # The widget shows the message for a few seconds, so it has to be read at a glance.
     assert len(events[-1]["message"]) <= 120, events[-1]["message"]
     assert events[-1]["retryable"] is True
+    assert events[-1]["suggested_model"] == HAIKU, "the message names a model, so the event does"
     assert events[-1]["error_id"]
     assert events[-1]["request_id"] == "req-failure", "the reader's report finds its row"
     assert len(records) == 1, [r.getMessage() for r in records]
@@ -259,6 +268,7 @@ def _assert_permanent(events: list[dict], records: list[logging.LogRecord], deta
     assert events[-1]["error_id"] and events[-1]["error_id"] not in message
     assert events[-1]["request_id"] == "req-failure"
     assert events[-1]["retryable"] is False
+    assert "suggested_model" not in events[-1], "another model would be refused the same way"
     assert len(records) == 1, [r.getMessage() for r in records]
     record = records[0]
     assert record.levelno == logging.ERROR
@@ -591,7 +601,7 @@ class TestAnthropic:
             )
             events = await _run(path, llm, DEFAULT_MODEL)
 
-        assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=DEFAULT_MODEL)
+        assert events[-1]["message"] == unavailable_text(DEFAULT_MODEL, "Claude Sonnet 5.5")
         assert events[-1]["retryable"] is True
         (record,) = _failure_records(caplog)
         assert record.levelno == logging.WARNING
@@ -650,6 +660,7 @@ class TestAThrottleOnTheCallersOwnKey:
 
         assert events[-1]["message"] == RATE_LIMITED_KEY_TEXT
         assert events[-1]["retryable"] is True
+        assert "suggested_model" not in events[-1], "another model is limited on the same key"
 
     @paths
     @pytest.mark.parametrize("key_source", ["platform", "community"])
@@ -885,6 +896,7 @@ class TestWhatNoProviderCallRaises:
 
         assert events[-1]["message"] == UNRECOGNIZED_TEXT[path]
         assert "retryable" not in events[-1], "nothing is claimed about an unknown failure"
+        assert "suggested_model" not in events[-1]
         (record,) = _failure_records(caplog)
         assert record.levelno == logging.ERROR and record.exc_info
         text = record.getMessage()
@@ -1003,6 +1015,68 @@ def _http_status_error(status: int) -> httpx.HTTPStatusError:
     return httpx.HTTPStatusError(
         f"HTTP {status}", request=request, response=httpx.Response(status, request=request)
     )
+
+
+class TestARunThatUsesAllItsSteps:
+    """A model that keeps calling a tool (a check, fix, check loop it does not converge in)
+    ends in langgraph's ``GraphRecursionError`` at the step limit. The reader is told that,
+    not that the service is unavailable, and which model to try."""
+
+    @staticmethod
+    def _looping_model() -> StreamingScriptedChatModel:
+        from tests.test_api.test_tool_call_streaming import _anthropic_call
+
+        return StreamingScriptedChatModel(
+            chunk_script=[_anthropic_call("lookup", "toolu_01lookup", {"query": "x"})]
+        )
+
+    @staticmethod
+    def _lookup_tool(runs: list[str]):
+        @tool
+        def lookup(query: str) -> str:
+            """Look something up."""
+            runs.append(query)
+            return "found"
+
+        return lookup
+
+    @paths
+    @pytest.mark.parametrize(
+        ("model", "suggested"),
+        [
+            ("openai.gpt-oss-120b", HAIKU),
+            ("claude-haiku-4-5", {"id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5"}),
+        ],
+    )
+    async def test_the_reader_is_told_and_given_a_model(
+        self,
+        path: str,
+        model: str,
+        suggested: dict[str, str],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+        runs: list[str] = []
+
+        events = await _run(path, self._looping_model(), model, [self._lookup_tool(runs)])
+
+        assert len(runs) > 5, "the tool ran again and again until the step limit"
+        assert events[-1]["event"] == "error", events
+        assert events[-1]["message"] == (
+            f"The current model ({model}) used all its steps without finishing. "
+            f"Try {suggested['label']}, or ask for a smaller part of the task."
+        )
+        assert events[-1]["suggested_model"] == suggested
+        assert events[-1]["retryable"] is True
+        assert events[-1]["request_id"] == "req-failure"
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.WARNING and not record.exc_info, (
+            "the model's behavior, not an outage: nothing for an operator to chase"
+        )
+        assert record.failure_kind == "step_limit"
+        assert record.error_id == events[-1]["error_id"]
+        (row,) = [r for r in _rows() if r["error_message"]]
+        assert "GraphRecursionError" in row["error_message"]
 
 
 class TestAToolFailureIsNotAModelFailure:
@@ -1213,12 +1287,27 @@ class TestNoRetryOnceAToolHasRun:
 
 
 class TestTheUnavailableModelMessage:
-    def test_it_names_the_model_and_asks_for_another(self) -> None:
+    def test_it_names_the_model_and_the_one_to_try(self) -> None:
         assert _model_unavailable(BEDROCK_MODEL) == BEDROCK_UNAVAILABLE
+
+    @pytest.mark.parametrize(
+        ("failed", "suggested"),
+        [
+            ("openai.gpt-6-luna", "Claude Haiku 4.5"),
+            ("openai.gpt-oss-120b", "Claude Haiku 4.5"),
+            ("qwen.qwen3-next-80b-a3b", "Claude Haiku 4.5"),
+            ("openai/gpt-6-luna", "Claude Haiku 4.5"),
+            ("claude-sonnet-5-5", "Claude Haiku 4.5"),
+            ("claude-haiku-4-5", "Claude Sonnet 5.5"),
+            ("anthropic/claude-haiku-4.5", "Claude Sonnet 5.5"),
+        ],
+    )
+    def test_it_never_suggests_the_model_that_failed(self, failed: str, suggested: str) -> None:
+        assert _model_unavailable(failed).endswith(f"Try {suggested}, or choose another model.")
 
     def test_it_still_reads_when_the_model_is_not_known(self) -> None:
         assert _model_unavailable(None) == (
-            "The current model is not available right now. Please choose another model."
+            "The current model is not available right now. Try Claude Haiku 4.5, or choose another model."
         )
 
 
@@ -1445,7 +1534,7 @@ class TestWhatElseIsTriedAgain:
         finally:
             server.close()
 
-        assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=OPENROUTER_MODEL)
+        assert events[-1]["message"] == unavailable_text(OPENROUTER_MODEL)
         assert requests == 1
         assert _retry_records(caplog) == []
         (record,) = _failure_records(caplog)
@@ -1492,7 +1581,7 @@ class TestWhatElseIsTriedAgain:
         finally:
             server.close()
 
-        assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=OPENROUTER_MODEL)
+        assert events[-1]["message"] == unavailable_text(OPENROUTER_MODEL)
         assert requests == 1
         assert _retry_records(caplog) == []
 
