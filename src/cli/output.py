@@ -5,6 +5,8 @@ This keeps piped output clean (e.g., osa ask "..." -o json | jq).
 """
 
 import json
+import logging
+import math
 import sys
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -15,6 +17,8 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
 
+logger = logging.getLogger(__name__)
+
 # stdout for results
 console = Console()
 # stderr for status messages, errors, progress
@@ -22,20 +26,108 @@ err_console = Console(stderr=True)
 
 
 def print_error(message: str, hint: str | None = None) -> None:
-    """Print error to stderr."""
-    err_console.print(f"[bold red]Error:[/] {message}")
+    """Print error to stderr.
+
+    The message is printed as written: it can carry a model name or an exception's text, and
+    a bracket in either is not markup. Whatever it is, it is printed (a server's JSON can
+    send ``null``).
+    """
+    err_console.print(f"[bold red]Error:[/] {escape(str(message))}", highlight=False)
     if hint:
         err_console.print(f"Hint: {hint}", style="dim", markup=False)
 
 
 def print_warning(message: str) -> None:
     """Print a warning to stderr: the answer is shown, and the reader should know something."""
-    err_console.print(f"[bold yellow]Warning:[/] {escape(message)}", highlight=False)
+    err_console.print(f"[bold yellow]Warning:[/] {escape(str(message))}", highlight=False)
 
 
 def print_success(message: str) -> None:
     """Print success message to stderr."""
     err_console.print(f"[bold green]OK:[/] {message}")
+
+
+#: A cost this large is not one OSA computes. The widget's ``formatCost`` does the same sums
+#: in doubles, which are exact only below 2**53 micro-dollars (about nine billion dollars),
+#: and the two must print the same digits, so both leave the cost out from one billion
+#: dollars up (and an infinity could not be rounded at all).
+_MAX_COST = 1e9
+
+
+def _format_cost(dollars: float) -> str:
+    """A cost in US dollars, with "about": four decimals below a cent, three below a dollar,
+    two from a dollar up, and "under $0.0001" for less, judged after rounding (so a cost
+    that rounds up to a cent is written as one).
+
+    Rounded half up on whole micro-dollars, then with integer arithmetic, so that the
+    widget's ``formatCost``, which cuts at the same places and does the same sums, prints the
+    same digits even where a float formatter would round a tie the other way.
+    """
+    micro = math.floor(dollars * 1_000_000 + 0.5)
+    if micro < 100:
+        return "under $0.0001"
+    for decimals, below in ((4, 10_000), (3, 1_000_000), (2, math.inf)):
+        unit = 10 ** (6 - decimals)
+        rounded = (micro + unit // 2) // unit
+        if rounded * unit < below:
+            break
+    whole, fraction = divmod(rounded, 10**decimals)
+    return f"about ${whole}.{fraction:0{decimals}d}"
+
+
+def _count(value: Any) -> int | None:
+    """``value`` if it is a token count (a whole number, not a boolean, not negative)."""
+    ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return value if ok else None
+
+
+def format_usage(usage: dict[str, Any] | None) -> str | None:
+    """What a reply used, in one line, from the ``usage`` object the server sends.
+
+    For example ``1,240 in (980 cached), 310 out, about $0.0021``. The input count includes
+    the cached tokens, and a reply some of whose model runs reported no tokens starts "at
+    least". The widget words it the same way (``formatUsage`` in
+    ``frontend/osa-chat-widget.js``), and the two are tested against every row of
+    ``tests/fixtures/usage_lines.json``.
+
+    Args:
+        usage: The server's ``usage`` object, or None when it sent none.
+
+    Returns:
+        The line, or None when there is nothing to say: no usage, or an object this version
+        cannot read (not an object, or without whole ``input_tokens`` and ``output_tokens``),
+        which a server of another version could send and which is logged at debug level.
+    """
+    if usage is None:
+        return None
+    fields = usage if isinstance(usage, dict) else {}
+    input_tokens = _count(fields.get("input_tokens"))
+    output_tokens = _count(fields.get("output_tokens"))
+    if input_tokens is None or output_tokens is None:
+        logger.debug("Ignoring a usage object this version cannot read: %r", usage)
+        return None
+    cache_parts = []
+    cache_read = _count(usage.get("cache_read_tokens"))
+    cache_written = _count(usage.get("cache_creation_tokens"))
+    if cache_read:
+        cache_parts.append(f"{cache_read:,} cached")
+    if cache_written:
+        cache_parts.append(f"{cache_written:,} written to cache")
+    cache = f" ({', '.join(cache_parts)})" if cache_parts else ""
+    parts = [f"{input_tokens:,} in{cache}", f"{output_tokens:,} out"]
+    cost = usage.get("estimated_cost")
+    if isinstance(cost, int | float) and not isinstance(cost, bool) and 0 <= cost < _MAX_COST:
+        parts.append(_format_cost(float(cost)))
+    line = ", ".join(parts)
+    return f"at least {line}" if usage.get("partial") is True else line
+
+
+def print_usage(usage: dict[str, Any] | None) -> None:
+    """Print what a reply used, under it, to stderr: a status line, so stdout stays the
+    answer alone for a pipe."""
+    line = format_usage(usage)
+    if line:
+        err_console.print(f"Usage: {line}", style="dim", markup=False, highlight=False)
 
 
 def print_info(message: str) -> None:

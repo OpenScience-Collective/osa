@@ -45,6 +45,17 @@ cors_origins:
 - https://nwbinspector.readthedocs.io
 - https://nwb-overview.readthedocs.io
 - https://matnwb.readthedocs.io
+# Temporary: Read the Docs PR preview builds, so reviewers can try the widget
+# before merge. Remove once these PRs are merged:
+#   NeurodataWithoutBorders/pynwb#2266, catalystneuro/neuroconv#2064,
+#   NeurodataWithoutBorders/nwbinspector#768, hdmf-dev/hdmf#1587,
+#   NeurodataWithoutBorders/nwb-overview#197, NeurodataWithoutBorders/matnwb#891
+- https://pynwb--2266.org.readthedocs.build
+- https://neuroconv--2064.org.readthedocs.build
+- https://nwbinspector--768.org.readthedocs.build
+- https://hdmf--1587.org.readthedocs.build
+- https://nwb-overview--197.org.readthedocs.build
+- https://matnwb--891.org.readthedocs.build
 enable_page_context: true
 budget:
   daily_limit_usd: 5.0

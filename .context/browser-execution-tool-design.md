@@ -176,7 +176,8 @@ All payloads are JSON.
 
 **As built (phases 1 and 2).** The shapes above are the proposal. What is on the wire is
 `ToolRequestEvent` and `ClientToolResult` in `src/api/tool_results.py`, which win over
-these examples. `tool_request` also carries the run's `content` and `citations`, and no
+these examples. `tool_request` also carries the run's `content`, `citations` and `usage` (its
+tokens and estimated cost, which the widget adds to the next run's, issue #582), and no
 `deadline_s`: the deadline is `runtime.python.limits.exec_seconds`, which the widget reads
 from `/config`. The result adds `summary`, the structured description the model reasons
 over, and `oom` as a status; it has no `truncated` field (a clipped stream says so in its

@@ -10,7 +10,7 @@ and require `pip install open-science-assistant[server]`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import httpx
 import typer
@@ -256,6 +256,7 @@ def _ask_streaming(client: OSAClient, assistant: str, question: str) -> None:
     """
     full_content = ""
     warnings: list[str] = []
+    usage: dict[str, Any] | None = None
     with output.streaming_status(f"Asking {assistant} assistant...") as status:
         for event_type, data in client.ask_stream(assistant, question):
             if event_type == "content":
@@ -264,13 +265,14 @@ def _ask_streaming(client: OSAClient, assistant: str, question: str) -> None:
                 final_content = data.get("content")
                 if isinstance(final_content, str):
                     full_content = final_content
+                usage = data.get("usage")
             elif event_type == "tool_start":
                 tool_name = data.get("name", "").replace("_", " ").title()
                 status.update(f"[dim]Using tool: {tool_name}[/dim]")
             elif event_type == "warning":
-                warnings.append(data.get("message", "Unknown warning"))
+                warnings.append(data.get("message") or "Unknown warning")
             elif event_type == "error":
-                output.print_error(data.get("message", "Unknown error"), hint=_report_hint(data))
+                output.print_error(data.get("message") or "Unknown error", hint=_report_hint(data))
                 raise typer.Exit(code=1)
 
     if full_content:
@@ -279,6 +281,7 @@ def _ask_streaming(client: OSAClient, assistant: str, question: str) -> None:
         output.print_info("No response received.")
     for warning in warnings:
         output.print_warning(warning)
+    output.print_usage(usage)
 
 
 def _ask_batch(client: OSAClient, assistant: str, question: str, fmt: str) -> None:
@@ -295,6 +298,7 @@ def _ask_batch(client: OSAClient, assistant: str, question: str, fmt: str) -> No
         output.print_markdown(content, title=assistant.upper())
         for warning in response.get("warnings", []):
             output.print_warning(warning)
+        output.print_usage(response.get("usage"))
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +409,7 @@ def _chat_turn_streaming(
     """
     full_content = ""
     warnings: list[str] = []
+    usage: dict[str, Any] | None = None
     new_session_id = session_id
 
     with output.streaming_status("Thinking...") as status:
@@ -421,10 +426,11 @@ def _chat_turn_streaming(
                 final_content = data.get("content")
                 if isinstance(final_content, str):
                     full_content = final_content
+                usage = data.get("usage")
             elif event_type == "warning":
-                warnings.append(data.get("message", "Unknown warning"))
+                warnings.append(data.get("message") or "Unknown warning")
             elif event_type == "error":
-                output.print_error(data.get("message", "Unknown error"), hint=_report_hint(data))
+                output.print_error(data.get("message") or "Unknown error", hint=_report_hint(data))
                 return new_session_id
 
     if full_content:
@@ -434,6 +440,7 @@ def _chat_turn_streaming(
         output.console.print()
     for warning in warnings:
         output.print_warning(warning)
+    output.print_usage(usage)
 
     return new_session_id
 
@@ -464,6 +471,7 @@ def _chat_turn_batch(
     output.console.print()
     for warning in response.get("warnings", []):
         output.print_warning(warning)
+    output.print_usage(response.get("usage"))
 
     return new_session_id
 
@@ -653,7 +661,7 @@ def config_reset(
         save_credentials(CredentialsConfig())
         output.print_success("Configuration reset to defaults.")
     else:
-        output.print_info("Cancelled.")
+        output.print_info("Canceled.")
 
 
 # ---------------------------------------------------------------------------

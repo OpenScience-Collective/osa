@@ -1,10 +1,9 @@
 """Telling a model call's failures apart: which can succeed on a retry, which cannot.
 
 A throttle, a read timeout and a request the provider rejects as invalid all end a
-stream with an exception, and all used to reach the reader as the same "try again". Only
-the first two can succeed on a retry; a request the provider refused outright (a 400 for a
-field the model does not take, say) fails the same way every time, and the operator is the
-one who has to act on it.
+stream with an exception. Only the first two can succeed on a retry; a request the
+provider refused outright (a 400 for a field the model does not take, say) fails the same
+way every time, and the operator is the one who has to act on it.
 
 ``classify_model_error`` reads an exception from any of the three provider paths, each of
 which raises differently:
@@ -13,7 +12,9 @@ which raises differently:
   ``response["Error"]["Code"]``; the service's own exception events that arrive inside a
   stream carry the code in lowerCamelCase), ``ReadTimeoutError`` and friends for the
   network, and, from ``langchain-aws``, a ``ValueError`` for an exception event it could
-  not turn into a ``ClientError`` and for a permissions error about system tools.
+  not turn into a ``ClientError`` and for a permissions error about system tools. Once a
+  stream is open, botocore iterates urllib3's response itself, so a stall or a dropped
+  connection there is urllib3's ``ReadTimeoutError`` or ``ProtocolError``, not botocore's.
 - Anthropic raises the SDK's ``APIStatusError`` family (``status_code``) and
   ``APITimeoutError`` / ``APIConnectionError``.
 - LiteLLM raises OpenAI-style exceptions (``status_code``, ``Timeout``).
@@ -25,15 +26,19 @@ a page fails with ``httpx`` errors and the built-in ``TimeoutError`` and
 an error reaches the same handlers as a model call's. Reading it as the model's would put
 the wrong name on it, call it retryable (or, for a 404, not retryable), and leave its
 traceback out of the log. So an exception is the model call's only when its class comes
-from a model provider's library, or, for the one built-in exception a provider library
-raises on its own, when that library raised it.
+from a model provider's library, or, for a class that is not a provider's, when its
+traceback shows a provider library raised it (the one built-in exception ``langchain-aws``
+raises on its own) or carried it up (urllib3's timeout and protocol errors, which botocore
+lets out of an open stream raw).
 """
 
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import TracebackType
 from typing import Literal
 
+from botocore.eventstream import EventStreamError
 from botocore.exceptions import (
     ClientError,
     ConnectTimeoutError,
@@ -42,9 +47,19 @@ from botocore.exceptions import (
 )
 from botocore.exceptions import ConnectionError as BotocoreConnectionError
 
+# urllib3 is botocore's own hard dependency, so it is always installed alongside botocore,
+# which this module already imports without declaring either.
+from urllib3.exceptions import ProtocolError as Urllib3ProtocolError
+from urllib3.exceptions import TimeoutError as Urllib3TimeoutError
+
+logger = logging.getLogger(__name__)
+
 FailureKind = Literal[
     "throttled", "timeout", "unavailable", "connection", "rejected", "unauthorized", "unknown"
 ]
+
+#: The kinds ``ModelFailure.worth_retrying_now`` allows.
+_WORTH_RETRYING_NOW: frozenset[FailureKind] = frozenset({"unavailable", "connection"})
 
 #: Bedrock error codes whose request can succeed later, and what each one is. Looked up
 #: with the first letter upper-cased, since an exception event inside a stream names its
@@ -78,8 +93,8 @@ _RECEIVED_AWS_EXCEPTION = re.compile(r"^Received AWS exception (\w+):")
 #: built wrong.
 _UNSUPPORTED_STREAM_EVENT = re.compile(r"^Received unsupported stream event")
 
-#: The packages a model call's own exception classes come from. ``httpx2`` is the copy of
-#: httpx the Anthropic SDK vendors, whose errors escape it raw when a stream dies part way;
+#: The packages a model call's own exception classes come from. ``httpx2`` is the separate
+#: package the Anthropic SDK depends on, whose errors escape it raw when a stream dies part way;
 #: OSA's own code uses ``httpx`` (a different package), so the two never mix. LiteLLM's
 #: exceptions subclass the OpenAI SDK's.
 _PROVIDER_PACKAGES = frozenset(
@@ -96,7 +111,7 @@ _PROVIDER_PACKAGES = frozenset(
 
 #: Exception class names (anywhere in the MRO) that mean the call timed out or the
 #: connection failed, for libraries whose base classes cannot be imported here: the
-#: Anthropic SDK carries its own copy of httpx, LiteLLM raises OpenAI-style classes. Read
+#: Anthropic SDK depends on its own ``httpx2``, LiteLLM raises OpenAI-style classes. Read
 #: only on a class from ``_PROVIDER_PACKAGES``, since ``Timeout`` and ``TransportError``
 #: are names other libraries use too.
 _TIMEOUT_NAMES = frozenset({"APITimeoutError", "TimeoutException", "Timeout"})
@@ -116,16 +131,44 @@ class ModelFailure:
             not known.
         detail: The exception class and the provider's error code or HTTP status, for a
             log line. It carries none of the provider's message.
+        mid_stream: True when the failure came after the response began (an exception
+            event inside a stream, a stream the service ended early, a connection that
+            dropped part way). A failure before that was already retried with backoff by
+            botocore or the Anthropic SDK; one inside an open stream was not, since no
+            client retries a stream it has started to hand back. Only Bedrock, Anthropic
+            and the SDK's httpx errors are recognized as mid-stream: OpenRouter's client
+            does not retry, and the errors it raises inside a stream carry no status, so
+            they are not marked (and not retried) here.
     """
 
     kind: FailureKind
     retryable: bool | None
     detail: str
+    mid_stream: bool = False
 
     @property
     def from_provider(self) -> bool:
         """Whether the exception came from the model call, not from OSA's own code."""
         return self.kind != "unknown"
+
+    @property
+    def worth_retrying_now(self) -> bool:
+        """Whether the stream helper (``stream_retry``) should try again a moment later.
+
+        This is that helper's policy, narrower than ``retryable``, which says only whether
+        a retry can ever succeed. True for a failure that can clear by itself and came
+        after the response began: a stream the service cut short, a dropped connection, a
+        service error inside the stream. A service error whose code is not recognized has
+        ``retryable`` None, so it is not retried.
+
+        A failure before the response began is left out: the clients (botocore, the
+        Anthropic SDK) already retried it with backoff, so a second try here would only
+        multiply the calls a degraded provider gets. A throttle is left out because a
+        second try a moment later only adds load to the account being throttled. A timeout
+        is left out even though a retry can succeed: it has already waited out its limit,
+        so a second try would double the reader's wait.
+        """
+        return self.mid_stream and self.retryable is True and self.kind in _WORTH_RETRYING_NOW
 
     @property
     def retryable_label(self) -> str:
@@ -189,16 +232,32 @@ def _is_provider_class(error: BaseException) -> bool:
     return any(cls.__module__.split(".")[0] in _PROVIDER_PACKAGES for cls in type(error).__mro__)
 
 
+def _frame_in(frame: TracebackType, package: str) -> bool:
+    """Whether the frame's code is in ``package``."""
+    module = str(frame.tb_frame.f_globals.get("__name__", ""))
+    return module == package or module.startswith(f"{package}.")
+
+
 def _raised_in(error: BaseException, package: str) -> bool:
     """Whether the innermost frame of the error's traceback is in ``package``, that is,
     whether that library's own code raised it. False for an error that was never raised."""
     frame: TracebackType | None = error.__traceback__
     while frame is not None and frame.tb_next is not None:
         frame = frame.tb_next
-    if frame is None:
-        return False
-    module = str(frame.tb_frame.f_globals.get("__name__", ""))
-    return module == package or module.startswith(f"{package}.")
+    return frame is not None and _frame_in(frame, package)
+
+
+def _passed_through(error: BaseException, package: str) -> bool:
+    """Whether the error's traceback has a frame in ``package``, that is, whether it
+    traveled through that library's code on its way up. False for an error that was never
+    raised. Unlike ``_raised_in``, any frame counts: a urllib3 error's innermost frame is
+    urllib3's own."""
+    frame: TracebackType | None = error.__traceback__
+    while frame is not None:
+        if _frame_in(frame, package):
+            return True
+        frame = frame.tb_next
+    return False
 
 
 def _classify_one(error: BaseException) -> ModelFailure | None:
@@ -217,6 +276,14 @@ def _classify_one(error: BaseException) -> ModelFailure | None:
         return ModelFailure("timeout", True, name)
     if isinstance(error, HTTPClientError | BotocoreConnectionError):
         return ModelFailure("connection", True, name)
+    if isinstance(error, Urllib3TimeoutError | Urllib3ProtocolError) and _passed_through(
+        error, "langchain_aws"
+    ):
+        # urllib3 sits under other clients too, so only an error that came up through
+        # langchain-aws, the Bedrock model call, is the model's. The detail names urllib3,
+        # since botocore has classes of the same names.
+        kind: FailureKind = "timeout" if isinstance(error, Urllib3TimeoutError) else "connection"
+        return ModelFailure(kind, True, f"urllib3.{name}")
     if isinstance(error, ValueError):
         match = _RECEIVED_AWS_EXCEPTION.match(str(error))
         if match:
@@ -249,18 +316,86 @@ def _classify_one(error: BaseException) -> ModelFailure | None:
     return None
 
 
+def _arrived_mid_stream(error: BaseException) -> bool:
+    """Whether the failure came after the response began (see ``ModelFailure.mid_stream``)."""
+    if isinstance(error, EventStreamError):
+        # The service's own exception event, inside the stream.
+        return True
+    if isinstance(error, ValueError) and _RECEIVED_AWS_EXCEPTION.match(str(error)):
+        # The same, as langchain-aws raises one it could not make a ClientError.
+        return True
+    if type(error) is ConnectionError and _raised_in(error, "langchain_aws"):
+        # A Bedrock stream that ended with no messageStop.
+        return True
+    if isinstance(error, Urllib3TimeoutError | Urllib3ProtocolError):
+        return _passed_through(error, "langchain_aws")
+    if _is_provider_class(error) and getattr(error, "status_code", None) == 200:
+        # An error event inside a stream that answered 200 (Anthropic's overloaded_error).
+        return True
+    # The ``httpx2`` package the Anthropic SDK depends on lets a stream's network errors out raw.
+    return type(error).__module__.split(".")[0] == "httpx2"
+
+
+def exception_text(error: BaseException) -> str:
+    """``str(error)``, or a placeholder when the exception cannot say what it is.
+
+    For a log line or a message built while reporting a failure: a ``__str__`` that raises
+    would otherwise drop the line (the logging module prints "--- Logging error ---" and
+    moves on) or cut the stream.
+    """
+    try:
+        return str(error)
+    except Exception:
+        return f"<{type(error).__name__}: text unreadable>"
+
+
+#: Set on an exception the classifier could not read, so that the several handlers that
+#: classify one failure log it once.
+_UNREADABLE_LOGGED = "_osa_unreadable_logged"
+
+
+def _report_unreadable(error: BaseException) -> None:
+    """Log, once per exception, that it could not be classified."""
+    try:
+        if getattr(error, _UNREADABLE_LOGGED, False):
+            return
+        setattr(error, _UNREADABLE_LOGGED, True)
+    except Exception:
+        pass  # An exception that refuses attributes is logged each time.
+    logger.error("Could not classify a model error (%s)", type(error).__name__, exc_info=True)
+
+
 def classify_model_error(error: BaseException) -> ModelFailure:
     """Classify an exception a model call raised.
 
     Looks at the exception and then at what it was raised from (``__cause__``, a few
     levels), since a library that wraps a provider error keeps the original there.
+
+    Never raises: it runs inside the handlers that report a failure, and an exception from
+    it would cut the stream with no ``error`` event, no log line and no metrics row. A link
+    it cannot read is skipped, so a readable cause behind it still classifies the failure;
+    an exception none of whose links it can read is ``unknown``, and the reason is logged
+    once.
     """
-    current: BaseException | None = error
-    for _ in range(4):
-        if current is None:
-            break
-        failure = _classify_one(current)
-        if failure is not None:
-            return failure
-        current = current.__cause__
+    try:
+        current: BaseException | None = error
+        for _ in range(4):
+            if current is None:
+                break
+            try:
+                failure = _classify_one(current)
+            except Exception:
+                _report_unreadable(error)
+                failure = None
+            if failure is not None:
+                try:
+                    mid_stream = _arrived_mid_stream(current)
+                except Exception:
+                    # The kind is known and where it came from is not: not retried.
+                    _report_unreadable(error)
+                    mid_stream = False
+                return replace(failure, mid_stream=mid_stream)
+            current = current.__cause__
+    except Exception:
+        _report_unreadable(error)
     return ModelFailure("unknown", None, type(error).__name__)

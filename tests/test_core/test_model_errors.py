@@ -7,6 +7,8 @@ exception event, the Anthropic SDK's status errors and LiteLLM's OpenAI-style on
 """
 
 import json
+import logging
+from typing import get_args
 
 import anthropic
 import httpx
@@ -22,8 +24,22 @@ from botocore.exceptions import (
 )
 from langchain_aws.chat_models.bedrock_converse import _handle_bedrock_error, _parse_stream_event
 
+from src.api.config import Settings
+from src.core.services import model_errors
 from src.core.services.anthropic_models import BEDROCK_MODELS
-from src.core.services.model_errors import classify_model_error
+from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
+from src.core.services.model_errors import (
+    FailureKind,
+    ModelFailure,
+    classify_model_error,
+    exception_text,
+)
+from tests.helpers.bedrock_wire import (
+    CUT_SHORT,
+    Wire,
+    dropped_stream_error,
+    stalled_stream_error,
+)
 
 
 def _client_error(code: str, status: int, message: str = "no") -> ClientError:
@@ -38,6 +54,33 @@ def _client_error(code: str, status: int, message: str = "no") -> ClientError:
 
 def _anthropic_response(status: int) -> httpx2.Response:
     return httpx2.Response(status, request=httpx2.Request("POST", "https://api.anthropic.com"))
+
+
+def _error_from_a_bedrock_stream(then_raises: Exception | None = None) -> Exception:
+    """The exception the real Bedrock client raises for a stream that opens with
+    ``messageStart`` and then ends: with no ``messageStop`` when ``then_raises`` is None
+    (``langchain-aws`` raises ``ConnectionError``), or by raising ``then_raises`` from the
+    response body the way urllib3 does for a stall or a dropped connection."""
+    _bedrock_client.cache_clear()
+    try:
+        llm = create_bedrock_llm(
+            sorted(BEDROCK_MODELS)[0],
+            settings=Settings(
+                _env_file=None,
+                bedrock_api_key="test-bedrock-key",
+                bedrock_region="us-east-2",
+                bedrock_max_output_tokens=16000,
+            ),
+        )
+        Wire(llm, **CUT_SHORT, then_raises=then_raises)
+        expected = type(then_raises) if then_raises else ConnectionError
+        with pytest.raises(
+            expected, match=None if then_raises else "missing messageStop"
+        ) as caught:
+            list(llm.stream("hello"))
+    finally:
+        _bedrock_client.cache_clear()
+    return caught.value
 
 
 RETRYABLE = [
@@ -79,7 +122,7 @@ RETRYABLE = [
         ConnectionClosedError(endpoint_url="https://bedrock-runtime.us-east-2.amazonaws.com"),
         "connection",
     ),
-    # Anthropic: its vendored httpx lets a stream's network errors out raw
+    # Anthropic: its httpx2 package lets a stream's network errors out raw
     (httpx2.ReadTimeout("slow"), "timeout"),
     (httpx2.ConnectError("refused"), "connection"),
     (httpx2.RemoteProtocolError("peer closed connection without a complete body"), "connection"),
@@ -160,6 +203,13 @@ class TestTheDetailCarriesNoProviderMessage:
 
         assert "ClientError" in failure.detail and "ValidationException" in failure.detail
         assert secret not in failure.detail
+
+
+def _parse_stream_error(code: str) -> ValueError:
+    """The ``ValueError`` langchain-aws raises for an exception event inside a stream."""
+    with pytest.raises(ValueError, match="Received AWS exception") as raised:
+        _parse_stream_event({code: {"message": "x"}})
+    return raised.value
 
 
 def _mid_stream_error(error_type: str) -> anthropic.APIStatusError:
@@ -407,31 +457,343 @@ class TestOnlyAModelCallsErrorsAreTheModels:
     def test_the_connection_error_langchain_aws_raises_is_a_retryable_model_failure(self) -> None:
         """Through the real client: the stream ends after ``messageStart`` with no
         ``messageStop``, and langchain-aws raises the built-in ``ConnectionError``."""
-        from src.api.config import Settings
-        from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
-        from tests.helpers.bedrock_wire import EVENT_STREAM, Wire, frame
+        failure = classify_model_error(_error_from_a_bedrock_stream())
 
-        _bedrock_client.cache_clear()
-        try:
-            llm = create_bedrock_llm(
-                sorted(BEDROCK_MODELS)[0],
-                settings=Settings(
-                    _env_file=None,
-                    bedrock_api_key="test-bedrock-key",
-                    bedrock_region="us-east-2",
-                    bedrock_max_output_tokens=16000,
-                ),
-            )
-            Wire(llm, frame("messageStart", {"role": "assistant"}), EVENT_STREAM)
-
-            with pytest.raises(ConnectionError, match="missing messageStop") as caught:
-                list(llm.stream("hello"))
-        finally:
-            _bedrock_client.cache_clear()
-
-        failure = classify_model_error(caught.value)
         assert (failure.kind, failure.retryable, failure.from_provider) == (
             "connection",
             True,
             True,
         )
+        assert failure.worth_retrying_now
+
+
+class TestAStreamThatDiedInsideBotocore:
+    """Regression test for issue #578: once Bedrock's stream is open, botocore iterates
+    urllib3's response itself, so a stall past the read timeout or a dropped connection
+    comes out as urllib3's own error, not botocore's. Those used to be logged as an
+    unrecognized "Unexpected streaming error" with no ``retryable`` field."""
+
+    def test_a_stall_past_the_read_timeout_is_a_timeout(self) -> None:
+        failure = classify_model_error(_error_from_a_bedrock_stream(stalled_stream_error()))
+
+        assert (failure.kind, failure.retryable, failure.from_provider) == ("timeout", True, True)
+        assert not failure.worth_retrying_now, "it has already waited out its limit"
+        assert failure.detail == "urllib3.ReadTimeoutError", "not confused with botocore's own"
+
+    def test_a_connection_that_dropped_part_way_is_a_connection_failure(self) -> None:
+        failure = classify_model_error(_error_from_a_bedrock_stream(dropped_stream_error()))
+
+        assert (failure.kind, failure.retryable, failure.from_provider) == (
+            "connection",
+            True,
+            True,
+        )
+        assert failure.worth_retrying_now
+
+    @pytest.mark.parametrize(
+        "error",
+        [stalled_stream_error(), dropped_stream_error()],
+        ids=lambda e: type(e).__name__,
+    )
+    def test_the_same_errors_from_a_tool_of_ours_are_not_the_models(self, error: Exception) -> None:
+        """urllib3 sits under other clients too. Raised anywhere but through the Bedrock
+        model call, the same class says nothing about a model call."""
+
+        def ours() -> None:
+            raise error
+
+        with pytest.raises(type(error)) as caught:
+            ours()
+
+        failure = classify_model_error(caught.value)
+
+        assert failure.kind == "unknown"
+        assert not failure.from_provider
+
+    def test_a_urllib3_error_through_botocore_alone_is_not_the_models(self) -> None:
+        """botocore is not only the model call's: any boto3 client of ours would pass a
+        urllib3 error through it. It is the Bedrock model call, langchain-aws, that makes
+        one the model's."""
+        client = _bedrock_client("bedrock-runtime", "us-east-2", "test-bedrock-key", 10.0, 10.0)
+
+        def dies(**_kwargs: object) -> None:
+            raise dropped_stream_error()
+
+        client.meta.events.register("before-send.bedrock-runtime.*", dies)
+        try:
+            with pytest.raises(type(dropped_stream_error())) as caught:
+                client.converse_stream(
+                    modelId=sorted(BEDROCK_MODELS)[0],
+                    messages=[{"role": "user", "content": [{"text": "hello"}]}],
+                )
+        finally:
+            _bedrock_client.cache_clear()
+
+        failure = classify_model_error(caught.value)
+
+        assert failure.kind == "unknown"
+        assert not failure.from_provider
+
+
+#: Every kind, with the retryable values it may carry, and what ``worth_retrying_now`` says.
+KINDS_AND_RETRYABLE: dict[str, set[bool | None]] = {
+    "throttled": {True},
+    "timeout": {True},
+    "unavailable": {True, None},
+    "connection": {True},
+    "rejected": {False},
+    "unauthorized": {False},
+    "unknown": {None},
+}
+
+
+class TestKindAndRetryableAgree:
+    """``ModelFailure`` is a frozen pair of facts that the classifier keeps consistent, which
+    nothing in the type enforces (a check in its constructor would raise inside the handler
+    of the very error being classified). So the classifier's own tables are walked here."""
+
+    def test_the_table_here_names_every_kind(self) -> None:
+        assert set(KINDS_AND_RETRYABLE) == set(get_args(FailureKind))
+
+    def test_every_code_type_and_status_the_classifier_knows_gives_a_consistent_pair(self) -> None:
+        pairs = [(kind, True) for kind in model_errors._BEDROCK_TRANSIENT.values()]
+        pairs += [(kind, False) for kind in model_errors._BEDROCK_PERMANENT.values()]
+        pairs += list(model_errors._ANTHROPIC_ERROR_TYPES.values())
+        pairs += [pair for status in range(100, 600) if (pair := model_errors._by_status(status))]
+
+        for kind, retryable in pairs:
+            assert retryable in KINDS_AND_RETRYABLE[kind], (kind, retryable)
+
+    def test_the_retry_policy_names_only_real_kinds(self) -> None:
+        assert set(get_args(FailureKind)) >= model_errors._WORTH_RETRYING_NOW
+
+
+#: (kind, retryable, mid_stream, worth retrying now)
+WORTH_RETRYING_NOW = [
+    ("connection", True, True, True),
+    ("unavailable", True, True, True),
+    ("connection", True, False, False),
+    ("unavailable", True, False, False),
+    ("throttled", True, True, False),
+    ("timeout", True, True, False),
+    ("unavailable", None, True, False),
+    ("rejected", False, True, False),
+    ("unauthorized", False, True, False),
+    ("unknown", None, True, False),
+]
+
+
+class TestWhatIsWorthRetryingNow:
+    """A second try a moment later is for a failure that can clear by itself and came after
+    the response began: a stream the service cut short, a dropped connection, a service
+    error inside the stream. Not for what the clients already retried with backoff (a
+    failure before the response, a throttle), what has already waited out its limit (a
+    timeout), what fails the same way every time, or what nothing is known about."""
+
+    def test_the_cases_here_cover_every_kind(self) -> None:
+        assert {kind for kind, *_ in WORTH_RETRYING_NOW} == set(get_args(FailureKind))
+
+    @pytest.mark.parametrize(("kind", "retryable", "mid_stream", "expected"), WORTH_RETRYING_NOW)
+    def test_each_case(
+        self, kind: FailureKind, retryable: bool | None, mid_stream: bool, expected: bool
+    ) -> None:
+        failure = ModelFailure(kind, retryable, "x", mid_stream=mid_stream)
+
+        assert failure.worth_retrying_now is expected
+
+
+class TestWhereInTheCallItFailed:
+    """``mid_stream`` is read from what raised the failure, since the clients retry a
+    failure before the response began with backoff and nothing retries one inside a stream.
+    Each shape that is mid-stream has a twin that is not."""
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: EventStreamError(
+                {"Error": {"Code": "modelStreamErrorException", "Message": "x"}}, "ConverseStream"
+            ),
+            lambda: _parse_stream_error("modelStreamErrorException"),
+            lambda: _error_from_a_bedrock_stream(),
+            lambda: _error_from_a_bedrock_stream(dropped_stream_error()),
+            lambda: _error_from_a_bedrock_stream(stalled_stream_error()),
+            lambda: _mid_stream_error("overloaded_error"),
+            lambda: httpx2.RemoteProtocolError("peer closed connection without a complete body"),
+        ],
+        ids=[
+            "bedrock exception event",
+            "langchain-aws ValueError for one",
+            "stream ended with no messageStop",
+            "connection dropped part way",
+            "stalled past the read timeout",
+            "anthropic error event in a 200 stream",
+            "anthropic sdk's raw httpx error",
+        ],
+    )
+    def test_a_failure_inside_a_stream(self, make) -> None:
+        assert classify_model_error(make()).mid_stream is True
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: _client_error("ServiceUnavailableException", 503),
+            lambda: _client_error("InternalServerException", 500),
+            lambda: EndpointConnectionError(endpoint_url="https://bedrock-runtime.example"),
+            lambda: ConnectTimeoutError(endpoint_url="https://bedrock-runtime.example"),
+            lambda: anthropic.InternalServerError(
+                "down", response=_anthropic_response(529), body=None
+            ),
+            lambda: anthropic.APIConnectionError(
+                message="no route", request=httpx2.Request("POST", "https://api.anthropic.com")
+            ),
+            lambda: ConnectionError("Incomplete Bedrock response stream: missing messageStop"),
+        ],
+        ids=[
+            "bedrock 503 answer",
+            "bedrock 500 answer",
+            "never connected",
+            "connect timeout",
+            "anthropic 529 answer",
+            "anthropic connection error",
+            "a ConnectionError of our own",
+        ],
+    )
+    def test_a_failure_before_the_response(self, make) -> None:
+        failure = classify_model_error(make())
+
+        assert failure.mid_stream is False
+        assert failure.worth_retrying_now is False
+
+    @pytest.mark.parametrize(
+        ("cause", "mid_stream"),
+        [
+            (
+                EventStreamError(
+                    {"Error": {"Code": "modelStreamErrorException", "Message": "x"}},
+                    "ConverseStream",
+                ),
+                True,
+            ),
+            (_client_error("ServiceUnavailableException", 503), False),
+        ],
+        ids=["a stream exception event", "an error answer before the response"],
+    )
+    def test_a_wrapper_is_placed_by_the_error_it_was_raised_from(
+        self, cause: Exception, mid_stream: bool
+    ) -> None:
+        """The wrapper says nothing of where the call failed; its cause does."""
+        try:
+            try:
+                raise cause
+            except Exception as inner:
+                raise RuntimeError("model call failed") from inner
+        except RuntimeError as wrapped:
+            failure = classify_model_error(wrapped)
+
+        assert failure.mid_stream is mid_stream
+        assert failure.worth_retrying_now is mid_stream
+
+    def test_the_same_urllib3_error_outside_the_model_call_is_not(self) -> None:
+        def ours() -> None:
+            raise dropped_stream_error()
+
+        with pytest.raises(type(dropped_stream_error())) as caught:
+            ours()
+
+        assert classify_model_error(caught.value).mid_stream is False
+
+
+class TestItNeverRaises:
+    """It runs inside the handlers that report a failure: an exception from it would cut the
+    stream with no error event, no log line and no metrics row."""
+
+    def test_an_exception_whose_text_cannot_be_read(self) -> None:
+        class Unreadable(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        failure = classify_model_error(Unreadable())
+
+        assert failure.kind == "unknown" and not failure.from_provider
+
+    def test_a_class_with_no_module(self) -> None:
+        class Moduleless(Exception):
+            __module__ = None  # type: ignore[assignment]
+
+        failure = classify_model_error(Moduleless("x"))
+
+        assert failure.kind == "unknown" and failure.mid_stream is False
+
+    def test_a_provider_error_whose_status_cannot_be_read(self) -> None:
+        class BadStatus(anthropic.APIStatusError):
+            @property
+            def status_code(self) -> int:  # type: ignore[override]
+                raise RuntimeError("no status")
+
+        error = BadStatus.__new__(BadStatus)
+
+        assert classify_model_error(error).kind == "unknown"
+
+    def test_a_wrapper_it_cannot_read_does_not_hide_the_cause_it_can(self) -> None:
+        class Unreadable(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        try:
+            try:
+                raise _client_error("ThrottlingException", 429)
+            except ClientError as inner:
+                raise Unreadable() from inner
+        except Unreadable as wrapped:
+            failure = classify_model_error(wrapped)
+
+        assert (failure.kind, failure.retryable) == ("throttled", True)
+
+    def test_an_error_it_cannot_read_is_logged_once_however_often_it_is_classified(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The helper, the router's handler and its ValueError check each classify one
+        failure; a classifier that cannot read it says so once, not once per handler."""
+
+        class Unreadable(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        error = Unreadable()
+        with caplog.at_level(logging.ERROR, logger="src.core.services.model_errors"):
+            for _ in range(3):
+                assert classify_model_error(error).kind == "unknown"
+
+        assert len([r for r in caplog.records if "Could not classify" in r.getMessage()]) == 1
+
+    def test_the_text_of_an_exception_that_cannot_say_it_is_a_placeholder(self) -> None:
+        class Unreadable(RuntimeError):
+            def __str__(self) -> str:
+                raise RuntimeError("no text for you")
+
+        assert exception_text(ValueError("plain")) == "plain"
+        assert exception_text(Unreadable()) == "<Unreadable: text unreadable>"
+
+    def test_a_failure_it_can_name_but_not_place_keeps_its_kind_and_is_not_retried(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Where a failure came from is read from its class's module; a class with none
+        leaves that unknown, and unknown is "not mid-stream", so it is not retried."""
+
+        class Moduleless(ClientError):
+            __module__ = None  # type: ignore[assignment]
+
+        error = Moduleless(
+            {
+                "Error": {"Code": "ServiceUnavailableException", "Message": "no"},
+                "ResponseMetadata": {"HTTPStatusCode": 503},
+            },
+            "ConverseStream",
+        )
+
+        with caplog.at_level(logging.ERROR, logger="src.core.services.model_errors"):
+            failure = classify_model_error(error)
+
+        assert (failure.kind, failure.retryable) == ("unavailable", True)
+        assert failure.mid_stream is False and failure.worth_retrying_now is False
+        assert len([r for r in caplog.records if "Could not classify" in r.getMessage()]) == 1

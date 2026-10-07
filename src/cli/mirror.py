@@ -217,7 +217,7 @@ def delete(
     if not confirm:
         confirm = typer.confirm(f"Delete mirror {mirror_id}?")
     if not confirm:
-        output.print_info("Cancelled.")
+        output.print_info("Canceled.")
         return
 
     client, _ = _get_client(api_key, api_url)

@@ -888,7 +888,7 @@ def sync_faq(
                 console.print("[yellow]This may incur significant LLM costs.[/yellow]")
                 confirm = typer.confirm("Continue?")
                 if not confirm:
-                    console.print("[dim]Cancelled.[/dim]")
+                    console.print("[dim]Canceled.[/dim]")
                     return
 
             result = summarize_threads(
