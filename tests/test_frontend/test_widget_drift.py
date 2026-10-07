@@ -32,7 +32,7 @@ from src.core.config.community import (
 )
 from src.core.logging import SecureFormatter
 from src.core.services.anthropic_llm import MODEL_ALIASES, OFFERED_MODELS
-from src.core.services.anthropic_models import BEDROCK_MODELS
+from src.core.services.anthropic_models import BEDROCK_MODELS, SUGGESTED_MODELS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WIDGET_PATH = REPO_ROOT / "frontend" / "osa-chat-widget.js"
@@ -128,6 +128,24 @@ class TestPlatformOnlyModelsMatchBackend:
 
     def test_platform_only_models_are_the_bedrock_models(self) -> None:
         assert _extract_platform_only_models(_widget_source()) == set(BEDROCK_MODELS)
+
+
+def _extract_suggested_models(widget_source: str) -> tuple[str, ...]:
+    """Parse the widget's ``SUGGESTED_MODELS`` array into a tuple of ids, in order."""
+    match = re.search(r"const SUGGESTED_MODELS = \[(.*?)\];", widget_source, re.DOTALL)
+    assert match, "Could not find SUGGESTED_MODELS in osa-chat-widget.js"
+    entries = re.findall(r"'([^']+)'", match.group(1))
+    assert entries, "SUGGESTED_MODELS parsed to zero entries"
+    return tuple(entries)
+
+
+class TestSuggestedModelsMatchBackend:
+    """The model a failed request names comes from the server when it can, and from the
+    widget when the widget timed out on its own; they have to name the same models in the
+    same order, or the same failure would offer a different model by where it was noticed."""
+
+    def test_the_widget_suggests_what_the_backend_does(self) -> None:
+        assert _extract_suggested_models(_widget_source()) == SUGGESTED_MODELS
 
 
 def _extract_retired_model_ids(widget_source: str) -> dict[str, str]:
