@@ -29,8 +29,9 @@ the version being released and start a new `[Unreleased]` section above it.
 ### Changed
 
 - **NWB: documentation pull request previews can use the widget** (pull request #579, issue #514): six Read the Docs preview origins (`pynwb--2266`, `neuroconv--2064`, `nwbinspector--768`, `hdmf--1587`, `nwb-overview--197` and `matnwb--891`, each `.org.readthedocs.build`) are on the NWB community's `cors_origins`, so reviewers can try the assistant on a preview before the documentation pull request merges.
-  They are exact origins, not a wildcard, so no other Read the Docs project can use the community's platform key, and they are temporary: the config comment names the pull requests, and the entries go once those merge.
-  The Cloudflare worker's allowed origins carry them too.
+  They are exact origins in the community's `cors_origins`, not a wildcard, so no other Read the Docs project can use the community's platform key.
+  They are temporary: the config comment names the pull requests, and the entries go once those merge.
+  The Cloudflare worker's list carries them too, though its suffix rules already admit any `*.readthedocs.build` origin.
 - **NEMAR: a clearer notebook welcome** (pull request #577): the starter notebook now opens as a "Python playground".
   Its short welcome says where the code runs, what is installed, that the latest MNE does not install in this runtime, and that the Zarr copy is lossy.
 - **NEMAR: a curated first plot** (pull request #577): the chat's guidance for power spectra and event-related potential (ERP) images now sets the plot range before drawing.
@@ -38,25 +39,36 @@ the version being released and start a new `[Unreleased]` section above it.
 - **A failed model is called unavailable** (issue #578): when a model call fails in a way that is not the request's fault, the `error` event of a streamed `/ask` or `/chat` now says "The current model (its model id) is not available right now. Please choose another model."
   It used to say "An error occurred while processing your request." on `/chat` and "An error occurred while generating the response. Please try again." on `/ask`, so a client that matches either string needs updating.
   There is no automatic switch to another model, which would change what a community chose and what a request costs.
-  A caller whose own API key is rate limited is told so instead, since another model would be limited the same way.
+  A caller whose own API key is rate limited is told so instead, since another model on the same key may be limited the same way.
   A failure that is not a model's (a tool of ours failing) keeps its wording, and a refused request or key keeps its own.
   The wording and the retry below apply to streamed replies; a request with `stream: false` still gets the generic HTTP 500 for a provider failure, as before.
 
 ### Fixed
 
 - **A stream cut short after the response began is tried once more, and a stall is classified** (issue #578): GPT-6 Luna streams on Bedrock sometimes ended almost at once with no `messageStop` event, and one request on develop stalled until the 120 s read timeout.
-  A stall came out of botocore as urllib3's own error, which the classifier did not know, so it was logged as an unexpected error with no `retryable` field; it is now classified as a timeout, which is not retried and reaches an API or CLI client with the unavailable message (a widget reader's own 120 s request timeout fires first and shows "Connection timeout"; the widget's stall timer, issue #564, still never fires).
+  A stall came out of botocore as urllib3's own error, which the classifier did not know, so it was logged as an unexpected error with no `retryable` field; it is now classified as a timeout, which is not retried and reaches an API client that waits longer than 120 s with the unavailable message.
+  The CLI's own 120 s read timeout ends at about the same moment, so it may show its own connection error instead.
+  A widget reader's own 120 s request timeout fires first (see the widget fix below), and the widget's stall timer, issue #564, still never fires.
   A stream that fails within ten seconds, after the response began, in a way that can clear by itself (the service ending the stream early, a dropped connection, a service error inside the stream), before the reader has been shown any text, reasoning, tool call or tool result and before any model call has finished, is run once more after about a second.
   A failure before the response began is not retried here, because the provider's client already retried it with backoff (botocore, the Anthropic SDK): a second try would only multiply the calls a degraded provider gets.
   A throttle is not retried either (botocore and the Anthropic SDK retry one with backoff; OpenRouter's client does not), nor a timeout (it has waited out its limit), a refused request or key, an error of our own, or a non-streamed request.
+  Only Bedrock and Anthropic failures are recognized as coming after the response began, so a model served through OpenRouter gets no retry here, and a 5xx before its response gets none from its client either.
   The log says when a request was retried and whether the second try worked.
-  A provider outage (the service unavailable, the connection lost, a read that timed out) is logged at ERROR whether or not a retry was possible, with the traceback when a retry would have covered it and it reached the reader anyway (the retry failed, or a tool had run so there was none to make), so an alert on ERROR sees the outage and not only some of its requests.
-  Such a failure was logged as a warning, or as an error only for a reply that used no tool.
-- **The widget names its own request timeout** (issue #578): `AbortSignal.timeout` aborts with a `TimeoutError`, not the `AbortError` the widget checked for, so a stalled request fell through to the widget's generic failure text instead of "Connection timeout" (streamed) or "Request timed out. Please try again." (not streamed).
-  Both names now read as the request timeout they are.
-- **A bad error message cannot break the CLI**: `osa` escapes any server message before printing it, including one that is not text, and a cost too large to be real (above one billion dollars) is shown as no cost by the widget and the CLI.
-- **The classifier cannot raise**: an unexpected shape of provider error is "unknown" in the log, not a second failure inside the handler that reports the first.
-- **A stream the reader closes is not retried**: a failure that surfaces as the reader closes the stream no longer starts a second model call that nobody will read.
+  A provider outage that reaches the reader (the service unavailable, the connection lost, a read that timed out) is logged at ERROR whether or not a retry was possible.
+  The traceback is kept when a retry would have covered it and none was made (the retry failed, output had already been shown, or the failure took too long to arrive).
+  So an alert on ERROR sees the outage and not only some of its requests; before this release such a failure was logged as a warning, without a traceback.
+- **The widget names its own request timeout** (issue #578): `AbortSignal.timeout` aborts with a `TimeoutError`, not the `AbortError` the widget checked for.
+  A stalled request therefore showed the browser's own text ("signal timed out") in the error banner, and "Stream interrupted" in a reply that already had text on screen.
+  Both names now read as the request timeout they are: the banner says "Request timed out. Please try again.", and a reply that already had text or code ends with "Connection timeout".
+- **The widget describes a failed network request**: Safari's "Load failed" and "The network connection was lost.", and Chrome's "network error" for a body cut short, reached the banner as the browsers worded them.
+  They now read "Network error. Please check your connection.", as "Failed to fetch" already did.
+- **A bad error message cannot break the CLI**: `osa` escapes the error and warning messages it prints, including one that is not text.
+  When the server sends a null message it says "Unknown error" or "Unknown warning", where it printed "Error: None".
+- **A cost too large to be real is shown as no cost**: the widget and the CLI leave out a cost of one billion dollars or more.
+- **The classifier cannot raise**: an unexpected shape of provider error is "unknown", and logged once, not a second failure inside the handler that reports the first.
+  A link of a cause chain it cannot read no longer hides a readable cause behind it, and an error whose text cannot be printed still gets its failure line.
+- **A stream the reader closes or cancels is not retried**: a failure that surfaces as the reader closes the stream, or in place of the cancellation of its task, no longer starts a second model call that nobody will read.
+  It is logged with the request's context.
 
 ## [0.8.16] - 2026-09-30
 
