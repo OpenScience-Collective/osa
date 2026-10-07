@@ -180,6 +180,60 @@ class TestDocumentFetcher:
         assert result.success is True
         assert result.content == cached_content
 
+    def _fetch_cached(self, fetcher: DocumentFetcher, source_url: str, text: str) -> str:
+        """Put text in the cache as a document's source, and return what fetch() gives for it."""
+        fetcher._save_to_cache(source_url, text)
+        doc = DocPage(title="Doc", url="https://example.com/doc.html", source_url=source_url)
+        result = fetcher.fetch(doc)
+        assert result.success is True
+        return result.content
+
+    def test_rst_source_keeps_link_targets(self, fetcher: DocumentFetcher) -> None:
+        """An RST link's target sits in angle brackets and is content, not an HTML tag."""
+        text = "See the `NWB Inspector <https://nwbinspector.readthedocs.io/>`_ docs."
+        content = self._fetch_cached(fetcher, "https://example.com/raw/docs/index.rst", text)
+        assert content == text
+
+    def test_python_source_keeps_comparisons_and_generics(self, fetcher: DocumentFetcher) -> None:
+        """Code between a `<` and a later `>` is code: a comparison, a generic, a repr."""
+        text = (
+            "if a<b and c>d:\n"
+            "    x: Mapping<str, int> = load()\n"
+            "    print(raw)  # <Raw | sample_audvis_raw.fif, 376 x 166800>"
+        )
+        content = self._fetch_cached(
+            fetcher, "https://example.com/raw/tutorials/plot_file.py", text
+        )
+        assert content == text
+
+    def test_converted_html_page_keeps_angle_brackets(self, fetcher: DocumentFetcher) -> None:
+        """An HTML page is cached as the markdown it was converted to, which has no tags
+        left to strip; what is in angle brackets there is the page's own text."""
+        text = (
+            "The reader returns `<Info | 10 non-empty values>`.\n\nUse sub-<label> in file names."
+        )
+        content = self._fetch_cached(fetcher, "https://example.com/stable/overview.html", text)
+        assert content == text
+
+    def test_markdown_source_still_loses_inline_html(self, fetcher: DocumentFetcher) -> None:
+        """A markdown source keeps the cleaning it had: inline HTML tags are dropped."""
+        text = "# Title\n\n<details><summary>More</summary>Hidden text</details>\n\nLine<br/>break"
+        for suffix in (".md", ".MD", ".markdown", ".mdx"):
+            content = self._fetch_cached(fetcher, f"https://example.com/raw/README{suffix}", text)
+            assert "<" not in content and ">" not in content
+            assert "MoreHidden text" in content
+            assert "Linebreak" in content
+
+    def test_markdown_suffix_is_read_from_the_path_not_the_query(
+        self, fetcher: DocumentFetcher
+    ) -> None:
+        """A query string or fragment does not change what kind of source a URL names."""
+        text = "Line<br/>break and `link <https://example.org>`_"
+        markdown = self._fetch_cached(fetcher, "https://example.com/doc.md?ref=main#top", text)
+        assert markdown == "Linebreak and `link `_"
+        rst = self._fetch_cached(fetcher, "https://example.com/doc.rst?format=.md", text)
+        assert rst == text
+
     @pytest.mark.network
     def test_fetch_invalid_url(self, fetcher: DocumentFetcher) -> None:
         """Test fetching from an invalid URL."""

@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -25,6 +26,26 @@ _CONTENT_SELECTORS = [
     "div.document",  # Older Sphinx
     "div.md-content",  # MkDocs Material
 ]
+
+
+#: Source files written in markdown. Only these have inline HTML to strip.
+_MARKDOWN_SUFFIXES = (".md", ".markdown", ".mdx")
+
+
+def _strips_html(source_url: str) -> bool:
+    r"""Whether a document's text has its HTML tags stripped when it is cleaned.
+
+    Only a markdown source does: there an inline ``<details>``, ``<img>`` or ``<br>`` is
+    markup the model does not need. Every other source is text in which an angle bracket
+    is content, and the stripper removes whatever sits between a ``<`` and the next ``>``:
+
+    - reStructuredText: the target of every ``\`text <https://...>\`_`` link.
+    - Python (sphinx-gallery examples): ``a<b and c>d`` becomes ``ad``.
+    - An HTML page: it was converted to markdown before it reached the cleaner (see
+      ``_html_to_markdown``), so no tags are left, only the page's own text, such as a
+      ``<Raw | sample_audvis_raw.fif>`` repr in a tutorial's output.
+    """
+    return urlparse(source_url).path.lower().endswith(_MARKDOWN_SUFFIXES)
 
 
 def _is_html(content: str) -> bool:
@@ -224,7 +245,11 @@ class DocumentFetcher:
         # Check cache first
         cached = self.get_cached(doc.source_url)
         if cached is not None:
-            content = clean_markdown(cached) if self.clean_markdown_content else cached
+            content = (
+                clean_markdown(cached, strip_html=_strips_html(doc.source_url))
+                if self.clean_markdown_content
+                else cached
+            )
             return RetrievedDoc(
                 title=doc.title,
                 url=doc.url,
@@ -254,7 +279,7 @@ class DocumentFetcher:
 
                 # Clean markdown if enabled
                 if self.clean_markdown_content:
-                    content = clean_markdown(content)
+                    content = clean_markdown(content, strip_html=_strips_html(doc.source_url))
 
                 return RetrievedDoc(
                     title=doc.title,
