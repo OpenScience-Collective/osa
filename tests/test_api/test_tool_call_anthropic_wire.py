@@ -11,7 +11,7 @@ notice.
 
 What stands in: the HTTP transport under the Anthropic SDK, patched where
 langchain-anthropic builds its client (`tests/test_api/test_byok_http.py` explains why
-there and not with respx; the SDK carries its own copy of httpx), and the router's
+there and not with respx; the SDK builds its client on the separate ``httpx2`` package), and the router's
 `create_community_assistant`, as in the other stream tests. If the patch point moves,
 the request goes to the real API with a fake key, fails, and these tests fail with it.
 """

@@ -13,10 +13,9 @@ process. This is not a business-logic mock: routing, authorization, model
 selection, and the full LangGraph agent loop all run for real; only the
 outbound Anthropic HTTP call is faked.
 
-Not respx: the installed ``anthropic`` SDK (1.6.0) vendors its own private,
-fully-isolated copy of the HTTP stack (``httpx2``/``httpcore2``, a straight
-fork of ``httpx``/``httpcore`` under a different top-level package name),
-and ``langchain-anthropic`` builds its client on that vendored copy
+Not respx: the installed ``anthropic`` SDK (1.6.0) depends on its own, separate
+HTTP stack (the ``httpx2`` package and ``httpcore2``, under a different top-level
+name from ``httpx``/``httpcore``), and ``langchain-anthropic`` builds its client on it
 (``anthropic.DefaultHttpxClient`` subclasses ``httpx2.Client``, not
 ``httpx.Client``). respx only ever patches the real, public ``httpx``
 package, so a respx route registered against these endpoints silently never
@@ -30,7 +29,7 @@ mocking happened at all).
 
 Instead, this file patches ``langchain_anthropic.chat_models.
 _get_default_httpx_client`` (the one place langchain-anthropic actually
-constructs that vendored client) to return an ``httpx2.Client`` backed by
+constructs that client) to return an ``httpx2.Client`` backed by
 ``httpx2.MockTransport`` -- httpx2's own equivalent of ``httpx.MockTransport``,
 since it is a faithful fork. If ``anthropic``/``langchain-anthropic`` change
 this vendoring again, this file's tests will fail loudly (real network

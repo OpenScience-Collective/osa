@@ -7511,7 +7511,8 @@
       }
 
       // What the reply used and cost (#582), under its text and sources. It arrives with
-      // the `done` event, so it appears when the reply is whole.
+      // the `done` event (or the JSON response when not streaming), so it appears when the
+      // reply is whole.
       const usage = msg.role === 'assistant' ? cleanUsage(msg.usage) : undefined;
       const usageRow = usage
         ? `<div class="osa-message-usage" title="${escapeHtml(usageTitle(usage))}">${escapeHtml(formatUsage(usage))}</div>`
@@ -7867,6 +7868,24 @@
   // is the last message's: an earlier message's must not hide a later one.
   const ERROR_VISIBLE_MS = 5000;
   const errorTimers = new WeakMap();
+  // Whether `error` is the widget's own request limit firing. `AbortSignal.timeout` aborts
+  // with a `TimeoutError`; a browser that aborts with an `AbortError` instead means the same,
+  // since the widget aborts a request only by its own timeout.
+  function isRequestTimeout(error) {
+    return !!error && (error.name === 'AbortError' || error.name === 'TimeoutError');
+  }
+
+  // Whether `error` is the browser saying the request got no response, or the body of one was
+  // cut short. A failed `fetch` throws a `TypeError` worded by the browser: "Failed to fetch"
+  // (Chrome), "NetworkError when attempting to fetch resource." (Firefox) or "Load failed"
+  // (Safari); a body read that ends early says "network error" (Chrome) or "The network
+  // connection was lost." (Safari). Other `TypeError`s are the page's own bugs and keep
+  // their own text.
+  const NETWORK_FAILURE = /\bfetch\b|^load failed$|^network error$|network connection was lost|internet connection appears to be offline/i;
+  function isNetworkFailure(error) {
+    return !!error && error.name === 'TypeError' && NETWORK_FAILURE.test(String(error.message));
+  }
+
   function showError(container, message, { persist = false, errorId = null } = {}) {
     const errorEl = container.querySelector('.osa-error');
     clearTimeout(errorTimers.get(errorEl));
@@ -8084,8 +8103,9 @@
   // `usage` cut down to the six fields this widget reads, or undefined when it is not a
   // usage (it lacks whole, non-negative input and output counts). What the server sent and
   // what localStorage held are both untrusted, and nothing else comes through: a count it
-  // lacks is zero, a cost that is negative or not finite is no cost. Something that is not
-  // a usage, but is not nothing either, is reported on the console once.
+  // lacks is zero, a cost that is negative, not finite or absurdly large is no cost.
+  // Something that is not a usage, but is not nothing either, is reported on the console
+  // once.
   function cleanUsage(usage) {
     const isCount = (n) => Number.isInteger(n) && n >= 0;
     if (!usage || typeof usage !== 'object' || !isCount(usage.input_tokens) || !isCount(usage.output_tokens)) {
@@ -8097,7 +8117,7 @@
     }
     const clean = {};
     for (const key of USAGE_COUNTS) clean[key] = isCount(usage[key]) ? usage[key] : 0;
-    clean.estimated_cost = typeof usage.estimated_cost === 'number' && Number.isFinite(usage.estimated_cost) && usage.estimated_cost >= 0
+    clean.estimated_cost = typeof usage.estimated_cost === 'number' && usage.estimated_cost >= 0 && usage.estimated_cost < 1e9
       ? usage.estimated_cost
       : null;
     clean.partial = usage.partial === true;
@@ -8122,17 +8142,21 @@
   }
 
   // "about $0.0021": four decimals below a cent, three below a dollar, two from a dollar
-  // up, "under $0.0001" for less. Rounded half up on whole micro-dollars with integer
-  // arithmetic, the same sums as `_format_cost` in src/cli/output.py, so a tie that
-  // `toFixed` and Python's formatter round differently comes out the same on both.
+  // up, "under $0.0001" for less, judged after rounding (a cost that rounds up to a cent is
+  // written as one). Rounded half up on whole micro-dollars, then with integer arithmetic,
+  // the same sums as `_format_cost` in src/cli/output.py, so a tie that `toFixed` and
+  // Python's formatter round differently comes out the same on both.
   function formatCost(dollars) {
     const micro = Math.floor(dollars * 1e6 + 0.5);
     if (micro < 100) return 'under $0.0001';
-    let decimals = 2;
-    if (micro < 10000) decimals = 4;
-    else if (micro < 1000000) decimals = 3;
-    const unit = 10 ** (6 - decimals);
-    const units = Math.floor((micro + unit / 2) / unit);
+    let decimals = 4;
+    let units = 0;
+    for (const [places, below] of [[4, 10000], [3, 1000000], [2, Infinity]]) {
+      decimals = places;
+      const unit = 10 ** (6 - places);
+      units = Math.floor((micro + unit / 2) / unit);
+      if (units * unit < below) break;
+    }
     const scale = 10 ** decimals;
     return `about $${Math.floor(units / scale)}.${String(units % scale).padStart(decimals, '0')}`;
   }
@@ -8811,7 +8835,7 @@
         const errorType = error.name || 'Error';
         let userMessage = 'Stream interrupted';
 
-        if (error.name === 'AbortError') {
+        if (isRequestTimeout(error)) {
           userMessage = 'Connection timeout';
         } else if (error.message && error.message.includes('timeout')) {
           userMessage = 'Stream timeout';
@@ -9016,9 +9040,9 @@
         // The server's own words, as it sent them: checked first, so a word in them
         // (JSON, Stream, fetch) is not taken for a failure of the page's own.
         userMessage = error.message.replace('Backend streaming error: ', '');
-      } else if (error.name === 'AbortError') {
+      } else if (isRequestTimeout(error)) {
         userMessage = 'Request timed out. Please try again.';
-      } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
+      } else if (isNetworkFailure(error)) {
         userMessage = 'Network error. Please check your connection.';
       } else if (error.message && error.message.includes('JSON')) {
         userMessage = 'Invalid response from server. Please try again.';

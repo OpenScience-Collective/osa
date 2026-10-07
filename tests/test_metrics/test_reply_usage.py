@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.core.services.anthropic_models import OFFERED_MODELS, OPENROUTER_MODEL_IDS
-from src.metrics.cost import MODEL_PRICING
+from src.metrics.cost import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER, MODEL_PRICING
 from src.metrics.reply_usage import ReplyUsage, reply_usage
 
 USAGE_LINES = json.loads(
@@ -19,9 +19,15 @@ USAGE_LINES = json.loads(
 
 class TestPricing:
     def test_a_cached_reply_is_priced_by_hand(self) -> None:
-        """GPT-6 Luna: $0.11 and $0.55 per million input and output tokens, and a cache
-        read costs a tenth of an input token. 200 fresh input tokens, 800 cache reads and
-        200 output tokens come to (22 + 8.8 + 110) / 1,000,000 dollars."""
+        """GPT-6 Luna, from the price table: 200 fresh input tokens at its input rate, 800
+        cache reads at a tenth of it and 200 output tokens at its output rate."""
+        rate = MODEL_PRICING["openai.gpt-6-luna"]
+        by_hand = (
+            200 * rate.input_per_1m
+            + 800 * rate.input_per_1m * CACHE_READ_MULTIPLIER
+            + 200 * rate.output_per_1m
+        ) / 1_000_000
+
         usage = reply_usage("openai.gpt-6-luna", 1000, 200, cache_read_tokens=800)
 
         assert usage == ReplyUsage(
@@ -29,16 +35,23 @@ class TestPricing:
             output_tokens=200,
             cache_read_tokens=800,
             cache_creation_tokens=0,
-            estimated_cost=0.000141,
+            estimated_cost=round(by_hand, 6),
             partial=False,
         )
 
     def test_a_cache_write_costs_a_quarter_more_than_an_input_token(self) -> None:
-        """claude-haiku-4-5 ($1 and $5 per million): 500 fresh input tokens, 500 written to
-        the cache, 100 output tokens: (500 + 625 + 500) / 1,000,000 dollars."""
+        """claude-haiku-4-5, from the price table: 500 fresh input tokens, 500 written to
+        the cache at its multiplier of the input rate, and 100 output tokens."""
+        rate = MODEL_PRICING["claude-haiku-4-5"]
+        by_hand = (
+            500 * rate.input_per_1m
+            + 500 * rate.input_per_1m * CACHE_WRITE_MULTIPLIER
+            + 100 * rate.output_per_1m
+        ) / 1_000_000
+
         usage = reply_usage("claude-haiku-4-5", 1000, 100, cache_creation_tokens=500)
 
-        assert usage is not None and usage.estimated_cost == 0.001625
+        assert usage is not None and usage.estimated_cost == round(by_hand, 6)
 
     @pytest.mark.parametrize("model", sorted(OFFERED_MODELS))
     def test_every_offered_model_has_a_price(self, model: str) -> None:

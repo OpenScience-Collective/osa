@@ -55,6 +55,61 @@
     "line": "100 in, 10 out, about $0.0005"
   },
   {
+    "name": "rounds up to a cent, so it is written as one",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.009999, "partial": false},
+    "line": "100 in, 10 out, about $0.010"
+  },
+  {
+    "name": "just under a cent keeps four decimals",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.0099, "partial": false},
+    "line": "100 in, 10 out, about $0.0099"
+  },
+  {
+    "name": "rounds up to a dollar, so it is written as one",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.9996, "partial": false},
+    "line": "100 in, 10 out, about $1.00"
+  },
+  {
+    "name": "just under a dollar keeps three decimals",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.9994, "partial": false},
+    "line": "100 in, 10 out, about $0.999"
+  },
+  {
+    "name": "half of the last place rounds up, 7850 micro-dollars",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.00785, "partial": false},
+    "line": "100 in, 10 out, about $0.0079"
+  },
+  {
+    "name": "half of a thousandth rounds up below a dollar, 500500 micro-dollars",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.5005, "partial": false},
+    "line": "100 in, 10 out, about $0.501"
+  },
+  {
+    "name": "half of a cent rounds up above a dollar, 1005000 micro-dollars",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 1.005, "partial": false},
+    "line": "100 in, 10 out, about $1.01"
+  },
+  {
+    "name": "exactly a hundredth of a cent is not under it",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.0001, "partial": false},
+    "line": "100 in, 10 out, about $0.0001"
+  },
+  {
+    "name": "just below a hundredth of a cent is under it",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 9.9e-05, "partial": false},
+    "line": "100 in, 10 out, under $0.0001"
+  },
+  {
+    "name": "exactly a cent keeps three decimals",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.01, "partial": false},
+    "line": "100 in, 10 out, about $0.010"
+  },
+  {
+    "name": "exactly a dollar keeps two decimals",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 1.0, "partial": false},
+    "line": "100 in, 10 out, about $1.00"
+  },
+  {
     "name": "a model with no price",
     "usage": {"input_tokens": 10, "output_tokens": 2, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": null, "partial": false},
     "line": "10 in, 2 out"
@@ -79,6 +134,22 @@
   {
     "name": "a negative cost is no cost",
     "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": -0.5, "partial": false},
+    "line": "100 in, 10 out",
+    "malformed": true
+  },
+  {
+    "name": "just under the largest cost shown",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 999999999.99, "partial": false},
+    "line": "100 in, 10 out, about $999999999.99"
+  },
+  {
+    "name": "the smallest cost that is too large to be real is no cost",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 1000000000.0, "partial": false},
+    "line": "100 in, 10 out"
+  },
+  {
+    "name": "an absurd cost is no cost",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 1e+305, "partial": false},
     "line": "100 in, 10 out",
     "malformed": true
   },
