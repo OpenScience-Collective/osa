@@ -13,6 +13,28 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+### Added
+
+- **A failure names the model to try, and the widget offers it** (issue #593, from #514): where a failed request said "Please choose another model.", it now says "Try Claude Haiku 4.5, or choose another model." (Claude Sonnet 5.5 when Haiku is the model that failed, and never the model that failed).
+  The `error` event carries the same model as `suggested_model`, an object with its `id` and `label`, only when the message names one: not for a rate-limited key of the caller's own, a refused request or key, or a failure that is not a model's.
+  The widget shows a button under the message, "Try Claude Haiku 4.5", for a request that showed no reply; it sends the question again on that model once and leaves the saved model setting alone, and the model also runs the later runs of that reply.
+  A stall the widget gave up on itself gets the same button, with the model picked from the community's offered models.
+- **A run that used all its steps says so** (issue #593): a model that keeps calling tools until langgraph's step limit (GPT-OSS did on a HED annotation question) was reported as "An error occurred while processing your request."
+  It now says "The current model (X) used all its steps without finishing. Try Claude Haiku 4.5, or ask for a smaller part of the task." and carries `suggested_model`; the log line is a WARNING with no traceback, since it is the model's behavior and not an outage.
+
+### Changed
+
+- **A streamed request in the widget is bounded by its silence, not its length** (issue #593): it was aborted 120 s after it was sent, however much the run had done since, which cut off a long tool loop that was making progress.
+  It is now given up 60 s after the last thing it did (an event, text, a tool starting or finishing), for each run of a reply that runs code, and a reply that keeps working is never cut off.
+  A request with no stream keeps its fixed 2 minutes.
+  The CLI already bounds silence (its 120 s read timeout is between chunks) and is unchanged.
+
+### Fixed
+
+- **The widget's 60 s stall timer could not fire** (issue #564): it was checked only between reads, so a read that never returned was never timed.
+  The idle timer above replaces it and aborts the read.
+  A server has no keepalive on the chat stream, so a stretch of more than 60 s with no event now ends the request: a model that streams its reasoning sends `thinking` events, but one that is quiet before its first word for that long is given up on.
+
 ## [0.8.17] - 2026-10-06
 
 ### Added

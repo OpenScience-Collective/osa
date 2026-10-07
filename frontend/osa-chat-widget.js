@@ -8584,8 +8584,11 @@
   //   data: {"event": "tool_request", "call_id": "...", "tool": "...", "args": {...},
   //          "content": "text so far", "citations": [...], "usage": {...}}  (instead of done)
   //   data: {"event": "error", "message": "error description", "error_id": "...",
-  //          "request_id": "...", "retryable": true}  (ends the stream, no done follows;
-  //          `retryable` only when the server knows)
+  //          "request_id": "...", "retryable": true,
+  //          "suggested_model": {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"}}
+  //          (ends the stream, no done follows; `retryable` only when the server knows;
+  //          `suggested_model` only when the message tells the reader to try another model,
+  //          and the widget offers a button that sends the question again with it)
   //   (/chat sends {"event": "session", "session_id": "..."} first.)
   //
   // A browser-execution reply is several runs the reader sees as one message.
