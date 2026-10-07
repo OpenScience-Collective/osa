@@ -2,6 +2,27 @@
 # Compatible with HEDit deployment patterns
 # Port allocation: HEDit prod=38427, HEDit dev=38428, OSA prod=38528, OSA dev=38529
 
+# hed-suggest, the tag lookup behind the HED assistant's suggest_hed_tags tool
+# (src/assistants/hed/tools.py). It is the command-line program of hed-lsp's server
+# package, which is not published to npm, so it is built here at a pinned commit.
+# The lookup is a keyword search over the HED schema that ships inside hed-validator:
+# no network at run time and no model download. onnxruntime and sharp serve only the
+# optional --semantic mode, which the tool does not use, and are most of the install
+# (about 340 MB of 450 MB), so they are removed.
+FROM node:22-bookworm-slim AS hed-lsp
+ARG HED_LSP_REF=36447afb5e48bfecc45af0464b652614ba571414
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && npm install -g pnpm@10.33.4 \
+    && git clone https://github.com/hed-standard/hed-lsp /opt/hed-lsp \
+    && cd /opt/hed-lsp && git checkout "$HED_LSP_REF" \
+    && pnpm install --frozen-lockfile --filter "hed-lsp-server..." \
+    && pnpm --filter hed-lsp-server exec tsc -b \
+    && rm -rf node_modules server/node_modules \
+    && pnpm install --frozen-lockfile --prod --filter "hed-lsp-server..." \
+    && rm -rf node_modules/.pnpm/onnxruntime-* node_modules/.pnpm/sharp@* node_modules/.pnpm/@img+sharp* \
+        .git client docs images server/src \
+    && node server/out/cli.js --json --top 1 "button press" | grep -q '"Button"'
+
 FROM python:3.12-slim-bookworm
 
 WORKDIR /app
@@ -43,6 +64,12 @@ COPY pyproject.toml uv.lock README.md ./
 # from /app/src on sys.path (see CMD), never from the installed distribution.
 RUN pip install uv && \
     UV_PROJECT_ENVIRONMENT=/usr/local uv sync --frozen --no-dev --extra server --no-install-project
+
+# hed-suggest and the Node that runs it (see the hed-lsp stage above). The tool finds
+# the program through HED_LSP_PATH.
+COPY --from=hed-lsp /usr/local/bin/node /usr/local/bin/node
+COPY --from=hed-lsp /opt/hed-lsp /opt/hed-lsp
+ENV HED_LSP_PATH=/opt/hed-lsp
 
 # Copy the rest of the application code
 COPY src/ ./src/
