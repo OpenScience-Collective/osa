@@ -105,7 +105,7 @@ A community sets `reasoning_effort` in its `config.yaml`, one key that every pro
   on OpenRouter, where its reasoning is mandatory, with whatever reasoning `low` gives.
 - **Haiku thinks up to twice as much by default** (a 4096-token budget against 2048):
   more output tokens billed (Haiku is $1 / $5 per 1M) and a longer wait before the first word.
-  It is the default model of FieldTrip, MNE, MetaBCI and OpenNeuroPET,
+  It is the default model of FieldTrip, HED, MNE, MetaBCI and OpenNeuroPET,
   and the model a Luna default falls back to when Luna cannot be served (for EEGLAB, BIDS and NWB: a deployment with no Bedrock key, or a caller's own Anthropic key with no model named).
   A community that wants the old behavior sets `reasoning_effort: medium`.
   The deployment setting `ANTHROPIC_THINKING_BUDGET_TOKENS`, which held the old budget, is removed:
