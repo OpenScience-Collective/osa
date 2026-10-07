@@ -661,7 +661,7 @@ def config_reset(
         save_credentials(CredentialsConfig())
         output.print_success("Configuration reset to defaults.")
     else:
-        output.print_info("Cancelled.")
+        output.print_info("Canceled.")
 
 
 # ---------------------------------------------------------------------------

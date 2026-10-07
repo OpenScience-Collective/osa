@@ -159,7 +159,7 @@ class TestConfigCommands:
         """config reset should require confirmation."""
         result = runner.invoke(cli, ["config", "reset"], input="n\n")
         assert result.exit_code == 0
-        assert "Cancelled" in result.output
+        assert "Canceled" in result.output
 
     def test_config_reset_with_yes_flag(self, tmp_path: Path) -> None:
         """config reset with --yes should skip confirmation."""
