@@ -16,8 +16,10 @@
  *     burst through a ReadableStream, and is observed the way a reader would: by what
  *     the message holds while the reply is still arriving.
  *
- * What stands in: `fetch` (never used; the stream is handed to the handler) and, for
- * the controller, the clock.
+ * What stands in: `fetch` (for most tests never used, the stream being handed to the
+ * handler; where a test presses Send, it answers `/chat` and `/chat/resume` with what the
+ * test stages, honoring the request's abort signal as a real fetch does) and, for the
+ * controller, the clock.
  *
  * Run with: bun frontend/test-widget-paced-streaming.js
  */
@@ -72,8 +74,9 @@ function timerTracker() {
 
 /**
  * The widget in its own window, initialized. `chat`, when given, answers /chat (what a
- * test that presses Send needs); `saved` is what the page's storage already holds under
- * the widget's key, as after a reload.
+ * test that presses Send needs), and `resume` /chat/resume; `saved` is what the page's
+ * storage already holds under the widget's key, as after a reload, and `settings` what it
+ * holds as the reader's settings (their model and key).
  */
 function loadWidget({ matchMedia, timers = null, chat = null, resume = null, saved = null, settings = null } = {}) {
   const window = new Window({
@@ -1796,7 +1799,7 @@ console.log('\na response that is not streamed shows its usage too');
   assertEqual(api.getMessages().at(-1).usage, usage, 'and the message keeps only the fields the widget reads');
 }
 
-console.log('\nthe widget\'s own 120 s limit is described as a timeout, not shown as the browser\'s raw text');
+console.log('\nthe widget\'s own timeout (the idle timer\'s, or the fixed one of a request not streamed) is described as a timeout, not shown as the browser\'s raw text');
 {
   // `AbortSignal.timeout` aborts with a `TimeoutError`, not an `AbortError`: the widget's two
   // checks for a timeout looked only for the second, so the limit it sets itself fell
@@ -1894,7 +1897,7 @@ console.log('\nwhat the browsers say when the network fails is described, not sh
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const sseLine = (event) => new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`);
 
-/** A stream that delivers `events`, `gapMs` apart, and ends with the request's own abort. */
+/** A stream that delivers `events`, `gapMs` apart, then closes; the request's abort errors it. */
 function pacedStream(events, gapMs, init) {
   return new Response(new ReadableStream({
     async start(controller) {
@@ -1912,7 +1915,7 @@ function pacedStream(events, gapMs, init) {
   }), { headers: { 'content-type': 'text/event-stream' } });
 }
 
-/** A stream that delivers `events` and then says nothing until the request is aborted. */
+/** A stream that delivers `events` and then says nothing until the request is aborted, which errors it. */
 function silentAfter(events, init) {
   return new Response(new ReadableStream({
     start(controller) {

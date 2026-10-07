@@ -3777,9 +3777,9 @@ class _FailureWording:
             tool of ours failed, say), so nothing is known about retrying. A model call
             that failed in a way a retry might fix is reported with ``_model_unavailable``.
         cannot_retry: When the provider refused the request outright (see
-            ``classify_model_error``), which fails the same way every time. Short, since
-            the widget shows an error for a few seconds; the error id that finds the log
-            line is a field of the event (and in the log), not part of this text.
+            ``classify_model_error``), which fails the same way every time. Short, since a
+            reader takes it in at a glance; the error id that finds the log line is a field
+            of the event (and in the log), not part of this text.
     """
 
     unrecognized: str

@@ -4,7 +4,7 @@ tells the reader the truth about it (release review, finding 3; issue #578).
 A throttle, a read timeout and a request the provider refused as invalid (a 400 for a
 reasoning field the model does not take) are different failures. A refusal fails the same
 way every time, so the reader is told so; a model that failed in a way that can clear is
-reported as unavailable, with the ask to choose another; and the log says which failure it
+reported as unavailable, with a model to try; and the log says which failure it
 was. A stream that fails fast before the reader has seen anything is run once more.
 
 What is real: the graph, the router's two streams, the metrics database, and the provider
@@ -241,7 +241,7 @@ def _assert_retryable(
     one a retry would have covered and that reached the reader anyway."""
     assert events[-1]["event"] == "error", events
     assert events[-1]["message"] == BEDROCK_UNAVAILABLE
-    # The widget shows the message for a few seconds, so it has to be read at a glance.
+    # The widget shows the message in a banner and the reader takes it in at a glance.
     assert len(events[-1]["message"]) <= 120, events[-1]["message"]
     assert events[-1]["retryable"] is True
     assert events[-1]["suggested_model"] == HAIKU, "the message names a model, so the event does"
@@ -264,13 +264,13 @@ def _assert_permanent(events: list[dict], records: list[logging.LogRecord], deta
     message = events[-1]["message"]
     assert "trying again will not help" in message
     assert "try again" not in message.lower().replace("trying again", "")
-    # The widget shows the message for a few seconds: short enough to read at a glance,
+    # The widget shows the message in a banner: short enough to read at a glance,
     # and the id is a field of its own (and in the log), not part of the text.
     assert len(message) <= 120, message
     assert events[-1]["error_id"] and events[-1]["error_id"] not in message
     assert events[-1]["request_id"] == "req-failure"
     assert events[-1]["retryable"] is False
-    assert "suggested_model" not in events[-1], "another model would be refused the same way"
+    assert "suggested_model" not in events[-1], "the message says trying again will not help"
     assert len(records) == 1, [r.getMessage() for r in records]
     record = records[0]
     assert record.levelno == logging.ERROR
@@ -662,7 +662,7 @@ class TestAThrottleOnTheCallersOwnKey:
 
         assert events[-1]["message"] == RATE_LIMITED_KEY_TEXT
         assert events[-1]["retryable"] is True
-        assert "suggested_model" not in events[-1], "another model is limited on the same key"
+        assert "suggested_model" not in events[-1], "another model may be limited on the same key"
 
     @paths
     @pytest.mark.parametrize("key_source", ["platform", "community"])

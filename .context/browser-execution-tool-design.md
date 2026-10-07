@@ -620,6 +620,12 @@ hold against the deployed code. They are Phase 0: none of Phase 1 works end to e
    `wrangler deploy` to two environments and avoids depending on a widget constant that embedders pin by
    SRI hash and never update.
 
+   (Update, issue #593: the widget no longer bounds a streamed request by a wall-clock ceiling. It gives
+   a request up after 60 s with no data from the server, and after 2 minutes while a server tool runs, for
+   each run of a reply. The worker's `AbortSignal.timeout(120000)` bounds the wait for the backend to
+   start answering, and the stream is then handed through; a local workerd run showed the signal does not
+   end a body that is passed through unread. The conclusion above stands: two-run parks nothing.)
+
    Two clocks remain, and they are not the HTTP one. `exec_seconds` is the browser's own execution budget,
    enforced in the worker. A separate, generous approval or idle deadline covers human reading time. The
    note previously used `deadline_s` for both; name them apart.

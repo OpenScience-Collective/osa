@@ -2205,8 +2205,7 @@
       background: rgba(0, 0, 0, 0.08);
     }
 
-    /* The button on a failed request that sends the question again on the model the
-       message names. */
+    /* The button on a failed request that sends the question again on another model. */
     .osa-error-suggest {
       display: block;
       margin-top: 6px;
@@ -7910,9 +7909,10 @@
   // is the last message's: an earlier message's must not hide a later one.
   const ERROR_VISIBLE_MS = 5000;
   const errorTimers = new WeakMap();
-  // Whether `error` is the widget's own request limit firing. `AbortSignal.timeout` aborts
-  // with a `TimeoutError`; a browser that aborts with an `AbortError` instead means the same,
-  // since the widget aborts a request only by its own timeout.
+  // Whether `error` is the widget's own request limit firing: the idle timer's abort (a
+  // `TimeoutError`) or `AbortSignal.timeout`'s of a request that is not streamed, which is
+  // one too. A browser that aborts with an `AbortError` instead means the same, since the
+  // widget aborts a request only by its own timeout.
   function isRequestTimeout(error) {
     return !!error && (error.name === 'AbortError' || error.name === 'TimeoutError');
   }
@@ -8606,8 +8606,9 @@
   //          "request_id": "...", "retryable": true,
   //          "suggested_model": {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"}}
   //          (ends the stream, no done follows; `retryable` only when the server knows;
-  //          `suggested_model` only when the message tells the reader to try another model,
-  //          and the widget offers a button that sends the question again with it)
+  //          `suggested_model` only when the message tells the reader to try another model;
+  //          the widget offers a button that sends the question again with it, or with
+  //          its own pick when it cannot send that one)
   //   (/chat sends {"event": "session", "session_id": "..."} first.)
   //
   // A browser-execution reply is several runs the reader sees as one message.
@@ -9265,8 +9266,7 @@
       // (it was disabled), so the question goes back as it was written.
       if (questionRemoved && !input.value) input.value = question;
       // With the question back in the box, a reader who has seen no reply can send it again
-      // on the model the message names. One who has seen part of a reply keeps that
-      // conversation as it is.
+      // on another model. One who has seen part of a reply keeps that conversation as it is.
       if (suggestion && questionRemoved) addModelSuggestion(container, suggestion, question);
       input.focus();
       renderMessages(container);
