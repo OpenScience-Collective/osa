@@ -30,6 +30,10 @@ from a model provider's library, or, for a class that is not a provider's, when 
 traceback shows a provider library raised it (the one built-in exception ``langchain-aws``
 raises on its own) or carried it up (urllib3's timeout and protocol errors, which botocore
 lets out of an open stream raw).
+
+One error that is not a provider's is read as the model's: langgraph's
+``GraphRecursionError``, which says the model kept calling tools until the step limit
+(kind ``step_limit``).
 """
 
 import logging
@@ -46,6 +50,7 @@ from botocore.exceptions import (
     ReadTimeoutError,
 )
 from botocore.exceptions import ConnectionError as BotocoreConnectionError
+from langgraph.errors import GraphRecursionError
 
 # urllib3 is botocore's own hard dependency, so it is always installed alongside botocore,
 # which this module already imports without declaring either.
@@ -55,7 +60,14 @@ from urllib3.exceptions import TimeoutError as Urllib3TimeoutError
 logger = logging.getLogger(__name__)
 
 FailureKind = Literal[
-    "throttled", "timeout", "unavailable", "connection", "rejected", "unauthorized", "unknown"
+    "throttled",
+    "timeout",
+    "unavailable",
+    "connection",
+    "rejected",
+    "unauthorized",
+    "step_limit",
+    "unknown",
 ]
 
 #: The kinds ``ModelFailure.worth_retrying_now`` allows.
@@ -125,10 +137,11 @@ class ModelFailure:
     Attributes:
         kind: ``throttled``, ``timeout``, ``unavailable`` and ``connection`` can succeed
             on a retry; ``rejected`` (the provider refused the request) and
-            ``unauthorized`` cannot; ``unknown`` is an exception this module does not
-            recognize.
-        retryable: True when a retry can succeed, False when it cannot, None when that is
-            not known.
+            ``unauthorized`` cannot; ``step_limit`` (the model used up the graph's steps)
+            can succeed only on another model; ``unknown`` is an exception this module
+            does not recognize.
+        retryable: True when a retry can succeed (for ``step_limit``, with another
+            model), False when it cannot, None when that is not known.
         detail: The exception class and the provider's error code or HTTP status, for a
             log line. It carries none of the provider's message.
         mid_stream: True when the failure came after the response began (an exception
@@ -148,7 +161,8 @@ class ModelFailure:
 
     @property
     def from_provider(self) -> bool:
-        """Whether the exception came from the model call, not from OSA's own code."""
+        """Whether the failure is read as the model call's (a provider's exception, or the
+        graph's step limit), not as a failure of OSA's own code."""
         return self.kind != "unknown"
 
     @property
@@ -262,6 +276,11 @@ def _passed_through(error: BaseException, package: str) -> bool:
 
 def _classify_one(error: BaseException) -> ModelFailure | None:
     name = type(error).__name__
+    if isinstance(error, GraphRecursionError):
+        # Not a provider's error: the graph's, when the model keeps calling tools (a check,
+        # fix, check loop it does not converge in) until the step limit. It is the model's
+        # behavior, and a different model may finish, so it is retryable in that sense.
+        return ModelFailure("step_limit", True, name)
     if isinstance(error, ClientError):
         code = str(error.response.get("Error", {}).get("Code", ""))
         status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")

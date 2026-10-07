@@ -13,6 +13,17 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+### Added
+
+- **A failure names the model to try, and the widget offers it** (issue #593, from #514): where a failed request said "Please choose another model.", it now says "Try Claude Haiku 4.5, or choose another model." (Claude Sonnet 5.5 when Haiku is the model that failed; it never names the model that failed).
+  The `error` event carries the same model as `suggested_model`, an object with its `id` and `label`, only when the message names one: not for a rate-limited key of the caller's own, a refused request or key, or a failure that is not a model's.
+  The widget shows a button under the message, "Try Claude Haiku 4.5", for a request that showed no reply.
+  It sends what is in the box (the question, put back there, which the reader may have narrowed) again on that model once, using the server's model when the widget can send it and its own pick otherwise, and leaves the saved model setting alone; the model also runs the later runs of that reply.
+  A stream the widget gave up on after it had begun and gone quiet gets the same button, with the model picked from the community's offered models; a request that timed out before the server answered gets none.
+- **A run that used all its steps says so** (issue #593): a model that keeps calling tools until langgraph's step limit (GPT-OSS did on a HED annotation question) was reported with the generic unrecognized-error text (on `/chat`, "An error occurred while processing your request.").
+  It now says "The current model (X) used all its steps without finishing. Try Claude Haiku 4.5, or ask for a smaller part of the task." and carries `suggested_model`.
+  The log line is a WARNING with no traceback, since it is the model's behavior and not an outage, and `/ask` and `/chat` with `stream: false` answer the same text in the HTTP 500's `detail`, at WARNING too, where they paged the operator with a traceback and sent the caller to support.
+
 ### Changed
 
 - **HED runs Claude Haiku 4.5** (issue #591): HED's `default_model` is `claude-haiku-4-5`, where it was GPT-6 Luna.
@@ -22,6 +33,20 @@ the version being released and start a new `[Unreleased]` section above it.
   Haiku costs about nine times Luna's price per token (an estimated $0.05 to $0.11 for each of the three dev requests, before caching).
   HED's budget (`$5` a day, `$50` a month) only alerts, and is unchanged, so it will alert at about a ninth of the traffic.
   The reasoning level stays `high`, which is a 4,096-token thinking budget on Haiku.
+- **A streamed request in the widget is bounded by its silence, not its length** (issue #593): it was aborted 120 s after it was sent, however much the run had done since, which cut off a long tool loop that was making progress.
+  It is now given up 60 s after the last data from the server (text, thinking, a tool call starting, running or finishing), for each run of a reply that runs code.
+  While a server tool is running, which sends nothing until it ends and has a limit of its own (a minute for an MCP tool), the widget allows 2 minutes.
+  A reply that keeps sending data is not cut off by a time limit; the step limit and the cap on browser runs still bound its length.
+  A request sent with streaming off, and a JSON reply to a request that asked for a stream, have 2 minutes.
+  The CLI already bounds silence (its 120 s read timeout is between chunks) and is unchanged, and so is the Cloudflare worker, which hands the stream through after the backend has started to answer.
+
+### Fixed
+
+- **The widget's 60 s stall timer could not fire** (issue #564): it was checked only between reads, so a read that never returned was never timed.
+  The idle timer above replaces it and aborts the read.
+  The server sends no keepalive on the chat stream, so more than 60 s with no data now ends a request.
+  A model that streams its reasoning sends `thinking` events while it works, but one that is quiet that long before its first word (Qwen3 Next has no reasoning to stream) is given up on.
+- **An error response whose body never finished could not be abandoned** in the widget: with the old fixed limit gone, it is now bounded by the idle timer, as the request is.
 
 ## [0.8.17] - 2026-10-06
 

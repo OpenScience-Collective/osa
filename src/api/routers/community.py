@@ -95,6 +95,7 @@ from src.core.services.anthropic_models import (
     ProviderName,
     is_bedrock_model,
     openrouter_model_id,
+    suggest_another_model,
 )
 from src.core.services.bedrock_llm import create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
@@ -2750,6 +2751,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 },
             )
 
+        awm: AssistantWithMetrics | None = None
         try:
             awm = create_community_assistant(
                 community_id,
@@ -2783,6 +2785,8 @@ def create_community_router(community_id: str) -> APIRouter:
         except HTTPException:
             raise
         except Exception as e:
+            if step_limit := _step_limit_error(e, awm, community_id=community_id):
+                raise step_limit from e
             logger.error(
                 "Error in ask endpoint for community %s: %s",
                 community_id,
@@ -2877,6 +2881,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 },
             )
 
+        awm: AssistantWithMetrics | None = None
         try:
             awm = create_community_assistant(
                 community_id,
@@ -2932,6 +2937,8 @@ def create_community_router(community_id: str) -> APIRouter:
             # A ValueError the model call raised (langchain-aws raises one for a service
             # exception event) is the provider's failure, not a request the caller got
             # wrong: it is logged and answered like any other model error, not echoed.
+            if step_limit := _step_limit_error(e, awm, community_id=community_id):
+                raise step_limit from e
             logger.error(
                 "Error in chat endpoint for session %s (community: %s): %s",
                 session.session_id,
@@ -3770,9 +3777,9 @@ class _FailureWording:
             tool of ours failed, say), so nothing is known about retrying. A model call
             that failed in a way a retry might fix is reported with ``_model_unavailable``.
         cannot_retry: When the provider refused the request outright (see
-            ``classify_model_error``), which fails the same way every time. Short, since
-            the widget shows an error for a few seconds; the error id that finds the log
-            line is a field of the event (and in the log), not part of this text.
+            ``classify_model_error``), which fails the same way every time. Short, since a
+            reader takes it in at a glance; the error id that finds the log line is a field
+            of the event (and in the log), not part of this text.
     """
 
     unrecognized: str
@@ -3816,10 +3823,48 @@ def _model_unavailable(model: str | None) -> str:
     the same way.
 
     There is no automatic switch to another model (it would change what the community
-    chose and what a request costs), so the reader is asked to choose.
+    chose and what a request costs), so the reader is told which one to try (see
+    ``suggest_another_model``) and asked to choose.
     """
     name = f" ({model})" if model else ""
-    return f"The current model{name} is not available right now. Please choose another model."
+    suggestion = suggest_another_model(model)
+    advice = (
+        f"Try {suggestion[1]}, or choose another model."
+        if suggestion
+        else ("Please choose another model.")
+    )
+    return f"The current model{name} is not available right now. {advice}"
+
+
+def _step_limit_reached(model: str | None) -> str:
+    """The reader's message for a run that used all its steps without finishing: the model
+    kept calling tools (a check, fix, check loop it does not converge in) until the graph's
+    step limit. Nothing was wrong with the service, so it is not called unavailable."""
+    name = f" ({model})" if model else ""
+    suggestion = suggest_another_model(model)
+    advice = (
+        f"Try {suggestion[1]}, or ask for a smaller part of the task."
+        if suggestion
+        else ("Try another model, or ask for a smaller part of the task.")
+    )
+    return f"The current model{name} used all its steps without finishing. {advice}"
+
+
+def _step_limit_error(
+    error: Exception, awm: AssistantWithMetrics | None, *, community_id: str
+) -> HTTPException | None:
+    """The response for a run that used all its steps, on an endpoint that is not streamed.
+
+    A model that keeps calling tools until the graph's step limit is the model's behavior,
+    not a fault of the service: it is logged as a warning with no traceback, and the caller
+    is told what happened and which model to try, as a streamed reply is. None for any other
+    error, which keeps the endpoint's generic 500.
+    """
+    if classify_model_error(error).kind != "step_limit":
+        return None
+    model = awm.model if awm else None
+    logger.warning("A run used all its steps (community=%s, model=%s)", community_id, model)
+    return HTTPException(status_code=500, detail=_step_limit_reached(model))
 
 
 class _StreamFailure(NamedTuple):
@@ -3851,21 +3896,23 @@ def _stream_failure_event(
 
     The log says which failure it was (the exception class, the provider's code or status,
     and whether a retry can succeed). A throttle, and the caller's own key being refused
-    (theirs to fix, and nothing the operator did), are WARNING. Everything else is ERROR,
+    (theirs to fix, and nothing the operator did), and a run that used all its steps (the
+    model's behavior, not a fault of the service), are WARNING. Everything else is ERROR,
     including a provider outage (the service unavailable, the connection lost, or a read
     that timed out) in whichever phase of the call it came, so that an alert on ERROR sees
-    it. The traceback is left off where the line already says all there is: the two WARNINGs,
-    and an outage that was not worth a retry (one that came before the response began, or a
-    read that timed out). It is kept for a failure that cannot clear, one that was worth a
+    it. The traceback is left off where the line already says all there is: the three
+    WARNINGs, and an outage that was not worth a retry (one that came before the response
+    began, or a read that timed out). It is kept for a failure that cannot clear, one that was worth a
     retry and reached the reader anyway (the retry failed, or output was already shown, or it
     came too late), a platform or community key the provider refused, and any exception that
     is not a recognized model-provider error (a tool of ours failing is one, and its
     traceback is the only clue).
 
     The reader is told what is honest: a failure no retry can fix says so, a refused
-    credential says whose it is, a throttle on the caller's own key says so, any other
-    model-call failure is reported as the model being unavailable with the ask to choose
-    another, and a failure that is not a model call's keeps the stream's own wording.
+    credential says whose it is, a throttle on the caller's own key says so, a run that used
+    all its steps says so, any other model-call failure is reported as the model being
+    unavailable, and the last two name another model to try (``suggested_model`` on the
+    event). A failure that is not a model call's keeps the stream's own wording.
 
     Args:
         error: What the stream raised.
@@ -3884,8 +3931,9 @@ def _stream_failure_event(
     Returns:
         The event to send: ``message``, an ``error_id`` (the key of the log line) and the
         ``request_id`` (the key of the metrics row), which are for a report and not part of
-        what the reader is shown, and ``retryable`` when known. And the failure's detail,
-        for that row's ``error_message``.
+        what the reader is shown, ``retryable`` when known, and ``suggested_model`` when the
+        message names a model to try. And the failure's detail, for that row's
+        ``error_message``.
     """
     failure = classify_model_error(error)
     detail = f"{failure.detail} (after one retry)" if after_retry else failure.detail
@@ -3893,6 +3941,8 @@ def _stream_failure_event(
     refused_callers_key = failure.kind == "unauthorized" and key_source == "byok"
     if refused_callers_key:
         summary = "Model call failed while streaming, the caller's own API key was refused"
+    elif failure.kind == "step_limit":
+        summary = "A run used all its steps"
     elif failure.from_provider:
         summary = "Model call failed while streaming"
     else:
@@ -3935,10 +3985,16 @@ def _stream_failure_event(
             "key_source": key_source,
         },
     )
+    suggested: tuple[str, str] | None = None
     if failure.kind == "throttled" and key_source == "byok":
         message = _BYOK_RATE_LIMITED_MESSAGE
+    elif failure.kind == "step_limit":
+        message = _step_limit_reached(model)
+        suggested = suggest_another_model(model)
     elif failure.retryable is not False:
         message = _model_unavailable(model) if failure.from_provider else wording.unrecognized
+        if failure.from_provider:
+            suggested = suggest_another_model(model)
     elif failure.kind == "unauthorized":
         message = _KEY_REFUSED_MESSAGE if refused_callers_key else _SERVER_KEY_MESSAGE
     else:
@@ -3951,6 +4007,10 @@ def _stream_failure_event(
     }
     if failure.retryable is not None:
         event["retryable"] = failure.retryable
+    if suggested:
+        # The model the message names, for a client that can offer to send the question
+        # again with it (the widget does).
+        event["suggested_model"] = {"id": suggested[0], "label": suggested[1]}
     return _StreamFailure(event, detail)
 
 
@@ -3979,7 +4039,9 @@ async def _stream_ask_response(
                "usage": {...}}  (`usage`: this request's tokens, cache tokens and estimated cost, or null;
                see ReplyUsage, whose `input_tokens` includes the cached ones)
         data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
-               "retryable": true}  (ends the stream, no `done`; `retryable` only when known)
+               "retryable": true, "suggested_model": {"id": "claude-haiku-4-5", "label": "..."}}
+               (ends the stream, no `done`; `retryable` only when known; `suggested_model` only
+               when the message tells the reader to try another model, and names it)
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
@@ -4367,7 +4429,9 @@ async def _stream_chat_response(
                "usage": {...}}  (`usage`: this run's tokens, cache tokens and estimated cost, or null;
                see ReplyUsage, whose `input_tokens` includes the cached ones)
         data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
-               "retryable": true}  (ends the stream, no `done`; `retryable` only when known)
+               "retryable": true, "suggested_model": {"id": "claude-haiku-4-5", "label": "..."}}
+               (ends the stream, no `done`; `retryable` only when known; `suggested_model` only
+               when the message tells the reader to try another model, and names it)
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
