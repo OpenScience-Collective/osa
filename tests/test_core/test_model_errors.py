@@ -122,7 +122,7 @@ RETRYABLE = [
         ConnectionClosedError(endpoint_url="https://bedrock-runtime.us-east-2.amazonaws.com"),
         "connection",
     ),
-    # Anthropic: its vendored httpx lets a stream's network errors out raw
+    # Anthropic: its httpx2 package lets a stream's network errors out raw
     (httpx2.ReadTimeout("slow"), "timeout"),
     (httpx2.ConnectError("refused"), "connection"),
     (httpx2.RemoteProtocolError("peer closed connection without a complete body"), "connection"),
@@ -649,11 +649,11 @@ class TestWhereInTheCallItFailed:
             lambda: ConnectionError("Incomplete Bedrock response stream: missing messageStop"),
         ],
         ids=[
-            "bedrock 503 refusal",
-            "bedrock 500 refusal",
+            "bedrock 503 answer",
+            "bedrock 500 answer",
             "never connected",
             "connect timeout",
-            "anthropic 529 refusal",
+            "anthropic 529 answer",
             "anthropic connection error",
             "a ConnectionError of our own",
         ],
@@ -676,7 +676,7 @@ class TestWhereInTheCallItFailed:
             ),
             (_client_error("ServiceUnavailableException", 503), False),
         ],
-        ids=["a stream exception event", "a refusal before the response"],
+        ids=["a stream exception event", "an error answer before the response"],
     )
     def test_a_wrapper_is_placed_by_the_error_it_was_raised_from(
         self, cause: Exception, mid_stream: bool

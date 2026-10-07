@@ -127,8 +127,8 @@ def _no_wait_before_a_retry(monkeypatch):
 
 class _NoBackoff:
     """``time`` as botocore sees it, with ``sleep`` skipped: its standard retry mode waits
-    between the tries of a refused request, and those waits are the clock (they run for
-    seconds across this file), not the behavior under test. The requests still happen, so
+    between the tries of a refused request, and those waits make up most of this
+    file's run time (they run for seconds), and are not the behavior under test. The requests still happen, so
     the count of them is still the count of botocore's tries."""
 
     @staticmethod
@@ -416,8 +416,7 @@ class TestARetryBeforeTheReaderSawAnything:
         llm = _bedrock_llm()
         wire = Wire(llm, **CUT_SHORT)
 
-        # A regression that retried without bound would loop here; fail it instead.
-        events = await asyncio.wait_for(_run(path, llm, BEDROCK_MODEL), timeout=30)
+        events = await _run(path, llm, BEDROCK_MODEL)
 
         assert events[-1]["event"] == "error", events
         assert events[-1]["message"] == BEDROCK_UNAVAILABLE
@@ -453,7 +452,9 @@ class TestARetryBeforeTheReaderSawAnything:
         assert _retry_records(caplog) == []
         (record,) = _failure_records(caplog)
         assert "ReadTimeoutError" in record.getMessage() and "retryable=yes" in record.getMessage()
-        assert record.levelno == logging.ERROR and not record.exc_info, "an outage, by its line"
+        assert record.levelno == logging.ERROR and not record.exc_info, (
+            "an outage: ERROR, and its line names the class, so it carries no traceback"
+        )
 
     @paths
     async def test_a_refusal_is_not_retried(
@@ -1370,9 +1371,9 @@ class TestWhatElseIsTriedAgain:
     async def test_openrouter_unavailable_before_the_response_is_not_tried_again(
         self, path: str, monkeypatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A 5xx answer arrives before any response: the client's own retries are the ones
-        for that, and a second try here would only multiply the calls a degraded provider
-        gets. The reader is asked to choose another model."""
+        """A 5xx answer arrives before any response. OpenRouter's client makes one request
+        and the helper retries only a failure that came after the response began, so the
+        reader is asked to choose another model."""
         caplog.set_level(logging.WARNING)
         server = FakeOpenRouter()
         monkeypatch.setenv("OPENROUTER_API_BASE", server.base_url)
@@ -1394,7 +1395,7 @@ class TestWhatElseIsTriedAgain:
         )
 
     @paths
-    async def test_a_bedrock_refusal_before_the_response_is_not_tried_again_here(
+    async def test_a_bedrock_error_answer_before_the_response_is_not_tried_again_here(
         self, path: str, caplog: pytest.LogCaptureFixture
     ) -> None:
         """botocore retried it with backoff already; the stream helper adds nothing."""

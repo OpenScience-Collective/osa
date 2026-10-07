@@ -93,8 +93,8 @@ _RECEIVED_AWS_EXCEPTION = re.compile(r"^Received AWS exception (\w+):")
 #: built wrong.
 _UNSUPPORTED_STREAM_EVENT = re.compile(r"^Received unsupported stream event")
 
-#: The packages a model call's own exception classes come from. ``httpx2`` is the httpx fork
-#: the Anthropic SDK depends on, whose errors escape it raw when a stream dies part way;
+#: The packages a model call's own exception classes come from. ``httpx2`` is the separate
+#: package the Anthropic SDK depends on, whose errors escape it raw when a stream dies part way;
 #: OSA's own code uses ``httpx`` (a different package), so the two never mix. LiteLLM's
 #: exceptions subclass the OpenAI SDK's.
 _PROVIDER_PACKAGES = frozenset(
@@ -111,7 +111,7 @@ _PROVIDER_PACKAGES = frozenset(
 
 #: Exception class names (anywhere in the MRO) that mean the call timed out or the
 #: connection failed, for libraries whose base classes cannot be imported here: the
-#: Anthropic SDK depends on its own httpx fork, LiteLLM raises OpenAI-style classes. Read
+#: Anthropic SDK depends on its own ``httpx2``, LiteLLM raises OpenAI-style classes. Read
 #: only on a class from ``_PROVIDER_PACKAGES``, since ``Timeout`` and ``TransportError``
 #: are names other libraries use too.
 _TIMEOUT_NAMES = frozenset({"APITimeoutError", "TimeoutException", "Timeout"})
@@ -332,7 +332,7 @@ def _arrived_mid_stream(error: BaseException) -> bool:
     if _is_provider_class(error) and getattr(error, "status_code", None) == 200:
         # An error event inside a stream that answered 200 (Anthropic's overloaded_error).
         return True
-    # The httpx fork the Anthropic SDK depends on lets a stream's network errors out raw.
+    # The ``httpx2`` package the Anthropic SDK depends on lets a stream's network errors out raw.
     return type(error).__module__.split(".")[0] == "httpx2"
 
 
