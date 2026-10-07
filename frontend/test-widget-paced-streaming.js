@@ -1794,6 +1794,47 @@ console.log('\na response that is not streamed shows its usage too');
   assertEqual(api.getMessages().at(-1).usage, usage, 'and the message keeps only the fields the widget reads');
 }
 
+console.log('\nthe widget\'s own 120 s limit is described as a timeout, not shown as the browser\'s raw text');
+{
+  // `AbortSignal.timeout` aborts with a `TimeoutError`, not an `AbortError`: the widget's two
+  // checks for a timeout looked only for the second, so the limit it sets itself fell
+  // through to the browser's own message ("signal timed out").
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    for (const name of ['TimeoutError', 'AbortError']) {
+      const { window } = loadWidget({
+        chat: () => { throw new DOMException('signal timed out', name); },
+      });
+      const container = window.document.querySelector('.osa-chat-widget');
+      send(window, container, 'A question');
+      await waitFor(() => settled(container), 'the send settles');
+      assertEqual(container.querySelector('.osa-error').textContent, 'Request timed out. Please try again.',
+        `a request that ends in a ${name} says it timed out`);
+    }
+
+    for (const name of ['TimeoutError', 'AbortError']) {
+      const { window, api } = loadWidget();
+      const container = window.document.querySelector('.osa-chat-widget');
+      const started = api.getMessages().length;
+      const encoder = new TextEncoder();
+      const response = new Response(new ReadableStream({
+        async start(controller) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ event: 'content', content: REPLY })}\n\n`));
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          controller.error(new DOMException('signal timed out', name));
+        },
+      }), { headers: { 'content-type': 'text/event-stream' } });
+      await api.handleStreamingResponse(response, container).catch(() => {});
+      const content = api.getMessages()[started].content;
+      assert(content.startsWith(REPLY) && content.endsWith('_[Connection timeout]_'),
+        `a stream that ends in a ${name} keeps its text and says the connection timed out`);
+    }
+  } finally {
+    console.error = warn;
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed} checks, passed: ${passed}, failed: ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

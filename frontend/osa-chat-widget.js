@@ -7868,6 +7868,13 @@
   // is the last message's: an earlier message's must not hide a later one.
   const ERROR_VISIBLE_MS = 5000;
   const errorTimers = new WeakMap();
+  // Whether `error` is the widget's own request limit firing. `AbortSignal.timeout` aborts
+  // with a `TimeoutError` (an abort by hand, or an older browser, is an `AbortError`), so
+  // both name the same thing: the request outlived its limit.
+  function isRequestTimeout(error) {
+    return !!error && (error.name === 'AbortError' || error.name === 'TimeoutError');
+  }
+
   function showError(container, message, { persist = false, errorId = null } = {}) {
     const errorEl = container.querySelector('.osa-error');
     clearTimeout(errorTimers.get(errorEl));
@@ -8817,7 +8824,7 @@
         const errorType = error.name || 'Error';
         let userMessage = 'Stream interrupted';
 
-        if (error.name === 'AbortError') {
+        if (isRequestTimeout(error)) {
           userMessage = 'Connection timeout';
         } else if (error.message && error.message.includes('timeout')) {
           userMessage = 'Stream timeout';
@@ -9022,7 +9029,7 @@
         // The server's own words, as it sent them: checked first, so a word in them
         // (JSON, Stream, fetch) is not taken for a failure of the page's own.
         userMessage = error.message.replace('Backend streaming error: ', '');
-      } else if (error.name === 'AbortError') {
+      } else if (isRequestTimeout(error)) {
         userMessage = 'Request timed out. Please try again.';
       } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
         userMessage = 'Network error. Please check your connection.';
