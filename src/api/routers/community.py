@@ -3850,19 +3850,22 @@ def _stream_failure_event(
     """Log a failure that ended a stream and build the ``error`` event the reader gets.
 
     The log says which failure it was (the exception class, the provider's code or status,
-    and whether a retry can succeed). A provider outage (the service unavailable, the
-    connection lost, or a read that timed out) is logged at ERROR, so that an alert on ERROR
-    sees it whichever phase of the call it came in; a throttle, and the caller's own key
-    being refused (theirs to fix, and nothing the operator did), are WARNING. The traceback
-    goes with ERROR for everything but an outage that is expected to look like itself: one
-    that cannot clear, one that was worth a retry and reached the reader anyway (the retry
-    failed, or output was already shown, or it came too late), a platform or community key
-    the provider refused, and any exception that is not a recognized model-provider error (a
-    tool of ours failing is one, and its traceback is the only clue). The reader is told what
-    is honest: a failure no retry can fix says so, a refused
-    credential says whose it is, any other model-call failure is reported as the model
-    being unavailable with the ask to choose another, and a failure that is not a model
-    call's keeps the stream's own wording.
+    and whether a retry can succeed). A throttle, and the caller's own key being refused
+    (theirs to fix, and nothing the operator did), are WARNING. Everything else is ERROR,
+    including a provider outage (the service unavailable, the connection lost, or a read
+    that timed out) in whichever phase of the call it came, so that an alert on ERROR sees
+    it. The traceback is left off where the line already says all there is: the two WARNINGs,
+    and an outage that was not worth a retry (one that came before the response began, or a
+    read that timed out). It is kept for a failure that cannot clear, one that was worth a
+    retry and reached the reader anyway (the retry failed, or output was already shown, or it
+    came too late), a platform or community key the provider refused, and any exception that
+    is not a recognized model-provider error (a tool of ours failing is one, and its
+    traceback is the only clue).
+
+    The reader is told what is honest: a failure no retry can fix says so, a refused
+    credential says whose it is, a throttle on the caller's own key says so, any other
+    model-call failure is reported as the model being unavailable with the ask to choose
+    another, and a failure that is not a model call's keeps the stream's own wording.
 
     Args:
         error: What the stream raised.
@@ -3875,7 +3878,8 @@ def _stream_failure_event(
             choosing one.
         session_id: The chat session, for the log.
         after_retry: Whether this failure survived a retry (``RetryState.failed_after_retry``),
-            which raises the log level to ERROR and adds "(after one retry)" to the detail.
+            which keeps the traceback (and makes the line an ERROR even for a throttle or a
+            refused key) and adds "(after one retry)" to the detail.
 
     Returns:
         The event to send: ``message``, an ``error_id`` (the key of the log line) and the
@@ -3896,7 +3900,7 @@ def _stream_failure_event(
     clears_by_itself = failure.from_provider and bool(failure.retryable)
     # A failure that was worth a retry and still reached the reader (the retry failed, or it
     # was too late to make one) is an outage, not a blip: the cheap remedy is spent or ruled
-    # out, so it is logged at ERROR like one that cannot clear.
+    # out, so its traceback is kept, like one that cannot clear.
     needs_traceback = (
         after_retry or failure.worth_retrying_now or not (clears_by_itself or refused_callers_key)
     )
