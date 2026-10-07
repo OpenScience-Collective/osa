@@ -11,6 +11,7 @@ OpenRouter is left out for now: its requests report no usage.
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -211,3 +212,22 @@ class TestWithoutStreaming:
 
         assert response.status_code == 200
         assert response.json()["usage"] is None
+
+
+class TestABadCountDoesNotCostTheReaderTheAnswer:
+    def test_a_fractional_token_count_is_no_usage_and_a_logged_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A provider that reports half a token: pydantic refuses it, and the reply still
+        goes out, with no usage and a warning for the operator."""
+        from src.api.routers.community import _usage_for_event
+
+        assistant = assistant_for(OFFERED[0], [])
+
+        with caplog.at_level(logging.WARNING):
+            usage = _usage_for_event(assistant, 120.5, 30, 0, 0)  # ty: ignore[invalid-argument-type]
+
+        assert usage is None
+        assert [r.levelno for r in caplog.records if "usage of a reply" in r.getMessage()] == [
+            logging.WARNING
+        ]
