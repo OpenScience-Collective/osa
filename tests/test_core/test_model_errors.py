@@ -658,6 +658,35 @@ class TestWhereInTheCallItFailed:
         assert failure.mid_stream is False
         assert failure.worth_retrying_now is False
 
+    @pytest.mark.parametrize(
+        ("cause", "mid_stream"),
+        [
+            (
+                EventStreamError(
+                    {"Error": {"Code": "modelStreamErrorException", "Message": "x"}},
+                    "ConverseStream",
+                ),
+                True,
+            ),
+            (_client_error("ServiceUnavailableException", 503), False),
+        ],
+        ids=["a stream exception event", "a refusal before the response"],
+    )
+    def test_a_wrapper_is_placed_by_the_error_it_was_raised_from(
+        self, cause: Exception, mid_stream: bool
+    ) -> None:
+        """The wrapper says nothing of where the call failed; its cause does."""
+        try:
+            try:
+                raise cause
+            except Exception as inner:
+                raise RuntimeError("model call failed") from inner
+        except RuntimeError as wrapped:
+            failure = classify_model_error(wrapped)
+
+        assert failure.mid_stream is mid_stream
+        assert failure.worth_retrying_now is mid_stream
+
     def test_the_same_urllib3_error_outside_the_model_call_is_not(self) -> None:
         def ours() -> None:
             raise dropped_stream_error()
