@@ -477,7 +477,14 @@ class TestABadCountDoesNotCostTheReaderTheAnswer:
         assert record.levelno == logging.WARNING
         assert not record.exc_info, "one line a reply, no traceback: the counts are in it"
         text = record.getMessage()
-        for expected in (COMMUNITY, provider.model, "req-usage", "input=20", "cache_read=80"):
+        for expected in (
+            COMMUNITY,
+            provider.model,
+            "req-usage",
+            "input=20",
+            "cache_read=80",
+            "cached tokens exceed",
+        ):
             assert expected in text, f"{expected!r} missing from {text!r}"
 
 
@@ -501,6 +508,7 @@ class TestAPriceTableDefectIsNotTheProvidersFault:
             r for r in caplog.records if "cost of a reply cannot be told" in r.getMessage()
         ]
         assert record.levelno == logging.ERROR and record.exc_info
+        assert "estimated_cost" in record.getMessage(), "the line names the field that failed"
 
 
 class TestWhatTheOperatorReads:
