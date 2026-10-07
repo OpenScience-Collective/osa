@@ -201,7 +201,9 @@ def _failure_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord
         for r in caplog.records
         if r.name == "src.api.routers.community"
         and (
-            "Model call failed" in r.getMessage() or "Unexpected streaming error" in r.getMessage()
+            "Model call failed" in r.getMessage()
+            or "Unexpected streaming error" in r.getMessage()
+            or "A run used all its steps" in r.getMessage()
         )
     ]
 
@@ -1079,6 +1081,52 @@ class TestARunThatUsesAllItsSteps:
         assert "GraphRecursionError" in row["error_message"]
 
 
+class TestARunThatUsesAllItsStepsOnAnEndpointThatIsNotStreamed:
+    """The same run, on ``/ask`` and ``/chat`` with ``stream: false``: the caller is told what
+    happened and which model to try, and the operator gets a warning, not a paged error."""
+
+    @pytest.mark.parametrize(
+        ("path", "payload"),
+        [
+            ("ask", {"question": QUESTION, "stream": False}),
+            ("chat", {"message": QUESTION, "stream": False}),
+        ],
+    )
+    def test_it_says_so_and_names_a_model(
+        self,
+        client: TestClient,
+        monkeypatch,
+        caplog: pytest.LogCaptureFixture,
+        path: str,
+        payload: dict[str, Any],
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+        model = TestARunThatUsesAllItsSteps._looping_model()
+        assistant = CommunityAssistant(
+            model=model,
+            config=community_config(),
+            preload_docs=False,
+            additional_tools=[TestARunThatUsesAllItsSteps._lookup_tool([])],
+        )
+        wrapped = AssistantWithMetrics(
+            assistant=assistant, model="openai.gpt-oss-120b", key_source="platform"
+        )
+        monkeypatch.setattr(
+            "src.api.routers.community.create_community_assistant", lambda *_a, **_k: wrapped
+        )
+
+        response = client.post(f"/{COMMUNITY}/{path}", headers={"Origin": ORIGIN}, json=payload)
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == (
+            "The current model (openai.gpt-oss-120b) used all its steps without finishing. "
+            "Try Claude Haiku 4.5, or ask for a smaller part of the task."
+        )
+        (record,) = [r for r in caplog.records if "used all its steps" in r.getMessage()]
+        assert record.levelno == logging.WARNING and not record.exc_info
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR], "nothing to page"
+
+
 class TestAToolFailureIsNotAModelFailure:
     """The errors a tool that goes to the network raises are the ones this module used to
     read as the model's: ``httpx`` errors, the built-in ``TimeoutError`` and
@@ -1300,6 +1348,8 @@ class TestTheUnavailableModelMessage:
             ("claude-sonnet-5-5", "Claude Haiku 4.5"),
             ("claude-haiku-4-5", "Claude Sonnet 5.5"),
             ("anthropic/claude-haiku-4.5", "Claude Sonnet 5.5"),
+            ("anthropic/claude-haiku-4.5:nitro", "Claude Sonnet 5.5"),
+            ("openai/gpt-oss-120b:nitro", "Claude Haiku 4.5"),
         ],
     )
     def test_it_never_suggests_the_model_that_failed(self, failed: str, suggested: str) -> None:

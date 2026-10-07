@@ -137,10 +137,11 @@ class ModelFailure:
     Attributes:
         kind: ``throttled``, ``timeout``, ``unavailable`` and ``connection`` can succeed
             on a retry; ``rejected`` (the provider refused the request) and
-            ``unauthorized`` cannot; ``unknown`` is an exception this module does not
-            recognize.
-        retryable: True when a retry can succeed, False when it cannot, None when that is
-            not known.
+            ``unauthorized`` cannot; ``step_limit`` (the model used up the graph's steps)
+            can succeed only on another model; ``unknown`` is an exception this module
+            does not recognize.
+        retryable: True when a retry can succeed (for ``step_limit``, with another
+            model), False when it cannot, None when that is not known.
         detail: The exception class and the provider's error code or HTTP status, for a
             log line. It carries none of the provider's message.
         mid_stream: True when the failure came after the response began (an exception
@@ -160,7 +161,8 @@ class ModelFailure:
 
     @property
     def from_provider(self) -> bool:
-        """Whether the exception came from the model call, not from OSA's own code."""
+        """Whether the failure is read as the model call's (a provider's exception, or the
+        graph's step limit), not as a failure of OSA's own code."""
         return self.kind != "unknown"
 
     @property

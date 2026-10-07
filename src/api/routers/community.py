@@ -2751,6 +2751,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 },
             )
 
+        awm: AssistantWithMetrics | None = None
         try:
             awm = create_community_assistant(
                 community_id,
@@ -2784,6 +2785,8 @@ def create_community_router(community_id: str) -> APIRouter:
         except HTTPException:
             raise
         except Exception as e:
+            if step_limit := _step_limit_error(e, awm, community_id=community_id):
+                raise step_limit from e
             logger.error(
                 "Error in ask endpoint for community %s: %s",
                 community_id,
@@ -2878,6 +2881,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 },
             )
 
+        awm: AssistantWithMetrics | None = None
         try:
             awm = create_community_assistant(
                 community_id,
@@ -2933,6 +2937,8 @@ def create_community_router(community_id: str) -> APIRouter:
             # A ValueError the model call raised (langchain-aws raises one for a service
             # exception event) is the provider's failure, not a request the caller got
             # wrong: it is logged and answered like any other model error, not echoed.
+            if step_limit := _step_limit_error(e, awm, community_id=community_id):
+                raise step_limit from e
             logger.error(
                 "Error in chat endpoint for session %s (community: %s): %s",
                 session.session_id,
@@ -3844,6 +3850,23 @@ def _step_limit_reached(model: str | None) -> str:
     return f"The current model{name} used all its steps without finishing. {advice}"
 
 
+def _step_limit_error(
+    error: Exception, awm: AssistantWithMetrics | None, *, community_id: str
+) -> HTTPException | None:
+    """The response for a run that used all its steps, on an endpoint that is not streamed.
+
+    A model that keeps calling tools until the graph's step limit is the model's behavior,
+    not a fault of the service: it is logged as a warning with no traceback, and the caller
+    is told what happened and which model to try, as a streamed reply is. None for any other
+    error, which keeps the endpoint's generic 500.
+    """
+    if classify_model_error(error).kind != "step_limit":
+        return None
+    model = awm.model if awm else None
+    logger.warning("A run used all its steps (community=%s, model=%s)", community_id, model)
+    return HTTPException(status_code=500, detail=_step_limit_reached(model))
+
+
 class _StreamFailure(NamedTuple):
     """A failure that ended a stream, as the stream reports it.
 
@@ -3873,12 +3896,13 @@ def _stream_failure_event(
 
     The log says which failure it was (the exception class, the provider's code or status,
     and whether a retry can succeed). A throttle, and the caller's own key being refused
-    (theirs to fix, and nothing the operator did), are WARNING. Everything else is ERROR,
+    (theirs to fix, and nothing the operator did), and a run that used all its steps (the
+    model's behavior, not a fault of the service), are WARNING. Everything else is ERROR,
     including a provider outage (the service unavailable, the connection lost, or a read
     that timed out) in whichever phase of the call it came, so that an alert on ERROR sees
-    it. The traceback is left off where the line already says all there is: the two WARNINGs,
-    and an outage that was not worth a retry (one that came before the response began, or a
-    read that timed out). It is kept for a failure that cannot clear, one that was worth a
+    it. The traceback is left off where the line already says all there is: the three
+    WARNINGs, and an outage that was not worth a retry (one that came before the response
+    began, or a read that timed out). It is kept for a failure that cannot clear, one that was worth a
     retry and reached the reader anyway (the retry failed, or output was already shown, or it
     came too late), a platform or community key the provider refused, and any exception that
     is not a recognized model-provider error (a tool of ours failing is one, and its
@@ -3907,8 +3931,9 @@ def _stream_failure_event(
     Returns:
         The event to send: ``message``, an ``error_id`` (the key of the log line) and the
         ``request_id`` (the key of the metrics row), which are for a report and not part of
-        what the reader is shown, and ``retryable`` when known. And the failure's detail,
-        for that row's ``error_message``.
+        what the reader is shown, ``retryable`` when known, and ``suggested_model`` when the
+        message names a model to try. And the failure's detail, for that row's
+        ``error_message``.
     """
     failure = classify_model_error(error)
     detail = f"{failure.detail} (after one retry)" if after_retry else failure.detail
@@ -3916,6 +3941,8 @@ def _stream_failure_event(
     refused_callers_key = failure.kind == "unauthorized" and key_source == "byok"
     if refused_callers_key:
         summary = "Model call failed while streaming, the caller's own API key was refused"
+    elif failure.kind == "step_limit":
+        summary = "A run used all its steps"
     elif failure.from_provider:
         summary = "Model call failed while streaming"
     else:

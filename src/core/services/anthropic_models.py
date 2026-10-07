@@ -132,9 +132,9 @@ OFFERED_MODELS: dict[str, str] = {
 }
 
 #: The models to suggest, in order, to a reader whose model could not finish a request.
-#: Claude Haiku 4.5 first: the recursive-improvement work that Luna, GPT-OSS and Qwen fail
-#: (a tool, check, fix loop) finishes on it, and Sonnet costs several times as much (NEMAR
-#: already defaults to it). Sonnet follows, for the reader whose Haiku is the one that failed.
+#: Claude Haiku 4.5 first: the HED validate-and-refine loop (#514) that Luna, GPT-OSS and
+#: Qwen failed finished on it, and Sonnet costs twice as much per token (NEMAR already
+#: defaults to it). Sonnet follows, for the reader whose Haiku is the one that failed.
 SUGGESTED_MODELS: tuple[str, ...] = ("claude-haiku-4-5", "claude-sonnet-5-5")
 
 # Legacy OpenRouter-style identifiers that exist in saved widget settings,
@@ -456,12 +456,15 @@ def suggest_another_model(failed: str | None) -> tuple[str, str] | None:
 
     Returns:
         The first of ``SUGGESTED_MODELS`` that is not the one that failed, as ``(id,
-        label)``; None only if there is no other (an empty or one-model table).
+        label)``. None only when every model in it is the failed one or is not offered
+        (never, with today's two). With no failed model named, the first.
     """
     try:
         current = normalize_model(failed) if failed else None
     except ValueError:
-        current = failed
+        # An OpenRouter slug, perhaps with a routing variant (":nitro"): the offered model
+        # it stands for, or else the string as it came.
+        current = openrouter_model_id(failed) or failed
     for model_id in SUGGESTED_MODELS:
         if model_id != current and model_id in OFFERED_MODELS:
             return model_id, OFFERED_MODELS[model_id]
