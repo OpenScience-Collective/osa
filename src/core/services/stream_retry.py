@@ -36,7 +36,7 @@ from langchain_core.messages import AIMessageChunk
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
-from src.core.services.model_errors import classify_model_error
+from src.core.services.model_errors import classify_model_error, exception_text
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,7 @@ async def astream_events_with_retry(
                 session_id,
                 failure.detail,
                 failure.kind,
-                error,
+                exception_text(error),
                 extra={
                     "community_id": community_id,
                     "model": model,

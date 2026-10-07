@@ -3907,7 +3907,7 @@ def _stream_failure_event(
     # An outage before the response began, or a read that timed out, is no less an outage
     # than a stream cut short: it reaches ERROR too, without a traceback its line already
     # names (the class and code).
-    outage = failure.from_provider and failure.kind in ("unavailable", "connection", "timeout")
+    outage = failure.kind in ("unavailable", "connection", "timeout")
     logger.log(
         logging.ERROR if (needs_traceback or outage) else logging.WARNING,
         "%s (ID: %s) for %s (community=%s, model=%s, request_id=%s, session=%s): "
