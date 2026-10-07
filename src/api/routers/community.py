@@ -2357,9 +2357,10 @@ def _safe_reply_usage(
         )
     except ValidationError as error:
         problems = "; ".join(
-            f"{'.'.join(str(part) for part in e['loc'])}: {e['msg']}" for e in error.errors()
+            f"{'.'.join(str(part) for part in e['loc']) or 'usage'}: {e['msg']}"
+            for e in error.errors()
         )
-        if any(e["loc"] and e["loc"][0] == "estimated_cost" for e in error.errors()):
+        if all(e["loc"] and e["loc"][0] == "estimated_cost" for e in error.errors()):
             # The counts were fine and the price was not: a defect in the price table.
             logger.error(
                 "The cost of a reply cannot be told as usage (community=%s, model=%s, "
