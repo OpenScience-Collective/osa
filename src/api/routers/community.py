@@ -2355,20 +2355,39 @@ def _safe_reply_usage(
             cache_creation_tokens,
             partial=model_runs.without_usage > 0,
         )
-    except ValidationError:
-        logger.warning(
-            "The token counts of a reply cannot be told as usage (community=%s, model=%s, "
-            "request_id=%s): input=%s output=%s cache_read=%s cache_creation=%s",
-            community_id,
-            model,
-            request_id,
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cache_creation_tokens,
-            exc_info=True,
-            extra=context,
+    except ValidationError as error:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in e['loc'])}: {e['msg']}" for e in error.errors()
         )
+        if any(e["loc"] and e["loc"][0] == "estimated_cost" for e in error.errors()):
+            # The counts were fine and the price was not: a defect in the price table.
+            logger.error(
+                "The cost of a reply cannot be told as usage (community=%s, model=%s, "
+                "request_id=%s): %s",
+                community_id,
+                model,
+                request_id,
+                problems,
+                exc_info=True,
+                extra=context,
+            )
+        else:
+            # One line per reply and no traceback: the problem is in the counts, which the
+            # line gives, and how often it recurs is the number worth seeing.
+            logger.warning(
+                "The token counts of a reply cannot be told as usage (community=%s, "
+                "model=%s, request_id=%s): input=%s output=%s cache_read=%s "
+                "cache_creation=%s (%s)",
+                community_id,
+                model,
+                request_id,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                problems,
+                extra=context,
+            )
     except Exception:
         logger.error(
             "Failed to build the usage of a reply (community=%s, model=%s, request_id=%s)",
@@ -3746,9 +3765,9 @@ class _FailureWording:
     """The two messages that differ between ``/ask`` and a chat when a request fails.
 
     Attributes:
-        unrecognized: When the failure was not a model call's (a tool of ours failed, say),
-            so nothing is known about retrying. A model call that failed has its own
-            message (``_model_unavailable``).
+        unrecognized: What the reader is told when the failure was not a model call's (a
+            tool of ours failed, say), so nothing is known about retrying. A model call
+            that failed in a way a retry might fix is reported with ``_model_unavailable``.
         cannot_retry: When the provider refused the request outright (see
             ``classify_model_error``), which fails the same way every time. Short, since
             the widget shows an error for a few seconds; the error id that finds the log
@@ -3782,6 +3801,12 @@ _KEY_REFUSED_MESSAGE = (
 _SERVER_KEY_MESSAGE = (
     "The assistant is unavailable because of a server problem, and trying again will not "
     "help. Please contact support."
+)
+
+#: Told to a caller whose own key hit the provider's rate limit: the model is fine, and
+#: another model on the same key would be limited the same way.
+_BYOK_RATE_LIMITED_MESSAGE = (
+    "The provider is rate limiting your API key. Wait a moment and try again."
 )
 
 
@@ -3846,7 +3871,7 @@ def _stream_failure_event(
             choosing one.
         session_id: The chat session, for the log.
         after_retry: Whether this failure survived a retry (``RetryState.failed_after_retry``),
-            which the log level and the failure's detail say.
+            which raises the log level to ERROR and adds "(after one retry)" to the detail.
 
     Returns:
         The event to send: ``message``, an ``error_id`` (the key of the log line) and the
@@ -3865,7 +3890,12 @@ def _stream_failure_event(
     else:
         summary = "Unexpected streaming error"
     clears_by_itself = failure.from_provider and bool(failure.retryable)
-    needs_traceback = after_retry or not (clears_by_itself or refused_callers_key)
+    # A failure that was worth a retry and still reached the reader (the retry failed, or it
+    # was too late to make one) is an outage, not a blip: the cheap remedy is spent or ruled
+    # out, so it is logged at ERROR like one that cannot clear.
+    needs_traceback = (
+        after_retry or failure.worth_retrying_now or not (clears_by_itself or refused_callers_key)
+    )
     logger.log(
         logging.ERROR if needs_traceback else logging.WARNING,
         "%s (ID: %s) for %s (community=%s, model=%s, request_id=%s, session=%s): "
@@ -3893,7 +3923,9 @@ def _stream_failure_event(
             "key_source": key_source,
         },
     )
-    if failure.retryable is not False:
+    if failure.kind == "throttled" and key_source == "byok":
+        message = _BYOK_RATE_LIMITED_MESSAGE
+    elif failure.retryable is not False:
         message = _model_unavailable(model) if failure.from_provider else wording.unrecognized
     elif failure.kind == "unauthorized":
         message = _KEY_REFUSED_MESSAGE if refused_callers_key else _SERVER_KEY_MESSAGE

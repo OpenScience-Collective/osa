@@ -1,12 +1,13 @@
 """Running a graph's event stream again when its model call failed fast, before the reader
 saw anything of it.
 
-Bedrock sometimes ends a stream almost at once with no ``messageStop`` event, or drops the
-connection part way (issue #578). botocore retries a request that fails before the
+Bedrock sometimes ends a stream almost at once with no ``messageStop`` event (issue #578),
+or drops the connection part way. botocore retries a request that fails before the
 response begins (``retries`` in ``bedrock_llm._bedrock_client``), but not a stream that
 fails after, so these reached the reader as an error although a second call can succeed.
 Every provider's stream goes through this helper; ``classify_model_error`` decides what is
-worth a second try.
+worth a second try, and only a failure that came after the response began is (the clients
+already retried the rest).
 
 A second try is safe only while nothing has happened that the first one cannot undo. The
 reader has seen no text, reasoning signal, tool call or tool result, and no model call has
@@ -184,9 +185,13 @@ async def astream_events_with_retry(
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
             logger.info(
-                "The reader left before the second try of %s (community=%s, request_id=%s)",
+                "The reader left before the second try of %s (community=%s, model=%s, "
+                "request_id=%s, session=%s) after a %s failure",
                 endpoint,
                 community_id,
+                model,
                 request_id,
+                session_id,
+                failure.kind,
             )
             raise

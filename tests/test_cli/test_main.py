@@ -479,6 +479,15 @@ class TestAWarningReachesTheReader:
         assert "HED is a sys" in captured.out
         assert self.WARNING in captured.err
 
+    def test_an_error_with_markup_characters_prints_as_written(self, capsys) -> None:
+        """The unavailable-model message names the model, and a custom model id can carry
+        brackets that Rich would otherwise read as a tag (``[/bar]`` raises)."""
+        from src.cli import output
+
+        output.print_error("The current model (foo[/bar]) is not available right now.")
+
+        assert "foo[/bar]" in capsys.readouterr().err
+
     def test_a_warning_with_markup_characters_prints_as_written(self, capsys) -> None:
         from src.cli import output
 

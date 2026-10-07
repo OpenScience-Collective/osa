@@ -21,8 +21,8 @@ the version being released and start a new `[Unreleased]` section above it.
   The `done` event of `/ask` and `/chat`, the `tool_request` event that ends a browser-execution run, and the non-streaming `AskResponse` and `ChatResponse` carry a `usage` object: `input_tokens` (cached ones included), `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `estimated_cost` in US dollars (null for a model with no price) and `partial`.
   On a stream the object covers one run, so a client that drives `/chat/resume` itself adds up the runs of a reply; the widget does.
   The widget shows one line under each finished reply and keeps it in the saved history, with "at least" in front when a model run reported no tokens, since the figures then leave that run out.
-  `osa ask` and `osa chat` print the same wording after "Usage:" on stderr, so a pipe still carries the answer alone.
-  `usage` is null when the provider reported no tokens (which is not the same as a free reply), when the request was served through OpenRouter (not covered yet), and when OSA could not build it (a warning is logged).
+  `osa ask` and `osa chat` print the same wording after "Usage:" on stderr, so a pipe still carries the answer alone (with `-o json`, `usage` is a field of the JSON).
+  `usage` is null when the provider reported no tokens (which is not the same as a free reply), when the request was served through OpenRouter (not covered yet), and when OSA could not build it (it is logged).
   A reply that ends in an error shows none, and the tokens of a model call that failed and was tried again are not counted.
   The cost is an estimate from OSA's price table, with cache writes priced at the five-minute rate, not an invoice.
 
@@ -34,19 +34,23 @@ the version being released and start a new `[Unreleased]` section above it.
 - **NEMAR: a clearer notebook welcome** (pull request #577): the starter notebook now opens as a "Python playground".
   Its short welcome says where the code runs, what is installed, that the latest MNE does not install in this runtime, and that the Zarr copy is lossy.
 - **NEMAR: a curated first plot** (pull request #577): the chat's guidance for power spectra and event-related potential (ERP) images now sets the plot range before drawing.
-  It orders ERP image rows (by response time, else by each epoch's amplitude in a window), and describes what a plot shows rather than calling the recording noise.
-- **A failed model is called unavailable** (issue #578): when a model call fails in a way that is not the request's fault, the `error` event now says "The current model (name) is not available right now. Please choose another model."
-  It used to say "An error occurred while processing your request."
+  It orders ERP image rows (by response time, else by each epoch's amplitude in a window), and describes what a plot shows, calling a recording noisy only when the dropped-epoch count supports it.
+- **A failed model is called unavailable** (issue #578): when a model call fails in a way that is not the request's fault, the `error` event of a streamed `/ask` or `/chat` now says "The current model (its model id) is not available right now. Please choose another model."
+  It used to say "An error occurred while processing your request." on `/chat` and "An error occurred while generating the response. Please try again." on `/ask`, so a client that matches either string needs updating.
   There is no automatic switch to another model, which would change what a community chose and what a request costs.
+  A caller whose own API key is rate limited is told so instead, since another model would be limited the same way.
   A failure that is not a model's (a tool of ours failing) keeps its wording, and a refused request or key keeps its own.
+  The wording and the retry below apply to streamed replies; a request with `stream: false` still gets the generic HTTP 500 for a provider failure, as before.
 
 ### Fixed
 
-- **A Bedrock stream that is cut short is tried once more, and a stall is classified** (issue #578): GPT-6 Luna streams sometimes ended almost at once with no `messageStop` event, and others stalled until the read timeout.
-  A stall came out of botocore as urllib3's own error, which the classifier did not know, so it was logged as an unexpected error with no `retryable` field; it is now a retryable timeout.
-  A stream that fails within ten seconds, before the reader has been shown any text, reasoning, tool call or tool result, is run once more after about a second.
-  A throttle and a timeout are not retried: the clients already retry a throttle with backoff, and a timeout has waited out its limit.
-  The log says when a request was retried and whether the second try worked, and a failure that survived it is logged at ERROR.
+- **A stream cut short after the response began is tried once more, and a stall is classified** (issue #578): GPT-6 Luna streams on Bedrock sometimes ended almost at once with no `messageStop` event, and one request on develop stalled until the 120 s read timeout.
+  A stall came out of botocore as urllib3's own error, which the classifier did not know, so it was logged as an unexpected error with no `retryable` field; it is now classified as a timeout, which is not retried and reaches an API or CLI client with the unavailable message (a widget reader's own 120 s request timeout fires first and shows "Connection timeout"; the widget's stall timer, issue #564, still never fires).
+  A stream that fails within ten seconds, after the response began, in a way that can clear by itself (the service ending the stream early, a dropped connection, a service error inside the stream), before the reader has been shown any text, reasoning, tool call or tool result and before any model call has finished, is run once more after about a second.
+  A failure before the response began is not retried here, because the provider's client already retried it with backoff (botocore, the Anthropic SDK): a second try would only multiply the calls a degraded provider gets.
+  A throttle is not retried either (botocore and the Anthropic SDK retry one with backoff; OpenRouter's client does not), nor a timeout (it has waited out its limit), a refused request or key, an error of our own, or a non-streamed request.
+  The log says when a request was retried and whether the second try worked.
+  A failure that was worth a retry and reached the reader anyway (the retry failed, or a tool had run so there was none to make) is logged at ERROR, where such a failure was logged as a warning.
 
 ## [0.8.16] - 2026-09-30
 

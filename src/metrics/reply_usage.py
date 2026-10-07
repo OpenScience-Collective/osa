@@ -27,7 +27,7 @@ from src.metrics.cost import MODEL_PRICING, estimate_cost
 USAGE_FIELD_DESCRIPTION = (
     "Tokens this reply used, how many of them were cached, and an estimate of the cost in "
     "US dollars. Null when the provider reported no usage, for requests served through "
-    "OpenRouter whatever the model, and when OSA could not build it (a warning is logged). "
+    "OpenRouter whatever the model, and when OSA could not build it (it is logged). "
     "The streamed endpoint sends the same shape on its `done` event, one object per run "
     "of a reply."
 )

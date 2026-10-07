@@ -26,7 +26,8 @@ from unittest.mock import patch
 import httpx
 import httpx2
 import pytest
-from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError
+from botocore.eventstream import EventStreamError
+from botocore.exceptions import ClientError, ReadTimeoutError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_aws.chat_models.bedrock_converse import _parse_stream_event
@@ -184,9 +185,16 @@ def _fresh_bedrock_clients():
     _bedrock_client.cache_clear()
 
 
-def _assert_retryable(events: list[dict], records: list[logging.LogRecord], detail: str) -> None:
+def _assert_retryable(
+    events: list[dict],
+    records: list[logging.LogRecord],
+    detail: str,
+    *,
+    level: int = logging.WARNING,
+) -> None:
     """The reader is told their model is unavailable and to choose another; the log says
-    what happened, at WARNING."""
+    what happened, at WARNING for a failure that can clear by itself, or at ERROR with the
+    traceback for one a retry would have covered and that reached the reader anyway."""
     assert events[-1]["event"] == "error", events
     assert events[-1]["message"] == BEDROCK_UNAVAILABLE
     # The widget shows the message for a few seconds, so it has to be read at a glance.
@@ -196,11 +204,11 @@ def _assert_retryable(events: list[dict], records: list[logging.LogRecord], deta
     assert events[-1]["request_id"] == "req-failure", "the reader's report finds its row"
     assert len(records) == 1, [r.getMessage() for r in records]
     record = records[0]
-    assert record.levelno == logging.WARNING
+    assert record.levelno == level
     message = record.getMessage()
     for expected in (COMMUNITY, BEDROCK_MODEL, "req-failure", detail, "retryable=yes"):
         assert expected in message, f"{expected!r} missing from {message!r}"
-    assert not record.exc_info, "a failure that can clear by itself needs no traceback"
+    assert bool(record.exc_info) == (level == logging.ERROR)
     assert record.error_id == events[-1]["error_id"]
     assert record.retryable is True
 
@@ -341,6 +349,7 @@ class TestARetryBeforeTheReaderSawAnything:
         assert events[-1]["event"] == "done", events
         assert events[-1]["content"] == "Hello there"
         assert len(wire.requests) == 2
+        assert wire.requests[0].body == wire.requests[1].body, "the same request, sent again"
         assert _failure_records(caplog) == [], "nothing failed for the reader"
         (record,) = _retry_records(caplog)
         assert record.levelno == logging.WARNING
@@ -548,6 +557,38 @@ CANNOT_RETRY_TEXT = {
 }
 
 
+RATE_LIMITED_KEY_TEXT = "The provider is rate limiting your API key. Wait a moment and try again."
+
+
+class TestAThrottleOnTheCallersOwnKey:
+    """The model is fine, and another model on the same key would be limited the same way,
+    so the reader is told about their key, not asked to choose a model."""
+
+    @paths
+    async def test_it_says_the_key_is_rate_limited(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+        llm = _bedrock_llm()
+        Wire(llm, **refusal("ThrottlingException", "Too many requests"))
+
+        events = await _run(path, llm, BEDROCK_MODEL, key_source="byok")
+
+        assert events[-1]["message"] == RATE_LIMITED_KEY_TEXT
+        assert events[-1]["retryable"] is True
+
+    @paths
+    async def test_the_platforms_own_key_throttled_still_says_the_model_is_unavailable(
+        self, path: str
+    ) -> None:
+        llm = _bedrock_llm()
+        Wire(llm, **refusal("ThrottlingException", "Too many requests"))
+
+        events = await _run(path, llm, BEDROCK_MODEL, key_source="platform")
+
+        assert events[-1]["message"] == BEDROCK_UNAVAILABLE
+
+
 class TestAKeyTheProviderRefused:
     """The fix for a refused key depends on whose it is: the caller's own (BYOK) is theirs
     to check, the platform's or a community's is the operator's. Neither is helped by a new
@@ -732,6 +773,14 @@ class _FailingChatModel(StreamingScriptedChatModel):
         raise self.error
 
 
+def _stream_error() -> EventStreamError:
+    """The service's exception event inside an open stream: a failure that can clear by
+    itself and came after the response began, the kind that is tried again."""
+    return EventStreamError(
+        {"Error": {"Code": "modelStreamErrorException", "Message": "boom"}}, "ConverseStream"
+    )
+
+
 def _failing(error: Exception, *, said: str = "") -> _FailingChatModel:
     script = [[text_chunk(said)] if said else []]
     return _FailingChatModel(chunk_script=script, error=error)
@@ -879,7 +928,8 @@ class TestWhatLangchainAwsRaisesItself:
         events = await _run(path, llm, BEDROCK_MODEL)
 
         records = _failure_records(caplog)
-        _assert_retryable(events, records, "ConnectionError")
+        # Text had reached the reader, so there was no retry to make: an outage, at ERROR.
+        _assert_retryable(events, records, "ConnectionError", level=logging.ERROR)
         assert "Model call failed" in records[0].getMessage()
 
 
@@ -1010,7 +1060,7 @@ class TestNoRetryOnceAToolHasRun:
 
         model = _FailsOnTheSecondCall(
             chunk_script=[_anthropic_call("lookup", "toolu_01lookup", {"query": "x"})],
-            error=EndpointConnectionError(endpoint_url=ENDPOINT),
+            error=_stream_error(),
         )
 
         events = await _run(path, model, "some-model", [lookup])
@@ -1041,7 +1091,7 @@ class TestTheReaderLeavesDuringTheWait:
         starts, the cancellation propagates, and the log says why the retry never ran."""
         monkeypatch.setattr(stream_retry, "RETRY_DELAY_SECONDS", 30.0)
         caplog.set_level(logging.INFO)
-        model = _failing(EndpointConnectionError(endpoint_url=ENDPOINT))
+        model = _failing(_stream_error())
         assistant = CommunityAssistant(model=model, config=community_config(), preload_docs=False)
         graph = assistant.build_graph()
         state = {
@@ -1078,7 +1128,9 @@ class TestTheReaderLeavesDuringTheWait:
 
         assert model.calls == 1, "no second call started"
         left = [r for r in caplog.records if "The reader left" in r.getMessage()]
-        assert len(left) == 1 and "req-cancel" in left[0].getMessage()
+        assert len(left) == 1
+        for expected in ("req-cancel", "some-model", "unavailable failure"):
+            assert expected in left[0].getMessage(), left[0].getMessage()
 
 
 def _service_error_in_the_stream(code: str) -> dict[str, Any]:
@@ -1124,9 +1176,12 @@ class TestWhatElseIsTriedAgain:
         assert row["error_message"].endswith("(after one retry)"), row["error_message"]
 
     @paths
-    async def test_openrouter_unavailable_is_answered_by_the_second_try(
+    async def test_openrouter_unavailable_before_the_response_is_not_tried_again(
         self, path: str, monkeypatch, caplog: pytest.LogCaptureFixture
     ) -> None:
+        """A 5xx answer arrives before any response: the client's own retries are the ones
+        for that, and a second try here would only multiply the calls a degraded provider
+        gets. The reader is asked to choose another model."""
         caplog.set_level(logging.WARNING)
         server = FakeOpenRouter()
         monkeypatch.setenv("OPENROUTER_API_BASE", server.base_url)
@@ -1139,9 +1194,26 @@ class TestWhatElseIsTriedAgain:
         finally:
             server.close()
 
-        assert events[-1]["event"] == "done", events
-        assert requests == 2
-        assert len(_retry_records(caplog)) == 1
+        assert events[-1]["message"] == UNAVAILABLE_TEXT.format(model=OPENROUTER_MODEL)
+        assert requests == 1
+        assert _retry_records(caplog) == []
+
+    @paths
+    async def test_a_bedrock_refusal_before_the_response_is_not_tried_again_here(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """botocore retried it with backoff already; the stream helper adds nothing."""
+        caplog.set_level(logging.WARNING)
+        llm = _bedrock_llm()
+        wire = Wire(llm, **refusal("ServiceUnavailableException", "down"))
+
+        events = await _run(path, llm, BEDROCK_MODEL)
+
+        assert events[-1]["event"] == "error"
+        assert events[-1]["message"] == BEDROCK_UNAVAILABLE
+        assert _retry_records(caplog) == []
+        attempts = llm.client.meta.config.retries["total_max_attempts"]
+        assert len(wire.requests) == attempts, "botocore's own tries, and the helper adds none"
 
     @paths
     async def test_openrouter_throttle_is_not_tried_again(
@@ -1202,6 +1274,14 @@ class TestWhatElseIsTriedAgain:
         assert len(calls) == 2
         (record,) = _retry_records(caplog)
         assert record.__dict__["failure_kind"] == "unavailable"
+        # The failed try's opening chunk carried input tokens; none of them are counted.
+        usage = events[-1]["usage"]
+        (row,) = _rows()
+        assert usage["partial"] is False
+        assert (row["input_tokens"], row["estimated_cost"]) == (
+            usage["input_tokens"],
+            usage["estimated_cost"],
+        )
 
 
 class TestWordingForAProviderFailureNobodyRecognizes:
@@ -1237,9 +1317,7 @@ class TestEveryKindOfOutputEndsTheChanceToRetry:
             content="",
             tool_call_chunks=[{"name": "lookup", "args": "", "id": "call_1", "index": 0}],
         )
-        model = _FailingChatModel(
-            chunk_script=[[chunk]], error=EndpointConnectionError(endpoint_url=ENDPOINT)
-        )
+        model = _FailingChatModel(chunk_script=[[chunk]], error=_stream_error())
 
         events = await _run(path, model, "some-model")
 
@@ -1252,12 +1330,25 @@ class TestEveryKindOfOutputEndsTheChanceToRetry:
         assert _retry_records(caplog) == []
 
     @paths
+    async def test_the_same_failure_with_no_output_is_tried_again(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The control for the tests here: without a chunk the reader was shown, the very
+        same failure is retried, so they pass because of the output and not the error."""
+        caplog.set_level(logging.WARNING)
+        model = _failing(_stream_error())
+
+        events = await _run(path, model, "some-model")
+
+        assert events[-1]["event"] == "error"
+        assert model.calls == 2
+        assert len(_retry_records(caplog)) == 1
+
+    @paths
     async def test_reasoning_alone(self, path: str, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.WARNING)
         chunk = AIMessageChunk(content=[{"type": "thinking", "thinking": "hmm", "index": 0}])
-        model = _FailingChatModel(
-            chunk_script=[[chunk]], error=EndpointConnectionError(endpoint_url=ENDPOINT)
-        )
+        model = _FailingChatModel(chunk_script=[[chunk]], error=_stream_error())
 
         events = await _run(path, model, "some-model")
 
@@ -1285,7 +1376,7 @@ class TestEveryKindOfOutputEndsTheChanceToRetry:
             def _generate(self, messages, stop=None, run_manager=None, **kwargs):
                 if self.calls >= 1:
                     self.calls += 1
-                    raise EndpointConnectionError(endpoint_url=ENDPOINT)
+                    raise _stream_error()
                 return super()._generate(messages, stop, run_manager, **kwargs)
 
         model = _FailsSecond(responses=[tool_call_response("lookup", {"query": "x"}, "call_1")])
@@ -1352,11 +1443,12 @@ class TestTheRetryOnTheResumePath:
 
 class TestTheReaderLeavesTheRouterDuringTheWait:
     async def test_the_turn_is_released_and_no_second_call_starts(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The chat stream's ``finally`` releases the session's turn however the generator
         ends; with a wait in the middle, a disconnect there must still release it."""
         monkeypatch.setattr(stream_retry, "RETRY_DELAY_SECONDS", 30.0)
+        caplog.set_level(logging.INFO)
         llm = _bedrock_llm()
         wire = Wire(llm, **CUT_SHORT, then=[ANSWER])
         assistant = CommunityAssistant(model=llm, config=community_config(), preload_docs=False)
@@ -1373,16 +1465,19 @@ class TestTheReaderLeavesTheRouterDuringTheWait:
             task = asyncio.create_task(collect(stream))
             for _ in range(100):
                 assert not task.done(), task.exception()
-                if wire.requests:
+                if _retry_records(caplog):
                     break
                 await asyncio.sleep(0.05)
-            await asyncio.sleep(0.3)
+            assert _retry_records(caplog), "the first try failed and the wait began"
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
 
         assert len(wire.requests) == 1
         assert session.begin_turn() is True, "the turn was released"
+        assert any("The reader left" in r.getMessage() for r in caplog.records), (
+            "and it was the wait that the cancellation landed in"
+        )
 
 
 class _FailsOnCalls(StreamingScriptedChatModel):
@@ -1436,7 +1531,7 @@ class TestWhatTheHelperReports:
         stale = RetryState(failed_after_retry=True)
         model = _FailsOnCalls(
             chunk_script=[[text_chunk("Hi")]],
-            error=EndpointConnectionError(endpoint_url=ENDPOINT),
+            error=_stream_error(),
             fail_on={0},
         )
 
@@ -1453,7 +1548,7 @@ class TestWhatTheHelperReports:
         stale = RetryState(failed_after_retry=True)
         model = _FailsOnCalls(
             chunk_script=[[text_chunk("Hi")]],
-            error=EndpointConnectionError(endpoint_url=ENDPOINT),
+            error=_stream_error(),
             fail_on=set(),
         )
 
@@ -1466,11 +1561,11 @@ class TestWhatTheHelperReports:
         state = RetryState()
         model = _FailsOnCalls(
             chunk_script=[[]],
-            error=EndpointConnectionError(endpoint_url=ENDPOINT),
+            error=_stream_error(),
             fail_on={0, 1, 2},
         )
 
-        with pytest.raises(EndpointConnectionError):
+        with pytest.raises(EventStreamError):
             await _drain(model, state)
 
         assert model.attempts == 2
@@ -1515,7 +1610,7 @@ class TestWhatTheHelperReports:
 
         model = _FailsOnCalls(
             chunk_script=[_anthropic_call("lookup", "toolu_01lookup", {"query": "x"})],
-            error=EndpointConnectionError(endpoint_url=ENDPOINT),
+            error=_stream_error(),
             fail_on={0, 2},
         )
 
@@ -1525,10 +1620,12 @@ class TestWhatTheHelperReports:
         assert len(_retry_records(caplog)) == 1, "the first call was tried again"
         assert events[-1]["event"] == "error"
         (record,) = _failure_records(caplog)
-        assert record.levelno == logging.WARNING
+        # It was worth a retry and reached the reader (a tool had run, so there was none to
+        # make): an outage, at ERROR. But that call was never tried twice, and says so.
+        assert record.levelno == logging.ERROR and record.exc_info
         assert "after one retry" not in record.getMessage()
         (row,) = _rows()
-        assert row["error_message"] == "EndpointConnectionError"
+        assert row["error_message"] == "EventStreamError modelStreamErrorException"
 
 
 class TestTheUsageOfAReplyThatWasTriedAgain:
@@ -1564,6 +1661,7 @@ class TestTheUsageOfAReplyThatWasTriedAgain:
         usage = events[-1]["usage"]
         assert (usage["input_tokens"], usage["output_tokens"]) == (30, 7)
         assert (usage["cache_read_tokens"], usage["cache_creation_tokens"]) == (8, 2)
+        assert usage["partial"] is False, "a failed try is not a run that reported nothing"
         (row,) = _rows()
         assert row["input_tokens"] == usage["input_tokens"]
         assert row["estimated_cost"] == usage["estimated_cost"]
