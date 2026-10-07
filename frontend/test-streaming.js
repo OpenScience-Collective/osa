@@ -283,6 +283,54 @@ test('Feedback race keeps the same response after done-state replacement', () =>
   );
 });
 
+test('The usage line reads the same as the CLI: both are tested against one table', () => {
+  const { format } = testWidgetWindow.OSAChatWidget.__usage;
+  assert(typeof format === 'function', 'The usage formatter should be exposed in test mode');
+  const table = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', 'tests', 'fixtures', 'usage_lines.json'), 'utf8')
+  );
+  assert(table.length >= 5, 'The shared table should have its cases');
+  for (const row of table) {
+    assertEqual(format(row.usage), row.line, `Usage line for ${row.name}`);
+  }
+});
+
+test('Usage adds up across the runs of a reply, and the cost is unknown if any run has none', () => {
+  const { add } = testWidgetWindow.OSAChatWidget.__usage;
+  const first = { input_tokens: 100, output_tokens: 10, cache_read_tokens: 40, cache_creation_tokens: 5, estimated_cost: 0.000401 };
+  const second = { input_tokens: 150, output_tokens: 20, cache_read_tokens: 0, cache_creation_tokens: 0, estimated_cost: 0.000602 };
+  assertEqual(
+    add(first, second),
+    { input_tokens: 250, output_tokens: 30, cache_read_tokens: 40, cache_creation_tokens: 5, estimated_cost: 0.001003 },
+    'Tokens and cost add, with the cost kept to six places'
+  );
+  assertEqual(add(undefined, second), second, 'A reply with no earlier run has the new run\'s usage');
+  assert(add(undefined, second) !== second, 'And it is a copy, not the event\'s own object');
+  assertEqual(add(first, null), first, 'A run that reported no usage leaves the total as it was');
+  assertEqual(add(undefined, null), undefined, 'And with nothing before it there is no usage at all');
+  assertEqual(add(first, { ...second, estimated_cost: null }).estimated_cost, null, 'One run with no price makes the sum unpriced');
+  assertEqual(add(first, 'lots'), first, 'Something that is not a usage object is left out');
+});
+
+test('Done reducer keeps a reply\'s usage, and adds the last run\'s to the earlier ones', () => {
+  const applyDoneEvent = testWidgetWindow.OSAChatWidget.__applyDoneEvent;
+  const usage = { input_tokens: 120, output_tokens: 30, cache_read_tokens: 80, cache_creation_tokens: 0, estimated_cost: 0.0002 };
+
+  const one = [{ role: 'assistant', content: 'raw' }];
+  applyDoneEvent(one, 0, { event: 'done', content: 'Final.', usage }, 'raw');
+  assertEqual(one[0].usage, usage, 'A reply with one run carries that run\'s usage');
+
+  const two = [{ role: 'assistant', content: 'earlier', _usageSoFar: { ...usage, input_tokens: 80, output_tokens: 20, cache_read_tokens: 0, estimated_cost: 0.0001 } }];
+  applyDoneEvent(two, 0, { event: 'done', content: 'Final.', usage }, 'raw');
+  assertEqual(two[0].usage.input_tokens, 200, 'The final run joins the earlier ones');
+  assertEqual(two[0].usage.estimated_cost, 0.0003, 'And so does its cost');
+  assert(!('_usageSoFar' in two[0]), 'And the earlier runs\' total is no longer kept aside');
+
+  const none = [{ role: 'assistant', content: 'raw' }];
+  applyDoneEvent(none, 0, { event: 'done', content: 'Final.', usage: null }, 'raw');
+  assert(!('usage' in none[0]), 'A done with no usage leaves the message without any');
+});
+
 test('Done reducer keeps a reply that ran code even when it ends with no text', () => {
   const applyDoneEvent = testWidgetWindow.OSAChatWidget.__applyDoneEvent;
   // What ran, and any figure it drew, is part of the answer. Removing the

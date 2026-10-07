@@ -13,6 +13,15 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+### Added
+
+- **What a reply used and cost, shown with it** (issue #582): each reply now tells the reader its tokens, how many were cached, and an estimated cost, for example "1,240 in (980 cached), 310 out, about $0.0021".
+  The `done` event of `/ask` and `/chat`, the `tool_request` event that ends a browser-execution run, and the non-streaming `AskResponse` and `ChatResponse` carry a `usage` object: `input_tokens` (cached ones included), `output_tokens`, `cache_read_tokens`, `cache_creation_tokens` and `estimated_cost` in US dollars.
+  The widget shows one line under each finished reply, summing the runs of a reply that executes code in the browser, and keeps it in the saved history.
+  `osa ask` and `osa chat` print the same line to stderr under the answer, so a pipe still carries the answer alone.
+  `usage` is null when the provider reported no tokens, which is not the same as a free reply, and for models served through OpenRouter, which are left out for now.
+  The cost is an estimate from OSA's price table, not an invoice.
+
 ### Changed
 
 - **NEMAR: a clearer notebook welcome** (pull request #577): the starter notebook now opens as a "Python playground".

@@ -1083,6 +1083,77 @@ console.log('\nsources appear with the sentence that cites them, not ahead of it
   assertEqual([...window.document.querySelectorAll('.osa-message.assistant .osa-message-sources li')].length, 3, 'and once done, all three are listed');
 }
 
+console.log('\nwhat a reply used and cost is shown under it, between its sources and the feedback buttons');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const citations = [{ marker: 1, source: 'https://example.org/1', title: 'Source 1', cited_text: 'x' }];
+  const usage = { input_tokens: 1240, output_tokens: 310, cache_read_tokens: 980, cache_creation_tokens: 0, estimated_cost: 0.0021 };
+  const text = 'The first claim is stated plainly here, with a marker after it.[1]';
+  const lastReply = () => [...window.document.querySelectorAll('.osa-message.assistant')].at(-1);
+  const started = api.getMessages().length;
+  const stream = api.handleStreamingResponse(sse([
+    { event: 'content', content: text },
+    { event: 'done', content: text, citations, usage },
+  ]), container);
+  let shownEarly = false;
+  let over = false;
+  stream.then(() => { over = true; }, () => { over = true; });
+  while (!over) {
+    if (lastReply() && lastReply().querySelector('.osa-message-usage')) {
+      // Sampled while the reply is still being drawn: usage arrives with `done`.
+      shownEarly = shownEarly || api.getMessages()[started].usage === undefined;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 8));
+  }
+  await stream;
+  const line = lastReply().querySelector('.osa-message-usage');
+  assert(line !== null, 'the reply has a usage line once it is done');
+  assertEqual(line.textContent, '1,240 in (980 cached), 310 out, about $0.0021', 'saying tokens, cache and cost');
+  assert(!shownEarly, 'and it was not shown before the reply had usage to show');
+  const order = [...lastReply().children].map((el) => el.className.split(' ')[0]);
+  assert(
+    order.indexOf('osa-message-sources') < order.indexOf('osa-message-usage')
+      && order.indexOf('osa-message-usage') < order.indexOf('osa-message-feedback'),
+    `it sits under the sources and above the feedback buttons (${order.join(', ')})`
+  );
+  assertEqual(api.getMessages()[started].usage, usage, 'and the message keeps it, so a reload shows it again');
+}
+
+console.log('\na reply with no usage has no usage line');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  for (const usage of [undefined, null]) {
+    await api.handleStreamingResponse(sse([
+      { event: 'content', content: 'Fine.' },
+      { event: 'done', content: 'Fine.', ...(usage === undefined ? {} : { usage }) },
+    ]), container);
+  }
+  assertEqual(window.document.querySelectorAll('.osa-message-usage').length, 0, 'whether the server sent null or left it out');
+}
+
+console.log('\na browser-execution reply shows what all of its runs used');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const run = (input, output, cost) => ({
+    input_tokens: input, output_tokens: output, cache_read_tokens: 0, cache_creation_tokens: 0, estimated_cost: cost,
+  });
+  const first = await api.handleStreamingResponse(sse([
+    { event: 'content', content: 'Let me check that for you.' },
+    { event: 'tool_request', call_id: 'c1', tool: 'execute_code', args: {}, content: 'Let me check that for you.', usage: run(1000, 100, 0.0010) },
+  ]), container);
+  assertEqual(window.document.querySelectorAll('.osa-message-usage').length, 0, 'nothing is shown while the reply is unfinished');
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: 'The peak is at ten hertz.' },
+    { event: 'done', content: 'The peak is at ten hertz.', usage: run(1500, 200, 0.0015) },
+  ]), container, { messageIndex: first.messageIndex });
+  const lines = [...window.document.querySelectorAll('.osa-message-usage')];
+  assertEqual(lines.length, 1, 'one line for the one reply');
+  assertEqual(lines[0].textContent, '2,500 in, 300 out, about $0.0025', 'the sum of the two runs');
+}
+
 console.log('\na reader typing in a message keeps their caret through the reveal');
 {
   const { window, api } = loadWidget();

@@ -1717,6 +1717,12 @@
       margin: 2px 0;
     }
 
+    .osa-message-usage {
+      margin: 6px 0 0;
+      font-size: 11px;
+      color: var(--osa-text-light);
+    }
+
     .osa-source-marker {
       font-variant-numeric: tabular-nums;
       margin-right: 2px;
@@ -4456,7 +4462,7 @@
       // in-progress draft, and never persist a vote that has not been confirmed
       // by the server (so a reload can't show a false "recorded" state).
       const persistable = messages.map((m) => {
-        const { _feedbackCommitting, _feedbackJustOpened, _responseId, feedbackDraft, ...rest } = m;
+        const { _feedbackCommitting, _feedbackJustOpened, _responseId, _usageSoFar, feedbackDraft, ...rest } = m;
         if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
         // Figures are shown for the life of the page and not stored. An open
         // "Edit and run" editor, its draft and its live echo, and an opened
@@ -7500,6 +7506,13 @@
         sourcesRow = '<ul class="osa-message-sources">' + items + '</ul>';
       }
 
+      // What the reply used and cost (#582), under its text and sources. It arrives with
+      // the `done` event, so it appears when the reply is whole.
+      const usageLine = msg.role === 'assistant' ? formatUsage(msg.usage) : null;
+      const usageRow = usageLine
+        ? `<div class="osa-message-usage" title="An estimate from OSA's price list, not an invoice">${escapeHtml(usageLine)}</div>`
+        : '';
+
       // Add copy button for assistant messages
       const copyBtn = msg.role === 'assistant'
         ? `<button class="osa-message-copy-btn" data-msg-index="${msgIndex}" title="Copy as markdown">${ICONS.copy}</button>`
@@ -7544,6 +7557,7 @@
         <div class="osa-message-content">${content}</div>
         ${status && status.where === 'inline' && status.messageIndex === msgIndex ? statusLineHtml(status) : ''}
         ${sourcesRow}
+        ${usageRow}
         ${feedbackRow}
       `;
       messagesEl.appendChild(msgEl);
@@ -8055,6 +8069,60 @@
     return typeof text === 'string' && /\S/.test(text);
   }
 
+  // What a reply used and cost (#582), from the `usage` object the server sends on a
+  // `done` or `tool_request` event: input tokens (cached ones included), output tokens,
+  // cache reads and writes, and an estimated cost in US dollars, or null when the model
+  // has no price. A reply that spans browser runs is the sum of its runs.
+  function isUsage(usage) {
+    return !!usage && typeof usage === 'object'
+      && Number.isInteger(usage.input_tokens) && Number.isInteger(usage.output_tokens);
+  }
+
+  // `total` and `next` added, as a new object. Whichever is not a usage is left out, and
+  // undefined comes back when neither is. The cost is unknown when either run's is.
+  function addUsage(total, next) {
+    if (!isUsage(next)) return isUsage(total) ? total : undefined;
+    if (!isUsage(total)) return { ...next };
+    const count = (key) => (Number.isInteger(total[key]) ? total[key] : 0)
+      + (Number.isInteger(next[key]) ? next[key] : 0);
+    const priced = typeof total.estimated_cost === 'number' && typeof next.estimated_cost === 'number';
+    return {
+      input_tokens: count('input_tokens'),
+      output_tokens: count('output_tokens'),
+      cache_read_tokens: count('cache_read_tokens'),
+      cache_creation_tokens: count('cache_creation_tokens'),
+      estimated_cost: priced ? Math.round((total.estimated_cost + next.estimated_cost) * 1e6) / 1e6 : null,
+    };
+  }
+
+  function formatCost(dollars) {
+    if (dollars < 0.0001) return 'under $0.0001';
+    if (dollars < 0.01) return `about $${dollars.toFixed(4)}`;
+    if (dollars < 1) return `about $${dollars.toFixed(3)}`;
+    return `about $${dollars.toFixed(2)}`;
+  }
+
+  // One line for a reply's usage, for example "1,240 in (980 cached), 310 out, about
+  // $0.0021", or null when there is none to show. The CLI words it the same way
+  // (`format_usage` in src/cli/output.py), and both are tested against one table.
+  function formatUsage(usage) {
+    if (!isUsage(usage)) return null;
+    const number = (n) => n.toLocaleString('en-US');
+    const cache = [];
+    if (Number.isInteger(usage.cache_read_tokens) && usage.cache_read_tokens > 0) {
+      cache.push(`${number(usage.cache_read_tokens)} cached`);
+    }
+    if (Number.isInteger(usage.cache_creation_tokens) && usage.cache_creation_tokens > 0) {
+      cache.push(`${number(usage.cache_creation_tokens)} written to cache`);
+    }
+    const parts = [
+      `${number(usage.input_tokens)} in${cache.length ? ` (${cache.join(', ')})` : ''}`,
+      `${number(usage.output_tokens)} out`,
+    ];
+    if (typeof usage.estimated_cost === 'number') parts.push(formatCost(usage.estimated_cost));
+    return parts.join(', ');
+  }
+
   // Apply the authoritative completion payload to the active assistant
   // message. Kept separate from the stream loop so the state transition can
   // be tested without depending on a live model or browser network.
@@ -8068,6 +8136,11 @@
     if (Array.isArray(event.citations)) {
       message.citations = event.citations;
     }
+    // This run's usage joins what earlier runs of the reply used (kept aside by the
+    // tool_request branch until now), so the reply shows its total, and only once whole.
+    const usage = addUsage(message._usageSoFar, event.usage);
+    delete message._usageSoFar;
+    if (usage) message.usage = usage;
 
     const finalContent = typeof event.content === 'string'
       ? event.content
@@ -8342,9 +8415,11 @@
   //   data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
   //   data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before
   //          done; `codes` lists every kind when more than one applies)
-  //   data: {"event": "done", "content": "final answer", "citations": [...]}
+  //   data: {"event": "done", "content": "final answer", "citations": [...],
+  //          "usage": {...}}  (`usage`: this run's tokens, cache tokens and estimated cost,
+  //          or null; the reply shows the sum of its runs)
   //   data: {"event": "tool_request", "call_id": "...", "tool": "...", "args": {...},
-  //          "content": "text so far", "citations": [...]}  (instead of done)
+  //          "content": "text so far", "citations": [...], "usage": {...}}  (instead of done)
   //   data: {"event": "error", "message": "error description", "error_id": "...",
   //          "request_id": "...", "retryable": true}  (ends the stream, no done follows;
   //          `retryable` only when the server knows)
@@ -8605,6 +8680,10 @@
             if (Array.isArray(event.citations)) {
               messages[messageIndex].citations = event.citations;
             }
+            // Kept aside, not shown: the reply is unfinished, and a total that changes
+            // under text still being written would read as a number to rely on.
+            const usageSoFar = addUsage(messages[messageIndex]._usageSoFar, event.usage);
+            if (usageSoFar) messages[messageIndex]._usageSoFar = usageSoFar;
             accumulatedContent = runText;
           } else if (event.event === 'error') {
             // Backend sent an error event
@@ -9522,6 +9601,7 @@
       waiting: () => launcherWaiting,
     };
     window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
+    window.OSAChatWidget.__usage = { format: formatUsage, add: addUsage };
     // The settings in memory, as the next request would read them (a copy).
     window.OSAChatWidget.__settings = { get: () => ({ ...userSettings }) };
     window.OSAChatWidget.__reveal = {
