@@ -30,10 +30,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && npm install -g pnpm@10.33.4 \
     && git clone https://github.com/hed-standard/hed-lsp /opt/hed-lsp \
     && cd /opt/hed-lsp && git checkout "$HED_LSP_REF" \
-    && pnpm install --frozen-lockfile --filter "hed-lsp-server..." \
+    && pnpm install --frozen-lockfile --ignore-scripts --filter "hed-lsp-server..." \
     && pnpm --filter hed-lsp-server exec tsc -b \
     && rm -rf node_modules server/node_modules \
-    && pnpm install --frozen-lockfile --prod --filter "hed-lsp-server..." \
+    && pnpm install --frozen-lockfile --prod --ignore-scripts --filter "hed-lsp-server..." \
     && rm -rf node_modules/.pnpm/onnxruntime-* node_modules/.pnpm/sharp@* node_modules/.pnpm/@img+sharp* \
         .git client docs images server/src \
     && node server/out/cli.js --json --top 10 "button press" | grep -q '"Press"'
