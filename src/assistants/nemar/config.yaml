@@ -1,6 +1,6 @@
 # NEMAR Assistant Configuration
 # Helps researchers discover and explore BIDS-formatted EEG/MEG/iEEG datasets
-# default_model is Claude Sonnet 5.5 (issues #522, #530). GPT-6 Luna, which HED, EEGLAB, BIDS
+# default_model is Claude Sonnet 5.5 (issues #522, #530). GPT-6 Luna, which EEGLAB, BIDS
 # and NWB run, cannot take image blocks, so it would not see the figures that
 # nemar_render_overview and browser-run code produce.
 

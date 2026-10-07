@@ -55,6 +55,7 @@ A community sets `reasoning_effort` in its `config.yaml`, one key that every pro
 - **Every model runs at `high` when a community sets none**, on every provider, so a model behaves the same whichever key paid for it (`DEFAULT_REASONING_EFFORT`, issue #548; #545 had per-model defaults for Luna and gpt-oss only).
   Claude Sonnet is then sent `high` explicitly, which is the Claude Platform's own default, so nothing changes there; Haiku's default budget goes from 2048 to 4096.
   The communities that default to Luna (NWB, Hierarchical Event Descriptors (HED), EEGLAB and Brain Imaging Data Structure (BIDS)) set `high` explicitly, and so does NEMAR, so the key is discoverable there.
+  (HED has defaulted to Claude Haiku 4.5 since 2026-10-07, issue #591, and keeps `high`, which is a 4096-token thinking budget there.)
 - **Per platform**:
   - Bedrock: Luna gets the nested field, gpt-oss the flat one, Qwen nothing (`BedrockModel.reasoning_field`).
   - Claude Platform on AWS: Sonnet gets `output_config.effort` (`low`, `medium` or `high`) beside its default adaptive thinking.
@@ -105,7 +106,7 @@ A community sets `reasoning_effort` in its `config.yaml`, one key that every pro
 - **Haiku thinks up to twice as much by default** (a 4096-token budget against 2048):
   more output tokens billed (Haiku is $1 / $5 per 1M) and a longer wait before the first word.
   It is the default model of FieldTrip, MNE, MetaBCI and OpenNeuroPET,
-  and the model a Luna default falls back to when Luna cannot be served (for HED, EEGLAB, BIDS and NWB: a deployment with no Bedrock key, or a caller's own Anthropic key with no model named).
+  and the model a Luna default falls back to when Luna cannot be served (for EEGLAB, BIDS and NWB: a deployment with no Bedrock key, or a caller's own Anthropic key with no model named).
   A community that wants the old behavior sets `reasoning_effort: medium`.
   The deployment setting `ANTHROPIC_THINKING_BUDGET_TOKENS`, which held the old budget, is removed:
   it defaulted to the same number the example file shipped, so a server that copied it would have kept Haiku off the new default.
