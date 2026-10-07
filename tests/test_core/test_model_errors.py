@@ -199,6 +199,13 @@ class TestTheDetailCarriesNoProviderMessage:
         assert secret not in failure.detail
 
 
+def _parse_stream_error(code: str) -> ValueError:
+    """The ``ValueError`` langchain-aws raises for an exception event inside a stream."""
+    with pytest.raises(ValueError, match="Received AWS exception") as raised:
+        _parse_stream_event({code: {"message": "x"}})
+    return raised.value
+
+
 def _mid_stream_error(error_type: str) -> anthropic.APIStatusError:
     """The error the Anthropic SDK raises for an SSE ``error`` event, from its own decoder.
 
@@ -555,27 +562,107 @@ class TestKindAndRetryableAgree:
         assert set(get_args(FailureKind)) >= model_errors._WORTH_RETRYING_NOW
 
 
+#: (kind, retryable, mid_stream, worth retrying now)
 WORTH_RETRYING_NOW = [
-    ("connection", True, True),
-    ("unavailable", True, True),
-    ("throttled", True, False),
-    ("timeout", True, False),
-    ("unavailable", None, False),
-    ("rejected", False, False),
-    ("unauthorized", False, False),
-    ("unknown", None, False),
+    ("connection", True, True, True),
+    ("unavailable", True, True, True),
+    ("connection", True, False, False),
+    ("unavailable", True, False, False),
+    ("throttled", True, True, False),
+    ("timeout", True, True, False),
+    ("unavailable", None, True, False),
+    ("rejected", False, True, False),
+    ("unauthorized", False, True, False),
+    ("unknown", None, True, False),
 ]
 
 
 class TestWhatIsWorthRetryingNow:
-    """A second try a moment later is for a stream the service cut short, a dropped
-    connection or a service error. Not for what has already waited out its limit (a
-    timeout), what the clients already retry with backoff (a throttle), what fails the
-    same way every time, or what nothing is known about."""
+    """A second try a moment later is for a failure that can clear by itself and came after
+    the response began: a stream the service cut short, a dropped connection, a service
+    error inside the stream. Not for what the clients already retried with backoff (a
+    failure before the response, a throttle), what has already waited out its limit (a
+    timeout), what fails the same way every time, or what nothing is known about."""
 
     def test_the_cases_here_cover_every_kind(self) -> None:
-        assert {kind for kind, _, _ in WORTH_RETRYING_NOW} == set(get_args(FailureKind))
+        assert {kind for kind, *_ in WORTH_RETRYING_NOW} == set(get_args(FailureKind))
 
-    @pytest.mark.parametrize(("kind", "retryable", "expected"), WORTH_RETRYING_NOW)
-    def test_each_kind(self, kind: FailureKind, retryable: bool | None, expected: bool) -> None:
-        assert ModelFailure(kind, retryable, "x").worth_retrying_now is expected
+    @pytest.mark.parametrize(("kind", "retryable", "mid_stream", "expected"), WORTH_RETRYING_NOW)
+    def test_each_case(
+        self, kind: FailureKind, retryable: bool | None, mid_stream: bool, expected: bool
+    ) -> None:
+        failure = ModelFailure(kind, retryable, "x", mid_stream=mid_stream)
+
+        assert failure.worth_retrying_now is expected
+
+
+class TestWhereInTheCallItFailed:
+    """``mid_stream`` is read from what raised the failure, since the clients retry a
+    failure before the response began with backoff and nothing retries one inside a stream.
+    Each shape that is mid-stream has a twin that is not."""
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: EventStreamError(
+                {"Error": {"Code": "modelStreamErrorException", "Message": "x"}}, "ConverseStream"
+            ),
+            lambda: _parse_stream_error("modelStreamErrorException"),
+            lambda: _error_from_a_bedrock_stream(),
+            lambda: _error_from_a_bedrock_stream(dropped_stream_error()),
+            lambda: _error_from_a_bedrock_stream(stalled_stream_error()),
+            lambda: _mid_stream_error("overloaded_error"),
+            lambda: httpx2.RemoteProtocolError("peer closed connection without a complete body"),
+        ],
+        ids=[
+            "bedrock exception event",
+            "langchain-aws ValueError for one",
+            "stream ended with no messageStop",
+            "connection dropped part way",
+            "stalled past the read timeout",
+            "anthropic error event in a 200 stream",
+            "anthropic sdk's raw httpx error",
+        ],
+    )
+    def test_a_failure_inside_a_stream(self, make) -> None:
+        assert classify_model_error(make()).mid_stream is True
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: _client_error("ServiceUnavailableException", 503),
+            lambda: _client_error("InternalServerException", 500),
+            lambda: EndpointConnectionError(endpoint_url="https://bedrock-runtime.example"),
+            lambda: ConnectTimeoutError(endpoint_url="https://bedrock-runtime.example"),
+            lambda: anthropic.InternalServerError(
+                "down", response=_anthropic_response(529), body=None
+            ),
+            lambda: anthropic.APIConnectionError(
+                message="no route", request=httpx2.Request("POST", "https://api.anthropic.com")
+            ),
+            lambda: ConnectionError("Incomplete Bedrock response stream: missing messageStop"),
+        ],
+        ids=[
+            "bedrock 503 refusal",
+            "bedrock 500 refusal",
+            "never connected",
+            "connect timeout",
+            "anthropic 529 refusal",
+            "anthropic connection error",
+            "a ConnectionError of our own",
+        ],
+    )
+    def test_a_failure_before_the_response(self, make) -> None:
+        failure = classify_model_error(make())
+
+        assert failure.mid_stream is False
+        assert failure.worth_retrying_now is False
+
+    def test_the_same_urllib3_error_outside_the_model_call_is_not(self) -> None:
+        def ours() -> None:
+            raise dropped_stream_error()
+
+        with pytest.raises(type(dropped_stream_error())) as caught:
+            ours()
+
+        assert classify_model_error(caught.value).mid_stream is False

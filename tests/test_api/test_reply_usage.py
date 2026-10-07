@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from unittest.mock import patch
 
 import pytest
@@ -474,6 +475,29 @@ class TestABadCountDoesNotCostTheReaderTheAnswer:
         assert events[-1]["usage"] is None
         (record,) = [r for r in caplog.records if "cannot be told as usage" in r.getMessage()]
         assert record.levelno == logging.WARNING
+        assert not record.exc_info, "one line a reply, no traceback: the counts are in it"
         text = record.getMessage()
         for expected in (COMMUNITY, provider.model, "req-usage", "input=20", "cache_read=80"):
             assert expected in text, f"{expected!r} missing from {text!r}"
+
+
+class TestAPriceTableDefectIsNotTheProvidersFault:
+    @offered
+    async def test_a_price_that_is_not_a_number_is_logged_at_error_and_the_answer_goes_out(
+        self, provider: Provider, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The counts are fine and the price is not: that is a defect in OSA's table, which
+        would take the usage line from every reply, so it is an ERROR with its traceback,
+        not a warning about a provider."""
+        rate = MODEL_PRICING[provider.model]
+        monkeypatch.setitem(MODEL_PRICING, provider.model, type(rate)(math.nan, rate.output_per_1m))
+
+        with caplog.at_level(logging.WARNING):
+            events = await _chat(provider, [scripted_reply(provider, ANSWER)])
+
+        assert events[-1]["event"] == "done" and events[-1]["content"] == ANSWER
+        assert events[-1]["usage"] is None
+        (record,) = [
+            r for r in caplog.records if "cost of a reply cannot be told" in r.getMessage()
+        ]
+        assert record.levelno == logging.ERROR and record.exc_info

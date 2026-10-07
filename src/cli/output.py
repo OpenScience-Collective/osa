@@ -26,8 +26,9 @@ err_console = Console(stderr=True)
 
 
 def print_error(message: str, hint: str | None = None) -> None:
-    """Print error to stderr."""
-    err_console.print(f"[bold red]Error:[/] {message}")
+    """Print error to stderr. The message is printed as written: it can carry a model name or
+    an exception's text, and a bracket in either is not markup."""
+    err_console.print(f"[bold red]Error:[/] {escape(message)}", highlight=False)
     if hint:
         err_console.print(f"Hint: {hint}", style="dim", markup=False)
 
@@ -44,24 +45,22 @@ def print_success(message: str) -> None:
 
 def _format_cost(dollars: float) -> str:
     """A cost in US dollars, with "about": four decimals below a cent, three below a dollar,
-    two from a dollar up, and "under $0.0001" for less.
+    two from a dollar up, and "under $0.0001" for less, judged after rounding (so a cost
+    that rounds up to a cent is written as one).
 
-    Rounded half up on whole micro-dollars (the server's own precision) with integer
-    arithmetic, so that the widget's ``formatCost``, which cuts at the same places and does
-    the same sums, prints the same digits even where a float formatter would round a tie
-    the other way.
+    Rounded half up on whole micro-dollars, then with integer arithmetic, so that the
+    widget's ``formatCost``, which cuts at the same places and does the same sums, prints the
+    same digits even where a float formatter would round a tie the other way.
     """
     micro = math.floor(dollars * 1_000_000 + 0.5)
     if micro < 100:
         return "under $0.0001"
-    if micro < 10_000:
-        decimals = 4
-    elif micro < 1_000_000:
-        decimals = 3
-    else:
-        decimals = 2
-    unit = 10 ** (6 - decimals)
-    whole, fraction = divmod((micro + unit // 2) // unit, 10**decimals)
+    for decimals, below in ((4, 10_000), (3, 1_000_000), (2, math.inf)):
+        unit = 10 ** (6 - decimals)
+        rounded = (micro + unit // 2) // unit
+        if rounded * unit < below:
+            break
+    whole, fraction = divmod(rounded, 10**decimals)
     return f"about ${whole}.{fraction:0{decimals}d}"
 
 

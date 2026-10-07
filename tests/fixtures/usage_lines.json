@@ -55,6 +55,26 @@
     "line": "100 in, 10 out, about $0.0005"
   },
   {
+    "name": "rounds up to a cent, so it is written as one",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.009999, "partial": false},
+    "line": "100 in, 10 out, about $0.010"
+  },
+  {
+    "name": "just under a cent keeps four decimals",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.0099, "partial": false},
+    "line": "100 in, 10 out, about $0.0099"
+  },
+  {
+    "name": "rounds up to a dollar, so it is written as one",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.9996, "partial": false},
+    "line": "100 in, 10 out, about $1.00"
+  },
+  {
+    "name": "just under a dollar keeps three decimals",
+    "usage": {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": 0.9994, "partial": false},
+    "line": "100 in, 10 out, about $0.999"
+  },
+  {
     "name": "a model with no price",
     "usage": {"input_tokens": 10, "output_tokens": 2, "cache_read_tokens": 0, "cache_creation_tokens": 0, "estimated_cost": null, "partial": false},
     "line": "10 in, 2 out"

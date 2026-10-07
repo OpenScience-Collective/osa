@@ -7511,7 +7511,8 @@
       }
 
       // What the reply used and cost (#582), under its text and sources. It arrives with
-      // the `done` event, so it appears when the reply is whole.
+      // the `done` event (or the JSON response when not streaming), so it appears when the
+      // reply is whole.
       const usage = msg.role === 'assistant' ? cleanUsage(msg.usage) : undefined;
       const usageRow = usage
         ? `<div class="osa-message-usage" title="${escapeHtml(usageTitle(usage))}">${escapeHtml(formatUsage(usage))}</div>`
@@ -8122,17 +8123,21 @@
   }
 
   // "about $0.0021": four decimals below a cent, three below a dollar, two from a dollar
-  // up, "under $0.0001" for less. Rounded half up on whole micro-dollars with integer
-  // arithmetic, the same sums as `_format_cost` in src/cli/output.py, so a tie that
-  // `toFixed` and Python's formatter round differently comes out the same on both.
+  // up, "under $0.0001" for less, judged after rounding (a cost that rounds up to a cent is
+  // written as one). Rounded half up on whole micro-dollars, then with integer arithmetic,
+  // the same sums as `_format_cost` in src/cli/output.py, so a tie that `toFixed` and
+  // Python's formatter round differently comes out the same on both.
   function formatCost(dollars) {
     const micro = Math.floor(dollars * 1e6 + 0.5);
     if (micro < 100) return 'under $0.0001';
-    let decimals = 2;
-    if (micro < 10000) decimals = 4;
-    else if (micro < 1000000) decimals = 3;
-    const unit = 10 ** (6 - decimals);
-    const units = Math.floor((micro + unit / 2) / unit);
+    let decimals = 4;
+    let units = 0;
+    for (const [places, below] of [[4, 10000], [3, 1000000], [2, Infinity]]) {
+      decimals = places;
+      const unit = 10 ** (6 - places);
+      units = Math.floor((micro + unit / 2) / unit);
+      if (units * unit < below) break;
+    }
     const scale = 10 ** decimals;
     return `about $${Math.floor(units / scale)}.${String(units % scale).padStart(decimals, '0')}`;
   }
