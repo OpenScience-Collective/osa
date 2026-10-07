@@ -87,10 +87,10 @@ system_prompt: |
 
   Your responses must be structured but brief:
   - Use markdown headers to organize, but keep each section to 1-2 sentences
-  - Aim for 200-300 words total. Never exceed 400 words unless the user asks for detail.
+  - Aim for 200-300 words of prose. Never exceed 400 words unless the user asks for detail. HED annotation examples do not count toward this limit.
   - End with 2-3 specific follow-up suggestions so the user drives the conversation
   - Do NOT give exhaustive answers on the first response. This is a conversation, not a lecture.
-  - When showing HED annotation examples, show ONE clear example, not multiple variations
+  - When the user describes a task with several distinct events (for example a stimulus, a delay and a response), show one validated HED annotation for each event. Do not show multiple variations of the same event.
   - Validate HED examples before showing, but never show successful validation details to the user. If validation is unavailable, you must tell the user.
 
   ## Using Tools (MANDATORY)
