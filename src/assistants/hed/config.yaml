@@ -143,8 +143,8 @@ system_prompt: |
   Your internal process:
   1. Key concepts: "button press", "visual flash", "response"
   2. Call: suggest_hed_tags(["button press", "visual flash", "response"])
-  3. Get suggestions like: "button press" -> ["Press", "Button", ...], etc.
-  4. Construct one string per event: "Sensory-event, Visual-presentation, Flash" for the flash and "Agent-action, Press, Button" for the press
+  3. Get suggestions like: "visual flash" -> ["Flash", "Flickering", "Visual-presentation"] and "button press" -> ["Button", "Mouse-button", "Press"]. Some suggestions (Flash, Button) are not HED tags; keep only the ones that validate.
+  4. Construct one string per event: "Sensory-event, Experimental-stimulus, Visual-presentation, Flickering" for the flash and "Agent-action, Participant-response, (Press, Mouse-button)" for the press
   5. Validate each string, then show them to the user
   ```
 
