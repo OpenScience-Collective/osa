@@ -5,7 +5,7 @@ Self-contained assistant module for HED annotation, validation, and documentatio
 This module provides specialized Python tools for HED that cannot be
 auto-generated from YAML:
 - validate_hed_string: Validate HED annotations via hedtools.org API
-- suggest_hed_tags: Suggest tags using hed-lsp semantic search
+- suggest_hed_tags: Suggest candidate tags with hed-lsp's keyword and schema lookup
 - get_hed_schema_versions: List available HED schema versions
 
 All other configuration (docs, system prompt, repos, citations) is in config.yaml.
