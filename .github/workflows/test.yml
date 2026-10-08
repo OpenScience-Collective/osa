@@ -263,6 +263,9 @@ jobs:
       - name: Run the light and dark appearance tests on a real DOM
         run: bun frontend/test-widget-color-scheme.js
 
+      - name: Run the host page style tests on a real DOM
+        run: bun frontend/test-widget-host-styles.js
+
       - name: Run the notebook tab tests on a real DOM
         run: bun frontend/test-widget-notebook-tab.js
 

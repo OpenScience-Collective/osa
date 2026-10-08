@@ -1583,9 +1583,17 @@
       border-bottom-left-radius: 4px;
     }
 
-    /* Markdown styling */
+    /* Markdown styling.
+       The widget lives in the host page's document, so a host rule on a bare element
+       (a docs theme's \`code\`, \`p\`, \`li\` or \`h2\`) reaches a reply wherever the rules
+       below leave a property unset. The Read the Docs theme turned inline code red,
+       gave it a border and put a code block on one line (white-space: nowrap); the
+       PyData theme colored inline code purple. So each property such a theme sets is
+       set here too. */
     .osa-message-content p {
       margin: 0 0 8px 0;
+      font-size: inherit;
+      line-height: inherit;
     }
 
     .osa-message-content p:last-child {
@@ -1595,8 +1603,10 @@
     .osa-message-content h1, .osa-message-content h2, .osa-message-content h3,
     .osa-message-content h4, .osa-message-content h5, .osa-message-content h6 {
       margin: 16px 0 8px 0;
+      font-family: inherit;
       font-weight: 600;
       line-height: 1.3;
+      color: inherit;
     }
 
     .osa-message-content h1:first-child, .osa-message-content h2:first-child,
@@ -1615,22 +1625,34 @@
       border-radius: 4px;
       font-size: 13px;
       font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+      line-height: inherit;
+      color: inherit;
+      border: 0;
+      max-width: none;
+      overflow: visible;
+      white-space: normal;
     }
 
     .osa-message-content pre {
       background: #1f2937;
       color: #f9fafb;
       padding: 12px;
+      border: 0;
       border-radius: 8px;
       overflow-x: auto;
       margin: 8px 0;
       position: relative;
+      font-family: monospace;
+      font-size: inherit;
+      line-height: inherit;
+      clear: none;
     }
 
     .osa-message-content pre code {
       background: transparent;
       padding: 0;
       color: inherit;
+      white-space: pre;
     }
 
     .osa-message-content ul, .osa-message-content ol {
@@ -1638,16 +1660,27 @@
       padding-left: 20px;
     }
 
+    .osa-message-content ul, .osa-message-content ol,
+    .osa-message-content li {
+      list-style-type: revert;
+    }
+
     .osa-message-content li {
       margin: 4px 0;
+      font-size: inherit;
+      line-height: inherit;
+      list-style-position: outside;
+      list-style-image: none;
     }
 
     .osa-message-content a {
       color: var(--osa-accent);
       text-decoration: none;
+      text-underline-offset: auto;
     }
 
     .osa-message-content a:hover {
+      color: var(--osa-accent);
       text-decoration: underline;
     }
 
@@ -1655,10 +1688,18 @@
       border: none;
       border-top: 1px solid var(--osa-border);
       margin: 12px 0;
+      height: auto;
+      padding: 0;
+      opacity: 1;
+      color: revert;
     }
 
     .osa-message-content strong {
       font-weight: 600;
+    }
+
+    .osa-message-content strong, .osa-message-content em {
+      color: inherit;
     }
 
     /* Table styling */
@@ -1671,12 +1712,22 @@
       border-collapse: collapse;
       width: 100%;
       font-size: 13px;
+      caption-side: top;
+      border-spacing: 2px;
+    }
+
+    .osa-table thead, .osa-table tbody, .osa-table tfoot, .osa-table tr {
+      border: 0;
+      vertical-align: revert;
     }
 
     .osa-table th, .osa-table td {
       border: 1px solid var(--osa-border);
       padding: 8px 10px;
       text-align: left;
+      font-size: inherit;
+      line-height: inherit;
+      vertical-align: revert;
     }
 
     .osa-table th {
@@ -1693,6 +1744,10 @@
       font-size: 0.75em;
       line-height: 0;
       margin-left: 1px;
+      position: static;
+      top: auto;
+      bottom: auto;
+      vertical-align: super;
     }
 
     .osa-citation a {
@@ -1739,6 +1794,8 @@
 
     /* Copy button styles */
     .osa-copy-btn {
+      font: revert;
+      appearance: auto;
       position: absolute;
       top: 6px;
       right: 6px;
@@ -1763,6 +1820,7 @@
     .osa-copy-btn svg {
       width: 14px;
       height: 14px;
+      vertical-align: baseline;
     }
 
     .osa-copy-btn.copied {
@@ -2632,6 +2690,15 @@
       font-size: 12px;
       font-family: 'SF Mono', Monaco, 'Courier New', monospace;
       white-space: pre;
+      border: 0;
+      line-height: inherit;
+      clear: none;
+    }
+
+    /* The code element inside a card gets no host \`code\` rule (color, border, padding,
+       font, wrapping): back to what a page with no host styles gives it. */
+    .osa-tool-code code {
+      all: revert;
     }
 
     .osa-py-kw { color: #c4b5fd; }
@@ -2649,6 +2716,8 @@
     }
 
     .osa-tool-actions button {
+      font: revert;
+      appearance: auto;
       border: 1px solid var(--osa-border);
       background: var(--osa-bg);
       color: var(--osa-text);
@@ -2762,6 +2831,8 @@
     }
 
     .osa-code-action {
+      font: revert;
+      appearance: auto;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -2790,6 +2861,7 @@
     .osa-code-action svg {
       width: 15px;
       height: 15px;
+      vertical-align: baseline;
     }
 
     .osa-code-action.copied {
