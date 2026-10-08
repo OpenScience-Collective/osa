@@ -741,16 +741,11 @@ class TestCommunityConfigOfferedModels:
         one (the Luna communities) is otherwise listed without it, and the request falls
         back to the deployment's Claude default."""
         from src.api.config import get_settings
-        from src.assistants import registry
-        from src.core.services.anthropic_models import BEDROCK_MODELS, normalize_model
+        from tests.helpers.deployment import name_luna_as_the_default
 
         monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
         monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
-        community = next(
-            info.id
-            for info in registry.list_all()
-            if normalize_model(info.community_config.default_model) in BEDROCK_MODELS
-        )
+        community = name_luna_as_the_default(monkeypatch).id
 
         response = client.get(f"/{community}/")
         data = response.json()

@@ -29,7 +29,7 @@ from src.core.services.anthropic_models import (
     normalize_model,
 )
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
-from tests.helpers.deployment import set_platform_keys
+from tests.helpers.deployment import name_luna_as_the_default, set_platform_keys
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -416,15 +416,16 @@ class TestTheFallbackLog:
     def test_every_shipped_bedrock_default_fails_loudly_on_a_deployment_without_the_key(
         self, monkeypatch, caplog
     ):
-        """Dynamic: each community whose default is a Bedrock model, as shipped."""
+        """Dynamic: each community whose default is a Bedrock model, once a test names one."""
         set_platform_keys(monkeypatch, bedrock=None)
         caplog.set_level(logging.WARNING)
+        name_luna_as_the_default(monkeypatch)
         bedrock_communities = [
             info
             for info in registry.list_all()
             if info.community_config and is_bedrock_model(info.community_config.default_model)
         ]
-        assert bedrock_communities, "no shipped community defaults to a Bedrock model"
+        assert bedrock_communities, "no community defaults to a Bedrock model"
 
         for info in bedrock_communities:
             caplog.clear()

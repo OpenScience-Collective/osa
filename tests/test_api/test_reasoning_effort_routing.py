@@ -178,8 +178,9 @@ class TestTheShippedCommunities:
                 assert payload["output_config"] == {"effort": level}, info.id
                 _assert_claude_level(awm, level, info.id)
 
-    def test_nemar_is_pinned_to_sonnet_on_the_claude_platform_at_high(self, monkeypatch):
-        """NEMAR's tools return figures, which only a Claude model can see (#522, #530)."""
+    def test_nemar_is_pinned_to_a_claude_model_on_the_claude_platform_at_high(self, monkeypatch):
+        """NEMAR's tools return figures, which only a Claude model can see (#522, #530).
+        Haiku is that model today, so this pins the class rather than a Sonnet id."""
         info = registry.get("nemar")
         assert info is not None
         self._with_platform_keys_only(monkeypatch, info)
@@ -187,10 +188,10 @@ class TestTheShippedCommunities:
         route = _route_request(info, "nemar", None, _origin(info), None)
 
         assert route.choice.provider == "anthropic"
-        assert route.model == SONNET
+        assert route.model == HAIKU
         assert route.choice.takes_native_blocks
         awm = create_community_assistant("nemar", origin=_origin(info), preload_docs=False)
-        assert awm.model == SONNET
+        assert awm.model == HAIKU
         payload = awm.assistant.model._get_request_payload([HumanMessage(content="hi")])
         assert payload["output_config"] == {"effort": "high"}
 

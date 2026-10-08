@@ -26,6 +26,7 @@ from src.core.services.anthropic_models import (
     normalize_model,
 )
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
+from tests.helpers.deployment import name_luna_as_the_default
 
 NOTES_HEADING = "Working Notes For This Model"
 
@@ -68,12 +69,8 @@ def hed(monkeypatch):
 @pytest.fixture
 def a_bedrock_default_community(monkeypatch):
     """A real community whose default model is one of the Bedrock models, on a deployment
-    with every platform key (which communities those are is the configs' to say)."""
-    info = next(
-        info
-        for info in registry.list_all()
-        if normalize_model(info.community_config.default_model) in BEDROCK_MODELS
-    )
+    with every platform key. No shipped community names one now, so NWB is given one here."""
+    info = name_luna_as_the_default(monkeypatch)
     return _on_a_deployment_with_every_platform_key(monkeypatch, info.id)
 
 
