@@ -233,6 +233,19 @@ class TestDocumentFetcher:
             assert "MoreHidden text" in content
             assert "Linebreak" in content
 
+    def test_markdown_source_keeps_placeholders_and_code(self, fetcher: DocumentFetcher) -> None:
+        """Only HTML markup is dropped from markdown: a placeholder, an autolink and the
+        inside of a code block are content."""
+        text = (
+            "# Names\n\nUse sub-<label>_task-<label> and <https://example.org>.\n\n"
+            '```html\n<div class="x">Hi</div>\n```\n\n<b>Bold</b> text'
+        )
+        content = self._fetch_cached(fetcher, "https://example.com/raw/spec.md", text)
+        assert "sub-<label>_task-<label>" in content
+        assert "<https://example.org>" in content
+        assert '<div class="x">Hi</div>' in content
+        assert "<b>" not in content and "Bold text" in content
+
     def test_markdown_suffix_is_read_from_the_path_not_the_query(
         self, fetcher: DocumentFetcher
     ) -> None:

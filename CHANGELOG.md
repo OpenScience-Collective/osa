@@ -50,8 +50,11 @@ the version being released and start a new `[Unreleased]` section above it.
 - **Documentation sources that are not markdown keep their angle brackets** (issue #514, section 4; PR #602): `DocumentFetcher.fetch` stripped the HTML tags from every document, and the stripper removes whatever sits between a `<` and the next `>`.
   In reStructuredText that is the target of each `` `text <https://...>`_ `` link and of each cross-reference; in a Python example it is a comparison or a generic (`if a<b and c>d` became `if ad`); in a converted web page it is a repr such as `<Raw | sample_audvis_raw.fif>`.
   Tags are now stripped only from a source whose URL path ends in `.md`, `.markdown` or `.mdx`.
-  Of the 325 documentation entries of the shipped communities, 91 change (NWB 63, MNE 19, OpenNeuroPET 7, HED 1, EEGLAB 1), and no markdown source does.
-  Angle-bracket text in markdown that is not HTML (`sub-<label>`, `<https://...>`) is still stripped.
+  Of the 325 documentation entries of the shipped communities, 91 that are not markdown change (NWB 63, MNE 19, OpenNeuroPET 7, HED 1, EEGLAB 1).
+- **Markdown keeps what is not HTML markup** (issue #514, section 4; PR #602): the stripper treated any angle-bracket text in a markdown source as a tag, so the BIDS specification's `sub-<label>` reached the model as `sub-` (242 times), and `<https://...>` autolinks and the placeholders in HED's schema examples were dropped too.
+  A tag is now removed only when its name is an HTML element, and a placeholder that shares a name with an element (`<label>`) stays unless the text closes it or gives it attributes.
+  Fenced code blocks and inline code are kept as written, except the body of a MyST directive such as ```` ```{admonition} ````, which is markdown.
+  Of the 153 markdown documents of the shipped communities, 45 change (BIDS 24, FieldTrip 8, HED 5, OpenNeuroPET 5, NWB 3); no HTML element is left in the output outside the `<label>` and `<source-entities>` placeholders.
 - **An HTML page is recognized by more than a leading doctype, and its scripts and styles are dropped** (PR #602): a page that began with a byte order mark, an `<?xml?>` prolog, a comment, `<head>` or `<body>`, or an HTML fragment served as `text/html`, was not converted to markdown, so with the change above its tags would have reached the model.
   A source whose URL ends in `.md` is never converted because of its `Content-Type`, and a bare `<div>` or `<p>` at the start does not make a markdown file a page.
   The text of `<script>` and `<style>` elements was kept as page content (up to 18 KB of JavaScript in one MNE tutorial); it is now dropped with the element.
