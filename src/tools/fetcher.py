@@ -105,15 +105,12 @@ def _html_to_markdown(html: str) -> str:
     if content_element is None:
         content_element = soup.body or soup
 
-    # Remove nav, sidebar, footer elements within content
-    for tag in content_element.find_all(["nav", "footer", "aside"]):
+    # Remove nav, sidebar, footer elements within content, and script and style elements
+    # with their text (markdownify's ``strip`` drops a tag but keeps the text inside it)
+    for tag in content_element.find_all(["nav", "footer", "aside", "script", "style"]):
         tag.decompose()
 
-    md = markdownify.markdownify(
-        str(content_element),
-        heading_style="ATX",
-        strip=["script", "style"],
-    )
+    md = markdownify.markdownify(str(content_element), heading_style="ATX")
 
     # Clean up Sphinx anchor links like [#](#heading "Link to this heading")
     md = re.sub(r'\[#\]\([^)]*"Link to this [^"]*"\)', "", md)

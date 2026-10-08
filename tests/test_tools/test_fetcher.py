@@ -442,6 +442,22 @@ class TestFetchOverHttp:
         assert "List<String>" in content, name
         assert "<main>" not in content and "<b>" not in content and "&lt;" not in content, name
 
+    def test_script_and_style_text_is_dropped(
+        self, site: _LocalSite, fetcher: DocumentFetcher
+    ) -> None:
+        """The text of a <script> or <style> is not page content, with or without a <main>."""
+        script = "<script>\n<!--//\nvar tracker = 1;\n//-->\n</script>"
+        style = "<style>p { margin: 0 }</style>"
+        with_main = (
+            f"<!DOCTYPE html><html><head>{style}</head><body><main><h1>T</h1>{script}"
+            f"<p>Body text</p>{style}</main></body></html>"
+        )
+        without_main = f"<!DOCTYPE html><html><head>{style}</head><body>{script}<p>Body text</p>"
+        for name, page in (("main.html", with_main), ("plain.html", without_main)):
+            content = self._fetch(fetcher, site.serve(f"/{name}", page, "text/html"))
+            assert "Body text" in content, name
+            assert "tracker" not in content and "margin" not in content, name
+
     def test_html_page_is_cached_as_markdown(
         self, site: _LocalSite, fetcher: DocumentFetcher
     ) -> None:
