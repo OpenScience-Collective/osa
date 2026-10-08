@@ -2659,6 +2659,15 @@
       font-size: 12px;
       font-family: 'SF Mono', Monaco, 'Courier New', monospace;
       white-space: pre;
+      border: 0;
+      line-height: inherit;
+      clear: none;
+    }
+
+    /* The code element inside a card gets no host \`code\` rule (color, border, padding,
+       font, wrapping): back to what a page with no host styles gives it. */
+    .osa-tool-code code {
+      all: revert;
     }
 
     .osa-py-kw { color: #c4b5fd; }
