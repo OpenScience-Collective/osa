@@ -48,12 +48,12 @@ DEFAULT_MAX_CONVERSATION_TOKENS = 80000
 #: make trimming vary per call.
 #:
 #: Sized for the most expensive tier among the models this project offers. Anthropic's
-#: documented cost is per tier: the standard tier caps near 1568 tokens, which is what
-#: `claude-haiku-4-5` uses, and the high-resolution tier (Sonnet 5 onward, so
-#: `claude-sonnet-5-5`) caps near 4784. Counting Haiku's images at the high-resolution
-#: rate over-counts them by up to 3x, which only spends headroom; the reverse would
-#: under-count every Sonnet figure by the same factor, the direction this comment exists
-#: to warn against. Revisit it when the offered model list changes, not before.
+#: documented cost is per tier: the standard tier caps near 1568 tokens, and the
+#: high-resolution tier (Sonnet 5 onward, so the `sonnet` class) caps near 4784. Counting
+#: an image at the high-resolution rate over-counts it by up to 3x on a model that is on
+#: the standard tier, which only spends headroom; the reverse would under-count every
+#: Sonnet figure by the same factor, the direction this comment exists to warn against.
+#: Revisit it when the offered model list changes, not before.
 #:
 #: Requires `tokens_per_image`, which landed in langchain-core 1.2.8; pyproject floors
 #: the dependency at 1.6.0 as a margin above that.

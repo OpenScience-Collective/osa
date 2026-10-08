@@ -70,6 +70,7 @@ from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
     REASONING_SCALE,
     SAMPLING_MODELS,
+    SONNET,
     ReasoningEffort,
     normalize_model,
     openrouter_model_id,
@@ -90,12 +91,12 @@ class SSRFViolationError(ValueError):
 
 # Shared regex for model identifiers. Accepts both the OpenRouter
 # creator/model-name form (e.g. "anthropic/claude-3.5-sonnet") and a bare
-# first-party id with no provider prefix (e.g. "claude-haiku-4-5", one of
-# src.core.services.anthropic_models.OFFERED_MODELS), since the Claude Platform on
-# AWS path has no separate "creator" segment. Any number of ":variant" suffixes may
-# end either form: Bedrock's own invoke id for gpt-oss-120b, "openai.gpt-oss-120b-1:0",
-# is an alias of an offered model, and OpenRouter slugs carry ":free", ":nitro" and the
-# like, which it lets be stacked ("openai/gpt-5.2:nitro:exacto").
+# first-party id with no provider prefix (e.g. "claude-haiku-5-5", one of
+# src.core.services.anthropic_models.OFFERED_MODELS) or a model class ("haiku"), since
+# the Claude Platform on AWS path has no separate "creator" segment. Any number of
+# ":variant" suffixes may end either form: Bedrock's own invoke id for gpt-oss-120b,
+# "openai.gpt-oss-120b-1:0", is an alias of an offered model, and OpenRouter slugs carry
+# ":free", ":nitro" and the like, which it lets be stacked ("openai/gpt-5.2:nitro:exacto").
 _MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9._-]+)?(:[a-zA-Z0-9._-]+)*$")
 _MODEL_ID_MAX_LENGTH = 100
 
@@ -156,7 +157,7 @@ def _validate_model_id(v: str | None, field_label: str = "Model identifier") -> 
         raise ValueError(
             f"Invalid {field_label.lower()}: '{v}'. "
             "Must match pattern: provider/model-name (e.g., 'anthropic/claude-3.5-sonnet') "
-            "or a bare first-party id (e.g., 'claude-haiku-4-5')"
+            "or a bare first-party id or model class (e.g., 'claude-haiku-5-5' or 'haiku')"
         )
 
     if len(v) > _MODEL_ID_MAX_LENGTH:
@@ -1169,10 +1170,10 @@ class AgentConfig(BaseModel):
     """Model identifier: one of the offered Claude models.
 
     FAQ generation runs on the Claude Platform on AWS, so this must resolve
-    through ``MODEL_ALIASES`` to an entry in ``OFFERED_MODELS``
-    (``claude-haiku-4-5`` or ``claude-sonnet-5-5``). Legacy OpenRouter-style ids
-    such as "anthropic/claude-haiku-4.5" still resolve; anything else raises
-    at run time when the agent is built.
+    through ``MODEL_ALIASES`` to a Claude entry of ``OFFERED_MODELS``: the model
+    class ``haiku`` or ``sonnet`` (or the id it is today). The ids a class used to
+    be and OpenRouter-style ids such as "anthropic/claude-haiku-4.5" still resolve;
+    anything else raises at run time when the agent is built.
     """
 
     provider: str | None = None
@@ -1190,11 +1191,10 @@ class AgentConfig(BaseModel):
     """Sampling temperature for model responses.
 
     Only honored on models that still accept sampling parameters
-    (``claude-haiku-4-5``). ``claude-sonnet-5-5`` rejects ``temperature``, so it
-    is not forwarded there; see ``SAMPLING_MODELS`` in
-    src/core/services/anthropic_models.py. Setting one anyway is a warning at
-    config load, not an error, so a community can switch models without its
-    config failing to parse.
+    (``SAMPLING_MODELS`` in src/core/services/anthropic_models.py), and neither Claude
+    model offered does: the Claude 5 generation rejects ``temperature``, so it is not
+    forwarded. Setting one anyway is a warning at config load, not an error, so a
+    community can switch models without its config failing to parse.
     """
 
     enable_caching: bool = True
@@ -1321,7 +1321,7 @@ class FAQGenerationConfig(BaseModel):
         Every check runs against the model id ``normalize_model`` resolves, not
         the literal string, so a config still carrying a legacy OpenRouter-style
         id ("anthropic/claude-sonnet-4.5") is judged as the model it will
-        actually bill (``claude-sonnet-5-5``).
+        actually bill (the ``sonnet`` class).
 
         Four things are worth saying at config load, all as warnings rather
         than errors so that a config keeps parsing (this schema backs the whole
@@ -1336,13 +1336,13 @@ class FAQGenerationConfig(BaseModel):
           exists so the thousands of scoring calls run on something cheap and
           only the few hundred surviving threads pay for quality. With two
           models offered, the wasteful shape is specifically "score everything
-          with the expensive one": ``claude-haiku-4-5`` for both is the
+          with the expensive one": ``haiku`` for both is the
           cheapest valid configuration, so warning about any repeated model
           would fire on the recommended setup.
         - A ``temperature`` on a model that ignores it, which is otherwise
           dropped silently at request time.
         """
-        expensive = "claude-sonnet-5-5"
+        expensive = SONNET
 
         for role, agent in (
             ("evaluation_agent", self.evaluation_agent),
@@ -1367,8 +1367,7 @@ class FAQGenerationConfig(BaseModel):
                 warnings.warn(
                     f"{role}.model is {as_written}, which is served from Amazon Bedrock. "
                     "FAQ generation runs on Claude models only, so it will fail for this "
-                    "community until the model is changed to claude-haiku-4-5 or "
-                    "claude-sonnet-5-5.",
+                    "community until the model is changed to haiku or sonnet.",
                     UserWarning,
                     stacklevel=2,
                 )
@@ -1378,7 +1377,7 @@ class FAQGenerationConfig(BaseModel):
                 warnings.warn(
                     f"evaluation_agent uses {as_written}, which scores every thread at "
                     "the higher rate and defeats the two-agent cost split. Use "
-                    "claude-haiku-4-5 for evaluation and reserve the more capable model "
+                    "haiku for evaluation and reserve the more capable model "
                     "for summary_agent.",
                     UserWarning,
                     stacklevel=2,
@@ -1390,8 +1389,7 @@ class FAQGenerationConfig(BaseModel):
                 warnings.warn(
                     f"{role}.temperature={agent.temperature} is ignored: {as_written} "
                     "accepts only its default temperature, so the value is dropped "
-                    "rather than sent. Remove the field, or use claude-haiku-4-5 for "
-                    "this agent if the temperature matters.",
+                    "rather than sent. Remove the field.",
                     UserWarning,
                     stacklevel=2,
                 )
@@ -2105,13 +2103,16 @@ class CommunityConfig(BaseModel):
 
     If specified, overrides the platform-level default_model for this community.
     Must resolve through ``MODEL_ALIASES`` to an entry in ``OFFERED_MODELS``
-    (a Claude model such as ``claude-haiku-4-5`` or ``claude-sonnet-5-5``, or one
-    of the Bedrock-served models: ``openai.gpt-6-luna``, ``qwen.qwen3-next-80b-a3b``,
-    ``openai.gpt-oss-120b``); legacy OpenRouter-style ids such as
-    "anthropic/claude-haiku-4.5" still resolve.
+    (a model class: ``haiku`` or ``sonnet`` for Claude, ``luna`` for GPT-6 Luna; or
+    one of the Bedrock-served models by id: ``qwen.qwen3-next-80b-a3b``,
+    ``openai.gpt-oss-120b``). A class means the model it is today
+    (``MODEL_CLASSES`` in src/core/services/anthropic_models.py), so a community
+    that names one moves to a new generation when the platform does. The ids a
+    class used to be and OpenRouter-style ids such as "anthropic/claude-haiku-4.5"
+    still resolve.
 
     Example:
-        default_model: "claude-haiku-4-5"
+        default_model: haiku
 
     If not specified, uses the platform-level default from Settings.
     """
@@ -2124,11 +2125,10 @@ class CommunityConfig(BaseModel):
     Bedrock and OpenRouter): each turns it into its own request field, for every model
     that has reasoning levels, and respects the levels that model accepts. A level the
     model does not accept is not sent: it runs at the nearest one it does, lowered to
-    the model's highest or raised to its lowest. Claude Sonnet 5.5 never runs above
-    ``high``, so ``xhigh`` and ``max`` give ``high`` there. Claude Haiku 4.5 has no
-    effort field and thinks with a token budget, so its level is a budget (``low`` 1024,
-    ``medium`` 2048, ``high`` 4096 tokens, ``none`` no thinking; ``xhigh`` and ``max``
-    give ``high``). A model with no levels (Qwen3 Next) ignores it.
+    the model's highest or raised to its lowest. The Claude models (Sonnet 5.5 and
+    Haiku 5.5) never run above ``high``, so ``xhigh`` and ``max`` give ``high`` there,
+    and ``none`` is no up-front thinking at the lowest effort. A model with no levels
+    (Qwen3 Next) ignores it.
 
     It applies to whichever model a request runs, not only ``default_model``: a reader
     who picks another model in the widget gets that model's nearest level.
@@ -2561,7 +2561,7 @@ class CommunityConfig(BaseModel):
                 f"config.yaml and set that environment variable to your OpenRouter API key -- "
                 f"or, to use the Anthropic offering instead, set 'default_model' to one of the "
                 f"models in src.core.services.anthropic_models.OFFERED_MODELS (e.g. "
-                f"'claude-haiku-4-5'), which are cost-capped and never require BYOK. "
+                f"'haiku'), which are cost-capped and never require BYOK. "
                 f"Ultra-expensive models (>$15/1M tokens) cannot use the platform API key."
             )
 

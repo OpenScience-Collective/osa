@@ -168,7 +168,7 @@
   // community config ever omits that field). The live list is the source
   // of truth; see offeredModels below.
   const DEFAULT_MODELS = [
-    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+    { value: 'claude-haiku-5-5', label: 'Claude Haiku 5.5' },
     { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
     { value: 'openai.gpt-6-luna', label: 'OpenAI GPT-6 Luna' },
     { value: 'qwen.qwen3-next-80b-a3b', label: 'Qwen3 Next 80B A3B' },
@@ -192,17 +192,34 @@
   // instead of "Custom", and the rules for a key and a model (modelKeyProblem) are
   // applied to the model the server will run. tests/test_frontend/test_widget_drift.py
   // keeps this equal to the backend's table.
+  //
+  // The backend's MODEL_CLASSES is where a model generation is chosen
+  // (docs/adr/0016-model-classes.md). This table, DEFAULT_MODELS and SUGGESTED_MODELS
+  // are copies of what it gives, so moving a class to a new generation changes them
+  // together with it.
   const RETIRED_MODEL_IDS = {
-    'anthropic/claude-haiku-4.5': 'claude-haiku-4-5',
-    'anthropic/claude-haiku-4-5': 'claude-haiku-4-5',
-    'claude-haiku-4.5': 'claude-haiku-4-5',
+    // The model classes OSA offers (MODEL_CLASSES): a class means the model it is today.
+    'haiku': 'claude-haiku-5-5',
+    'sonnet': 'claude-sonnet-5-5',
+    'luna': 'openai.gpt-6-luna',
+    // The ids a class used to be (PREVIOUS_GENERATIONS).
+    'claude-haiku-4-5': 'claude-haiku-5-5',
+    'claude-haiku-4.5': 'claude-haiku-5-5',
+    'anthropic/claude-haiku-4-5': 'claude-haiku-5-5',
+    'anthropic/claude-haiku-4.5': 'claude-haiku-5-5',
     'claude-sonnet-5': 'claude-sonnet-5-5',
-    'claude-sonnet-5.5': 'claude-sonnet-5-5',
-    'anthropic/claude-sonnet-5.5': 'claude-sonnet-5-5',
+    'claude-sonnet-4.5': 'claude-sonnet-5-5',
     'anthropic/claude-sonnet-5': 'claude-sonnet-5-5',
     'anthropic/claude-sonnet-4.6': 'claude-sonnet-5-5',
     'anthropic/claude-sonnet-4.5': 'claude-sonnet-5-5',
-    'claude-sonnet-4.5': 'claude-sonnet-5-5',
+    // Other spellings of the current Claude ids.
+    'claude-haiku-5.5': 'claude-haiku-5-5',
+    'anthropic/claude-haiku-5-5': 'claude-haiku-5-5',
+    'anthropic/claude-haiku-5.5': 'claude-haiku-5-5',
+    'claude-sonnet-5.5': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-5-5': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-5.5': 'claude-sonnet-5-5',
+    // The ids Bedrock itself uses.
     'us.openai.gpt-6-luna': 'openai.gpt-6-luna',
     'openai.gpt-oss-120b-1:0': 'openai.gpt-oss-120b'
   };
@@ -242,7 +259,7 @@
     return model ? model.label : modelId;
   }
 
-  // A valid model id is a bare first-party id ("claude-haiku-4-5") or an OpenRouter-style
+  // A valid model id is a bare first-party id ("claude-haiku-5-5") or an OpenRouter-style
   // "provider/model" id ("openai/gpt-5"), either with ":variant" suffixes
   // ("openai/gpt-oss-120b:nitro:exacto"). Mirrors _MODEL_ID_PATTERN in
   // src/core/config/community.py; tests/fixtures/model_ids.json keeps the two in step.
@@ -8030,14 +8047,14 @@
 
   // The models to suggest, in this order: the same two as SUGGESTED_MODELS in
   // src/core/services/anthropic_models.py (test_widget_drift.py keeps them equal).
-  const SUGGESTED_MODELS = ['claude-haiku-4-5', 'claude-sonnet-5-5'];
+  const SUGGESTED_MODELS = ['claude-haiku-5-5', 'claude-sonnet-5-5'];
   // The model a failed reply's button named for the request being sent, or null. It wins
   // over the saved setting, which wins over the community's default, and is cleared when
   // the request ends.
   let modelOverride = null;
 
   // A model id without its OpenRouter routing variants (":nitro"), so a saved
-  // "anthropic/claude-haiku-4.5:nitro" is read as the Haiku it runs.
+  // "anthropic/claude-haiku-5.5:nitro" is read as the Haiku it runs.
   function withoutVariants(model) {
     const id = String(model || '');
     return id.includes('/') ? id.split(':')[0] : id;
@@ -8676,7 +8693,7 @@
   //          "content": "text so far", "citations": [...], "usage": {...}}  (instead of done)
   //   data: {"event": "error", "message": "error description", "error_id": "...",
   //          "request_id": "...", "retryable": true,
-  //          "suggested_model": {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"}}
+  //          "suggested_model": {"id": "claude-haiku-5-5", "label": "Claude Haiku 5.5"}}
   //          (ends the stream, no done follows; `retryable` only when the server knows;
   //          `suggested_model` only when the message tells the reader to try another model;
   //          the widget offers a button that sends the question again with it, or with

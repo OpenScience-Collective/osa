@@ -30,6 +30,7 @@ from src.api.tool_results import (
     build_unanswered_tool_message,
 )
 from src.core.services.anthropic_llm import create_anthropic_llm
+from src.core.services.anthropic_models import HAIKU
 from tests.helpers.images import BAR_FIXTURES, bar_chart_png, tallest_and_shortest
 
 pytestmark = [
@@ -65,7 +66,7 @@ def _llm():
     recognize as declared risks a 400 on the one thing this module exists to
     prove, rather than testing it.
     """
-    llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=get_settings())
+    llm = create_anthropic_llm(model=HAIKU, thinking=None, settings=get_settings())
     return llm.bind_tools([execute_code])
 
 

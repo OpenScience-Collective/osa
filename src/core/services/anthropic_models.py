@@ -18,11 +18,80 @@ re-exports them: the split is a packaging detail, not something every router
 and agent should have to know.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
 
+# Model classes. A class is a family at one price and speed tier, named for the tier
+# ("haiku" is Anthropic's small fast model, "luna" is OpenAI's), and this table is the
+# one place that says which concrete model each class is today. A community's
+# config.yaml, the CLI, a request and the code name the class; everything else in this
+# file is keyed by the id the table gives, so moving a class to a new generation is:
+#   1. change its entry here;
+#   2. add the id it replaces to PREVIOUS_GENERATIONS, so saved settings still resolve;
+#   3. where the new model differs from the last (its price in src/metrics/cost.py, its
+#      reasoning levels, how its thinking is turned off, whether it takes a temperature),
+#      change that model's own entry below.
+# A class that is not offered (OFFERED_MODELS) is refused like any unknown model until its
+# facts are filled in and it is added there.
+MODEL_CLASSES: dict[str, str] = {
+    # Anthropic, from the Claude Platform on AWS (or a BYOK key).
+    "haiku": "claude-haiku-5-5",
+    "sonnet": "claude-sonnet-5-5",
+    "opus": "claude-opus-5-5",
+    "fable": "claude-fable-5-1",
+    # OpenAI, from Amazon Bedrock.
+    "luna": "openai.gpt-6-luna",
+    "terra": "openai.gpt-5.6-terra",
+    "sol": "openai.gpt-6.1-sol",
+    "astra": "openai.gpt-6-astra",
+}
+
+# The ids a class used to be, which still resolve to its current model: a widget's saved
+# setting, a community's config.yaml or a CLI config that was written before the move.
+# Each spelling is an id as someone may have copied it (Claude Platform, dotted, or an
+# OpenRouter-style slug).
+PREVIOUS_GENERATIONS: dict[str, tuple[str, ...]] = {
+    "haiku": (
+        "claude-haiku-4-5",
+        "claude-haiku-4.5",
+        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-haiku-4.5",
+    ),
+    "sonnet": (
+        "claude-sonnet-5",
+        "claude-sonnet-4.5",
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-sonnet-4.5",
+    ),
+}
+
+# The classes OSA offers, as the ids they are today. The rest of this file keys the
+# facts about a model (levels, sampling, thinking, Bedrock serving) by these, never by
+# a literal id.
+HAIKU = MODEL_CLASSES["haiku"]
+SONNET = MODEL_CLASSES["sonnet"]
+LUNA = MODEL_CLASSES["luna"]
+
 # Default offered model.
-DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = HAIKU
+
+
+def _claude_label(model_id: str) -> str:
+    """The widget's name for a Claude model id: ``claude-haiku-5-5`` is "Claude Haiku 5.5"."""
+    match = re.fullmatch(r"claude-([a-z]+)-(\d+(?:-\d+)?)", model_id)
+    if match is None:
+        raise ValueError(
+            f"{model_id!r} is not a Claude model id of the form claude-<name>-<version>"
+        )
+    return f"Claude {match.group(1).title()} {match.group(2).replace('-', '.')}"
+
+
+def _claude_dotted(model_id: str) -> str:
+    """A Claude model id with its version dotted: ``claude-haiku-5-5`` is ``claude-haiku-5.5``."""
+    return re.sub(r"(\d)-(\d)", r"\1.\2", model_id)
+
 
 # The platforms a model can be reached on: the Claude Platform on AWS ("anthropic"),
 # Amazon Bedrock and OpenRouter. The one spelling every module uses, for a request's
@@ -100,11 +169,12 @@ class BedrockModel:
         return {"reasoning_effort": level}
 
 
-# Every model here is priced at or below Claude Haiku 4.5 (see
-# src/metrics/cost.py); tests/test_metrics/test_cost.py enforces that, because
-# these are the models a deployment can offer as cheaper than the default.
+# Every model here is priced at or below the old cheap tier, $1 / $5 per 1M tokens (what
+# Claude Haiku 4.5 cost; see src/metrics/cost.py); tests/test_metrics/test_cost.py enforces
+# that, because these are the models a deployment can offer as cheap alternatives to its
+# Claude default. Claude Haiku 5.5 is cheaper still, about what Luna costs.
 BEDROCK_MODELS: dict[str, BedrockModel] = {
-    "openai.gpt-6-luna": BedrockModel(
+    LUNA: BedrockModel(
         label="OpenAI GPT-6 Luna",
         invoke_id="us.openai.gpt-6-luna",
         reasoning_field="nested",
@@ -126,35 +196,36 @@ BEDROCK_MODELS: dict[str, BedrockModel] = {
 
 # Models offered to callers (widget dropdown, CLI, community config.yaml).
 OFFERED_MODELS: dict[str, str] = {
-    "claude-haiku-4-5": "Claude Haiku 4.5",
-    "claude-sonnet-5-5": "Claude Sonnet 5.5",
+    HAIKU: _claude_label(HAIKU),
+    SONNET: _claude_label(SONNET),
     **{model_id: spec.label for model_id, spec in BEDROCK_MODELS.items()},
 }
 
 #: The models to suggest, in order, to a reader whose model could not finish a request.
-#: Claude Haiku 4.5 first: the HED validate-and-refine loop (#514) that Luna, GPT-OSS and
-#: Qwen failed finished on it, and Sonnet costs twice as much per token (NEMAR already
-#: defaults to it). Sonnet follows, for the reader whose Haiku is the one that failed.
-SUGGESTED_MODELS: tuple[str, ...] = ("claude-haiku-4-5", "claude-sonnet-5-5")
+#: Haiku first: the HED validate-and-refine loop (#514) that Luna, GPT-OSS and Qwen
+#: failed finished on it, and Sonnet costs more per token (NEMAR already defaults to it).
+#: Sonnet follows, for the reader whose Haiku is the one that failed.
+SUGGESTED_MODELS: tuple[str, ...] = (HAIKU, SONNET)
 
-# Legacy OpenRouter-style identifiers that exist in saved widget settings,
-# CLI configs, and community config.yaml files, normalized to first-party ids.
+# Every other name a request, a saved widget setting, a CLI config or a community's
+# config.yaml may use for an offered model, normalized to the id it runs: the class
+# names, the ids a class used to be (PREVIOUS_GENERATIONS), the current Claude ids as
+# the dotted and OpenRouter-style spellings, and the ids Bedrock itself uses.
 MODEL_ALIASES: dict[str, str] = {
-    "anthropic/claude-haiku-4.5": "claude-haiku-4-5",
-    "anthropic/claude-haiku-4-5": "claude-haiku-4-5",
-    "claude-haiku-4.5": "claude-haiku-4-5",
-    # Sonnet 5.5 replaced Sonnet 5 at the same price, so a saved setting or
-    # community config that still names an earlier Sonnet runs on it.
-    "claude-sonnet-5": "claude-sonnet-5-5",
-    "claude-sonnet-5.5": "claude-sonnet-5-5",
-    "anthropic/claude-sonnet-5.5": "claude-sonnet-5-5",
-    "anthropic/claude-sonnet-5": "claude-sonnet-5-5",
-    "anthropic/claude-sonnet-4.6": "claude-sonnet-5-5",
-    "anthropic/claude-sonnet-4.5": "claude-sonnet-5-5",
-    "claude-sonnet-4.5": "claude-sonnet-5-5",
+    **{name: model for name, model in MODEL_CLASSES.items() if model in OFFERED_MODELS},
+    **{old: MODEL_CLASSES[name] for name, olds in PREVIOUS_GENERATIONS.items() for old in olds},
+    **{
+        spelling: model
+        for model in (HAIKU, SONNET)
+        for spelling in (
+            _claude_dotted(model),
+            f"anthropic/{model}",
+            f"anthropic/{_claude_dotted(model)}",
+        )
+    },
     # The ids Bedrock itself uses for the models above, so a config that copied
     # one from the AWS console resolves.
-    "us.openai.gpt-6-luna": "openai.gpt-6-luna",
+    f"us.{LUNA}": LUNA,
     "openai.gpt-oss-120b-1:0": "openai.gpt-oss-120b",
 }
 
@@ -163,16 +234,16 @@ MODEL_ALIASES: dict[str, str] = {
 # OpenRouter key (BYOK, or a community's own funded key) still runs the
 # community's chosen model rather than switching to a different model family
 # just because of which key paid for it. Bare first-party ids such as
-# "claude-haiku-4-5" are not valid OpenRouter slugs, hence the mapping.
+# "claude-haiku-5-5" are not valid OpenRouter slugs, hence the mapping.
 # tests/test_core/test_litellm_llm.py asserts these keys stay in step with
 # OFFERED_MODELS so adding a model cannot silently skip this. The table lives here,
 # with no third-party imports, so community config validation can reach it on a CLI-only
 # install; ``litellm_llm`` re-exports it.
 OPENROUTER_MODEL_IDS: dict[str, str] = {
-    "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
-    "claude-sonnet-5-5": "anthropic/claude-sonnet-5.5",
+    HAIKU: f"anthropic/{_claude_dotted(HAIKU)}",
+    SONNET: f"anthropic/{_claude_dotted(SONNET)}",
     # The Bedrock-served models, for a caller who brings an OpenRouter key.
-    "openai.gpt-6-luna": "openai/gpt-6-luna",
+    LUNA: LUNA.replace(".", "/", 1),
     "openai.gpt-oss-120b": "openai/gpt-oss-120b",
     "qwen.qwen3-next-80b-a3b": "qwen/qwen3-next-80b-a3b-instruct",
 }
@@ -186,6 +257,17 @@ OPENROUTER_MODEL_IDS: dict[str, str] = {
 # ":extended") are catalog entries of their own, at most one to a slug, and are not
 # looked through: stripping ":free" would resolve to the paid entry.
 OPENROUTER_ROUTING_VARIANTS = ("nitro", "floor", "exacto", "online")
+
+
+def _without_routing_variants(slug: str) -> str:
+    """An OpenRouter slug with its routing variants (``:nitro``, ``:floor``...) removed.
+
+    A variant that is a catalog entry of its own (``:free``) is kept: it names a different
+    entry, not a different route to the same one.
+    """
+    base, *variants = slug.split(":")
+    kept = [v for v in variants if v not in OPENROUTER_ROUTING_VARIANTS]
+    return ":".join([base, *kept])
 
 
 def openrouter_model_id(slug: str | None) -> str | None:
@@ -202,23 +284,19 @@ def openrouter_model_id(slug: str | None) -> str | None:
     """
     if not slug:
         return None
-    base, *variants = slug.split(":")
-    kept = [v for v in variants if v not in OPENROUTER_ROUTING_VARIANTS]
-    slug = ":".join([base, *kept])
+    slug = _without_routing_variants(slug)
     for model_id, known_slug in OPENROUTER_MODEL_IDS.items():
         if known_slug == slug:
             return model_id
     return None
 
 
-# Models that still accept sampling parameters. Claude 5-generation models
-# (claude-sonnet-5-5) reject `temperature` with a 400 because the only value
-# they accept is 1, the implicit default when the field is simply omitted.
-# GPT-6 Luna rejects `temperature` and `topP` the same way (Bedrock: "This model
-# doesn't support the temperature field"); gpt-oss-120b and Qwen3 Next accept them.
-SAMPLING_MODELS: frozenset[str] = frozenset(
-    {"claude-haiku-4-5", "openai.gpt-oss-120b", "qwen.qwen3-next-80b-a3b"}
-)
+# Models that still accept sampling parameters. Claude 5-generation models (Sonnet 5.5,
+# Haiku 5.5) reject `temperature` with a 400 because the only value they accept is 1,
+# the implicit default when the field is simply omitted. GPT-6 Luna rejects
+# `temperature` and `topP` the same way (Bedrock: "This model doesn't support the
+# temperature field"); gpt-oss-120b and Qwen3 Next accept them.
+SAMPLING_MODELS: frozenset[str] = frozenset({"openai.gpt-oss-120b", "qwen.qwen3-next-80b-a3b"})
 
 # Reasoning effort (issue #545). One provider-neutral scale, lowest to highest, that a
 # community sets once (``reasoning_effort`` in its config.yaml) and that each provider
@@ -235,31 +313,34 @@ REASONING_SCALE: tuple[ReasoningEffort, ...] = get_args(ReasoningEffort)
 # the models' own predetermined ones (Luna and gpt-oss measured against Bedrock on
 # 2026-09-29: Luna accepts none, low, medium, high, xhigh and max and rejects
 # ``minimal``; gpt-oss accepts low, medium and high and rejects ``max``), with one policy
-# on top: Claude Sonnet 5.5 is never run above ``high``, whatever a community asks and on
-# whichever platform it is reached, so it lists none through high even though the API
-# accepts more. Claude Haiku 4.5 has no effort field: it thinks with a token budget, so
-# its levels are the ones ``THINKING_BUDGET_TOKENS`` gives a budget (none is no thinking),
-# capped at ``high`` because a larger budget leaves too little of ``max_tokens`` for the
-# answer.
+# on top: the Claude models are never run above ``high``, whatever a community asks and on
+# whichever platform they are reached, so they list none through high even though the API
+# accepts more (Sonnet 5.5 and Haiku 5.5 take xhigh and max too). ``none`` is no up-front
+# thinking, at the lowest effort.
 REASONING_LEVELS: dict[str, tuple[ReasoningEffort, ...]] = {
-    "claude-sonnet-5-5": ("none", "low", "medium", "high"),
-    "claude-haiku-4-5": ("none", "low", "medium", "high"),
-    "openai.gpt-6-luna": ("none", "low", "medium", "high", "xhigh", "max"),
+    SONNET: ("none", "low", "medium", "high"),
+    HAIKU: ("none", "low", "medium", "high"),
+    LUNA: ("none", "low", "medium", "high", "xhigh", "max"),
     "openai.gpt-oss-120b": ("low", "medium", "high"),
 }
 
-# The thinking budget, in tokens, of each level of a model that thinks with a budget rather
-# than an effort level (``none`` has no entry: no thinking). The floor is the API's
-# minimum (1024); ``medium`` is what Haiku ran at before levels existed (2048), and
-# ``high`` (4096) is the default level's.
-THINKING_BUDGET_TOKENS: dict[str, dict[str, int]] = {
-    "claude-haiku-4-5": {"low": 1024, "medium": 2048, "high": 4096},
+# The Claude models that think adaptively, steered by an effort level, and the `thinking`
+# value that turns up-front thinking off on each. The two generations name it differently
+# and the API is strict about it (a mismatch is a 400): Sonnet 5.5 rejects "disabled"
+# ("Use thinking.type.between_tools for the lowest thinking setting"), and Haiku 5.5 has
+# no "between_tools". Neither takes a token budget: ``thinking.type "enabled"`` with
+# ``budget_tokens`` is a 400 on both. The API allows an off value only at effort "high"
+# or below and with no other field inside ``thinking``; OSA sends an effort of at most
+# "high" with it.
+THINKING_OFF: dict[str, dict[str, str]] = {
+    SONNET: {"type": "between_tools"},
+    HAIKU: {"type": "disabled"},
 }
 
 # The level every model runs at when a community sets none, on every provider, so a model
-# behaves the same whichever key paid for it: ``high``. That is Claude Sonnet 5.5 (which
-# is then sent explicitly; the Claude Platform's own default is the same), Claude Haiku
-# 4.5 (a 4096-token thinking budget), GPT-6 Luna and gpt-oss-120b. Luna at ``max`` made a
+# behaves the same whichever key paid for it: ``high``. That is Claude Sonnet 5.5 (the
+# Claude Platform's own default is the same), Claude Haiku 5.5 (whose own default is
+# ``medium``, so it is sent ``high`` explicitly), GPT-6 Luna and gpt-oss-120b. Luna at ``max`` made a
 # tool-using turn take 15 to 50 seconds before its first word, and at ``xhigh`` and ``max``
 # it answered with no documentation search in the median of three runs on one question, so
 # no citations. A model with no levels (Qwen3 Next) is sent nothing.
@@ -268,10 +349,9 @@ DEFAULT_REASONING_EFFORT: ReasoningEffort = "high"
 # Models whose reasoning OpenRouter does not let a request turn off (its model metadata
 # marks it mandatory and the docs say not to send ``effort: none``), so ``none`` is not
 # a level there: it is raised to the model's lowest. On the Claude Platform, ``none`` for
-# Claude Sonnet 5.5 is real (``thinking: between_tools``).
-MANDATORY_REASONING_ON_OPENROUTER: frozenset[str] = frozenset(
-    {"claude-sonnet-5-5", "openai.gpt-oss-120b"}
-)
+# Claude Sonnet 5.5 is real (``thinking: between_tools``). Claude Haiku 5.5's reasoning is
+# not mandatory there (OpenRouter's metadata for it says so), so it keeps ``none``.
+MANDATORY_REASONING_ON_OPENROUTER: frozenset[str] = frozenset({SONNET, "openai.gpt-oss-120b"})
 
 # The offered models with no reasoning levels to set: Qwen3 Next has no reasoning control.
 # The key is ignored for it. Together with REASONING_LEVELS this names every offered model,
@@ -463,8 +543,15 @@ def suggest_another_model(failed: str | None) -> tuple[str, str] | None:
         current = normalize_model(failed) if failed else None
     except ValueError:
         # An OpenRouter slug, perhaps with a routing variant (":nitro"): the offered model
-        # it stands for, or else the string as it came.
-        current = openrouter_model_id(failed) or failed
+        # it stands for, or else the string as it came. A slug of an earlier generation
+        # ("anthropic/claude-haiku-4.5:nitro") counts as the class it was, as it does in
+        # the widget, so the model that failed is not offered back to the reader.
+        current = openrouter_model_id(failed)
+        if current is None:
+            try:
+                current = normalize_model(_without_routing_variants(failed))
+            except ValueError:
+                current = failed
     for model_id in SUGGESTED_MODELS:
         if model_id != current and model_id in OFFERED_MODELS:
             return model_id, OFFERED_MODELS[model_id]

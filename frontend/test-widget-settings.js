@@ -56,15 +56,25 @@ async function waitUntil(predicate, label, timeoutMs = 5000) {
 }
 
 const SOURCE = readFileSync(new URL('./osa-chat-widget.js', import.meta.url), 'utf8');
+
+// The offered Claude models as the widget's own fallback list names them (tests/test_frontend/
+// test_widget_drift.py keeps that list equal to the backend's), so these tests do not repeat a
+// model generation.
+const WIDGET_MODELS = [...SOURCE.matchAll(/\{ value: '([^']+)', label: '([^']+)' \}/g)].map(
+  ([, id, label]) => ({ id, label })
+);
+const widgetModel = (family) => WIDGET_MODELS.find((m) => m.id.startsWith(`claude-${family}-`));
+const HAIKU = widgetModel('haiku').id;
+const HAIKU_LABEL = widgetModel('haiku').label;
 const API = 'http://localhost/api';
 const SETTINGS_KEY = 'osa-settings-hed';
 const ANTHROPIC_KEY = `sk-ant-${'a'.repeat(90)}`;
 const OPENROUTER_KEY = `sk-or-v1-${'b'.repeat(64)}`;
 
 const CONFIG = {
-  default_model: 'claude-haiku-4-5',
+  default_model: HAIKU,
   offered_models: [
-    { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+    { id: HAIKU, label: HAIKU_LABEL },
     { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
     { id: 'openai.gpt-6-luna', label: 'OpenAI GPT-6 Luna', platform_only: true },
   ],
@@ -458,9 +468,9 @@ for (const [label, saved, menu] of [
 
 console.log('\na saved model that is the community default selects Default, not a blank menu');
 for (const [label, config, model, defaultModel] of [
-  ['the default itself', CONFIG, 'claude-haiku-4-5', 'claude-haiku-4-5'],
+  ['the default itself', CONFIG, HAIKU, HAIKU],
   ['a retired id the default replaced (NEMAR)', NEMAR_LIKE, 'claude-sonnet-5', 'claude-sonnet-5-5'],
-  ['an alias of the default', CONFIG, 'claude-haiku-4.5', 'claude-haiku-4-5'],
+  ['an alias of the default', CONFIG, 'claude-haiku-4.5', HAIKU],
   ['the default, itself given as an alias', { ...CONFIG, default_model: 'claude-sonnet-5' }, 'claude-sonnet-5-5', 'claude-sonnet-5-5'],
 ]) {
   const { window, q, saved } = await openSettingsDialog({ config, saved: { apiKey: null, model } });

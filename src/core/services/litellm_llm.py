@@ -16,7 +16,7 @@ Usage:
 
     # Or specify a different model
     llm = create_openrouter_llm(
-        model="anthropic/claude-haiku-4.5",
+        model="anthropic/claude-haiku-5.5",
         api_key=os.getenv("OPENROUTER_API_KEY"),
         enable_caching=True,  # For Anthropic prompt caching
     )
@@ -37,7 +37,6 @@ from langchain_core.language_models import BaseChatModel
 from src.core.services.anthropic_models import (
     OPENROUTER_MODEL_IDS,
     OPENROUTER_ROUTING_VARIANTS,
-    THINKING_BUDGET_TOKENS,
     effective_reasoning_effort,
     openrouter_model_id,
 )
@@ -109,7 +108,7 @@ def create_openrouter_llm(
         - Other models use the specified provider or default routing
 
     Args:
-        model: Model identifier (e.g., "openai/gpt-oss-120b", "anthropic/claude-haiku-4.5")
+        model: Model identifier (e.g., "openai/gpt-oss-120b", "anthropic/claude-haiku-5.5")
         api_key: OpenRouter API key (defaults to OPENROUTER_API_KEY env var)
         temperature: Sampling temperature (0.0-1.0)
         max_tokens: Maximum tokens to generate
@@ -122,11 +121,9 @@ def create_openrouter_llm(
         reasoning_effort: The community's level from the neutral scale, or None for
             ``DEFAULT_REASONING_EFFORT`` (high). Sent as OpenRouter's ``reasoning: {"effort": level}``
             body field, only for an offered model that has levels, at a level it
-            accepts on OpenRouter (Claude Sonnet is never above ``high``, and has no
-            ``none`` there, where its reasoning is mandatory), including a routing
-            variant of one (``:nitro``). Claude Haiku thinks with
-            a budget, so it is sent ``reasoning: {"max_tokens": <the level's budget>}``
-            (and no temperature) or, for ``none``, no reasoning field; a slug OSA knows nothing
+            accepts on OpenRouter (the Claude models are never above ``high``, and
+            Claude Sonnet has no ``none`` there, where its reasoning is mandatory),
+            including a routing variant of one (``:nitro``). A slug OSA knows nothing
             about, including the older Claude slugs that ``normalize_model`` aliases, is
             sent nothing (and a debug line says so).
 
@@ -171,7 +168,6 @@ def create_openrouter_llm(
     # fail every request for a slug it does not know.
     model_id = openrouter_model_id(model)
     reasoning_level = effective_reasoning_effort(model_id, reasoning_effort, "openrouter")
-    budgets = THINKING_BUDGET_TOKENS.get(model_id or "")
     if reasoning_level is None:
         if reasoning_effort is not None:
             logger.debug(
@@ -180,17 +176,8 @@ def create_openrouter_llm(
                 reasoning_effort,
                 model,
             )
-    elif budgets is None:
+    else:
         model_kwargs["reasoning"] = {"effort": reasoning_level}
-    elif reasoning_level in budgets:
-        # A model that thinks with a token budget (Haiku): OpenRouter would turn an
-        # effort into a share of max_tokens, which is not OSA's budget and is unset here,
-        # so the budget is sent itself (`reasoning.max_tokens` is used as given, 1024 at
-        # least), the same one the Claude Platform path uses. Anthropic does not allow a
-        # temperature with thinking, so it is not sent, as on that path.
-        model_kwargs["reasoning"] = {"max_tokens": budgets[reasoning_level]}
-        temperature = None
-    # `none` on such a model sends no reasoning field: without one it does not think.
 
     # Falls back to the env var (documented above) rather than requiring
     # every caller to read it themselves, but a request with neither fails

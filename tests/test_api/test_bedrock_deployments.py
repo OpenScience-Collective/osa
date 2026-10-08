@@ -22,7 +22,12 @@ from src.api.routers.community import (
     log_unserved_bedrock_defaults,
 )
 from src.assistants import discover_assistants, registry
-from src.core.services.anthropic_models import BEDROCK_MODELS, is_bedrock_model, normalize_model
+from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,
+    MODEL_CLASSES,
+    is_bedrock_model,
+    normalize_model,
+)
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
 from tests.helpers.deployment import DEPLOYMENTS, set_platform_keys, without_mcp_servers
 
@@ -310,17 +315,15 @@ class TestAnOpenRouterOnlyPlatform:
             assert type(awm.assistant.model).__name__ == "TaggedCitationChatLiteLLM", info.id
 
     @pytest.mark.parametrize(
-        ("community_id", "slug"),
-        [
-            ("hed", "anthropic/claude-haiku-4.5"),
-            ("nwb", "openai/gpt-6-luna"),
-            ("nemar", "anthropic/claude-sonnet-5.5"),
-        ],
+        ("community_id", "model_class"),
+        [("hed", "haiku"), ("nwb", "luna"), ("nemar", "sonnet")],
     )
-    def test_the_shipped_defaults_resolve_to_these_slugs(self, community_id, slug):
+    def test_the_shipped_defaults_resolve_to_their_classes_slugs(self, community_id, model_class):
+        """Each community names a class, and runs under that class's OpenRouter slug."""
         info = registry.get(community_id)
+        assert info.community_config.default_model == model_class
         awm = create_community_assistant(community_id, origin=_origin(info), preload_docs=False)
-        assert awm.model == slug
+        assert awm.model == OPENROUTER_MODEL_IDS[MODEL_CLASSES[model_class]]
 
     def test_the_default_model_notes_reach_the_prompt_on_openrouter(self):
         """The Bedrock default's anti-search-loop note follows it onto OpenRouter."""

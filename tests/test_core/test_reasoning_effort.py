@@ -18,6 +18,7 @@ from src.core.config.community import CommunityConfig
 from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
     DEFAULT_REASONING_EFFORT,
+    HAIKU,
     MANDATORY_REASONING_ON_OPENROUTER,
     MODEL_ALIASES,
     NO_REASONING_LEVELS,
@@ -30,7 +31,7 @@ from src.core.services.anthropic_models import (
 )
 
 SONNET = "claude-sonnet-5-5"
-HAIKU = "claude-haiku-4-5"
+HAIKU = HAIKU
 LUNA = "openai.gpt-6-luna"
 GPT_OSS = "openai.gpt-oss-120b"
 QWEN = "qwen.qwen3-next-80b-a3b"

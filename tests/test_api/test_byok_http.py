@@ -50,6 +50,7 @@ from src.api.config import get_settings
 from src.api.routers.community import create_community_router
 from src.assistants import discover_assistants, registry
 from src.core.services.anthropic_llm import normalize_model
+from src.core.services.anthropic_models import HAIKU
 
 discover_assistants()
 
@@ -133,7 +134,7 @@ def _sse_message(text: str) -> bytes:
                     "id": "msg_test_byok_http",
                     "type": "message",
                     "role": "assistant",
-                    "model": "claude-haiku-4-5",
+                    "model": HAIKU,
                     "content": [],
                     "stop_reason": None,
                     "stop_sequence": None,

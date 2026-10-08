@@ -17,6 +17,8 @@ from unittest.mock import patch
 
 import httpx2
 
+from src.core.services.anthropic_models import HAIKU
+
 _USAGE = {"input_tokens": 25, "output_tokens": 12}
 
 
@@ -37,7 +39,7 @@ def message_stream(
         "id": "msg_test",
         "type": "message",
         "role": "assistant",
-        "model": "claude-haiku-4-5",
+        "model": HAIKU,
         "content": [],
         "stop_reason": None,
         "stop_sequence": None,
@@ -103,7 +105,7 @@ def message_body(
         "id": "msg_test",
         "type": "message",
         "role": "assistant",
-        "model": "claude-haiku-4-5",
+        "model": HAIKU,
         "content": [{"type": "text", "text": text}] if text else [],
         "stop_reason": stop_reason,
         "stop_sequence": None,

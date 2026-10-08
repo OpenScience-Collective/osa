@@ -7,6 +7,7 @@ from functools import lru_cache
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.core.services.anthropic_models import DEFAULT_MODEL
 from src.version import __version__
 
 logger = logging.getLogger(__name__)
@@ -128,7 +129,7 @@ class Settings(BaseSettings):
     # OpenRouter key selects that provider. See .context/research.md for
     # benchmark details behind the OpenRouter defaults.
     default_model: str = Field(
-        default="claude-haiku-4-5",
+        default=DEFAULT_MODEL,
         description="Default model for the Claude Platform on AWS path",
     )
     default_model_provider: str | None = Field(
@@ -136,7 +137,7 @@ class Settings(BaseSettings):
         description="OpenRouter-BYOK-only: provider for routing (e.g., DeepInfra/FP8)",
     )
     test_model: str = Field(
-        default="claude-haiku-4-5",
+        default=DEFAULT_MODEL,
         description="Default model for testing",
     )
     test_model_provider: str | None = Field(
@@ -270,12 +271,12 @@ class Settings(BaseSettings):
 # Environment variables that used to set something and are now ignored (Settings ignores
 # unknown ones), with what replaced each. A server that still exports one would otherwise
 # change behavior without a word: an operator who lowered the old Haiku thinking budget to
-# save cost now gets the default level's budget.
+# save cost now gets Haiku 5.5's adaptive thinking at the default level.
 RETIRED_ENV_VARS: dict[str, str] = {
     "ANTHROPIC_THINKING_BUDGET_TOKENS": (
-        "reasoning_effort in the community's config.yaml sets Claude Haiku's thinking "
-        "budget now (low 1024, medium 2048, high 4096 tokens, none no thinking; high "
-        "when unset)"
+        "Claude Haiku no longer thinks with a token budget (Haiku 5.5 thinks adaptively); "
+        "reasoning_effort in the community's config.yaml sets how much (none, low, "
+        "medium or high; high when unset)"
     ),
 }
 

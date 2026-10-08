@@ -57,7 +57,13 @@ from src.api.routers.community import (
 from src.assistants.community import CommunityAssistant
 from src.core.services import stream_retry
 from src.core.services.anthropic_llm import create_anthropic_llm
-from src.core.services.anthropic_models import BEDROCK_MODELS, DEFAULT_MODEL
+from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,
+    DEFAULT_MODEL,
+    HAIKU,
+    OFFERED_MODELS,
+    SONNET,
+)
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_MODEL
 from src.core.services.litellm_llm import create_openrouter_llm
@@ -102,20 +108,24 @@ UNRECOGNIZED_TEXT = {
     "chat": "An error occurred while processing your request.",
 }
 
+#: The labels the reader is shown for the two models a failure suggests.
+HAIKU_LABEL = OFFERED_MODELS[HAIKU]
+SONNET_LABEL = OFFERED_MODELS[SONNET]
+
 #: What either stream tells a reader when their model failed in a way that can clear by
 #: itself: there is no automatic switch to another model, so they are told which to try and
-#: asked to make the change (Claude Haiku 4.5, or Sonnet 5.5 when Haiku is the one that failed).
+#: asked to make the change (Haiku, or Sonnet when Haiku is the one that failed).
 UNAVAILABLE_TEXT = "The current model ({model}) is not available right now. Try {suggested}, or choose another model."
 
 
-def unavailable_text(model: str, suggested: str = "Claude Haiku 4.5") -> str:
+def unavailable_text(model: str, suggested: str = HAIKU_LABEL) -> str:
     return UNAVAILABLE_TEXT.format(model=model, suggested=suggested)
 
 
 BEDROCK_UNAVAILABLE = unavailable_text(BEDROCK_MODEL)
 
 #: What the event carries for a client that can send the question again with the model.
-HAIKU = {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"}
+HAIKU_SUGGESTION = {"id": HAIKU, "label": HAIKU_LABEL}
 
 paths = pytest.mark.parametrize("path", ["ask", "chat"])
 
@@ -244,7 +254,9 @@ def _assert_retryable(
     # The widget shows the message in a banner and the reader takes it in at a glance.
     assert len(events[-1]["message"]) <= 120, events[-1]["message"]
     assert events[-1]["retryable"] is True
-    assert events[-1]["suggested_model"] == HAIKU, "the message names a model, so the event does"
+    assert events[-1]["suggested_model"] == HAIKU_SUGGESTION, (
+        "the message names a model, so the event does"
+    )
     assert events[-1]["error_id"]
     assert events[-1]["request_id"] == "req-failure", "the reader's report finds its row"
     assert len(records) == 1, [r.getMessage() for r in records]
@@ -1046,8 +1058,8 @@ class TestARunThatUsesAllItsSteps:
     @pytest.mark.parametrize(
         ("model", "suggested"),
         [
-            ("openai.gpt-oss-120b", HAIKU),
-            ("claude-haiku-4-5", {"id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5"}),
+            ("openai.gpt-oss-120b", HAIKU_SUGGESTION),
+            (HAIKU, {"id": SONNET, "label": SONNET_LABEL}),
         ],
     )
     async def test_the_reader_is_told_and_given_a_model(
@@ -1125,7 +1137,7 @@ class TestARunThatUsesAllItsStepsOnAnEndpointThatIsNotStreamed:
         assert response.status_code == 500
         assert response.json()["detail"] == (
             "The current model (openai.gpt-oss-120b) used all its steps without finishing. "
-            "Try Claude Haiku 4.5, or ask for a smaller part of the task."
+            f"Try {HAIKU_LABEL}, or ask for a smaller part of the task."
         )
         (record,) = [r for r in caplog.records if "used all its steps" in r.getMessage()]
         assert record.levelno == logging.WARNING and not record.exc_info
@@ -1347,29 +1359,28 @@ class TestTheUnavailableModelMessage:
         from src.api.routers.community import _step_limit_reached
         from src.core.services import anthropic_models
 
-        monkeypatch.setattr(anthropic_models, "SUGGESTED_MODELS", ("claude-haiku-4-5",))
+        monkeypatch.setattr(anthropic_models, "SUGGESTED_MODELS", (HAIKU,))
 
-        assert _model_unavailable("claude-haiku-4-5") == (
-            "The current model (claude-haiku-4-5) is not available right now. "
-            "Please choose another model."
+        assert _model_unavailable(HAIKU) == (
+            f"The current model ({HAIKU}) is not available right now. Please choose another model."
         )
-        assert _step_limit_reached("claude-haiku-4-5") == (
-            "The current model (claude-haiku-4-5) used all its steps without finishing. "
+        assert _step_limit_reached(HAIKU) == (
+            f"The current model ({HAIKU}) used all its steps without finishing. "
             "Try another model, or ask for a smaller part of the task."
         )
 
     @pytest.mark.parametrize(
         ("failed", "suggested"),
         [
-            ("openai.gpt-6-luna", "Claude Haiku 4.5"),
-            ("openai.gpt-oss-120b", "Claude Haiku 4.5"),
-            ("qwen.qwen3-next-80b-a3b", "Claude Haiku 4.5"),
-            ("openai/gpt-6-luna", "Claude Haiku 4.5"),
-            ("claude-sonnet-5-5", "Claude Haiku 4.5"),
-            ("claude-haiku-4-5", "Claude Sonnet 5.5"),
-            ("anthropic/claude-haiku-4.5", "Claude Sonnet 5.5"),
-            ("anthropic/claude-haiku-4.5:nitro", "Claude Sonnet 5.5"),
-            ("openai/gpt-oss-120b:nitro", "Claude Haiku 4.5"),
+            ("openai.gpt-6-luna", HAIKU_LABEL),
+            ("openai.gpt-oss-120b", HAIKU_LABEL),
+            ("qwen.qwen3-next-80b-a3b", HAIKU_LABEL),
+            ("openai/gpt-6-luna", HAIKU_LABEL),
+            ("claude-sonnet-5-5", HAIKU_LABEL),
+            (HAIKU, SONNET_LABEL),
+            ("anthropic/claude-haiku-4.5", SONNET_LABEL),
+            ("anthropic/claude-haiku-4.5:nitro", SONNET_LABEL),
+            ("openai/gpt-oss-120b:nitro", HAIKU_LABEL),
         ],
     )
     def test_it_never_suggests_the_model_that_failed(self, failed: str, suggested: str) -> None:
@@ -1377,7 +1388,7 @@ class TestTheUnavailableModelMessage:
 
     def test_it_still_reads_when_the_model_is_not_known(self) -> None:
         assert _model_unavailable(None) == (
-            "The current model is not available right now. Try Claude Haiku 4.5, or choose another model."
+            f"The current model is not available right now. Try {HAIKU_LABEL}, or choose another model."
         )
 
 

@@ -2,7 +2,13 @@ id: metabci
 name: MetaBCI
 description: Python-based open-source software platform for Brain-Computer Interfaces (BCI)
 status: available
-default_model: claude-haiku-4-5
+# default_model names a model class (haiku, sonnet or luna), not a version. OSA moves each class
+# to the newest model of its kind (MODEL_CLASSES in src/core/services/anthropic_models.py), so
+# this line stays as it is when a new generation arrives. Write a model id only to pin a generation.
+default_model: haiku
+# reasoning_effort (none, low, medium, high, xhigh or max) sets how hard every model this
+# community runs thinks, on every provider; high when unset. Uncomment it to change that.
+# reasoning_effort: high
 
 # External links for dashboard and discovery
 links:

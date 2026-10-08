@@ -133,8 +133,8 @@ CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "38528"]
 #                             Without the Bedrock key they are left out of the model
 #                             menu, a request naming one is answered with a 400, and
 #                             a request to those three communities that names no model
-#                             runs the deployment's Claude default (DEFAULT_MODEL, Haiku
-#                             4.5 unless changed), logging an error naming the community.
+#                             runs the deployment's Claude default (DEFAULT_MODEL, the Haiku
+#                             class unless changed), logging an error naming the community.
 #                             With no ANTHROPIC_API_KEY it goes to OpenRouter's Luna slug,
 #                             or fails with HTTP 500.
 #   BEDROCK_REGION          - Region the models are called in (default: us-east-2;
