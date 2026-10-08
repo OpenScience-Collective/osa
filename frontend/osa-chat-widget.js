@@ -4701,6 +4701,16 @@
         return;
       }
 
+      // Parsed to something that is not an object (null, a number, a string): corrupt too.
+      // Reading its fields below would throw, and the storage message would hide why.
+      if (!parsed || typeof parsed !== 'object') {
+        console.error('[OSA] Saved settings are not an object, ignoring');
+        queuePendingNotice('Saved settings are corrupted. Using defaults.');
+        userSettings = { apiKey: null, model: null, keyProvider: null };
+        try { localStorage.removeItem(storageKey); } catch {}
+        return;
+      }
+
       // Validate API key format if present: either an Anthropic or an
       // OpenRouter key. keyProvider is never read from storage directly;
       // it is always re-derived from the key itself below, so settings

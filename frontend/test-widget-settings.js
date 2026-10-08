@@ -96,13 +96,14 @@ function makeConfigFetch(config = CONFIG) {
 
 // A fresh page load; `saved` seeds the reader's saved settings, `config` is what the
 // community config endpoint answers.
-function loadWidget({ saved = null, config = CONFIG } = {}) {
+function loadWidget({ saved = null, rawSaved = null, config = CONFIG } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
   });
   window.__OSA_TEST__ = true;
-  if (saved) window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved));
+  if (rawSaved !== null) window.localStorage.setItem(SETTINGS_KEY, rawSaved);
+  else if (saved) window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved));
   const script = window.document.createElement('script');
   script.setAttribute('src', 'http://localhost/static/osa-chat-widget.js');
   script.setAttribute('data-no-auto-init', '');
@@ -533,6 +534,13 @@ console.log('\na saved model with a variant suffix comes back as Custom, kept');
   assertEqual(q('#osa-settings-model').value, 'custom', 'the menu is on Custom');
   assertEqual(q('#osa-settings-custom-model').value, slug, 'the model name is kept whole');
   assert(!window.document.body.textContent.includes('was ignored'), 'and no notice says it was dropped');
+}
+
+console.log('\na saved value that is not an object is cleared, and not reported as a storage failure');
+{
+  const { window } = await openSettingsDialog({ rawSaved: 'null' });
+  assert(window.localStorage.getItem(SETTINGS_KEY) === null, 'the corrupt value is removed from storage');
+  assert(!window.document.body.textContent.includes('Cannot access browser storage'), 'and no notice says storage cannot be accessed');
 }
 
 console.log(`\nTotal: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
