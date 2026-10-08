@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessageChunk
 
 from src.api.routers.community import ChatSession, _get_session_store, _stream_chat_response
 from src.cli.output import format_usage
+from src.core.services.anthropic_models import HAIKU
 from src.metrics.cost import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER, MODEL_PRICING
 from tests.helpers.provider_replies import (
     ANSWER,
@@ -211,7 +212,7 @@ class TestAParkedBrowserRun:
             )
 
         assert events[-1]["event"] == "tool_request"
-        assert events[-1]["usage"] == _usage("claude-haiku-4-5")
+        assert events[-1]["usage"] == _usage(HAIKU)
 
     async def test_its_cache_reads_and_writes_are_its_own(self) -> None:
         call = _anthropic_call("execute_code", "toolu_01cached", {"code": "x", "description": "d"})
@@ -234,7 +235,7 @@ class TestAParkedBrowserRun:
                 )
             )
 
-        assert events[-1]["usage"] == _cached_usage("claude-haiku-4-5")
+        assert events[-1]["usage"] == _cached_usage(HAIKU)
 
     def test_each_run_of_a_reply_reports_only_its_own_through_the_real_endpoints(
         self,
@@ -527,7 +528,7 @@ class TestWhatTheOperatorReads:
             "cache_creation_tokens": 0,
         } | counts
         return _safe_reply_usage(
-            "claude-haiku-4-5",
+            HAIKU,
             model_runs=ModelRuns(),
             community_id=COMMUNITY,
             request_id="req-log",

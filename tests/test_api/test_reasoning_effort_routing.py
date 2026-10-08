@@ -18,17 +18,17 @@ from src.assistants import discover_assistants, registry
 from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
     DEFAULT_REASONING_EFFORT,
-    THINKING_BUDGET_TOKENS,
+    HAIKU,
+    SONNET,
+    THINKING_OFF,
     effective_reasoning_effort,
     is_bedrock_model,
     normalize_model,
 )
 from tests.helpers.deployment import without_mcp_servers
 
-SONNET = "claude-sonnet-5-5"
 LUNA = "openai.gpt-6-luna"
 GPT_OSS = "openai.gpt-oss-120b"
-HAIKU = "claude-haiku-4-5"
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -50,8 +50,8 @@ def hed(monkeypatch):
     monkeypatch.setattr(settings, "anthropic_api_key", "platform-anthropic-key")
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     monkeypatch.setattr(settings, "bedrock_api_key", "bedrock-key")
-    # A Haiku thinking budget is lowered to fit under max_tokens, which get_settings reads
-    # from the environment: pin it so a machine's own value cannot decide these tests.
+    # max_tokens comes from the environment through get_settings: pin it so a machine's
+    # own value cannot decide these tests.
     monkeypatch.setattr(settings, "anthropic_max_output_tokens", 8000)
     info = registry.get("hed")
     assert info is not None
@@ -116,18 +116,19 @@ class TestTheShippedCommunities:
         without_mcp_servers(monkeypatch, info)
 
     def test_a_luna_community_runs_luna_at_the_level_its_yaml_sets(self, monkeypatch):
-        """Every community whose default is GPT-6 Luna, found in the registry."""
-        luna_communities = [
+        """A community that names GPT-6 Luna runs it at the level its YAML sets.
+
+        No shipped community names Luna now, so each one that sets high is given Luna
+        as its default here, the way its config.yaml would name it.
+        """
+        with_high = [
             info
             for info in registry.list_all()
-            if info.community_config
-            and info.community_config.default_model
-            and normalize_model(info.community_config.default_model) == LUNA
+            if info.community_config and info.community_config.reasoning_effort == "high"
         ]
-        assert luna_communities, "no shipped community defaults to GPT-6 Luna"
-        for info in luna_communities:
-            # The anchor: the shipped level, and the request field it becomes.
-            assert info.community_config.reasoning_effort == "high", info.id
+        assert with_high, "no community sets reasoning_effort: high, nothing to check"
+        for info in with_high:
+            monkeypatch.setattr(info.community_config, "default_model", LUNA)
             self._with_platform_keys_only(monkeypatch, info)
             awm = create_community_assistant(info.id, origin=_origin(info), preload_docs=False)
             assert awm.model == LUNA, info.id
@@ -156,28 +157,30 @@ class TestTheShippedCommunities:
                 continue
             _assert_claude_level(awm, config.reasoning_effort, info.id)
 
-    def test_a_community_on_haiku_hands_its_level_over_as_a_thinking_budget(self, monkeypatch):
-        """Haiku has no effort field: the same key becomes a thinking budget."""
+    def test_a_community_on_haiku_hands_its_level_over_as_an_effort(self, monkeypatch):
+        """Haiku 5.5 takes the same effort field as Sonnet: the key is sent as written."""
         on_haiku = [
             info
             for info in registry.list_all()
             if info.community_config
-            and (info.community_config.default_model or get_settings().default_model) == HAIKU
+            and normalize_model(info.community_config.default_model or get_settings().default_model)
+            == HAIKU
         ]
         assert on_haiku, "no shipped community defaults to Claude Haiku"
-        for level, budget in (("low", 1024), ("medium", 2048)):
+        for level in ("low", "medium"):
             for info in on_haiku:
                 self._with_platform_keys_only(monkeypatch, info)
                 monkeypatch.setattr(info.community_config, "reasoning_effort", level)
                 awm = create_community_assistant(info.id, origin=_origin(info), preload_docs=False)
                 payload = awm.assistant.model._get_request_payload([HumanMessage(content="hi")])
                 assert awm.model == HAIKU, info.id
-                assert payload["thinking"] == {"type": "enabled", "budget_tokens": budget}, info.id
-                assert "output_config" not in payload, info.id
+                assert payload["thinking"] == {"type": "adaptive"}, info.id
+                assert payload["output_config"] == {"effort": level}, info.id
                 _assert_claude_level(awm, level, info.id)
 
-    def test_nemar_is_pinned_to_sonnet_on_the_claude_platform_at_high(self, monkeypatch):
-        """NEMAR's tools return figures, which only a Claude model can see (#522, #530)."""
+    def test_nemar_is_pinned_to_a_claude_model_on_the_claude_platform_at_high(self, monkeypatch):
+        """NEMAR's tools return figures, which only a Claude model can see (#522, #530).
+        Haiku is that model today, so this pins the class rather than a Sonnet id."""
         info = registry.get("nemar")
         assert info is not None
         self._with_platform_keys_only(monkeypatch, info)
@@ -185,10 +188,10 @@ class TestTheShippedCommunities:
         route = _route_request(info, "nemar", None, _origin(info), None)
 
         assert route.choice.provider == "anthropic"
-        assert route.model == SONNET
+        assert route.model == HAIKU
         assert route.choice.takes_native_blocks
         awm = create_community_assistant("nemar", origin=_origin(info), preload_docs=False)
-        assert awm.model == SONNET
+        assert awm.model == HAIKU
         payload = awm.assistant.model._get_request_payload([HumanMessage(content="hi")])
         assert payload["output_config"] == {"effort": "high"}
 
@@ -212,24 +215,15 @@ class TestTheShippedCommunities:
 
 
 def _assert_claude_level(awm, requested: str | None, community_id: str) -> None:
-    """A Claude model is handed the level as its provider names it.
-
-    Sonnet has an effort field (`output_config.effort`; `none` is sent as `low`, the
-    lowest level there is). Haiku has none, so its level is a thinking budget, and `none`
-    is no thinking at all.
-    """
+    """A Claude model is handed the level as its provider names it: `output_config.effort`
+    (`none` is sent as `low`, the lowest level there is, with the model's own thinking-off
+    value)."""
     payload = awm.assistant.model._get_request_payload([HumanMessage(content="hi")])
     asked = effective_reasoning_effort(awm.model, requested, "anthropic")
-    budgets = THINKING_BUDGET_TOKENS.get(normalize_model(awm.model))
-    if budgets is None:
-        sent = (payload.get("output_config") or {}).get("effort")
-        assert sent == {"none": "low"}.get(asked, asked), community_id
-    elif asked in budgets:
-        assert payload["thinking"] == {"type": "enabled", "budget_tokens": budgets[asked]}, (
-            community_id
-        )
-    else:
-        assert "thinking" not in payload, community_id
+    sent = (payload.get("output_config") or {}).get("effort")
+    assert sent == {"none": "low"}.get(asked, asked), community_id
+    if asked == "none":
+        assert payload["thinking"] == THINKING_OFF[normalize_model(awm.model)], community_id
 
 
 class TestBedrockPath:
@@ -262,29 +256,33 @@ class TestAnthropicPath:
         _set_level(monkeypatch, hed, None)
         assert _anthropic_payload(SONNET)["output_config"] == {"effort": "high"}
 
-    @pytest.mark.parametrize(
-        ("level", "budget"), [("low", 1024), ("medium", 2048), ("high", 4096), ("max", 4096)]
-    )
-    def test_haiku_gets_the_communitys_level_as_a_thinking_budget(
-        self, monkeypatch, hed, level, budget
-    ):
+    @pytest.mark.parametrize("level", ["low", "medium"])
+    def test_haiku_gets_the_communitys_level(self, monkeypatch, hed, level):
         _set_level(monkeypatch, hed, level)
         payload = _anthropic_payload(HAIKU)
-        assert payload["thinking"] == {"type": "enabled", "budget_tokens": budget}
-        assert "output_config" not in payload
+        assert payload["output_config"] == {"effort": level}
+        assert payload["thinking"] == {"type": "adaptive"}
 
-    def test_haiku_with_no_thinking_when_the_level_is_none(self, monkeypatch, hed):
+    @pytest.mark.parametrize("asked", ["xhigh", "max"])
+    def test_haiku_is_never_sent_more_than_high(self, monkeypatch, hed, asked):
+        _set_level(monkeypatch, hed, asked)
+        assert _anthropic_payload(HAIKU)["output_config"] == {"effort": "high"}
+
+    def test_haiku_with_thinking_off_when_the_level_is_none(self, monkeypatch, hed):
         _set_level(monkeypatch, hed, "none")
-        assert "thinking" not in _anthropic_payload(HAIKU)
+        payload = _anthropic_payload(HAIKU)
+        assert payload["thinking"] == THINKING_OFF[HAIKU]
+        assert payload["output_config"] == {"effort": "low"}
 
-    def test_haiku_unset_is_high(self, monkeypatch, hed):
-        """Whatever the process environment says: the retired budget setting is not read."""
+    def test_haiku_unset_is_high_sent_explicitly(self, monkeypatch, hed):
+        """Its own default is medium, so high is what a community that sets nothing gets only
+        because it is sent. Whatever the process environment says: the retired budget setting
+        is not read."""
         monkeypatch.setenv("ANTHROPIC_THINKING_BUDGET_TOKENS", "1500")
         _set_level(monkeypatch, hed, None)
-        assert _anthropic_payload(HAIKU)["thinking"] == {
-            "type": "enabled",
-            "budget_tokens": THINKING_BUDGET_TOKENS[HAIKU][DEFAULT_REASONING_EFFORT],
-        }
+        payload = _anthropic_payload(HAIKU)
+        assert payload["thinking"] == {"type": "adaptive"}
+        assert payload["output_config"] == {"effort": DEFAULT_REASONING_EFFORT}
 
 
 class TestOpenRouterPath:

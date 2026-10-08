@@ -29,6 +29,7 @@ import pytest
 from src.api.routers.community import AssistantWithMetrics, ChatSession, _stream_chat_response
 from src.assistants.community import CommunityAssistant
 from src.core.services.anthropic_llm import create_anthropic_llm
+from src.core.services.anthropic_models import HAIKU
 from tests.test_api.test_tool_call_streaming import (
     COMMUNITY,
     SEARCH_ARGS,
@@ -38,7 +39,7 @@ from tests.test_api.test_tool_call_streaming import (
     retrieve_toolcallstream_docs,
 )
 
-MODEL = "claude-haiku-4-5"
+MODEL = HAIKU
 LEAD_TEXT = "Let me search for that."
 ANSWER = "Three datasets match: nm000103, nm000132 and nm000140."
 

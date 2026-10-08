@@ -5,14 +5,15 @@ id: eeglab
 name: EEGLAB
 description: EEG signal processing and analysis toolbox
 status: available
-# GPT-6 Luna, served from Amazon Bedrock on the platform's key (issue #559). With the Bedrock key
-# missing but ANTHROPIC_API_KEY set, a request that names no model runs the deployment's Claude
-# default (DEFAULT_MODEL, Claude Haiku 4.5 unless changed) and logs an error naming this community;
-# a caller's own Anthropic key (the CLI) runs it too, with a warning if that is the only cause.
-# With no ANTHROPIC_API_KEY it goes to OpenRouter's Luna slug, or fails with HTTP 500.
-default_model: openai.gpt-6-luna
+# The Haiku class (Claude Haiku 5.5 today), served by the Claude platform. It was GPT-6 Luna on
+# Amazon Bedrock (issue #559) until the move to Haiku.
+# default_model names a model class (haiku, sonnet or luna), not a version. OSA moves each class
+# to the newest model of its kind (MODEL_CLASSES in src/core/services/anthropic_models.py), so
+# this line stays as it is when a new generation arrives. Write a model id only to pin a generation.
+default_model: haiku
 # The level every model this community runs is asked to reason at, on every provider
 # (issue #545, ADR 0015). Luna at max took 15 to 50 s to a first word, so this community runs high.
+# Haiku 5.5 defaults to medium, so high is sent explicitly.
 reasoning_effort: high
 
 # External links for dashboard and discovery
@@ -478,21 +479,20 @@ docstrings:
 # Process: Eval agent scores all threads (cheap) → Summary agent creates FAQs for high-quality threads (quality)
 faq_generation:
   # Evaluation Agent: Scores thread quality (1000s of calls, optimized for speed/cost)
-  # Model: Claude Haiku 4.5, the cheapest offered model. This replaced a
-  # quantized Qwen on DeepInfra, which is no longer reachable now that FAQ
-  # generation runs on the Claude Platform instead of OpenRouter.
+  # Model: haiku, a model class (Claude Haiku 5.5 today), the cheapest Claude model. This
+  # replaced a quantized Qwen on DeepInfra, which is no longer reachable now that FAQ
+  # generation runs on the Claude Platform instead of OpenRouter. Haiku 5.5 takes no
+  # `temperature` (it rejects any but its default), so scoring is not pinned to 0.0 as it
+  # was on Haiku 4.5; the field is left out rather than set and dropped.
   evaluation_agent:
-    model: claude-haiku-4-5
-    temperature: 0.0         # Deterministic scoring
+    model: haiku
     enable_caching: true     # Prompt caching enabled for cost reduction
 
   # Summary Agent: Creates FAQ entries (100s of calls after filtering, optimized for quality)
-  # Model: Claude Haiku 4.5. Sonnet 5.5 would be the quality upgrade, but it
-  # rejects `temperature`, which would silently discard the 0.0/0.1 split
-  # these two agents rely on.
+  # Model: haiku. Sonnet is the quality upgrade; neither takes a `temperature` any more,
+  # so the 0.0/0.1 split these two agents had on Haiku 4.5 no longer applies.
   summary_agent:
-    model: claude-haiku-4-5
-    temperature: 0.1         # Slightly creative for natural FAQ phrasing
+    model: haiku
     enable_caching: true     # Prompt caching enabled for cost reduction
 
   # Quality Threshold: Only create FAQs for threads scoring >= 0.7

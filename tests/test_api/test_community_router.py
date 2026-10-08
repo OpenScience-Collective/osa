@@ -36,6 +36,7 @@ from src.core.config.community import (
     RESERVED_CLIENT_TOOL_NAMES,
     CommunityConfig,
 )
+from src.core.services.anthropic_models import HAIKU, normalize_model
 
 # Discover assistants to populate registry
 discover_assistants()
@@ -740,16 +741,11 @@ class TestCommunityConfigOfferedModels:
         one (the Luna communities) is otherwise listed without it, and the request falls
         back to the deployment's Claude default."""
         from src.api.config import get_settings
-        from src.assistants import registry
-        from src.core.services.anthropic_models import BEDROCK_MODELS, normalize_model
+        from tests.helpers.deployment import name_luna_as_the_default
 
         monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
         monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
-        community = next(
-            info.id
-            for info in registry.list_all()
-            if normalize_model(info.community_config.default_model) in BEDROCK_MODELS
-        )
+        community = name_luna_as_the_default(monkeypatch).id
 
         response = client.get(f"/{community}/")
         data = response.json()
@@ -765,6 +761,30 @@ class TestCommunityConfigPlatformDefaultModel:
     where a community config has none and the endpoint falls back to
     settings.default_model was exercised by no test.
     """
+
+    @pytest.mark.parametrize("written", ["haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4.5"])
+    def test_a_default_written_as_a_class_or_an_old_id_is_reported_as_the_id_it_runs(
+        self, monkeypatch, written: str
+    ) -> None:
+        """The widget compares this with the ids of offered_models, so it is never a class
+        name or a retired id."""
+        os.environ["REQUIRE_API_AUTH"] = "false"
+        from src.api.config import get_settings
+
+        get_settings.cache_clear()
+
+        from src.assistants import registry
+
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        monkeypatch.setattr(info.community_config, "default_model", written)
+
+        app = FastAPI()
+        app.include_router(create_community_router("hed"))
+        data = TestClient(app).get("/hed/").json()
+
+        assert data["default_model"] == HAIKU
+        assert data["default_model"] in {m["id"] for m in data["offered_models"]}
 
     def test_falls_back_to_platform_default_model(self, monkeypatch) -> None:
         """A community config with no default_model returns the platform default."""
@@ -788,7 +808,7 @@ class TestCommunityConfigPlatformDefaultModel:
 
         data = response.json()
         settings = get_settings()
-        assert data["default_model"] == settings.default_model
+        assert data["default_model"] == normalize_model(settings.default_model)
 
         assert data["offered_models"], "offered_models must not be empty"
         for entry in data["offered_models"]:
@@ -1186,3 +1206,51 @@ class TestTheRuntimeLockOverlay:
             assert "immutable" not in response.headers.get("cache-control", "")
         finally:
             registry._assistants.pop(self.COMMUNITY, None)
+
+
+class TestTheShippedDefaults:
+    """Each shipped community names the class chosen for it. A change there is a change of
+    model family for that community, so the choice is pinned here by name."""
+
+    CHOSEN = {
+        "bids": "haiku",
+        "eeglab": "haiku",
+        "fieldtrip": "haiku",
+        "hed": "haiku",
+        "metabci": "haiku",
+        "mne": "haiku",
+        "nemar": "haiku",
+        "nwb": "haiku",
+        "openneuropet": "haiku",
+    }
+
+    def test_every_shipped_community_names_the_class_chosen_for_it(self):
+        from src.assistants import discover_assistants, registry
+
+        discover_assistants()
+        shipped = {
+            info.id: info.community_config.default_model
+            for info in registry.list_all()
+            if info.community_config and info.community_config.default_model
+        }
+        assert shipped == self.CHOSEN
+
+    def test_a_default_that_is_an_openrouter_slug_is_reported_as_written(self, monkeypatch):
+        """A slug that is not an offered model is not an error: the config endpoint reports
+        it as the community wrote it, since OpenRouter is what runs it."""
+        from src.api.routers.community import create_community_router
+        from src.assistants import discover_assistants, registry
+        from tests.helpers.deployment import set_platform_keys
+
+        discover_assistants()
+        set_platform_keys(monkeypatch, anthropic=None, openrouter="openrouter-key", bedrock=None)
+        monkeypatch.setattr(
+            registry.get("hed").community_config, "default_model", "some-lab/unknown-model"
+        )
+        app = FastAPI()
+        app.include_router(create_community_router("hed"))
+
+        response = TestClient(app).get("/hed/")
+
+        assert response.status_code == 200
+        assert response.json()["default_model"] == "some-lab/unknown-model"

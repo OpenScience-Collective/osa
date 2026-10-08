@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.core.services.anthropic_models import HAIKU
 from src.knowledge.db import get_connection, init_db, upsert_mailing_list_message
 from src.knowledge.faq_summarizer import (
     _build_thread_context,
@@ -629,12 +630,25 @@ class TestFAQGenerationRunsOnTheClaudePlatform:
 
         assert "is ignored" in caplog.text
 
-    def test_honored_temperature_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
-        """claude-haiku-4-5 does accept a temperature, so there is nothing to say."""
+    def test_ignored_temperature_on_haiku_is_reported(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Haiku 4.5 honored a temperature; Haiku 5.5 does not, so scoring pinned to 0.0
+        stopped being deterministic and the operator should hear it."""
         from src.knowledge.faq_summarizer import _warn_if_temperature_ignored
 
         with caplog.at_level("WARNING"):
-            _warn_if_temperature_ignored(0.0, "claude-haiku-4-5", "evaluation_agent", "eeglab")
+            _warn_if_temperature_ignored(0.0, HAIKU, "evaluation_agent", "eeglab")
+
+        assert "temperature=0.0 is ignored" in caplog.text
+
+    def test_honored_temperature_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A model that takes sampling parameters, or no temperature at all, has nothing to say."""
+        from src.knowledge.faq_summarizer import _warn_if_temperature_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_temperature_ignored(0.0, "openai.gpt-oss-120b", "evaluation_agent", "eeglab")
+            _warn_if_temperature_ignored(None, HAIKU, "evaluation_agent", "eeglab")
 
         assert caplog.text == ""
 

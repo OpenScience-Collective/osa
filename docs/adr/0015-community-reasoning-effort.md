@@ -43,7 +43,7 @@ A community sets `reasoning_effort` in its `config.yaml`, one key that every pro
   or raised to its lowest when the ask is below all of them (gpt-oss cannot go below `low`).
 - **Claude Sonnet is never run above `high`**, on any platform, whatever a community asks.
   The API accepts more; this is a policy, and it lives in the levels table so it holds on Bedrock, the Claude Platform and OpenRouter alike.
-- **Claude Haiku 4.5 has no effort field, so its level is a thinking budget** (`THINKING_BUDGET_TOKENS`, issue #548):
+- **Claude Haiku 4.5 has no effort field, so its level is a thinking budget** (`THINKING_BUDGET_TOKENS`, issue #548; Update, 2026-10-08: Claude Haiku 5.5 replaced it as the `haiku` class and takes an effort level like Sonnet, so the budgets and `THINKING_BUDGET_TOKENS` are gone, see [0016](0016-model-classes.md)):
   `low` 1024 tokens (the API's floor), `medium` 2048 (what Haiku ran at before levels), `high` 4096, `none` no thinking;
   `xhigh` and `max` give `high`, since a larger budget leaves too little of `max_tokens` for the answer.
   A budget that would not fit under the request's `max_tokens` is lowered so it does (the API refuses one that is not below it):

@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from src.core.services.anthropic_models import OFFERED_MODELS, OPENROUTER_MODEL_IDS
+from src.core.services.anthropic_models import HAIKU, OFFERED_MODELS, OPENROUTER_MODEL_IDS
 from src.metrics.cost import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER, MODEL_PRICING
 from src.metrics.reply_usage import ReplyUsage, reply_usage
 
@@ -42,14 +42,14 @@ class TestPricing:
     def test_a_cache_write_costs_a_quarter_more_than_an_input_token(self) -> None:
         """claude-haiku-4-5, from the price table: 500 fresh input tokens, 500 written to
         the cache at its multiplier of the input rate, and 100 output tokens."""
-        rate = MODEL_PRICING["claude-haiku-4-5"]
+        rate = MODEL_PRICING[HAIKU]
         by_hand = (
             500 * rate.input_per_1m
             + 500 * rate.input_per_1m * CACHE_WRITE_MULTIPLIER
             + 100 * rate.output_per_1m
         ) / 1_000_000
 
-        usage = reply_usage("claude-haiku-4-5", 1000, 100, cache_creation_tokens=500)
+        usage = reply_usage(HAIKU, 1000, 100, cache_creation_tokens=500)
 
         assert usage is not None and usage.estimated_cost == round(by_hand, 6)
 
@@ -62,21 +62,21 @@ class TestPricing:
         assert usage is not None and usage.estimated_cost is not None
 
     def test_a_reply_some_of_whose_runs_reported_nothing_says_it_is_partial(self) -> None:
-        usage = reply_usage("claude-haiku-4-5", 100, 10, partial=True)
+        usage = reply_usage(HAIKU, 100, 10, partial=True)
 
         assert usage is not None and usage.partial is True
 
 
 class TestWhenThereIsNothingToTell:
     def test_a_request_with_no_tokens_is_not_a_free_one(self) -> None:
-        assert reply_usage("claude-haiku-4-5", 0, 0) is None
+        assert reply_usage(HAIKU, 0, 0) is None
 
     @pytest.mark.parametrize(("input_tokens", "output_tokens"), [(100, 0), (0, 10)])
     def test_a_run_with_only_input_or_only_output_still_has_usage(
         self, input_tokens: int, output_tokens: int
     ) -> None:
         """A run cut off before it wrote anything, or one that only wrote."""
-        assert reply_usage("claude-haiku-4-5", input_tokens, output_tokens) is not None
+        assert reply_usage(HAIKU, input_tokens, output_tokens) is not None
 
     @pytest.mark.parametrize(
         "model",
@@ -129,7 +129,7 @@ class TestWhatCannotBeUsage:
         arguments: dict[str, Any] = {"input_tokens": 100, "output_tokens": 10} | counts
 
         with pytest.raises(ValidationError):
-            reply_usage("claude-haiku-4-5", **arguments)
+            reply_usage(HAIKU, **arguments)
 
     @pytest.mark.parametrize("cost", [-0.01, math.nan, math.inf])
     def test_a_cost_that_is_negative_or_not_a_number_is_refused(self, cost: float) -> None:
@@ -144,7 +144,7 @@ class TestWhatCannotBeUsage:
             )
 
     def test_all_the_input_may_be_cached(self) -> None:
-        usage = reply_usage("claude-haiku-4-5", 100, 10, cache_read_tokens=100)
+        usage = reply_usage(HAIKU, 100, 10, cache_read_tokens=100)
 
         assert usage is not None and usage.cache_read_tokens == 100
 
@@ -170,7 +170,7 @@ class TestTheSharedTable:
 
 
 def test_the_usage_is_the_shape_the_events_carry() -> None:
-    usage = reply_usage("claude-haiku-4-5", 100, 10)
+    usage = reply_usage(HAIKU, 100, 10)
 
     assert usage is not None
     assert set(usage.model_dump()) == {

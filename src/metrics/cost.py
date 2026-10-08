@@ -11,6 +11,8 @@ on platform/community keys (not BYOK).
 import logging
 from typing import NamedTuple
 
+from src.core.services.anthropic_models import HAIKU, LUNA, OPENROUTER_MODEL_IDS, SONNET
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,27 +23,45 @@ class ModelRate(NamedTuple):
     output_per_1m: float
 
 
+class LongPromptRate(NamedTuple):
+    """The rates a model charges for a prompt longer than ``above_tokens``.
+
+    The whole request is billed at ``rate``, not only the tokens past the line.
+    """
+
+    above_tokens: int
+    rate: ModelRate
+
+
+# Claude Haiku 5.5: $0.10 / $0.50 for a prompt of up to 100,000 tokens (its entry in
+# MODEL_PRICING), $0.50 / $2.50 above (LONG_PROMPT_RATES).
+_HAIKU_RATE = ModelRate(0.10, 0.50)
+_HAIKU_LONG_PROMPT = LongPromptRate(100_000, ModelRate(0.50, 2.50))
+
+
 # Source: https://openrouter.ai/api/v1/models
 # Last verified: 2026-03
 MODEL_PRICING: dict[str, ModelRate] = {
     # First-party Anthropic model ids (Claude Platform on AWS, src/core/services/
     # anthropic_llm.py). Kept alongside the OpenRouter-format keys below, which
     # BYOK requests through OpenRouter still need.
+    HAIKU: _HAIKU_RATE,
+    SONNET: ModelRate(2.00, 10.00),
+    # Earlier generations of the offered classes are no longer offered (they resolve
+    # to the class's current model), but request logs written before the switch still
+    # name them and the dashboard prices them by this table, at the price they had.
     "claude-haiku-4-5": ModelRate(1.00, 5.00),
-    "claude-sonnet-5-5": ModelRate(2.00, 10.00),
-    # claude-sonnet-5 is no longer offered (it resolves to claude-sonnet-5-5 at
-    # the same price), but request logs written before the switch still name
-    # it and the dashboard prices them by this table.
     "claude-sonnet-5": ModelRate(2.00, 10.00),
     # Amazon Bedrock model ids (BEDROCK_MODELS in src/core/services/anthropic_models.py).
     # Standard-tier rates from the Bedrock model cards and price list, verified
     # 2026-09-28: GPT-6 Luna at US geographic cross-Region inference, 272K input
     # tokens or fewer (the long-context rate, double, is far above what a
     # conversation here reaches); gpt-oss-120b and Qwen3 Next in-Region. All three
-    # cost no more than claude-haiku-4-5, which test_cost.py enforces. Luna's cache
+    # cost no more than $1 / $5, the cheap tier (Claude Haiku 4.5's old price), which
+    # test_cost.py enforces. Luna's cache
     # writes ($0.1375) and reads ($0.011) are 1.25x and 0.1x its input rate, the
     # same multipliers CACHE_WRITE_MULTIPLIER and CACHE_READ_MULTIPLIER apply.
-    "openai.gpt-6-luna": ModelRate(0.11, 0.55),
+    LUNA: ModelRate(0.11, 0.55),
     "openai.gpt-oss-120b": ModelRate(0.15, 0.60),
     "qwen.qwen3-next-80b-a3b": ModelRate(0.14, 1.20),
     # Anthropic models
@@ -50,7 +70,8 @@ MODEL_PRICING: dict[str, ModelRate] = {
     # A community whose default resolves to this slug over OpenRouter would
     # otherwise 403 as "not in the approved pricing list" even though the
     # first-party id is priced. Same rate as the first-party entry.
-    "anthropic/claude-sonnet-5.5": ModelRate(2.00, 10.00),
+    OPENROUTER_MODEL_IDS[SONNET]: ModelRate(2.00, 10.00),
+    OPENROUTER_MODEL_IDS[HAIKU]: _HAIKU_RATE,
     "anthropic/claude-sonnet-5": ModelRate(2.00, 10.00),
     "anthropic/claude-opus-4.6": ModelRate(5.00, 25.00),
     "anthropic/claude-opus-4.5": ModelRate(5.00, 25.00),
@@ -68,7 +89,7 @@ MODEL_PRICING: dict[str, ModelRate] = {
     # (the same rate as Bedrock's global inference profile; the registry id
     # openai.gpt-6-luna above is served through the us. profile instead, at $0.11 / $0.55,
     # a 10% premium: docs/adr/0014-bedrock-models-alongside-claude.md).
-    "openai/gpt-6-luna": ModelRate(0.10, 0.50),
+    OPENROUTER_MODEL_IDS[LUNA]: ModelRate(0.10, 0.50),
     "openai/gpt-5.2": ModelRate(1.75, 14.00),
     "openai/gpt-5.2-chat": ModelRate(1.75, 14.00),
     "openai/gpt-5.1": ModelRate(1.25, 10.00),
@@ -114,6 +135,13 @@ MODEL_PRICING: dict[str, ModelRate] = {
     "meta-llama/llama-4-maverick": ModelRate(0.15, 0.60),
     "meta-llama/llama-4-scout": ModelRate(0.08, 0.30),
     "meta-llama/llama-3.3-70b-instruct": ModelRate(0.10, 0.32),
+}
+
+# Models priced by prompt length. Keyed like MODEL_PRICING, so a model's slug on OpenRouter,
+# which charges the same, is listed too.
+LONG_PROMPT_RATES: dict[str, LongPromptRate] = {
+    HAIKU: _HAIKU_LONG_PROMPT,
+    OPENROUTER_MODEL_IDS[HAIKU]: _HAIKU_LONG_PROMPT,
 }
 
 # Validate all pricing entries at import time to catch typos
@@ -163,7 +191,7 @@ def estimate_cost(
 
     Args:
         model: Model name (e.g., "qwen/qwen3-235b-a22b-2507" or a first-party
-            Anthropic id like "claude-haiku-4-5").
+            Anthropic id like "claude-haiku-5-5").
         input_tokens: Total input tokens, INCLUDING any cache_read_tokens and
             cache_creation_tokens (matches langchain's usage_metadata shape,
             where input_tokens is already the true total -- see
@@ -186,6 +214,11 @@ def estimate_cost(
         if model:
             logger.warning("No pricing data for model %s, using fallback rates", model)
         rate = _FALLBACK_RATE
+
+    long_prompt = LONG_PROMPT_RATES.get(model or "")
+    if long_prompt is not None and input_tokens > long_prompt.above_tokens:
+        # Priced by prompt length: this whole request is in the higher tier.
+        rate = long_prompt.rate
 
     # input_tokens already includes the cache read/creation tokens, so the
     # "ordinary" (fresh, uncached) portion is what's left over.

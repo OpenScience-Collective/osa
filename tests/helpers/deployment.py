@@ -7,6 +7,7 @@ the cached Settings instance directly and leaves no community to fund itself.
 
 from src.api.config import get_settings
 from src.assistants import registry
+from src.core.services.anthropic_models import LUNA
 
 #: Deployments by the platform keys they hold: (Anthropic, OpenRouter, Bedrock).
 #: Every combination is here, because what a request does depends on all three.
@@ -50,3 +51,14 @@ def without_mcp_servers(monkeypatch, info) -> None:
     routing test is about, and an offline suite must not depend on a live service."""
     if info.community_config.extensions:
         monkeypatch.setattr(info.community_config.extensions, "mcp_servers", [])
+
+
+def name_luna_as_the_default(monkeypatch, community_id: str = "nwb"):
+    """Name GPT-6 Luna as a shipped community's default, for one test, and return it.
+
+    No shipped community names a Bedrock model now (they moved to Haiku), so the tests of a
+    Bedrock default give NWB Luna the way its config.yaml would. monkeypatch undoes it.
+    """
+    info = registry.get(community_id)
+    monkeypatch.setattr(info.community_config, "default_model", LUNA)
+    return info

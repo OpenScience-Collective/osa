@@ -23,6 +23,7 @@ from src.assistants import discover_assistants, registry
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import CommunityConfig
 from src.core.services.anthropic_llm import OFFERED_MODELS, normalize_model
+from src.core.services.anthropic_models import HAIKU
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
@@ -504,7 +505,7 @@ class TestSelectModelAnthropic:
 
         model, provider = _select_model(info, None, provider="anthropic", has_byok=False)
 
-        assert model == "claude-haiku-4-5"
+        assert model == HAIKU
         assert provider is None
 
     def test_default_model_provider_ignored(self):
@@ -547,7 +548,7 @@ class TestSelectModelOpenRouter:
         change model family based on which key funded the request.
         """
         settings = get_settings()
-        monkeypatch.setattr(settings, "default_model", "claude-haiku-4-5")
+        monkeypatch.setattr(settings, "default_model", HAIKU)
         monkeypatch.setattr(settings, "default_model_provider", None)
 
         community_info = AssistantInfo(
@@ -559,7 +560,7 @@ class TestSelectModelOpenRouter:
 
         model, provider = _select_model(community_info, None, provider="openrouter", has_byok=True)
 
-        assert model == OPENROUTER_MODEL_IDS["claude-haiku-4-5"]
+        assert model == OPENROUTER_MODEL_IDS[HAIKU]
         # Routing is left to OpenRouter, which auto-selects the Anthropic
         # provider for anthropic/* models.
         assert provider is None
@@ -591,7 +592,7 @@ class TestSelectModelOpenRouter:
     def test_offered_model_requested_by_first_party_id_maps_across(self, monkeypatch):
         """Naming an offered model by first-party id works on an OpenRouter key."""
         settings = get_settings()
-        monkeypatch.setattr(settings, "default_model", "claude-haiku-4-5")
+        monkeypatch.setattr(settings, "default_model", HAIKU)
         monkeypatch.setattr(settings, "default_model_provider", None)
 
         community_info = AssistantInfo(
@@ -628,8 +629,10 @@ class TestSelectModelOpenRouter:
 
         model, provider = _select_model(info, None, provider="openrouter", has_byok=False)
 
-        assert model == "anthropic/claude-haiku-4.5"
-        assert provider == "Anthropic"
+        # A retired slug runs the model its class is today (ADR 0016), and an Anthropic slug
+        # takes no provider hint: OpenRouter picks the Anthropic provider for it.
+        assert model == "anthropic/claude-haiku-5.5"
+        assert provider is None
 
     def test_uses_platform_default_when_no_community_model(self, monkeypatch):
         """Should use platform default when community has no default_model."""
@@ -723,7 +726,7 @@ class TestSelectModelOpenRouter:
             community_info, "claude-haiku-4.5", provider="openrouter", has_byok=True
         )
 
-        assert model == OPENROUTER_MODEL_IDS["claude-haiku-4-5"]
+        assert model == OPENROUTER_MODEL_IDS[HAIKU]
         assert provider is None
 
     def test_requesting_default_model_explicitly_allowed(self, monkeypatch):
@@ -747,7 +750,49 @@ class TestSelectModelOpenRouter:
             info, "anthropic/claude-haiku-4.5", provider="openrouter", has_byok=False
         )
 
-        assert model == "anthropic/claude-haiku-4.5"
+        assert model == "anthropic/claude-haiku-5.5"
+        assert provider is None
+
+    def test_a_community_that_names_the_same_model_another_way_is_not_a_custom_one(self):
+        """A class or id that is the community's default, spelled another way, is the default:
+        it needs no key of the caller's own."""
+        info = AssistantInfo(
+            id="or-test-3",
+            name="OR Test 3",
+            description="x",
+            community_config=CommunityConfig(
+                id="or-test-3",
+                name="OR Test 3",
+                description="x",
+                default_model="haiku",
+            ),
+        )
+
+        model, provider = _select_model(
+            info, "claude-haiku-5-5", provider="openrouter", has_byok=False
+        )
+
+        assert model == OPENROUTER_MODEL_IDS[HAIKU]
+        assert provider is None
+
+    @pytest.mark.parametrize("requested", ["haiku", "claude-haiku-5-5"])
+    def test_a_class_or_id_request_for_another_model_runs_it_on_byok_openrouter(self, requested):
+        """ADR 0016: a class name is accepted wherever a model is named, a request included."""
+        info = AssistantInfo(
+            id="or-test-4",
+            name="OR Test 4",
+            description="x",
+            community_config=CommunityConfig(
+                id="or-test-4",
+                name="OR Test 4",
+                description="x",
+                default_model="claude-sonnet-5-5",
+            ),
+        )
+
+        model, provider = _select_model(info, requested, provider="openrouter", has_byok=True)
+
+        assert model == OPENROUTER_MODEL_IDS[HAIKU]
         assert provider is None
 
 

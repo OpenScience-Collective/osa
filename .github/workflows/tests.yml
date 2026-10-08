@@ -80,7 +80,7 @@ jobs:
         env:
           READ_GITHUB_TOKEN: ${{ secrets.READ_GITHUB_TOKEN }}
         run: |
-          uv run pytest --ignore=tests/test_integration -v --cov=src --cov-report=xml -m "not network"
+          uv run pytest --ignore=tests/test_integration -v --cov=src --cov-report=xml -m "not network and not llm"
 
       # The widget's light and dark appearance in real Chrome (#469). The bug is the
       # browser's own drawing of form controls on a dark host page, which the happy-dom

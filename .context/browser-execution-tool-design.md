@@ -543,6 +543,8 @@ Three consequences of that epic for this design:
   there is no availability constraint on any of the above.
 - The offered models narrow to `claude-haiku-4-5` (default; thinking budget set by the community's `reasoning_effort`, 4096 tokens at the default `high`) and
   `claude-sonnet-5-5`.
+  (Update, 2026-10-08, ADR 0016: the `haiku` class is now Claude Haiku 5.5, which thinks adaptively at an effort level and has no budget;
+  whether it supports mid-conversation system messages and where its cache floor sits were not checked, so the notes below stay about 4.5.)
   Haiku does not support mid-conversation system messages.
   Anthropic's documentation lists them for Opus 5, Opus 4.8, Fable, Mythos and Sonnet 5.5, and not for Haiku 4.5 or Sonnet 5
   (its mid-conversation system messages page and its Sonnet 5.5 feature list, read 2026-09-30).

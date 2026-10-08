@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      model:
+        description: 'Live models to test: all, or a part of a model id (haiku, sonnet, luna)'
+        required: false
+        default: 'all'
+        type: string
 
 jobs:
   lint:
@@ -318,12 +324,9 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    # Run on push to main or workflow_dispatch, but not on PRs (to save API costs)
-    # Skip for automated version-strip commits (version-only changes)
-    if: |
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      !(github.actor == 'github-actions[bot]' &&
-        contains(github.event.head_commit.message || '', 'strip dev suffix'))
+    # Manual only (Actions > Tests > Run workflow). These tests make paid calls to the Claude
+    # Platform, OpenRouter and Amazon Bedrock, so they never run on push or on pull requests.
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
 
@@ -339,25 +342,22 @@ jobs:
         run: |
           uv sync --frozen --extra dev
 
-      - name: Check for Anthropic credentials
-        id: check-anthropic-key
-        run: |
-          if [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
-            echo "has_anthropic_key=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_anthropic_key=false" >> $GITHUB_OUTPUT
-            echo "::warning::ANTHROPIC_API_KEY not set - skipping integration tests"
-          fi
-
-      - name: Run integration tests
-        if: steps.check-anthropic-key.outputs.has_anthropic_key == 'true'
+      - name: Run live model tests
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
           ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          MODEL_FILTER: ${{ inputs.model }}
         run: |
-          uv run pytest tests/ -v -m "integration or llm" --tb=short
+          # Each module skips itself when its credential is missing, so a Bedrock-only run
+          # still runs the Bedrock cases. -k keeps only the cases whose ids name the model.
+          SELECT=()
+          if [ -n "$MODEL_FILTER" ] && [ "$MODEL_FILTER" != "all" ]; then
+            SELECT=(-k "$MODEL_FILTER")
+          fi
+          uv run pytest tests/ -v -m "integration or llm" --tb=short "${SELECT[@]}"
 
       - name: Run network tests
         env:

@@ -15,24 +15,35 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
-- **A failure names the model to try, and the widget offers it** (issue #593, from #514): where a failed request said "Please choose another model.", it now says "Try Claude Haiku 4.5, or choose another model." (Claude Sonnet 5.5 when Haiku is the model that failed; it never names the model that failed).
+- **A failure names the model to try, and the widget offers it** (issue #593, from #514): where a failed request said "Please choose another model.", it now says "Try Claude Haiku 5.5, or choose another model." (Claude Sonnet 5.5 when Haiku is the model that failed; it never names the model that failed).
   The `error` event carries the same model as `suggested_model`, an object with its `id` and `label`, only when the message names one: not for a rate-limited key of the caller's own, a refused request or key, or a failure that is not a model's.
-  The widget shows a button under the message, "Try Claude Haiku 4.5", for a request that showed no reply.
+  The widget shows a button under the message, "Try Claude Haiku 5.5", for a request that showed no reply.
   It sends what is in the box (the question, put back there, which the reader may have narrowed) again on that model once, using the server's model when the widget can send it and its own pick otherwise, and leaves the saved model setting alone; the model also runs the later runs of that reply.
   A stream the widget gave up on after it had begun and gone quiet gets the same button, with the model picked from the community's offered models; a request that timed out before the server answered gets none.
 - **A run that used all its steps says so** (issue #593): a model that keeps calling tools until langgraph's step limit (GPT-OSS did on a HED annotation question) was reported with the generic unrecognized-error text (on `/chat`, "An error occurred while processing your request.").
-  It now says "The current model (X) used all its steps without finishing. Try Claude Haiku 4.5, or ask for a smaller part of the task." and carries `suggested_model`.
+  It now says "The current model (X) used all its steps without finishing. Try Claude Haiku 5.5, or ask for a smaller part of the task." and carries `suggested_model`.
   The log line is a WARNING with no traceback, since it is the model's behavior and not an outage, and `/ask` and `/chat` with `stream: false` answer the same text in the HTTP 500's `detail`, at WARNING too, where they paged the operator with a traceback and sent the caller to support.
 
 ### Changed
 
-- **HED runs Claude Haiku 4.5** (issue #591): HED's `default_model` is `claude-haiku-4-5`, where it was GPT-6 Luna.
+- **Models are named by class, and Claude Haiku 5.5 replaces Claude Haiku 4.5** (ADR 0016): `haiku`, `sonnet`, `opus` and `fable` for Anthropic and `luna`, `terra`, `sol` and `astra` for OpenAI are accepted wherever a model is named (a community's `default_model`, an agent's `model`, a request, the CLI, `DEFAULT_MODEL`), and `MODEL_CLASSES` in `src/core/services/anthropic_models.py` says which model each is today.
+  Moving a class to a new generation is an edit there, the id it replaces in `PREVIOUS_GENERATIONS`, and the new model's own price and thinking facts.
+  The communities now name `haiku`, `sonnet` and `luna`; the config endpoint reports the id they resolve to.
+  A saved widget setting, a `config.yaml` or a `DEFAULT_MODEL` that names Claude Haiku 4.5 runs Claude Haiku 5.5.
+  Haiku 5.5 thinks adaptively at an effort level (`high` unless a community sets another; `none` sends effort `low` and `thinking: {"type": "disabled"}`), where 4.5 thought with a token budget, so `THINKING_BUDGET_TOKENS` is gone.
+  It rejects `temperature`, so no offered Claude model takes one: EEGLAB's FAQ agents lose the 0.0 and 0.1 they set, and their `temperature` lines are removed.
+  It costs $0.10 / $0.50 per million tokens up to a 100,000-token prompt and $0.50 / $2.50 above (4.5 cost $1 / $5), and counts about 30% more tokens for the same text; cost estimates price a long prompt at the higher rate.
+  The Bedrock cost-ceiling test now holds the Bedrock models to $1 / $5, since Haiku is no longer the more expensive option.
+  Not measured: the HED and NEMAR answers on Haiku 5.5.
+
+- **HED runs Claude Haiku** (issue #591): HED's `default_model` is `haiku` (Claude Haiku 5.5, see the model classes entry below), where it was GPT-6 Luna.
   HED's annotation questions are a tag, validate and correct loop.
-  On dev, Luna answered 1 of 3 of them (the others ended in a dropped stream and in a stall past the read timeout, each after tool calls), GPT-OSS answered 1 of 2 (the other hit the recursion limit), and Haiku answered all 3 in 12 to 24 s.
-  Luna stays the default of NWB, EEGLAB and BIDS, whose questions are document lookups, and a reader can still choose Luna for HED from the model menu.
-  Haiku costs about nine times Luna's price per token (an estimated $0.05 to $0.11 for each of the three dev requests, before caching).
-  HED's budget (`$5` a day, `$50` a month) only alerts, and is unchanged, so it will alert at about a ninth of the traffic.
-  The reasoning level stays `high`, which is a 4,096-token thinking budget on Haiku.
+  On dev, Luna answered 1 of 3 of them (the others ended in a dropped stream and in a stall past the read timeout, each after tool calls), GPT-OSS answered 1 of 2 (the other hit the recursion limit), and Claude Haiku 4.5, which Haiku was then, answered all 3 in 12 to 24 s; Haiku 5.5 has not been measured on them.
+  NWB, EEGLAB and BIDS run Haiku too (see below), and a reader can still choose Luna for HED from the model menu.
+  Haiku 4.5 cost about nine times Luna's price per token; Haiku 5.5 costs about what Luna does, so HED's budget (`$5` a day, `$50` a month), which only alerts, is unchanged and no longer alerts at a ninth of the traffic.
+  The reasoning level stays `high`, which Haiku 5.5 is sent explicitly (its own default is `medium`).
+- **NWB, EEGLAB, BIDS and NEMAR run Claude Haiku** (ADR 0016): their `default_model` is `haiku` (Claude Haiku 5.5), where NWB, EEGLAB and BIDS were GPT-6 Luna on Amazon Bedrock and NEMAR was Claude Sonnet 5.5 (issue #522).
+  NEMAR's figures from `nemar_render_overview` and browser-run code are image blocks, which Luna cannot take, so NEMAR cannot move to Luna; Haiku 5.5 has not been measured on those figures.
 - **A streamed request in the widget is bounded by its silence, not its length** (issue #593): it was aborted 120 s after it was sent, however much the run had done since, which cut off a long tool loop that was making progress.
   It is now given up 60 s after the last data from the server (text, thinking, a tool call starting, running or finishing), for each run of a reply that runs code.
   While a server tool is running, which sends nothing until it ends and has a limit of its own (a minute for an MCP tool), the widget allows 2 minutes.

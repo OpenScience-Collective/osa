@@ -54,6 +54,16 @@ function assertEqual(actual, expected, msg) {
 
 const SOURCE = readFileSync(new URL('./osa-chat-widget.js', import.meta.url), 'utf8');
 
+// The offered Claude models as the widget's own fallback list names them (tests/test_frontend/
+// test_widget_drift.py keeps that list equal to the backend's), so these tests do not repeat a
+// model generation.
+const WIDGET_MODELS = [...SOURCE.matchAll(/\{ value: '([^']+)', label: '([^']+)' \}/g)].map(
+  ([, id, label]) => ({ id, label })
+);
+const widgetModel = (family) => WIDGET_MODELS.find((m) => m.id.startsWith(`claude-${family}-`));
+const HAIKU = widgetModel('haiku').id;
+const HAIKU_LABEL = widgetModel('haiku').label;
+
 /**
  * Timers the widget starts, so a test can see that none is left running. Recorded with
  * their delay: the reveal's are its tick and its drain guard, and the widget starts
@@ -1964,7 +1974,7 @@ console.log('\na reply that keeps working is not cut off, however long it takes'
   assert(widget.__browser.getMessages().at(-1).content.startsWith(REPLY.slice(0, 40)), 'the reply is there');
 }
 
-console.log('\na stream that goes quiet is given up on, and the reader is offered Claude Haiku 4.5');
+console.log('\na stream that goes quiet is given up on, and the reader is offered the Haiku model');
 {
   const bodies = [];
   const { window, widget } = loadWidget({
@@ -1989,13 +1999,13 @@ console.log('\na stream that goes quiet is given up on, and the reader is offere
   }
   assertEqual(container.querySelector('.osa-error-text').textContent, 'Request timed out. Please try again.', 'the banner says it timed out');
   const button = container.querySelector('.osa-error-suggest');
-  assertEqual(button && button.textContent, 'Try Claude Haiku 4.5', 'and offers the model');
+  assertEqual(button && button.textContent, `Try ${HAIKU_LABEL}`, 'and offers the model');
   assertEqual(container.querySelector('.osa-chat-input input').value, 'The same question', 'the question is back in the box');
 
   button.dispatchEvent(new window.Event('click', { bubbles: true }));
   await waitFor(() => bodies.length === 2 && settled(container), 'the question is sent again');
   assertEqual(bodies[0].model, undefined, 'the first request named no model');
-  assertEqual(bodies[1].model, 'claude-haiku-4-5', 'the second names the offered one');
+  assertEqual(bodies[1].model, HAIKU, 'the second names the offered one');
   assertEqual(bodies[1].message, 'The same question', 'with the same question');
   assertEqual(widget.__settings.get().model ?? null, null, 'and the saved model setting is not changed');
   assertEqual(container.querySelector('.osa-error-suggest'), null, 'the button went with the banner');
@@ -2005,8 +2015,8 @@ console.log('\na stream that goes quiet is given up on, and the reader is offere
 console.log('\nthe model a server error names is offered, when the widget can send it');
 for (const [named, expected] of [
   [{ id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }, 'Try Claude Sonnet 5.5'],
-  [{ id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' }, 'Try Claude Haiku 4.5'],
-  [{ id: 'some-lab/their-model', label: '<b>Their model</b>' }, 'Try Claude Haiku 4.5'],
+  [{ id: HAIKU, label: HAIKU_LABEL }, `Try ${HAIKU_LABEL}`],
+  [{ id: 'some-lab/their-model', label: '<b>Their model</b>' }, `Try ${HAIKU_LABEL}`],
 ]) {
   const { window } = loadWidget({
     chat: () => sse([{ event: 'error', message: 'The current model (m) is not available right now.', suggested_model: named }]),
@@ -2027,8 +2037,8 @@ for (const [named, expected] of [
 
 console.log('\nthe model that failed is not the one suggested');
 for (const [saved, expected] of [
-  ['claude-haiku-4-5', 'Try Claude Sonnet 5.5'],
-  ['claude-sonnet-5-5', 'Try Claude Haiku 4.5'],
+  [HAIKU, 'Try Claude Sonnet 5.5'],
+  ['claude-sonnet-5-5', `Try ${HAIKU_LABEL}`],
 ]) {
   const { window, widget } = loadWidget({
     settings: { apiKey: null, model: saved, keyProvider: null },
@@ -2116,7 +2126,7 @@ console.log('\nthe button sends what is in the box, so a question the reader nar
   container.querySelector('.osa-error-suggest').dispatchEvent(new window.Event('click', { bubbles: true }));
   await waitFor(() => bodies.length === 2 && settled(container), 'the question is sent again');
   assertEqual(bodies[1].message, 'A smaller question', 'the edited question was sent');
-  assertEqual(bodies[1].model, 'claude-haiku-4-5', 'on the suggested model');
+  assertEqual(bodies[1].model, HAIKU, 'on the suggested model');
 }
 
 console.log('\nan error response whose body never finishes does not hang the send');
@@ -2262,11 +2272,11 @@ console.log('\nthe button sends the suggested model although the reader saved an
   widget.__idle.set(QUIET_LIMIT_MS);
   const container = window.document.querySelector('.osa-chat-widget');
   await warnOff(async () => { send(window, container, 'A question'); await waitFor(() => settled(container), 'the first send settles', 10000); });
-  assertEqual(container.querySelector('.osa-error-suggest').textContent, 'Try Claude Haiku 4.5', 'Sonnet was saved and failed: Haiku is offered');
+  assertEqual(container.querySelector('.osa-error-suggest').textContent, `Try ${HAIKU_LABEL}`, 'Sonnet was saved and failed: Haiku is offered');
   click(window, container.querySelector('.osa-error-suggest'));
   await warnOff(async () => { await waitFor(() => bodies.length === 2 && settled(container), 'the second send settles', 10000); });
-  assertEqual(bodies[1].model, 'claude-haiku-4-5', 'the resend names Haiku although Sonnet is saved');
-  assertEqual(resumeBodies[0] && resumeBodies[0].model, 'claude-haiku-4-5', 'and so does a later run of that reply');
+  assertEqual(bodies[1].model, HAIKU, 'the resend names Haiku although Sonnet is saved');
+  assertEqual(resumeBodies[0] && resumeBodies[0].model, HAIKU, 'and so does a later run of that reply');
   assertEqual(widget.__settings.get().model, 'claude-sonnet-5-5', 'and the saved model is untouched');
   const again = container.querySelector('.osa-error-suggest');
   assertEqual(again && again.textContent, 'Try Claude Sonnet 5.5', 'Haiku failed on the resend, so it is not offered again');
@@ -2274,7 +2284,7 @@ console.log('\nthe button sends the suggested model although the reader saved an
 
 console.log('\na community whose default is Haiku is not offered Haiku when its request goes quiet');
 {
-  const { window, widget } = loadWidget({ defaultModel: 'claude-haiku-4-5', chat: (init) => silentAfter([], init) });
+  const { window, widget } = loadWidget({ defaultModel: HAIKU, chat: (init) => silentAfter([], init) });
   await sleep(100); // the community config, with its default model, arrives after init
   widget.__idle.set(QUIET_LIMIT_MS);
   const container = window.document.querySelector('.osa-chat-widget');
@@ -2376,15 +2386,15 @@ console.log('\na request sent with streaming off is not bound by the idle limit 
 
 console.log('\nwhat a server may send as suggested_model, odd shapes included');
 for (const [shape, expected] of [
-  ['claude-haiku-4-5', null],
+  [HAIKU, null],
   [true, null],
   [0, null],
-  [[], 'Try Claude Haiku 4.5'],
-  [{}, 'Try Claude Haiku 4.5'],
-  [{ id: 5 }, 'Try Claude Haiku 4.5'],
-  [{ id: null }, 'Try Claude Haiku 4.5'],
-  [{ id: '__proto__' }, 'Try Claude Haiku 4.5'],
-  [{ id: 'constructor' }, 'Try Claude Haiku 4.5'],
+  [[], `Try ${HAIKU_LABEL}`],
+  [{}, `Try ${HAIKU_LABEL}`],
+  [{ id: 5 }, `Try ${HAIKU_LABEL}`],
+  [{ id: null }, `Try ${HAIKU_LABEL}`],
+  [{ id: '__proto__' }, `Try ${HAIKU_LABEL}`],
+  [{ id: 'constructor' }, `Try ${HAIKU_LABEL}`],
   [{ id: 'claude-sonnet-5.5' }, 'Try Claude Sonnet 5.5'],
   [{ id: 'claude-sonnet-5-5', label: 12 }, 'Try Claude Sonnet 5.5'],
 ]) {
@@ -2425,7 +2435,7 @@ console.log('\nthe model of a resent question runs the later runs of its reply, 
   await warnOff(async () => { send(window, container, 'A question'); await waitFor(() => settled(container), 'the first send settles', 10000); });
   click(window, container.querySelector('.osa-error-suggest'));
   await warnOff(async () => { await waitFor(() => resumeBodies.length === 1 && settled(container), 'the second send settles', 10000); });
-  assertEqual(resumeBodies[0] && resumeBodies[0].model, 'claude-haiku-4-5', 'a run sent after the response began runs on the suggested model');
+  assertEqual(resumeBodies[0] && resumeBodies[0].model, HAIKU, 'a run sent after the response began runs on the suggested model');
   await widget.__browser.postResume({ session_id: 's' }, { ok: true }).catch(() => null);
   assertEqual(resumeBodies[1] && resumeBodies[1].model, undefined, 'and the override ended with the request');
 }

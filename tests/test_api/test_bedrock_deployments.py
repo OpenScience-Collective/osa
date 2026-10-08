@@ -22,9 +22,19 @@ from src.api.routers.community import (
     log_unserved_bedrock_defaults,
 )
 from src.assistants import discover_assistants, registry
-from src.core.services.anthropic_models import BEDROCK_MODELS, is_bedrock_model, normalize_model
+from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,
+    MODEL_CLASSES,
+    is_bedrock_model,
+    normalize_model,
+)
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
-from tests.helpers.deployment import DEPLOYMENTS, set_platform_keys, without_mcp_servers
+from tests.helpers.deployment import (
+    DEPLOYMENTS,
+    name_luna_as_the_default,
+    set_platform_keys,
+    without_mcp_servers,
+)
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -39,14 +49,18 @@ def _fresh_settings():
     get_settings.cache_clear()
 
 
-def _bedrock_communities():
-    """The registered communities whose default is a Bedrock model, as shipped."""
+def _bedrock_communities(monkeypatch):
+    """The registered communities whose default is a Bedrock model, once the test names one.
+
+    No shipped community names a Bedrock model now, so NWB is given GPT-6 Luna here.
+    """
+    name_luna_as_the_default(monkeypatch)
     found = [
         info
         for info in registry.list_all()
         if info.community_config and is_bedrock_model(info.community_config.default_model)
     ]
-    assert found, "no shipped community defaults to a Bedrock model"
+    assert found, "no community defaults to a Bedrock model"
     return found
 
 
@@ -91,7 +105,7 @@ class TestTheWidgetDefaultIsWhatTheServerRuns:
 
     def test_a_served_bedrock_default_is_reported_and_offered(self, monkeypatch):
         set_platform_keys(monkeypatch, anthropic="a", openrouter=None, bedrock="b")
-        for info in _bedrock_communities():
+        for info in _bedrock_communities(monkeypatch):
             data = _config(info.id)
             assert data["default_model"] == normalize_model(info.community_config.default_model)
             assert data["default_model"] in _offered_ids(data)
@@ -109,7 +123,7 @@ class TestTheWidgetDefaultIsWhatTheServerRuns:
         expected = _claude_fallback(settings)
         assert expected not in BEDROCK_MODELS
 
-        for info in _bedrock_communities():
+        for info in _bedrock_communities(monkeypatch):
             data = _config(info.id)
             assert data["default_model"] == expected, info.id
             assert data["default_model"] in _offered_ids(data), info.id
@@ -126,7 +140,7 @@ class TestTheWidgetDefaultIsWhatTheServerRuns:
         anthropic, openrouter, bedrock = DEPLOYMENTS[deployment]
         set_platform_keys(monkeypatch, anthropic=anthropic, openrouter=openrouter, bedrock=bedrock)
 
-        for info in _bedrock_communities():
+        for info in _bedrock_communities(monkeypatch):
             default = normalize_model(info.community_config.default_model)
             route = _route_request(info, info.id, None, _origin(info), None, log=False)
             assert route.choice.provider == "openrouter"
@@ -189,7 +203,7 @@ class TestACommunityThatFundsItself:
             openrouter=platform_openrouter,
             bedrock=platform_bedrock,
         )
-        info = _bedrock_communities()[0]
+        info = _bedrock_communities(monkeypatch)[0]
         _name_community_keys(monkeypatch, info, anthropic=anthropic, openrouter=openrouter)
         caplog.set_level(logging.WARNING)
         settings = get_settings()
@@ -233,7 +247,7 @@ class TestACommunityThatFundsItself:
         """The case the platform-only reading got wrong: a Bedrock key and nothing else on
         the platform, and a community with its own Anthropic key, runs Bedrock."""
         set_platform_keys(monkeypatch, anthropic=None, openrouter=None, bedrock="bedrock-key")
-        info = _bedrock_communities()[0]
+        info = _bedrock_communities(monkeypatch)[0]
         _name_community_keys(monkeypatch, info, anthropic="set", openrouter="unnamed")
 
         route = _route_request(info, info.id, None, _origin(info), None, log=False)
@@ -255,7 +269,7 @@ class TestACommunityThatFundsItself:
         self, monkeypatch, caplog, anthropic, openrouter, outcome, needs
     ):
         set_platform_keys(monkeypatch, anthropic=None, openrouter=None, bedrock=None)
-        info = _bedrock_communities()[0]
+        info = _bedrock_communities(monkeypatch)[0]
         _name_community_keys(monkeypatch, info, anthropic=anthropic, openrouter=openrouter)
         caplog.set_level(logging.WARNING)
 
@@ -276,7 +290,7 @@ class TestACommunityThatFundsItself:
         """Naming an Anthropic variable settles it (see ``_resolve_provider``): a community
         whose variable is unset goes to the platform key, not to its OpenRouter variable."""
         set_platform_keys(monkeypatch, anthropic="platform-key", openrouter=None, bedrock=None)
-        info = _bedrock_communities()[0]
+        info = _bedrock_communities(monkeypatch)[0]
         _name_community_keys(monkeypatch, info, anthropic="unset", openrouter="set")
 
         route = _route_request(info, info.id, None, _origin(info), None, log=False)
@@ -310,21 +324,19 @@ class TestAnOpenRouterOnlyPlatform:
             assert type(awm.assistant.model).__name__ == "TaggedCitationChatLiteLLM", info.id
 
     @pytest.mark.parametrize(
-        ("community_id", "slug"),
-        [
-            ("hed", "anthropic/claude-haiku-4.5"),
-            ("nwb", "openai/gpt-6-luna"),
-            ("nemar", "anthropic/claude-sonnet-5.5"),
-        ],
+        ("community_id", "model_class"),
+        [("hed", "haiku"), ("nwb", "haiku"), ("nemar", "haiku")],
     )
-    def test_the_shipped_defaults_resolve_to_these_slugs(self, community_id, slug):
+    def test_the_shipped_defaults_resolve_to_their_classes_slugs(self, community_id, model_class):
+        """Each community names a class, and runs under that class's OpenRouter slug."""
         info = registry.get(community_id)
+        assert info.community_config.default_model == model_class
         awm = create_community_assistant(community_id, origin=_origin(info), preload_docs=False)
-        assert awm.model == slug
+        assert awm.model == OPENROUTER_MODEL_IDS[MODEL_CLASSES[model_class]]
 
-    def test_the_default_model_notes_reach_the_prompt_on_openrouter(self):
+    def test_the_default_model_notes_reach_the_prompt_on_openrouter(self, monkeypatch):
         """The Bedrock default's anti-search-loop note follows it onto OpenRouter."""
-        info = _bedrock_communities()[0]
+        info = _bedrock_communities(monkeypatch)[0]
         default = normalize_model(info.community_config.default_model)
         assert BEDROCK_MODELS[default].prompt_addendum, "the default has no note to follow"
         awm = create_community_assistant(info.id, origin=_origin(info), preload_docs=False)
@@ -352,7 +364,7 @@ class TestTheStartupCheck:
         anthropic, openrouter, bedrock = DEPLOYMENTS[deployment]
         set_platform_keys(monkeypatch, anthropic=anthropic, openrouter=openrouter, bedrock=bedrock)
         caplog.set_level(logging.WARNING)
-        expected_ids = [info.id for info in _bedrock_communities()]
+        expected_ids = [info.id for info in _bedrock_communities(monkeypatch)]
 
         logged = log_unserved_bedrock_defaults(get_settings())
 
@@ -376,7 +388,7 @@ class TestTheStartupCheck:
         set_platform_keys(monkeypatch, anthropic=anthropic, openrouter=openrouter, bedrock=bedrock)
         caplog.set_level(logging.WARNING)
 
-        expected_ids = [info.id for info in _bedrock_communities()]
+        expected_ids = [info.id for info in _bedrock_communities(monkeypatch)]
 
         logged = log_unserved_bedrock_defaults(get_settings())
 
@@ -399,7 +411,7 @@ class TestTheStartupCheck:
         set_platform_keys(monkeypatch, anthropic=anthropic, openrouter=openrouter, bedrock=bedrock)
         caplog.set_level(logging.WARNING)
 
-        expected_ids = [info.id for info in _bedrock_communities()]
+        expected_ids = [info.id for info in _bedrock_communities(monkeypatch)]
 
         log_unserved_bedrock_defaults(get_settings())
 
@@ -415,6 +427,7 @@ class TestTheStartupCheck:
 
     async def test_the_app_runs_the_check_when_it_starts(self, monkeypatch, caplog, tmp_path):
         set_platform_keys(monkeypatch, anthropic="a", openrouter=None, bedrock=None)
+        expected_ids = [info.id for info in _bedrock_communities(monkeypatch)]
         monkeypatch.setattr(get_settings(), "sync_enabled", False)
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         caplog.set_level(logging.WARNING)
@@ -423,7 +436,7 @@ class TestTheStartupCheck:
             pass
 
         ids = [r.community_id for r in self._records(caplog)]
-        assert ids == [info.id for info in _bedrock_communities()]
+        assert ids == expected_ids
 
     async def test_a_check_that_fails_does_not_stop_the_app_starting(
         self, monkeypatch, caplog, tmp_path

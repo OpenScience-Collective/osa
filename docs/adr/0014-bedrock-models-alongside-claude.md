@@ -88,7 +88,7 @@ Serve the three models from Bedrock through the Converse API, one transport for 
   `langchain-aws` adds the cache read and write counts back, so `input_tokens` is the whole prompt, which is what the cost arithmetic (ordinary = input - read - write) assumes.
   `tests/test_integration/test_bedrock_platform.py` asserts it against the service.
 - **Per-model prompt notes**: a built-in note for the two models that loop, and a `model_instructions:` section in a community's `config.yaml` for the community's own, applied only on requests that run that model.
-- **A cost ceiling by test**: every Bedrock-served model must be priced at or below Claude Haiku 4.5.
+- **A cost ceiling by test**: every Bedrock-served model must be priced at or below Claude Haiku 4.5. (Update, 2026-10-08, [0016](0016-model-classes.md): the `haiku` class is now Claude Haiku 5.5, which costs about what Luna does, so the ceiling is held at the old $1 / $5 per million tokens instead.)
 - **Frequently asked questions (FAQ) generation stays on Claude.** It builds its agents with `create_anthropic_llm`, which refuses a Bedrock id, and community config validation warns.
 - The boto clients are built in `bedrock_llm.py`, with the key in the client's own token chain and placeholder credentials to stop the ambient walk.
   Nothing is written to `os.environ`.
