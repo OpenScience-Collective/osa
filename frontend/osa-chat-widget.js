@@ -1625,7 +1625,7 @@
       border-radius: 4px;
       font-size: 13px;
       font-family: 'SF Mono', Monaco, 'Courier New', monospace;
-      line-height: 1.5;
+      line-height: inherit;
       color: inherit;
       border: 0;
       max-width: none;
@@ -1643,8 +1643,8 @@
       margin: 8px 0;
       position: relative;
       font-family: monospace;
-      font-size: 14px;
-      line-height: 1.5;
+      font-size: inherit;
+      line-height: inherit;
       clear: none;
     }
 
@@ -1660,12 +1660,9 @@
       padding-left: 20px;
     }
 
-    .osa-message-content ul, .osa-message-content ul > li {
-      list-style-type: disc;
-    }
-
-    .osa-message-content ol, .osa-message-content ol > li {
-      list-style-type: decimal;
+    .osa-message-content ul, .osa-message-content ol,
+    .osa-message-content li {
+      list-style-type: revert;
     }
 
     .osa-message-content li {
