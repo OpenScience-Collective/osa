@@ -3,12 +3,8 @@
 # each entry keeps the index's URL and description; source_url is the raw file on GitHub.
 # The last 14 entries are pages the index lacks (NWB Inspector usage, MatNWB, DANDI, NWB overview,
 # schema release notes), added after evaluation showed answers inventing details on those topics.
-# default_model is GPT-6 Luna (high reasoning effort), served from Amazon Bedrock on the
-# platform's key (issue #514). With the Bedrock key missing but ANTHROPIC_API_KEY set, a request
-# that names no model runs the deployment's Claude default (DEFAULT_MODEL, the Haiku class unless
-# changed) and logs an error naming this community; a caller's own Anthropic key (the CLI) runs it
-# too, with a warning if that is the only cause. With no ANTHROPIC_API_KEY it goes to OpenRouter's
-# Luna slug, or fails with HTTP 500.
+# default_model is the Haiku class (Claude Haiku 5.5 today), served by the Claude platform. It was
+# GPT-6 Luna on Amazon Bedrock (issue #514) until the move to Haiku.
 
 id: nwb
 name: NWB
@@ -17,7 +13,7 @@ status: available
 # default_model names a model class (haiku, sonnet or luna), not a version. OSA moves each class
 # to the newest model of its kind (MODEL_CLASSES in src/core/services/anthropic_models.py), so
 # this line stays as it is when a new generation arrives. Write a model id only to pin a generation.
-default_model: luna
+default_model: haiku
 # The level every model this community runs is asked to reason at, on every provider
 # (issue #545): none, low, medium, high, xhigh or max. A model clamps it to the levels it
 # accepts (Claude Sonnet never runs above high). Luna at max took 15 to 50 s to a first

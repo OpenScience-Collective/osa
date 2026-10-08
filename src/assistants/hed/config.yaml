@@ -53,8 +53,8 @@ widget:
 # loop. On dev, GPT-6 Luna answered 1 of 3 of them (the others ended in a dropped stream and
 # in a stall past the read timeout, each after tool calls), GPT-OSS answered 1 of 2 (the
 # other hit the recursion limit), and Claude Haiku 4.5, which Haiku was then, answered all 3
-# in 12 to 24 s. Luna stays the default of the communities whose questions are document
-# lookups (NWB, EEGLAB, BIDS), and a reader can still pick it for HED from the model menu.
+# in 12 to 24 s. NWB, EEGLAB and BIDS run Haiku too, and a reader can still pick Luna for
+# HED from the model menu.
 # Haiku 5.5 costs about what Luna does per token.
 # default_model names a model class (haiku, sonnet or luna), not a version. OSA moves each class
 # to the newest model of its kind (MODEL_CLASSES in src/core/services/anthropic_models.py), so

@@ -408,9 +408,10 @@ for (const modelId of ['openai.gpt-oss-120b', 'us.openai.gpt-6-luna', 'openai/gp
 
 console.log('\nwith Default chosen, no model is named, so the key is saved: the server swaps a default it cannot run for Claude');
 {
-  // Luna is what EEGLAB, BIDS and NWB default to, and the service's own key alone runs
-  // it. _route_request does not refuse a request that names no model, and so has no model
-  // to refuse: it runs a Claude model in its place. Only a model the request names is refused.
+  // LUNA_DEFAULT stands in for a community that defaults to Luna (no shipped one does now),
+  // and the service's own key alone runs that default. _route_request does not refuse a
+  // request that names no model, and so has no model to refuse: it runs a Claude model in
+  // its place. Only a model the request names is refused.
   const seed = { apiKey: ANTHROPIC_KEY, model: null };
   const { window, q, saved } = await openSettingsDialog({ config: LUNA_DEFAULT, saved: seed });
   assertEqual(q('#osa-settings-model').value, 'default', 'Default is chosen');

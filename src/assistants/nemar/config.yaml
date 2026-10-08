@@ -1,8 +1,8 @@
 # NEMAR Assistant Configuration
 # Helps researchers discover and explore BIDS-formatted EEG/MEG/iEEG datasets
-# default_model is the Sonnet class, Claude Sonnet 5.5 today (issues #522, #530). GPT-6 Luna, which EEGLAB, BIDS
-# and NWB run, cannot take image blocks, so it would not see the figures that
-# nemar_render_overview and browser-run code produce.
+# default_model is the Haiku class, Claude Haiku 5.5 today. It was Claude Sonnet 5.5 (issue #522).
+# NEMAR's figures from nemar_render_overview and browser-run code are image blocks, which GPT-6
+# Luna cannot take, so the default must stay a Claude model.
 
 id: nemar
 name: NEMAR (NeuroElectroMagnetic Archive)
@@ -11,7 +11,7 @@ status: available
 # default_model names a model class (haiku, sonnet or luna), not a version. OSA moves each class
 # to the newest model of its kind (MODEL_CLASSES in src/core/services/anthropic_models.py), so
 # this line stays as it is when a new generation arrives. Write a model id only to pin a generation.
-default_model: sonnet
+default_model: haiku
 # The level every model this community runs is asked to reason at, on every provider
 # (issue #545): none, low, medium, high, xhigh or max. A model clamps it to the levels it
 # accepts (Claude Sonnet never runs above high). high is also what a community that sets

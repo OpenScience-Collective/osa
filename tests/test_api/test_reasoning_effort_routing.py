@@ -116,18 +116,19 @@ class TestTheShippedCommunities:
         without_mcp_servers(monkeypatch, info)
 
     def test_a_luna_community_runs_luna_at_the_level_its_yaml_sets(self, monkeypatch):
-        """Every community whose default is GPT-6 Luna, found in the registry."""
-        luna_communities = [
+        """A community that names GPT-6 Luna runs it at the level its YAML sets.
+
+        No shipped community names Luna now, so each one that sets high is given Luna
+        as its default here, the way its config.yaml would name it.
+        """
+        with_high = [
             info
             for info in registry.list_all()
-            if info.community_config
-            and info.community_config.default_model
-            and normalize_model(info.community_config.default_model) == LUNA
+            if info.community_config and info.community_config.reasoning_effort == "high"
         ]
-        assert luna_communities, "no shipped community defaults to GPT-6 Luna"
-        for info in luna_communities:
-            # The anchor: the shipped level, and the request field it becomes.
-            assert info.community_config.reasoning_effort == "high", info.id
+        assert with_high, "no community sets reasoning_effort: high, nothing to check"
+        for info in with_high:
+            monkeypatch.setattr(info.community_config, "default_model", LUNA)
             self._with_platform_keys_only(monkeypatch, info)
             awm = create_community_assistant(info.id, origin=_origin(info), preload_docs=False)
             assert awm.model == LUNA, info.id

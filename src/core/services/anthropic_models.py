@@ -203,7 +203,7 @@ OFFERED_MODELS: dict[str, str] = {
 
 #: The models to suggest, in order, to a reader whose model could not finish a request.
 #: Haiku first: the HED validate-and-refine loop (#514) that Luna, GPT-OSS and Qwen
-#: failed finished on it, and Sonnet costs more per token (NEMAR already defaults to it).
+#: failed finished on it, and Sonnet costs more per token.
 #: Sonnet follows, for the reader whose Haiku is the one that failed.
 SUGGESTED_MODELS: tuple[str, ...] = (HAIKU, SONNET)
 

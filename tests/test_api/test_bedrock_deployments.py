@@ -316,7 +316,7 @@ class TestAnOpenRouterOnlyPlatform:
 
     @pytest.mark.parametrize(
         ("community_id", "model_class"),
-        [("hed", "haiku"), ("nwb", "luna"), ("nemar", "sonnet")],
+        [("hed", "haiku"), ("nwb", "haiku"), ("nemar", "haiku")],
     )
     def test_the_shipped_defaults_resolve_to_their_classes_slugs(self, community_id, model_class):
         """Each community names a class, and runs under that class's OpenRouter slug."""

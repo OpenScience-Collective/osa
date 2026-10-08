@@ -39,9 +39,11 @@ the version being released and start a new `[Unreleased]` section above it.
 - **HED runs Claude Haiku** (issue #591): HED's `default_model` is `haiku` (Claude Haiku 5.5, see the model classes entry below), where it was GPT-6 Luna.
   HED's annotation questions are a tag, validate and correct loop.
   On dev, Luna answered 1 of 3 of them (the others ended in a dropped stream and in a stall past the read timeout, each after tool calls), GPT-OSS answered 1 of 2 (the other hit the recursion limit), and Claude Haiku 4.5, which Haiku was then, answered all 3 in 12 to 24 s; Haiku 5.5 has not been measured on them.
-  Luna stays the default of NWB, EEGLAB and BIDS, whose questions are document lookups, and a reader can still choose Luna for HED from the model menu.
+  NWB, EEGLAB and BIDS run Haiku too (see below), and a reader can still choose Luna for HED from the model menu.
   Haiku 4.5 cost about nine times Luna's price per token; Haiku 5.5 costs about what Luna does, so HED's budget (`$5` a day, `$50` a month), which only alerts, is unchanged and no longer alerts at a ninth of the traffic.
   The reasoning level stays `high`, which Haiku 5.5 is sent explicitly (its own default is `medium`).
+- **NWB, EEGLAB, BIDS and NEMAR run Claude Haiku** (ADR 0016): their `default_model` is `haiku` (Claude Haiku 5.5), where NWB, EEGLAB and BIDS were GPT-6 Luna on Amazon Bedrock and NEMAR was Claude Sonnet 5.5 (issue #522).
+  NEMAR's figures from `nemar_render_overview` and browser-run code are image blocks, which Luna cannot take, so NEMAR cannot move to Luna; Haiku 5.5 has not been measured on those figures.
 - **A streamed request in the widget is bounded by its silence, not its length** (issue #593): it was aborted 120 s after it was sent, however much the run had done since, which cut off a long tool loop that was making progress.
   It is now given up 60 s after the last data from the server (text, thinking, a tool call starting, running or finishing), for each run of a reply that runs code.
   While a server tool is running, which sends nothing until it ends and has a limit of its own (a minute for an MCP tool), the widget allows 2 minutes.
