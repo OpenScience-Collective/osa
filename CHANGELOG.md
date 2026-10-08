@@ -47,6 +47,15 @@ the version being released and start a new `[Unreleased]` section above it.
   The server sends no keepalive on the chat stream, so more than 60 s with no data now ends a request.
   A model that streams its reasoning sends `thinking` events while it works, but one that is quiet that long before its first word (Qwen3 Next has no reasoning to stream) is given up on.
 - **An error response whose body never finished could not be abandoned** in the widget: with the old fixed limit gone, it is now bounded by the idle timer, as the request is.
+- **Documentation sources that are not markdown keep their angle brackets** (issue #514, section 4; PR #602): `DocumentFetcher.fetch` stripped the HTML tags from every document, and the stripper removes whatever sits between a `<` and the next `>`.
+  In reStructuredText that is the target of each `` `text <https://...>`_ `` link and of each cross-reference; in a Python example it is a comparison or a generic (`if a<b and c>d` became `if ad`); in a converted web page it is a repr such as `<Raw | sample_audvis_raw.fif>`.
+  Tags are now stripped only from a source whose URL path ends in `.md`, `.markdown` or `.mdx`.
+  Of the 325 documentation entries of the shipped communities, 91 change (NWB 63, MNE 19, OpenNeuroPET 7, HED 1, EEGLAB 1), and no markdown source does.
+  Angle-bracket text in markdown that is not HTML (`sub-<label>`, `<https://...>`) is still stripped.
+- **An HTML page is recognized by more than a leading doctype, and its scripts and styles are dropped** (PR #602): a page that began with a byte order mark, an `<?xml?>` prolog, a comment, `<head>` or `<body>`, or an HTML fragment served as `text/html`, was not converted to markdown, so with the change above its tags would have reached the model.
+  A source whose URL ends in `.md` is never converted because of its `Content-Type`, and a bare `<div>` or `<p>` at the start does not make a markdown file a page.
+  The text of `<script>` and `<style>` elements was kept as page content (up to 18 KB of JavaScript in one MNE tutorial); it is now dropped with the element.
+  Of the 48 HTML pages among the shipped sources, 20 change (18 MNE tutorial pages, the BIDS specification page and PetSurfer), by script and style text only in the pages sampled.
 
 ## [0.8.17] - 2026-10-06
 
