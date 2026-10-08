@@ -1667,14 +1667,20 @@
 
     .osa-message-content li {
       margin: 4px 0;
+      font-size: inherit;
+      line-height: inherit;
+      list-style-position: outside;
+      list-style-image: none;
     }
 
     .osa-message-content a {
       color: var(--osa-accent);
       text-decoration: none;
+      text-underline-offset: auto;
     }
 
     .osa-message-content a:hover {
+      color: var(--osa-accent);
       text-decoration: underline;
     }
 
@@ -1682,10 +1688,18 @@
       border: none;
       border-top: 1px solid var(--osa-border);
       margin: 12px 0;
+      height: auto;
+      padding: 0;
+      opacity: 1;
+      color: revert;
     }
 
     .osa-message-content strong {
       font-weight: 600;
+    }
+
+    .osa-message-content strong, .osa-message-content em {
+      color: inherit;
     }
 
     /* Table styling */
@@ -1698,12 +1712,22 @@
       border-collapse: collapse;
       width: 100%;
       font-size: 13px;
+      caption-side: top;
+      border-spacing: 2px;
+    }
+
+    .osa-table thead, .osa-table tbody, .osa-table tfoot, .osa-table tr {
+      border: 0;
+      vertical-align: revert;
     }
 
     .osa-table th, .osa-table td {
       border: 1px solid var(--osa-border);
       padding: 8px 10px;
       text-align: left;
+      font-size: inherit;
+      line-height: inherit;
+      vertical-align: revert;
     }
 
     .osa-table th {
@@ -1720,6 +1744,10 @@
       font-size: 0.75em;
       line-height: 0;
       margin-left: 1px;
+      position: static;
+      top: auto;
+      bottom: auto;
+      vertical-align: super;
     }
 
     .osa-citation a {
@@ -1766,6 +1794,8 @@
 
     /* Copy button styles */
     .osa-copy-btn {
+      font: revert;
+      appearance: auto;
       position: absolute;
       top: 6px;
       right: 6px;
@@ -1790,6 +1820,7 @@
     .osa-copy-btn svg {
       width: 14px;
       height: 14px;
+      vertical-align: baseline;
     }
 
     .osa-copy-btn.copied {
@@ -2685,6 +2716,8 @@
     }
 
     .osa-tool-actions button {
+      font: revert;
+      appearance: auto;
       border: 1px solid var(--osa-border);
       background: var(--osa-bg);
       color: var(--osa-text);
@@ -2798,6 +2831,8 @@
     }
 
     .osa-code-action {
+      font: revert;
+      appearance: auto;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -2826,6 +2861,7 @@
     .osa-code-action svg {
       width: 15px;
       height: 15px;
+      vertical-align: baseline;
     }
 
     .osa-code-action.copied {
