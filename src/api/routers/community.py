@@ -1389,6 +1389,36 @@ def _to_openrouter_model_via_canonical(model: str) -> str | None:
     return to_openrouter_model(canonical)
 
 
+def _same_model(first: str | None, second: str | None) -> bool:
+    """Whether two model names are one model, whatever spelling each uses.
+
+    A community names a class ("haiku") or an offered id, the widget may send a legacy
+    alias, and a caller may name an OpenRouter slug. A name that ``normalize_model``
+    accepts is compared by the model it resolves to; any other pair is compared as written.
+    """
+    if not first or not second:
+        return first == second
+    try:
+        return normalize_model(first) == normalize_model(second)
+    except ValueError:
+        return first == second
+
+
+def _current_slug_for_retired(slug: str) -> str | None:
+    """The OpenRouter slug that a retired Claude slug runs today, else None.
+
+    ``anthropic/claude-haiku-4.5`` names a model whose class has moved on (ADR 0016).
+    Run as written, OpenRouter would answer with the retired model while the config
+    endpoint reports the current id, so the slug is mapped to the current one. None when
+    the slug already is the current one, or is not an offered model's.
+    """
+    try:
+        current = to_openrouter_model(normalize_model(slug))
+    except ValueError:
+        return None
+    return current if current and current != slug else None
+
+
 def _select_model(
     community_info: AssistantInfo,
     requested_model: str | None,
@@ -1450,7 +1480,7 @@ def _select_model(
         return (resolved_model, None)
 
     # OpenRouter path: if user requests a custom model, require BYOK
-    if requested_model and requested_model != default_model:
+    if requested_model and not _same_model(requested_model, default_model):
         if not has_byok:
             raise HTTPException(
                 status_code=403,
@@ -1498,6 +1528,10 @@ def _select_model(
             )
         return (OPENROUTER_DEFAULT_MODEL, OPENROUTER_DEFAULT_PROVIDER)
 
+    # A retired slug runs the model its class is today, as the config endpoint reports it.
+    current = _current_slug_for_retired(default_model) if default_model else None
+    if current:
+        return (current, None)
     # Use community or platform default
     return (default_model, default_provider)
 
@@ -1582,12 +1616,9 @@ def _claude_fallback(settings: Settings) -> str:
     """The Claude model that stands in for a Bedrock default that cannot be served.
 
     The deployment's own default when that is a Claude model, else the platform-wide
-    default.
+    default. Settings has already refused a default_model that is not offered.
     """
-    try:
-        candidate = normalize_model(settings.default_model)
-    except ValueError:
-        return DEFAULT_MODEL
+    candidate = normalize_model(settings.default_model)
     return DEFAULT_MODEL if is_bedrock_model(candidate) else candidate
 
 

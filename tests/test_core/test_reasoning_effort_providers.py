@@ -302,12 +302,20 @@ class TestOpenRouterBody:
         body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[HAIKU], reasoning_effort="none")
         assert body["reasoning"] == {"effort": "none"}
 
-    @pytest.mark.parametrize("model", [SONNET, HAIKU, LUNA, GPT_OSS])
-    def test_the_other_models_keep_their_temperature_beside_reasoning(
+    @pytest.mark.parametrize("model", [SONNET, HAIKU, LUNA])
+    def test_a_model_that_takes_no_temperature_is_sent_none_beside_reasoning(
         self, openrouter: FakeOpenRouter, model: str
     ) -> None:
-        """Unchanged behavior: the temperature is not held back because a model reasons."""
+        """ADR 0016: these models refuse a temperature, so none is sent, reasoning or not."""
         body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[model], reasoning_effort="high")
+        assert body.get("temperature") is None
+        assert "reasoning" in body
+
+    def test_the_sampling_models_keep_their_temperature_beside_reasoning(
+        self, openrouter: FakeOpenRouter
+    ) -> None:
+        """A model that still takes sampling parameters keeps the temperature while it reasons."""
+        body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[GPT_OSS], reasoning_effort="high")
         assert body["temperature"] == pytest.approx(0.1)
         assert "reasoning" in body
 

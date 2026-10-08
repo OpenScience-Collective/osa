@@ -1206,3 +1206,51 @@ class TestTheRuntimeLockOverlay:
             assert "immutable" not in response.headers.get("cache-control", "")
         finally:
             registry._assistants.pop(self.COMMUNITY, None)
+
+
+class TestTheShippedDefaults:
+    """Each shipped community names the class chosen for it. A change there is a change of
+    model family for that community, so the choice is pinned here by name."""
+
+    CHOSEN = {
+        "bids": "haiku",
+        "eeglab": "haiku",
+        "fieldtrip": "haiku",
+        "hed": "haiku",
+        "metabci": "haiku",
+        "mne": "haiku",
+        "nemar": "haiku",
+        "nwb": "haiku",
+        "openneuropet": "haiku",
+    }
+
+    def test_every_shipped_community_names_the_class_chosen_for_it(self):
+        from src.assistants import discover_assistants, registry
+
+        discover_assistants()
+        shipped = {
+            info.id: info.community_config.default_model
+            for info in registry.list_all()
+            if info.community_config and info.community_config.default_model
+        }
+        assert shipped == self.CHOSEN
+
+    def test_a_default_that_is_an_openrouter_slug_is_reported_as_written(self, monkeypatch):
+        """A slug that is not an offered model is not an error: the config endpoint reports
+        it as the community wrote it, since OpenRouter is what runs it."""
+        from src.api.routers.community import create_community_router
+        from src.assistants import discover_assistants, registry
+        from tests.helpers.deployment import set_platform_keys
+
+        discover_assistants()
+        set_platform_keys(monkeypatch, anthropic=None, openrouter="openrouter-key", bedrock=None)
+        monkeypatch.setattr(
+            registry.get("hed").community_config, "default_model", "some-lab/unknown-model"
+        )
+        app = FastAPI()
+        app.include_router(create_community_router("hed"))
+
+        response = TestClient(app).get("/hed/")
+
+        assert response.status_code == 200
+        assert response.json()["default_model"] == "some-lab/unknown-model"

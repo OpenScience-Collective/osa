@@ -31,7 +31,6 @@ from src.core.services.anthropic_models import (
 )
 
 SONNET = "claude-sonnet-5-5"
-HAIKU = HAIKU
 LUNA = "openai.gpt-6-luna"
 GPT_OSS = "openai.gpt-oss-120b"
 QWEN = "qwen.qwen3-next-80b-a3b"

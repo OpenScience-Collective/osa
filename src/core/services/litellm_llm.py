@@ -37,6 +37,7 @@ from langchain_core.language_models import BaseChatModel
 from src.core.services.anthropic_models import (
     OPENROUTER_MODEL_IDS,
     OPENROUTER_ROUTING_VARIANTS,
+    accepts_temperature,
     effective_reasoning_effort,
     openrouter_model_id,
 )
@@ -189,6 +190,12 @@ def create_openrouter_llm(
         raise RuntimeError(
             "No OpenRouter API key available: pass api_key explicitly or set OPENROUTER_API_KEY"
         )
+
+    # A model that takes no temperature (ADR 0016) answers one with a 400, so none is sent,
+    # as the Anthropic path sends none (create_anthropic_llm). A slug OSA does not know
+    # keeps whatever the caller asked for.
+    if model_id is not None and not accepts_temperature(model_id):
+        temperature = None
 
     # Streaming is required for on_chat_model_stream events in LangGraph. Imported here
     # because langchain_litellm takes about a second to import and only OpenRouter

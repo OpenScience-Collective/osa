@@ -457,10 +457,8 @@ def summarize_threads(
             quality_threshold = faq_config.quality_threshold
     else:
         # Fallback to hardcoded defaults (backward compatibility)
-        # Note: Uses same model for both agents (Haiku) with different temperatures.
-        # This is a simplified approach for communities without FAQ config.
-        # The temperature difference (0.0 for scoring, 0.1 for summarization) provides
-        # deterministic evaluation while allowing slight creativity in FAQ phrasing.
+        # Note: Uses the same model (Haiku) for both agents. Haiku 5.5 takes no temperature
+        # (ADR 0016), so neither agent sets one, and scoring is not pinned to 0.0 here.
         logger.warning(
             "No faq_generation config found for %s, using defaults",
             project,
@@ -469,13 +467,11 @@ def summarize_threads(
         eval_model_name = CHEAP_MODEL
         eval_agent = create_anthropic_llm(
             model=summary_model_name,
-            temperature=0.0,  # Deterministic scoring
             thinking=None,
             enable_caching=True,
         )
         summary_agent = create_anthropic_llm(
             model=summary_model_name,
-            temperature=0.1,  # Slightly creative for natural phrasing
             thinking=None,
             enable_caching=True,
         )
