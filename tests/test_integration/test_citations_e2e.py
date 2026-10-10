@@ -30,6 +30,7 @@ from src.api.config import get_settings
 from src.api.routers.community import _extract_agent_result, _stream_ask_response
 from src.assistants import discover_assistants, registry
 from src.core.services.anthropic_llm import create_anthropic_llm
+from src.core.services.anthropic_models import HAIKU
 
 pytestmark = [
     pytest.mark.llm,
@@ -78,7 +79,7 @@ class TestCitationsEndToEnd:
     async def test_retrieved_document_is_cited_with_its_own_url(self) -> None:
         target_url = _first_on_demand_doc_url()
 
-        llm = create_anthropic_llm(model="claude-haiku-4-5", max_tokens=3000)
+        llm = create_anthropic_llm(model=HAIKU, max_tokens=3000)
         assistant = registry.create_assistant("hed", model=llm, preload_docs=False, citations=True)
 
         question = (
@@ -139,7 +140,7 @@ class TestStreamedCitationsEndToEnd:
             byok=None,
             origin=origin,
             user_id=None,
-            requested_model="claude-haiku-4-5",
+            requested_model=HAIKU,
         ):
             for line in raw.splitlines():
                 if not line.startswith("data: "):

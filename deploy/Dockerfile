@@ -2,6 +2,42 @@
 # Compatible with HEDit deployment patterns
 # Port allocation: HEDit prod=38427, HEDit dev=38428, OSA prod=38528, OSA dev=38529
 
+# hed-suggest, the tag lookup behind the HED assistant's suggest_hed_tags tool
+# (src/assistants/hed/tools.py). It is the command-line program of hed-lsp's server
+# package, which is not published to npm, so it is built here at a pinned commit.
+# The lookup is a keyword search over the HED schema that ships inside hed-validator:
+# no network at run time and no model download. onnxruntime and sharp serve only the
+# optional --semantic mode, which the tool does not use, and are most of the install
+# (about 340 MB of 450 MB), so they are removed.
+#
+# --semantic cannot work in this image, so do not add it to the tool: with it the
+# program prints status lines to stdout ahead of the JSON, which breaks the tool's
+# parsing; onnxruntime is gone, so the model cannot load; and the 613 MB model
+# would download into /root/.cache, which is not a volume, on every new container.
+#
+# The Node tag floats on purpose: hed-validator needs Node 22 or newer, and a
+# rebuild should pick up Node patch releases (the Python base image floats too).
+# The hed-lsp commit and the lockfile are what pin the program itself.
+#
+# The last line of the RUN below is the build gate: it runs the program once and fails
+# the build unless "button press" returns `Press`, a tag in HED 8.4.0. Do not assert
+# `Button` there: it is the first keyword hit for "button", but it is not a tag in
+# 8.4.0. hed-lsp's keyword map is not filtered against the schema, so some suggestions
+# are not valid tags, and the HED assistant must still run validate_hed_string.
+FROM node:22-bookworm-slim AS hed-lsp
+ARG HED_LSP_REF=36447afb5e48bfecc45af0464b652614ba571414
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && npm install -g pnpm@10.33.4 \
+    && git clone https://github.com/hed-standard/hed-lsp /opt/hed-lsp \
+    && cd /opt/hed-lsp && git checkout "$HED_LSP_REF" \
+    && pnpm install --frozen-lockfile --ignore-scripts --filter "hed-lsp-server..." \
+    && pnpm --filter hed-lsp-server exec tsc -b \
+    && rm -rf node_modules server/node_modules \
+    && pnpm install --frozen-lockfile --prod --ignore-scripts --filter "hed-lsp-server..." \
+    && rm -rf node_modules/.pnpm/onnxruntime-* node_modules/.pnpm/sharp@* node_modules/.pnpm/@img+sharp* \
+        .git client docs images server/src \
+    && node server/out/cli.js --json --top 10 "button press" | grep -q '"Press"'
+
 FROM python:3.12-slim-bookworm
 
 WORKDIR /app
@@ -44,6 +80,12 @@ COPY pyproject.toml uv.lock README.md ./
 RUN pip install uv && \
     UV_PROJECT_ENVIRONMENT=/usr/local uv sync --frozen --no-dev --extra server --no-install-project
 
+# hed-suggest and the Node that runs it (see the hed-lsp stage above). The tool finds
+# the program through HED_LSP_PATH.
+COPY --from=hed-lsp /usr/local/bin/node /usr/local/bin/node
+COPY --from=hed-lsp /opt/hed-lsp /opt/hed-lsp
+ENV HED_LSP_PATH=/opt/hed-lsp
+
 # Copy the rest of the application code
 COPY src/ ./src/
 
@@ -84,17 +126,17 @@ CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "38528"]
 #   ANTHROPIC_WORKSPACE_ID  - Workspace the key is authorized on (wrkspc_...)
 #                             See ../.env.example for the optional tuning vars.
 #
-# To offer GPT-6 Luna, Qwen3 Next and gpt-oss-120b (Amazon Bedrock). Optional only if
-# Claude Haiku will do for HED, EEGLAB, BIDS and NWB, which default to GPT-6 Luna:
+# To offer GPT-6 Luna, Qwen3 Next and gpt-oss-120b (Amazon Bedrock). Optional: no shipped
+# community defaults to them, so this key is needed only for a reader who picks one from
+# the model menu:
 #   AWS_BEARER_TOKEN_BEDROCK - Bedrock API key that pays for those models. They are
 #                             served only when ANTHROPIC_API_KEY (above) is set too.
 #                             Without the Bedrock key they are left out of the model
-#                             menu, a request naming one is answered with a 400, and
-#                             a request to those four communities that names no model
-#                             runs the deployment's Claude default (DEFAULT_MODEL, Haiku
-#                             4.5 unless changed), logging an error naming the community.
-#                             With no ANTHROPIC_API_KEY it goes to OpenRouter's Luna slug,
-#                             or fails with HTTP 500.
+#                             menu, and a request naming one is answered with a 400.
+#                             A community that defaults to one of them runs the
+#                             deployment's Claude default (DEFAULT_MODEL), logging an
+#                             error naming the community. With no ANTHROPIC_API_KEY it
+#                             goes to OpenRouter's Luna slug, or fails with HTTP 500.
 #   BEDROCK_REGION          - Region the models are called in (default: us-east-2;
 #                             Qwen3 Next is pinned to us-east-1, see anthropic_models.py)
 #

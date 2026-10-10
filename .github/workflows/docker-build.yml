@@ -64,6 +64,24 @@ jobs:
         run: |
           docker build -t osa-test:ci -f ./deploy/Dockerfile --build-arg GIT_COMMIT=${{ github.sha }} .
 
+      # The HED assistant's suggest_hed_tags tool runs the hed-suggest program that the
+      # image's hed-lsp stage builds, and answers "not available" on every call when the
+      # program or Node is missing; nothing else notices (issue #595). The stage's own
+      # check runs the program in the Node image, not the final one, so a bad COPY, PATH
+      # or HED_LSP_PATH would pass it. This runs the real tool in the real image, with no
+      # network: the lookup is a keyword search over the schema bundled in hed-validator.
+      # "Press" is a tag HED 8.4.0 defines; the same assertion is in the Dockerfile.
+      - name: Smoke test - suggest_hed_tags in the image
+        run: |
+          docker run --rm -i --network none osa-test:ci python - <<'PY'
+          from src.assistants.hed.tools import suggest_hed_tags
+
+          result = suggest_hed_tags.invoke({"search_terms": ["button press"], "top_n": 10})
+          print(result)
+          assert "error" not in result, result
+          assert "Press" in result["button press"], result
+          PY
+
       - name: Smoke test - Start container
         run: |
           docker run -d --name osa-test \

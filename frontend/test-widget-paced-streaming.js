@@ -16,8 +16,10 @@
  *     burst through a ReadableStream, and is observed the way a reader would: by what
  *     the message holds while the reply is still arriving.
  *
- * What stands in: `fetch` (never used; the stream is handed to the handler) and, for
- * the controller, the clock.
+ * What stands in: `fetch` (for most tests never used, the stream being handed to the
+ * handler; where a test presses Send, it answers `/chat` and `/chat/resume` with what the
+ * test stages, honoring the request's abort signal as a real fetch does) and, for the
+ * controller, the clock.
  *
  * Run with: bun frontend/test-widget-paced-streaming.js
  */
@@ -52,6 +54,16 @@ function assertEqual(actual, expected, msg) {
 
 const SOURCE = readFileSync(new URL('./osa-chat-widget.js', import.meta.url), 'utf8');
 
+// The offered Claude models as the widget's own fallback list names them (tests/test_frontend/
+// test_widget_drift.py keeps that list equal to the backend's), so these tests do not repeat a
+// model generation.
+const WIDGET_MODELS = [...SOURCE.matchAll(/\{ value: '([^']+)', label: '([^']+)' \}/g)].map(
+  ([, id, label]) => ({ id, label })
+);
+const widgetModel = (family) => WIDGET_MODELS.find((m) => m.id.startsWith(`claude-${family}-`));
+const HAIKU = widgetModel('haiku').id;
+const HAIKU_LABEL = widgetModel('haiku').label;
+
 /**
  * Timers the widget starts, so a test can see that none is left running. Recorded with
  * their delay: the reveal's are its tick and its drain guard, and the widget starts
@@ -72,10 +84,12 @@ function timerTracker() {
 
 /**
  * The widget in its own window, initialized. `chat`, when given, answers /chat (what a
- * test that presses Send needs); `saved` is what the page's storage already holds under
- * the widget's key, as after a reload.
+ * test that presses Send needs), and `resume` /chat/resume; `saved` is what the page's
+ * storage already holds under the widget's key, as after a reload, `settings` what it holds
+ * as the reader's settings (their model and key), and `defaultModel` and `offered` what the
+ * community config says (the models offered default to none, so the widget's own list).
  */
-function loadWidget({ matchMedia, timers = null, chat = null, saved = null } = {}) {
+function loadWidget({ matchMedia, timers = null, chat = null, resume = null, saved = null, settings = null, defaultModel = 'm', offered = [] } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
@@ -86,14 +100,16 @@ function loadWidget({ matchMedia, timers = null, chat = null, saved = null } = {
   script.setAttribute('src', 'http://localhost/static/osa-chat-widget.js');
   script.setAttribute('data-no-auto-init', '');
   Object.defineProperty(window.document, 'currentScript', { value: script, configurable: true });
-  const config = { default_model: 'm', offered_models: [], widget: {}, client_tools: [], runtime: null };
+  const config = { default_model: defaultModel, offered_models: offered, widget: {}, client_tools: [], runtime: null };
   const fetch = async (url, init) => {
     if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    if (resume && String(url).endsWith('/chat/resume')) return resume(init);
     if (chat && String(url).endsWith('/chat')) return chat(init);
     return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
   };
   window.fetch = fetch;
   if (saved !== null) window.localStorage.setItem('osa-test-paced', saved);
+  if (settings !== null) window.localStorage.setItem('osa-settings-test', JSON.stringify(settings));
   // eslint-disable-next-line no-new-func
   const run = new Function(
     'window', 'document', 'localStorage', 'fetch', 'navigator', 'AbortSignal', 'URL',
@@ -1794,7 +1810,7 @@ console.log('\na response that is not streamed shows its usage too');
   assertEqual(api.getMessages().at(-1).usage, usage, 'and the message keeps only the fields the widget reads');
 }
 
-console.log('\nthe widget\'s own 120 s limit is described as a timeout, not shown as the browser\'s raw text');
+console.log('\nthe widget\'s own timeout (the idle timer\'s, or the fixed one of a request not streamed) is described as a timeout, not shown as the browser\'s raw text');
 {
   // `AbortSignal.timeout` aborts with a `TimeoutError`, not an `AbortError`: the widget's two
   // checks for a timeout looked only for the second, so the limit it sets itself fell
@@ -1809,7 +1825,7 @@ console.log('\nthe widget\'s own 120 s limit is described as a timeout, not show
       const container = window.document.querySelector('.osa-chat-widget');
       send(window, container, 'A question');
       await waitFor(() => settled(container), 'the send settles');
-      assertEqual(container.querySelector('.osa-error').textContent, 'Request timed out. Please try again.',
+      assertEqual(container.querySelector('.osa-error-text').textContent, 'Request timed out. Please try again.',
         `a request that ends in a ${name} says it timed out`);
     }
 
@@ -1885,6 +1901,557 @@ console.log('\nwhat the browsers say when the network fails is described, not sh
   } finally {
     console.error = warn;
   }
+}
+
+// ------------------------------------------------ silence is bounded, the run is not (#564, #593)
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sseLine = (event) => new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`);
+
+/** A stream that delivers `events`, `gapMs` apart, then closes; the request's abort errors it. */
+function pacedStream(events, gapMs, init) {
+  return new Response(new ReadableStream({
+    async start(controller) {
+      init.signal.addEventListener('abort', () => {
+        try { controller.error(init.signal.reason); } catch { /* already closed */ }
+      }, { once: true });
+      try {
+        for (const event of events) {
+          controller.enqueue(sseLine(event));
+          if (gapMs) await sleep(gapMs);
+        }
+        controller.close();
+      } catch { /* the request was aborted */ }
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+}
+
+/** A stream that delivers `events` and then says nothing until the request is aborted, which errors it. */
+function silentAfter(events, init) {
+  return new Response(new ReadableStream({
+    start(controller) {
+      for (const event of events) controller.enqueue(sseLine(event));
+      init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true });
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+}
+
+const QUIET_LIMIT_MS = 200;
+
+/** Events with the wait before each, ended by the request's own abort. */
+function sse2(timed, init) {
+  return new Response(new ReadableStream({
+    async start(controller) {
+      init.signal.addEventListener('abort', () => {
+        try { controller.error(init.signal.reason); } catch { /* already closed */ }
+      }, { once: true });
+      try {
+        for (const [event, waitBefore] of timed) {
+          if (waitBefore) await sleep(waitBefore);
+          controller.enqueue(sseLine(event));
+        }
+        controller.close();
+      } catch { /* the request was aborted */ }
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+}
+
+console.log('\na reply that keeps working is not cut off, however long it takes');
+{
+  const events = [
+    ...Array.from({ length: 8 }, (_, i) => ({ event: 'tool_start', name: `step_${i}`, input: {} })),
+    { event: 'content', content: REPLY },
+    { event: 'done', content: REPLY },
+  ];
+  const { window, widget } = loadWidget({ chat: (init) => pacedStream(events, QUIET_LIMIT_MS / 2, init) });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  const began = Date.now();
+  send(window, container, 'A question');
+  await waitFor(() => settled(container), 'the send settles', 10000);
+  assert(Date.now() - began > 3 * QUIET_LIMIT_MS, 'it ran for several times the limit on silence');
+  assertEqual(container.querySelector('.osa-error').style.display === 'block', false, 'and no error was shown');
+  assert(widget.__browser.getMessages().at(-1).content.startsWith(REPLY.slice(0, 40)), 'the reply is there');
+}
+
+console.log('\na stream that goes quiet is given up on, and the reader is offered the Haiku model');
+{
+  const bodies = [];
+  const { window, widget } = loadWidget({
+    chat: (init) => {
+      bodies.push(JSON.parse(init.body));
+      return bodies.length === 1
+        ? silentAfter([], init)
+        : pacedStream([{ event: 'content', content: REPLY }, { event: 'done', content: REPLY }], 0, init);
+    },
+  });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    const began = Date.now();
+    send(window, container, 'The same question');
+    await waitFor(() => settled(container), 'the send settles', 10000);
+    assert(Date.now() - began >= QUIET_LIMIT_MS, 'it waited out the limit');
+  } finally {
+    console.error = warn;
+  }
+  assertEqual(container.querySelector('.osa-error-text').textContent, 'Request timed out. Please try again.', 'the banner says it timed out');
+  const button = container.querySelector('.osa-error-suggest');
+  assertEqual(button && button.textContent, `Try ${HAIKU_LABEL}`, 'and offers the model');
+  assertEqual(container.querySelector('.osa-chat-input input').value, 'The same question', 'the question is back in the box');
+
+  button.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await waitFor(() => bodies.length === 2 && settled(container), 'the question is sent again');
+  assertEqual(bodies[0].model, undefined, 'the first request named no model');
+  assertEqual(bodies[1].model, HAIKU, 'the second names the offered one');
+  assertEqual(bodies[1].message, 'The same question', 'with the same question');
+  assertEqual(widget.__settings.get().model ?? null, null, 'and the saved model setting is not changed');
+  assertEqual(container.querySelector('.osa-error-suggest'), null, 'the button went with the banner');
+  assert(widget.__browser.getMessages().at(-1).content.startsWith(REPLY.slice(0, 40)), 'and the reply is there');
+}
+
+console.log('\nthe model a server error names is offered, when the widget can send it');
+for (const [named, expected] of [
+  [{ id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }, 'Try Claude Sonnet 5.5'],
+  [{ id: HAIKU, label: HAIKU_LABEL }, `Try ${HAIKU_LABEL}`],
+  [{ id: 'some-lab/their-model', label: '<b>Their model</b>' }, `Try ${HAIKU_LABEL}`],
+]) {
+  const { window } = loadWidget({
+    chat: () => sse([{ event: 'error', message: 'The current model (m) is not available right now.', suggested_model: named }]),
+  });
+  const container = window.document.querySelector('.osa-chat-widget');
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    send(window, container, 'A question');
+    await waitFor(() => settled(container), 'the send settles');
+  } finally {
+    console.error = warn;
+  }
+  const button = container.querySelector('.osa-error-suggest');
+  assertEqual(button && button.textContent, expected, `${named.id}: ${expected}`);
+  assertEqual(container.querySelector('.osa-error-text').textContent, 'The current model (m) is not available right now.', 'beside the server\'s own words');
+}
+
+console.log('\nthe model that failed is not the one suggested');
+for (const [saved, expected] of [
+  [HAIKU, 'Try Claude Sonnet 5.5'],
+  ['claude-sonnet-5-5', `Try ${HAIKU_LABEL}`],
+]) {
+  const { window, widget } = loadWidget({
+    settings: { apiKey: null, model: saved, keyProvider: null },
+    chat: (init) => silentAfter([], init),
+  });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  assertEqual(widget.__settings.get().model, saved, `${saved} is the saved model`);
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    send(window, container, 'A question');
+    await waitFor(() => settled(container), 'the send settles', 10000);
+  } finally {
+    console.error = warn;
+  }
+  const button = container.querySelector('.osa-error-suggest');
+  assertEqual(button && button.textContent, expected, `after ${saved}: ${expected}`);
+}
+
+console.log('\na saved model that is an OpenRouter slug with a routing variant is still the model that failed');
+{
+  const { window, widget } = loadWidget({
+    settings: { apiKey: `sk-or-v1-${'a'.repeat(48)}`, model: 'anthropic/claude-haiku-4.5:nitro', keyProvider: 'openrouter' },
+    chat: (init) => silentAfter([], init),
+  });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  assertEqual(widget.__settings.get().model, 'anthropic/claude-haiku-4.5:nitro', 'the slug with its variant is the saved model');
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    send(window, container, 'A question');
+    await waitFor(() => settled(container), 'the send settles', 10000);
+  } finally {
+    console.error = warn;
+  }
+  const button = container.querySelector('.osa-error-suggest');
+  assertEqual(button && button.textContent, 'Try Claude Sonnet 5.5', 'Haiku is not offered to a reader already on it');
+}
+
+console.log('\na request that timed out before the server answered offers no other model');
+{
+  const { window, widget } = loadWidget({
+    chat: (init) => new Promise((_, reject) => {
+      init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+    }),
+  });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    send(window, container, 'A question');
+    await waitFor(() => settled(container), 'the send settles', 10000);
+  } finally {
+    console.error = warn;
+  }
+  assertEqual(container.querySelector('.osa-error-text').textContent, 'Request timed out. Please try again.', 'it says it timed out');
+  assertEqual(container.querySelector('.osa-error-suggest'), null, 'with no button: the model is not what failed');
+}
+
+console.log('\nthe button sends what is in the box, so a question the reader narrowed is the one sent');
+{
+  const bodies = [];
+  const { window, widget } = loadWidget({
+    chat: (init) => {
+      bodies.push(JSON.parse(init.body));
+      return bodies.length === 1
+        ? silentAfter([], init)
+        : pacedStream([{ event: 'content', content: REPLY }, { event: 'done', content: REPLY }], 0, init);
+    },
+  });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    send(window, container, 'A big question');
+    await waitFor(() => settled(container), 'the send settles', 10000);
+  } finally {
+    console.error = warn;
+  }
+  container.querySelector('.osa-chat-input input').value = 'A smaller question';
+  container.querySelector('.osa-error-suggest').dispatchEvent(new window.Event('click', { bubbles: true }));
+  await waitFor(() => bodies.length === 2 && settled(container), 'the question is sent again');
+  assertEqual(bodies[1].message, 'A smaller question', 'the edited question was sent');
+  assertEqual(bodies[1].model, HAIKU, 'on the suggested model');
+}
+
+console.log('\nan error response whose body never finishes does not hang the send');
+{
+  const { window, widget } = loadWidget({
+    chat: (init) => new Response(new ReadableStream({
+      start(controller) {
+        init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true });
+      },
+    }), { status: 502, headers: { 'content-type': 'application/json' } }),
+  });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    send(window, container, 'A question');
+    await waitFor(() => settled(container), 'the send settles', 10000);
+  } finally {
+    console.error = warn;
+  }
+  assert(container.querySelector('.osa-error-text').textContent.length > 0, 'the reader is told something went wrong');
+}
+
+console.log('\na reply that is not a stream, answered as JSON after the silence limit, is still taken');
+{
+  const { window, widget } = loadWidget({
+    chat: (init) => new Response(new ReadableStream({
+      async start(controller) {
+        init.signal.addEventListener('abort', () => { try { controller.error(init.signal.reason); } catch { /* closed */ } }, { once: true });
+        await sleep(QUIET_LIMIT_MS * 2);
+        try {
+          controller.enqueue(new TextEncoder().encode(JSON.stringify({ message: { content: 'A JSON answer' }, session_id: 's' })));
+          controller.close();
+        } catch { /* aborted */ }
+      },
+    }), { headers: { 'content-type': 'application/json' } }),
+  });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  send(window, container, 'A question');
+  await waitFor(() => settled(container), 'the send settles', 10000);
+  assertEqual(widget.__browser.getMessages().at(-1).content, 'A JSON answer', 'the answer is there');
+}
+
+console.log('\na server tool that is running has a longer allowance than a quiet model');
+{
+  const events = [{ event: 'tool_start', name: 'validate_hed_string', input: {} }, { event: 'tool_end', name: 'validate_hed_string', output: {} }];
+  // 1.5 times the limit with a tool running: allowed.
+  const slowTool = (init) => sse2([
+    [events[0], 0], [events[1], QUIET_LIMIT_MS * 1.5], [{ event: 'content', content: REPLY }, 0], [{ event: 'done', content: REPLY }, 0],
+  ], init);
+  const { window, widget } = loadWidget({ chat: slowTool });
+  widget.__idle.set(QUIET_LIMIT_MS, QUIET_LIMIT_MS * 3);
+  const container = window.document.querySelector('.osa-chat-widget');
+  send(window, container, 'A question');
+  await waitFor(() => settled(container), 'the send settles', 10000);
+  assert(widget.__browser.getMessages().at(-1).content.startsWith(REPLY.slice(0, 40)), 'a tool that took 1.5 times the limit finished and the reply arrived');
+
+  // The same wait after the tool has ended: a quiet model, given up on.
+  const quietModel = (init) => sse2([
+    [events[0], 0], [events[1], 0], [{ event: 'content', content: 'Hel' }, QUIET_LIMIT_MS * 3], [{ event: 'done', content: 'Hello' }, 0],
+  ], init);
+  const second = loadWidget({ chat: quietModel });
+  second.widget.__idle.set(QUIET_LIMIT_MS, QUIET_LIMIT_MS * 3);
+  const secondContainer = second.window.document.querySelector('.osa-chat-widget');
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    send(second.window, secondContainer, 'A question');
+    await waitFor(() => settled(secondContainer), 'the send settles', 10000);
+  } finally {
+    console.error = warn;
+  }
+  assert(/timeout|timed out/i.test(second.widget.__browser.getMessages().at(-1).content + (secondContainer.querySelector('.osa-error-text')?.textContent ?? '')), 'a model that is quiet for 1.5 times the limit with no tool running is given up on');
+}
+
+console.log('\nan error that does not name a model offers none, and neither does a network failure');
+for (const chat of [
+  () => sse([{ event: 'error', message: 'Trying again will not help.', retryable: false }]),
+  () => { throw new TypeError('Failed to fetch'); },
+]) {
+  const { window } = loadWidget({ chat });
+  const container = window.document.querySelector('.osa-chat-widget');
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    send(window, container, 'A question');
+    await waitFor(() => settled(container), 'the send settles');
+  } finally {
+    console.error = warn;
+  }
+  assertEqual(container.querySelector('.osa-error-suggest'), null, 'no button');
+}
+
+console.log('\na reply that was partly written is not offered a resend: its question is still in the conversation');
+{
+  const { window, widget } = loadWidget({
+    chat: (init) => silentAfter([{ event: 'content', content: REPLY }], init),
+  });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  const warn = console.error;
+  console.error = () => {};
+  try {
+    send(window, container, 'A question');
+    await waitFor(() => settled(container), 'the send settles', 10000);
+  } finally {
+    console.error = warn;
+  }
+  assertEqual(container.querySelector('.osa-error-suggest'), null, 'no button');
+  assert(widget.__browser.getMessages().at(-1).content.endsWith('_[Connection timeout]_'), 'the reply ends with the note');
+}
+
+const warnOff = async (fn) => {
+  const warn = console.error;
+  console.error = () => {};
+  try { return await fn(); } finally { console.error = warn; }
+};
+const race = (promise, ms, label) => Promise.race([promise, sleep(ms).then(() => { throw new Error(`hung: ${label}`); })]);
+const click = (window, el) => el.dispatchEvent(new window.Event('click', { bubbles: true }));
+
+console.log('\nthe button sends the suggested model although the reader saved another, and a second failure does not offer the model that just failed');
+{
+  const bodies = [];
+  const resumeBodies = [];
+  let api;
+  const loaded = loadWidget({
+    settings: { apiKey: null, model: 'claude-sonnet-5-5', keyProvider: null },
+    chat: (init) => {
+      bodies.push(JSON.parse(init.body));
+      // A later run of the resent reply, sent while it is still being waited for.
+      if (bodies.length === 2) setTimeout(() => { api.postResume({ session_id: 's' }, { ok: true }).catch(() => null); }, 40);
+      return silentAfter([], init);
+    },
+    resume: (init) => {
+      resumeBodies.push(JSON.parse(init.body));
+      return pacedStream([{ event: 'done', content: 'ok' }], 0, init);
+    },
+  });
+  const { window, widget } = loaded;
+  api = loaded.api;
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  await warnOff(async () => { send(window, container, 'A question'); await waitFor(() => settled(container), 'the first send settles', 10000); });
+  assertEqual(container.querySelector('.osa-error-suggest').textContent, `Try ${HAIKU_LABEL}`, 'Sonnet was saved and failed: Haiku is offered');
+  click(window, container.querySelector('.osa-error-suggest'));
+  await warnOff(async () => { await waitFor(() => bodies.length === 2 && settled(container), 'the second send settles', 10000); });
+  assertEqual(bodies[1].model, HAIKU, 'the resend names Haiku although Sonnet is saved');
+  assertEqual(resumeBodies[0] && resumeBodies[0].model, HAIKU, 'and so does a later run of that reply');
+  assertEqual(widget.__settings.get().model, 'claude-sonnet-5-5', 'and the saved model is untouched');
+  const again = container.querySelector('.osa-error-suggest');
+  assertEqual(again && again.textContent, 'Try Claude Sonnet 5.5', 'Haiku failed on the resend, so it is not offered again');
+}
+
+console.log('\na community whose default is Haiku is not offered Haiku when its request goes quiet');
+{
+  const { window, widget } = loadWidget({ defaultModel: HAIKU, chat: (init) => silentAfter([], init) });
+  await sleep(100); // the community config, with its default model, arrives after init
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  await warnOff(async () => { send(window, container, 'A question'); await waitFor(() => settled(container), 'the send settles', 10000); });
+  const button = container.querySelector('.osa-error-suggest');
+  assertEqual(button && button.textContent, 'Try Claude Sonnet 5.5', 'the default model is the one that failed');
+}
+
+console.log('\nan emptied box falls back to the original question');
+{
+  const bodies = [];
+  const { window, widget } = loadWidget({
+    chat: (init) => {
+      bodies.push(JSON.parse(init.body));
+      return bodies.length === 1 ? silentAfter([], init) : pacedStream([{ event: 'done', content: 'ok' }], 0, init);
+    },
+  });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  await warnOff(async () => { send(window, container, 'Original'); await waitFor(() => settled(container), 'the first send settles', 10000); });
+  container.querySelector('.osa-chat-input input').value = '   ';
+  click(window, container.querySelector('.osa-error-suggest'));
+  await waitFor(() => bodies.length === 2 && settled(container), 'the second send settles', 10000);
+  assertEqual(bodies[1].message, 'Original', 'a blank box sends the original question');
+}
+
+console.log('\na /chat/resume stream is bounded by its silence too: touched per chunk, given up when quiet, its error body bounded');
+{
+  const events = [
+    ...Array.from({ length: 8 }, (_, i) => ({ event: 'tool_start', name: `step_${i}`, input: {} })),
+    { event: 'content', content: REPLY },
+    { event: 'done', content: REPLY },
+  ];
+  const working = loadWidget({ resume: (init) => pacedStream(events, QUIET_LIMIT_MS / 2, init) });
+  working.widget.__idle.set(QUIET_LIMIT_MS);
+  const workingContainer = working.window.document.querySelector('.osa-chat-widget');
+  const began = Date.now();
+  let failure = null;
+  await warnOff(async () => {
+    try {
+      const response = await working.api.postResume({ session_id: 's' }, { ok: true });
+      await race(working.api.handleStreamingResponse(response, workingContainer), 8000, 'a resume run that keeps working');
+    } catch (error) { failure = error; }
+  });
+  assertEqual(failure && failure.message, null, 'a run that keeps sending data for several times the limit finishes');
+  assert(Date.now() - began > 3 * QUIET_LIMIT_MS, 'it ran for several times the limit');
+
+  const quiet = loadWidget({ resume: (init) => silentAfter([], init) });
+  quiet.widget.__idle.set(QUIET_LIMIT_MS);
+  const quietContainer = quiet.window.document.querySelector('.osa-chat-widget');
+  failure = null;
+  await warnOff(async () => {
+    try {
+      const response = await quiet.api.postResume({ session_id: 's' }, { ok: true });
+      await race(quiet.api.handleStreamingResponse(response, quietContainer), 4000, 'a quiet resume run');
+    } catch (error) { failure = error; }
+  });
+  assert(failure && failure.name === 'TimeoutError', `a quiet run is given up on with a TimeoutError (${failure && failure.name})`);
+
+  const stuck = loadWidget({
+    resume: (init) => new Response(new ReadableStream({
+      start(controller) { init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true }); },
+    }), { status: 502, headers: { 'content-type': 'application/json' } }),
+  });
+  stuck.widget.__idle.set(QUIET_LIMIT_MS);
+  failure = null;
+  await warnOff(async () => {
+    try { await race(stuck.api.postResume({ session_id: 's' }, { ok: true }), 4000, 'an error body that never ends'); } catch (error) { failure = error; }
+  });
+  assert(failure && !/^hung/.test(failure.message), `an error whose body never ends is given up on (${failure && failure.message})`);
+}
+
+console.log('\na stream that breaks with a network error after the server answered offers no model');
+{
+  const { window, widget } = loadWidget({
+    chat: () => new Response(new ReadableStream({ start(controller) { controller.error(new TypeError('network error')); } }), { headers: { 'content-type': 'text/event-stream' } }),
+  });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  await warnOff(async () => { send(window, container, 'A question'); await waitFor(() => settled(container), 'the send settles', 10000); });
+  assert(container.querySelector('.osa-error-text').textContent.length > 0, 'an error is shown');
+  assertEqual(container.querySelector('.osa-error-suggest'), null, 'with no model button for a dropped connection');
+}
+
+console.log('\na request sent with streaming off is not bound by the idle limit before its answer');
+{
+  const { window, widget } = loadWidget({
+    chat: (init) => new Promise((resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+      setTimeout(() => resolve(new Response(JSON.stringify({ message: { content: 'A JSON answer' }, session_id: 's' }), { headers: { 'content-type': 'application/json' } })), QUIET_LIMIT_MS * 2);
+    }),
+  });
+  widget.setConfig({ streamingEnabled: false });
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  await warnOff(async () => { send(window, container, 'A question'); await waitFor(() => settled(container), 'the send settles', 10000); });
+  assertEqual(widget.__browser.getMessages().at(-1).content, 'A JSON answer', 'the slow answer is taken');
+}
+
+console.log('\nwhat a server may send as suggested_model, odd shapes included');
+for (const [shape, expected] of [
+  [HAIKU, null],
+  [true, null],
+  [0, null],
+  [[], `Try ${HAIKU_LABEL}`],
+  [{}, `Try ${HAIKU_LABEL}`],
+  [{ id: 5 }, `Try ${HAIKU_LABEL}`],
+  [{ id: null }, `Try ${HAIKU_LABEL}`],
+  [{ id: '__proto__' }, `Try ${HAIKU_LABEL}`],
+  [{ id: 'constructor' }, `Try ${HAIKU_LABEL}`],
+  [{ id: 'claude-sonnet-5.5' }, 'Try Claude Sonnet 5.5'],
+  [{ id: 'claude-sonnet-5-5', label: 12 }, 'Try Claude Sonnet 5.5'],
+]) {
+  const { window } = loadWidget({
+    chat: () => sse([{ event: 'error', message: 'The current model (m) is not available right now.', suggested_model: shape }]),
+  });
+  const container = window.document.querySelector('.osa-chat-widget');
+  let thrown = null;
+  await warnOff(async () => {
+    try { send(window, container, 'A question'); await waitFor(() => settled(container), 'the send settles'); } catch (error) { thrown = error; }
+  });
+  const button = container.querySelector('.osa-error-suggest');
+  assert(!thrown, `no crash for ${JSON.stringify(shape)}`);
+  assertEqual(button ? button.textContent : null, expected, `${JSON.stringify(shape)}`);
+}
+
+console.log('\nthe model of a resent question runs the later runs of its reply, while it is still arriving, and only that reply');
+{
+  const resumeBodies = [];
+  let api;
+  const bodies = [];
+  const { window, widget, api: browser } = loadWidget({
+    chat: (init) => {
+      bodies.push(JSON.parse(init.body));
+      if (bodies.length === 1) return silentAfter([], init);
+      // The response has begun; a later run of the reply is sent while it is still arriving.
+      setTimeout(() => { api.postResume({ session_id: 's' }, { ok: true }).catch(() => null); }, 60);
+      return pacedStream([{ event: 'content', content: REPLY }, { event: 'done', content: REPLY }], 150, init);
+    },
+    resume: (init) => {
+      resumeBodies.push(JSON.parse(init.body));
+      return pacedStream([{ event: 'done', content: REPLY }], 0, init);
+    },
+  });
+  api = browser;
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  await warnOff(async () => { send(window, container, 'A question'); await waitFor(() => settled(container), 'the first send settles', 10000); });
+  click(window, container.querySelector('.osa-error-suggest'));
+  await warnOff(async () => { await waitFor(() => resumeBodies.length === 1 && settled(container), 'the second send settles', 10000); });
+  assertEqual(resumeBodies[0] && resumeBodies[0].model, HAIKU, 'a run sent after the response began runs on the suggested model');
+  await widget.__browser.postResume({ session_id: 's' }, { ok: true }).catch(() => null);
+  assertEqual(resumeBodies[1] && resumeBodies[1].model, undefined, 'and the override ended with the request');
+}
+
+console.log('\na community that offers neither suggested model gets no button, and one that offers only Sonnet gets Sonnet');
+for (const [offered, expected] of [
+  [[{ id: 'openai.gpt-6-luna', label: 'GPT-6 Luna', platform_only: true }], null],
+  [[{ id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }, { id: 'openai.gpt-6-luna', label: 'GPT-6 Luna', platform_only: true }], 'Try Claude Sonnet 5.5'],
+]) {
+  const { window, widget } = loadWidget({ offered, defaultModel: 'openai.gpt-6-luna', chat: (init) => silentAfter([], init) });
+  await sleep(100);
+  widget.__idle.set(QUIET_LIMIT_MS);
+  const container = window.document.querySelector('.osa-chat-widget');
+  await warnOff(async () => { send(window, container, 'A question'); await waitFor(() => settled(container), 'the send settles', 10000); });
+  const button = container.querySelector('.osa-error-suggest');
+  assertEqual(button ? button.textContent : null, expected, `offered: ${offered.map((o) => o.id).join(', ')}`);
 }
 
 console.log('\n' + '='.repeat(60));

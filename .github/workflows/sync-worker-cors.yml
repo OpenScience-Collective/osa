@@ -102,7 +102,7 @@ jobs:
         if: steps.check_changes.outputs.changed == 'true' && github.event_name == 'push'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.3
 
       - name: Deploy to Cloudflare Workers (production)
         if: steps.check_changes.outputs.changed == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'push'

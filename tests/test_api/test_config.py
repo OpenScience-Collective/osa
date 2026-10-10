@@ -126,3 +126,30 @@ class TestRetiredEnvironmentVariables:
         for name in RETIRED_ENV_VARS:
             monkeypatch.setenv(name, "not even a number")
         assert get_settings() is not None
+
+    def test_a_retired_variable_in_the_env_file_is_warned_about_too(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path
+    ) -> None:
+        """Settings reads .env as well as the environment, so a retired name there is unused
+        all the same, and is reported the same way."""
+        name = sorted(RETIRED_ENV_VARS)[0]
+        for variant in (name, name.lower()):
+            monkeypatch.delenv(variant, raising=False)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text(f"{name}=1024\n", encoding="utf-8")
+        with caplog.at_level(logging.WARNING, logger="src.api.config"):
+            get_settings()
+        assert any(name in r.getMessage() for r in caplog.records)
+
+
+class TestDefaultModel:
+    """DEFAULT_MODEL is the model a Bedrock default falls back to, so a typo in it must stop
+    startup rather than change the model family for every such request."""
+
+    def test_a_default_model_that_is_not_offered_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(default_model="claude-typo-9-9")
+
+    def test_a_class_name_and_an_offered_id_are_accepted(self) -> None:
+        assert Settings(default_model="haiku").default_model == "haiku"
+        assert Settings(default_model="claude-haiku-5-5").default_model == "claude-haiku-5-5"

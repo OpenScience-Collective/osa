@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_litellm import ChatLiteLLM
 
+from src.agents.content import extract_text
 from src.core.services.anthropic_llm import MODEL_ALIASES, OFFERED_MODELS, normalize_model
 from src.core.services.litellm_chat import TaggedCitationChatLiteLLM
 from src.core.services.litellm_llm import (
@@ -285,7 +286,7 @@ class TestOpenRouterLive:
         # Verify response received
         assert response is not None
         assert hasattr(response, "content")
-        assert "hello" in response.content.lower()
+        assert "hello" in extract_text(response.content).lower()
 
     @pytest.mark.llm
     def test_tool_binding_with_anthropic_model(self):
@@ -374,7 +375,7 @@ class TestOpenRouterLive:
         # Verify response received
         assert response is not None
         assert hasattr(response, "content")
-        assert "hello" in response.content.lower()
+        assert "hello" in extract_text(response.content).lower()
 
     @pytest.mark.llm
     async def test_async_streaming_with_caching(self):

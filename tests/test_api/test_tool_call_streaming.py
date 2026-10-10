@@ -45,6 +45,7 @@ from src.api.routers.community import (
 from src.api.tool_results import PendingClientCall
 from src.assistants.community import CommunityAssistant
 from src.core.config.community import CommunityConfig
+from src.core.services.anthropic_models import HAIKU
 from tests.helpers.chat_models import StreamingScriptedChatModel
 
 COMMUNITY = "toolcallstream"
@@ -196,9 +197,7 @@ def _assistant(script: list[list[AIMessageChunk]]) -> AssistantWithMetrics:
         additional_tools=[nemar_search_datasets, retrieve_toolcallstream_docs],
         declared_client_tools={"execute_code"},
     )
-    return AssistantWithMetrics(
-        assistant=assistant, model="claude-haiku-4-5", key_source="platform"
-    )
+    return AssistantWithMetrics(assistant=assistant, model=HAIKU, key_source="platform")
 
 
 async def _collect(agen) -> list[dict]:

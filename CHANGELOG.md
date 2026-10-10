@@ -13,6 +13,89 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+## [0.8.18] - 2026-10-10
+
+### Added
+
+- **A failure names the model to try, and the widget offers it** (issue #593, from #514): where a failed request said "Please choose another model.", it now says "Try Claude Haiku 5.5, or choose another model." (Claude Sonnet 5.5 when Haiku is the model that failed; it never names the model that failed).
+  The `error` event carries the same model as `suggested_model`, an object with its `id` and `label`, only when the message names one: not for a rate-limited key of the caller's own, a refused request or key, or a failure that is not a model's.
+  The widget shows a button under the message, "Try Claude Haiku 5.5", for a request that showed no reply.
+  It sends what is in the box (the question, put back there, which the reader may have narrowed) again on that model once, using the server's model when the widget can send it and its own pick otherwise, and leaves the saved model setting alone; the model also runs the later runs of that reply.
+  A stream the widget gave up on after it had begun and gone quiet gets the same button, with the model picked from the community's offered models; a request that timed out before the server answered gets none.
+- **A run that used all its steps says so** (issue #593): a model that keeps calling tools until langgraph's step limit (GPT-OSS did on a HED annotation question) was reported with the generic unrecognized-error text (on `/chat`, "An error occurred while processing your request.").
+  It now says "The current model (X) used all its steps without finishing. Try Claude Haiku 5.5, or ask for a smaller part of the task." and carries `suggested_model`.
+  The log line is a WARNING with no traceback, since it is the model's behavior and not an outage, and `/ask` and `/chat` with `stream: false` answer the same text in the HTTP 500's `detail`, at WARNING too, where they paged the operator with a traceback and sent the caller to support.
+
+### Changed
+
+- **Models are named by class, and Claude Haiku 5.5 replaces Claude Haiku 4.5** (ADR 0016): `haiku`, `sonnet` and `luna` are accepted wherever a model is named (a community's `default_model`, an agent's `model`, a request, the CLI, `DEFAULT_MODEL`), and `MODEL_CLASSES` in `src/core/services/anthropic_models.py` says which model each class is today.
+  `opus`, `fable`, `terra`, `sol` and `astra` are in that table too, and are refused as unknown models until they are offered.
+  Moving a class to a new generation is an edit there, the id it replaces in `PREVIOUS_GENERATIONS`, and the new model's own price and thinking facts.
+  The communities now name `haiku`, `sonnet` and `luna`; the config endpoint reports the id they resolve to.
+  A saved widget setting, a `config.yaml` or a `DEFAULT_MODEL` that names Claude Haiku 4.5 runs Claude Haiku 5.5.
+  Haiku 5.5 thinks adaptively at an effort level (`high` unless a community sets another; `none` sends effort `low` and `thinking: {"type": "disabled"}`), where 4.5 thought with a token budget, so `THINKING_BUDGET_TOKENS` is gone.
+  It rejects `temperature`, so no offered Claude model takes one: EEGLAB's FAQ agents lose the 0.0 and 0.1 they set, and their `temperature` lines are removed.
+  It costs $0.10 / $0.50 per million tokens up to a 100,000-token prompt and $0.50 / $2.50 above (4.5 cost $1 / $5), and counts about 30% more tokens for the same text.
+  The higher rate is judged on the largest single model call of a reply, not on the reply's total: a tool loop sends the conversation again with each call, so its calls add up past 100,000 tokens while no prompt is near that line, and only a call whose own prompt is over it puts the reply at the higher rate.
+  The usage line under a reply, the request log and the FAQ cost estimate (per thread) all price it this way.
+  The Bedrock cost-ceiling test now holds the Bedrock models to $1 / $5, since Haiku is no longer the more expensive option.
+  Not measured: the HED and NEMAR answers on Haiku 5.5.
+
+- **HED runs Claude Haiku** (issue #591): HED's `default_model` is `haiku` (Claude Haiku 5.5, see the model classes entry above), where it was GPT-6 Luna.
+  HED's annotation questions are a tag, validate and correct loop.
+  On dev, Luna answered 1 of 3 of them (the others ended in a dropped stream and in a stall past the read timeout, each after tool calls), GPT-OSS answered 1 of 2 (the other hit the recursion limit), and Claude Haiku 4.5, which Haiku was then, answered all 3 in 12 to 24 s; Haiku 5.5 has not been measured on them.
+  NWB, EEGLAB and BIDS run Haiku too (see below), and a reader can still choose Luna for HED from the model menu.
+  Haiku 4.5 cost about nine times Luna's price per token; Haiku 5.5 costs about what Luna does, so HED's budget (`$5` a day, `$50` a month), which only alerts, is unchanged and no longer alerts at a ninth of the traffic.
+  The reasoning level stays `high`, which Haiku 5.5 is sent explicitly (its own default is `medium`).
+- **NWB, EEGLAB, BIDS and NEMAR run Claude Haiku** (ADR 0016): their `default_model` is `haiku` (Claude Haiku 5.5), where NWB, EEGLAB and BIDS were GPT-6 Luna on Amazon Bedrock and NEMAR was Claude Sonnet 5.5 (issue #522).
+  NEMAR's figures from `nemar_render_overview` and browser-run code are image blocks, which Luna cannot take, so NEMAR cannot move to Luna; Haiku 5.5 has not been measured on those figures.
+- **A streamed request in the widget is bounded by its silence, not its length** (issue #593): it was aborted 120 s after it was sent, however much the run had done since, which cut off a long tool loop that was making progress.
+  It is now given up 60 s after the last data from the server (text, thinking, a tool call starting, running or finishing), for each run of a reply that runs code.
+  While a server tool is running, which sends nothing until it ends and has a limit of its own (a minute for an MCP tool), the widget allows 2 minutes.
+  A reply that keeps sending data is not cut off by a time limit; the step limit and the cap on browser runs still bound its length.
+  A request sent with streaming off, and a JSON reply to a request that asked for a stream, have 2 minutes.
+  The CLI already bounds silence (its 120 s read timeout is between chunks) and is unchanged, and so is the Cloudflare worker, which hands the stream through after the backend has started to answer.
+- **`DEFAULT_MODEL` is checked when the server starts** (ADR 0016): a value that is not an offered model or a class name (`haiku`, `sonnet`, `luna`) stops the server from starting, with the model error.
+  A server whose `.env` pins something else, for example an OpenRouter slug such as `openai/gpt-oss-120b`, needs that line changed before this release is pulled.
+- **HED's prompt asks for one validated annotation per kind of event** (PR #600, refs issue #596): when a task describes several kinds of events (a stimulus onset and a response), the assistant shows one validated annotation for each, at most four, and one for an event that repeats.
+  The 200 to 300 word limit counts prose, not the code blocks that hold an annotation string.
+  The tool-use example uses suggestions that validate against HED 8.4.0, and the prompt calls what `suggest_hed_tags` returns candidates, since `Button` and `Flash` are not tags.
+- **The live model tests run by hand only** (PR #605): the tests that call the Claude Platform, OpenRouter and Amazon Bedrock no longer run on a push or a pull request.
+  `integration-tests` in `test.yml` runs from Actions > Tests > Run workflow, with a `model` input (`all`, or part of a test or model name such as `haiku`, `sonnet`, `luna` or `openrouter`) that limits the run, and `tests.yml` leaves the `llm` tests out.
+  The OpenRouter ones use `OPENROUTER_API_KEY_FOR_TESTING` only, so no live test can spend the production credit.
+  The job starts by naming each live key that is missing, and fails when none is set, since every test would skip and the run would still be green, or when `ANTHROPIC_BASE_URL` is set without `ANTHROPIC_WORKSPACE_ID`.
+
+### Fixed
+
+- **The widget's 60 s stall timer could not fire** (issue #564): it was checked only between reads, so a read that never returned was never timed.
+  The idle timer above replaces it and aborts the read.
+  The server sends no keepalive on the chat stream, so more than 60 s with no data now ends a request.
+  A model that streams its reasoning sends `thinking` events while it works, but one that is quiet that long before its first word (Qwen3 Next has no reasoning to stream) is given up on.
+- **An error response whose body never finished could not be abandoned** in the widget: with the old fixed limit gone, it is now bounded by the idle timer, as the request is.
+- **Documentation sources that are not markdown keep their angle brackets** (issue #514, section 4; PR #602): `DocumentFetcher.fetch` stripped the HTML tags from every document, and the stripper removes whatever sits between a `<` and the next `>`.
+  In reStructuredText that is the target of each `` `text <https://...>`_ `` link and of each cross-reference; in a Python example it is a comparison or a generic (`if a<b and c>d` became `if ad`); in a converted web page it is a repr such as `<Raw | sample_audvis_raw.fif>`.
+  Tags are now stripped only from a source whose URL path ends in `.md`, `.markdown` or `.mdx`.
+  Of the 325 documentation entries of the shipped communities, 91 that are not markdown change (NWB 63, MNE 19, OpenNeuroPET 7, HED 1, EEGLAB 1).
+- **Markdown keeps what is not HTML markup** (issue #514, section 4; PR #602): the stripper treated any angle-bracket text in a markdown source as a tag, so the BIDS specification's `sub-<label>` reached the model as `sub-` (242 times), and `<https://...>` autolinks and the placeholders in HED's schema examples were dropped too.
+  A tag is now removed only when its name is an HTML element, and a placeholder that shares a name with an element (`<label>`) stays unless the text closes it or gives it attributes.
+  Fenced code blocks and inline code are kept as written, except the body of a MyST directive such as ```` ```{admonition} ````, which is markdown.
+  Of the 153 markdown documents of the shipped communities, 45 change (BIDS 24, FieldTrip 8, HED 5, OpenNeuroPET 5, NWB 3); no HTML element is left in the output outside the `<label>` and `<source-entities>` placeholders.
+- **An HTML page is recognized by more than a leading doctype, and its scripts and styles are dropped** (PR #602): a page that began with a byte order mark, an `<?xml?>` prolog, a comment, `<head>` or `<body>`, or an HTML fragment served as `text/html`, was not converted to markdown, so with the change above its tags would have reached the model.
+  A source whose URL ends in `.md` is never converted because of its `Content-Type`, and a bare `<div>` or `<p>` at the start does not make a markdown file a page.
+  The text of `<script>` and `<style>` elements was kept as page content (up to 18 KB of JavaScript in one MNE tutorial); it is now dropped with the element.
+  Of the 48 HTML pages among the shipped sources, 20 change (18 MNE tutorial pages, the BIDS specification page and PetSurfer), by script and style text only in the pages sampled.
+- **HED's `suggest_hed_tags` works in the image** (issue #595; PR #599): the tool runs `hed-suggest`, the command-line program of hed-lsp's server package, and the image did not contain it, so every call answered that the tool is not available and nothing else noticed.
+  The Dockerfile now builds the program in a `hed-lsp` stage at a pinned commit, copies it and Node into the image and sets `HED_LSP_PATH`.
+  The build fails unless `button press` returns `Press`, a tag HED 8.4.0 defines, and `docker-build.yml` runs the real tool in the final image with no network.
+  The tool drops a search term that begins with `-`, which the program would read as an option, and answers `[]` for it, and it runs the program with only `PATH` from the server's environment, so the model keys are not in it.
+  Its suggestions are candidates: hed-lsp's keyword map is not checked against the schema, so some of them (`Button`, `Flash`) are not tags in HED 8.4.0, and the tool's description says to validate the result.
+  The image build now clones `hed-standard/hed-lsp` and runs `pnpm install` in a Node 22 stage, so a build needs GitHub and npm to be reachable.
+- **The widget keeps a host page's styles off its code, lists and text** (PR #601, part of issue #597): the widget lives in the host page's document, so a host rule on a bare element (`code`, `p`, `li`, `h2`) reached a reply wherever the widget's own rules left a property unset.
+  The Read the Docs theme turned inline code red, gave it a border and put a code block on one line (`white-space: nowrap`), and the PyData theme colored inline code purple.
+  Reply and code-card elements now declare the properties such a theme sets, with values that leave a page without host styles unchanged.
+  A happy-dom test, `frontend/test-widget-host-styles.js`, runs in both test workflows.
+  The widget's bytes change, so a page that pins its integrity hash keeps the old widget until it is re-pinned.
+
 ## [0.8.17] - 2026-10-06
 
 ### Added

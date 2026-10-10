@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from src.agents.content import extract_text
-from src.core.services.anthropic_models import accepts_temperature, normalize_model
+from src.core.services.anthropic_models import HAIKU, SONNET, accepts_temperature, normalize_model
 from src.knowledge.db import get_connection, update_summarization_status, upsert_faq_entry
 from src.metrics.cost import estimate_cost
 
@@ -29,8 +29,8 @@ console = Console()
 # Model ids used by the strategy comparison in estimate_summarization_cost.
 # Priced through src.metrics.cost, the same table the API path bills against,
 # so a rate change lands in one place.
-CHEAP_MODEL = "claude-haiku-4-5"
-QUALITY_MODEL = "claude-sonnet-5-5"
+CHEAP_MODEL = HAIKU
+QUALITY_MODEL = SONNET
 
 # Fraction of scored threads expected to clear the quality threshold and be
 # summarized, for the "hybrid" strategy: score everything cheaply, summarize
@@ -316,10 +316,23 @@ def estimate_summarization_cost(
         avg_tokens = sum(row["msg_count"] * 600 for row in threads) // max(thread_count, 1)
         total_input_tokens = thread_count * avg_tokens
         total_output_tokens = thread_count * SUMMARY_OUTPUT_TOKENS
+        # Each thread is a model call of its own: a price that depends on the length of a
+        # prompt applies to the longest thread, never to the corpus.
+        longest_thread_tokens = max(row["msg_count"] * 600 for row in threads)
 
         # Cost of running every thread through one model or the other.
-        haiku_cost = estimate_cost(CHEAP_MODEL, total_input_tokens, total_output_tokens)
-        sonnet_cost = estimate_cost(QUALITY_MODEL, total_input_tokens, total_output_tokens)
+        haiku_cost = estimate_cost(
+            CHEAP_MODEL,
+            total_input_tokens,
+            total_output_tokens,
+            longest_prompt_tokens=longest_thread_tokens,
+        )
+        sonnet_cost = estimate_cost(
+            QUALITY_MODEL,
+            total_input_tokens,
+            total_output_tokens,
+            longest_prompt_tokens=longest_thread_tokens,
+        )
 
         # Hybrid: score everything on the cheap model, summarize the survivors
         # on the quality model.
@@ -341,8 +354,8 @@ def _warn_if_temperature_ignored(
 ) -> None:
     """Log when a community's ``temperature`` will not reach the API.
 
-    ``claude-sonnet-5-5`` accepts only its default temperature, so
-    ``create_anthropic_llm`` drops the field rather than sending a value the
+    The Claude 5 models (Haiku 5.5, Sonnet 5.5) accept only their default
+    temperature, so ``create_anthropic_llm`` drops the field rather than sending a value the
     API would reject. A community that lowered the temperature to make scoring
     deterministic should hear that it stopped applying. ``CommunityConfig``
     warns about this at config load too; this covers the sync run, where the
@@ -357,8 +370,7 @@ def _warn_if_temperature_ignored(
     if temperature is not None and not accepts_temperature(model):
         logger.warning(
             "faq_generation.%s.temperature=%s is ignored for %s: %s accepts only its "
-            "default temperature. Use claude-haiku-4-5 for this agent if the "
-            "temperature matters.",
+            "default temperature, so the field is dropped. Remove it to silence this.",
             agent_role,
             temperature,
             project,
@@ -458,10 +470,8 @@ def summarize_threads(
             quality_threshold = faq_config.quality_threshold
     else:
         # Fallback to hardcoded defaults (backward compatibility)
-        # Note: Uses same model for both agents (Haiku 4.5) with different temperatures.
-        # This is a simplified approach for communities without FAQ config.
-        # The temperature difference (0.0 for scoring, 0.1 for summarization) provides
-        # deterministic evaluation while allowing slight creativity in FAQ phrasing.
+        # Note: Uses the same model (Haiku) for both agents. Haiku 5.5 takes no temperature
+        # (ADR 0016), so neither agent sets one, and scoring is not pinned to 0.0 here.
         logger.warning(
             "No faq_generation config found for %s, using defaults",
             project,
@@ -470,13 +480,11 @@ def summarize_threads(
         eval_model_name = CHEAP_MODEL
         eval_agent = create_anthropic_llm(
             model=summary_model_name,
-            temperature=0.0,  # Deterministic scoring
             thinking=None,
             enable_caching=True,
         )
         summary_agent = create_anthropic_llm(
             model=summary_model_name,
-            temperature=0.1,  # Slightly creative for natural phrasing
             thinking=None,
             enable_caching=True,
         )

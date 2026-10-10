@@ -88,6 +88,7 @@ def reply_usage(
     cache_creation_tokens: int = 0,
     *,
     partial: bool = False,
+    longest_prompt_tokens: int | None = None,
 ) -> ReplyUsage | None:
     """The usage to tell the reader, or None when there is none to tell.
 
@@ -99,6 +100,9 @@ def reply_usage(
         cache_creation_tokens: Of the input tokens, those that wrote a cache entry.
         partial: Whether a model run of the reply reported no tokens, which these counts
             then leave out.
+        longest_prompt_tokens: The input of the largest single model call, which decides
+            whether a model priced by prompt length is in its long tier (see
+            ``estimate_cost``). A reply of several calls must pass it.
 
     Returns:
         None for a request that is not answered by a model OSA offers (see the module
@@ -123,6 +127,7 @@ def reply_usage(
                 output_tokens,
                 cache_read_tokens=cache_read_tokens,
                 cache_creation_tokens=cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
             )
             if model in MODEL_PRICING
             else None

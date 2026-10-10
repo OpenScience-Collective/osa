@@ -543,6 +543,8 @@ Three consequences of that epic for this design:
   there is no availability constraint on any of the above.
 - The offered models narrow to `claude-haiku-4-5` (default; thinking budget set by the community's `reasoning_effort`, 4096 tokens at the default `high`) and
   `claude-sonnet-5-5`.
+  (Update, 2026-10-08, ADR 0016: the `haiku` class is now Claude Haiku 5.5, which thinks adaptively at an effort level and has no budget;
+  whether it supports mid-conversation system messages and where its cache floor sits were not checked, so the notes below stay about 4.5.)
   Haiku does not support mid-conversation system messages.
   Anthropic's documentation lists them for Opus 5, Opus 4.8, Fable, Mythos and Sonnet 5.5, and not for Haiku 4.5 or Sonnet 5
   (its mid-conversation system messages page and its Sonnet 5.5 feature list, read 2026-09-30).
@@ -619,6 +621,12 @@ hold against the deployed code. They are Phase 0: none of Phase 1 works end to e
    inside any HTTP budget. **Do not raise it.** 120 seconds is enough, and leaving it alone avoids a
    `wrangler deploy` to two environments and avoids depending on a widget constant that embedders pin by
    SRI hash and never update.
+
+   (Update, issue #593: the widget no longer bounds a streamed request by a wall-clock ceiling. It gives
+   a request up after 60 s with no data from the server, and after 2 minutes while a server tool runs, for
+   each run of a reply. The worker's `AbortSignal.timeout(120000)` bounds the wait for the backend to
+   start answering, and the stream is then handed through; a local workerd run showed the signal does not
+   end a body that is passed through unread. The conclusion above stands: two-run parks nothing.)
 
    Two clocks remain, and they are not the HTTP one. `exec_seconds` is the browser's own execution budget,
    enforced in the worker. A separate, generous approval or idle deadline covers human reading time. The

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.core.services.anthropic_models import HAIKU
 from src.knowledge.db import get_connection, init_db, upsert_mailing_list_message
 from src.knowledge.faq_summarizer import (
     _build_thread_context,
@@ -629,12 +630,25 @@ class TestFAQGenerationRunsOnTheClaudePlatform:
 
         assert "is ignored" in caplog.text
 
-    def test_honored_temperature_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
-        """claude-haiku-4-5 does accept a temperature, so there is nothing to say."""
+    def test_ignored_temperature_on_haiku_is_reported(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Haiku 4.5 honored a temperature; Haiku 5.5 does not, so scoring pinned to 0.0
+        stopped being deterministic and the operator should hear it."""
         from src.knowledge.faq_summarizer import _warn_if_temperature_ignored
 
         with caplog.at_level("WARNING"):
-            _warn_if_temperature_ignored(0.0, "claude-haiku-4-5", "evaluation_agent", "eeglab")
+            _warn_if_temperature_ignored(0.0, HAIKU, "evaluation_agent", "eeglab")
+
+        assert "temperature=0.0 is ignored" in caplog.text
+
+    def test_honored_temperature_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A model that takes sampling parameters, or no temperature at all, has nothing to say."""
+        from src.knowledge.faq_summarizer import _warn_if_temperature_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_temperature_ignored(0.0, "openai.gpt-oss-120b", "evaluation_agent", "eeglab")
+            _warn_if_temperature_ignored(None, HAIKU, "evaluation_agent", "eeglab")
 
         assert caplog.text == ""
 
@@ -665,6 +679,46 @@ class TestCostAccounting:
 
         assert estimate["haiku_cost"] == estimate_cost(CHEAP_MODEL, input_tokens, output_tokens)
         assert estimate["sonnet_cost"] == estimate_cost(QUALITY_MODEL, input_tokens, output_tokens)
+
+    def test_a_corpus_over_the_long_prompt_line_is_priced_by_its_threads_not_its_total(
+        self, tmp_path: Path
+    ) -> None:
+        """Each thread is a model call of its own. 400 threads of two messages are 480,000
+        input tokens in all and 1,200 in the longest, so Claude Haiku 5.5 is priced at its
+        base rates ($0.10 / $0.50 per million tokens), not the long-prompt rates. The
+        expected figure is written out from those published prices."""
+        from src.knowledge.faq_summarizer import SUMMARY_OUTPUT_TOKENS
+
+        db_path = tmp_path / "knowledge" / "test-faq.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test-faq")
+            with get_connection("test-faq") as conn:
+                for thread in range(400):
+                    for message in range(2):
+                        upsert_mailing_list_message(
+                            conn,
+                            list_name="test-list",
+                            message_id=f"t{thread:03d}m{message}",
+                            thread_id=f"thread{thread:03d}",
+                            subject=f"Thread {thread}",
+                            author=f"Author {message}",
+                            author_email=f"author{message}@example.com",
+                            date="2026-01-01T10:00:00Z",
+                            body="A short message.",
+                            in_reply_to=None,
+                            url=f"https://example.com/list/2026/t{thread:03d}m{message}.html",
+                            year=2026,
+                        )
+                conn.commit()
+
+            estimate = estimate_summarization_cost("test-list", project="test-faq")
+
+        assert estimate["thread_count"] == 400
+        assert estimate["estimated_input_tokens"] == 480_000
+        output_tokens = 400 * SUMMARY_OUTPUT_TOKENS
+        assert estimate["haiku_cost"] == round(
+            480_000 * 0.10 / 1_000_000 + output_tokens * 0.50 / 1_000_000, 6
+        )
 
     def test_the_two_strategies_are_the_models_the_platform_offers(self) -> None:
         """The comparison is only useful if it compares what can actually run.

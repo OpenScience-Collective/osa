@@ -4,9 +4,11 @@ import logging
 import os
 from functools import lru_cache
 
+from dotenv import dotenv_values
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.core.services.anthropic_models import DEFAULT_MODEL, normalize_model
 from src.version import __version__
 
 logger = logging.getLogger(__name__)
@@ -128,7 +130,7 @@ class Settings(BaseSettings):
     # OpenRouter key selects that provider. See .context/research.md for
     # benchmark details behind the OpenRouter defaults.
     default_model: str = Field(
-        default="claude-haiku-4-5",
+        default=DEFAULT_MODEL,
         description="Default model for the Claude Platform on AWS path",
     )
     default_model_provider: str | None = Field(
@@ -136,7 +138,7 @@ class Settings(BaseSettings):
         description="OpenRouter-BYOK-only: provider for routing (e.g., DeepInfra/FP8)",
     )
     test_model: str = Field(
-        default="claude-haiku-4-5",
+        default=DEFAULT_MODEL,
         description="Default model for testing",
     )
     test_model_provider: str | None = Field(
@@ -189,6 +191,17 @@ class Settings(BaseSettings):
     # Master switch only; per-community schedules are defined in each community's config.yaml
     # Empty databases are automatically seeded on startup when sync is enabled
     sync_enabled: bool = Field(default=True, description="Enable automated knowledge sync")
+
+    @field_validator("default_model")
+    @classmethod
+    def _offered_default_model(cls, value: str) -> str:
+        """Refuse a DEFAULT_MODEL that is not an offered model, at startup.
+
+        The Bedrock fallback runs this model in place of a community's default, so a typo
+        here would change the model family for every such request without a word.
+        """
+        normalize_model(value)
+        return value
 
     @field_validator("bedrock_api_key", mode="before")
     @classmethod
@@ -270,12 +283,12 @@ class Settings(BaseSettings):
 # Environment variables that used to set something and are now ignored (Settings ignores
 # unknown ones), with what replaced each. A server that still exports one would otherwise
 # change behavior without a word: an operator who lowered the old Haiku thinking budget to
-# save cost now gets the default level's budget.
+# save cost now gets Haiku 5.5's adaptive thinking at the default level.
 RETIRED_ENV_VARS: dict[str, str] = {
     "ANTHROPIC_THINKING_BUDGET_TOKENS": (
-        "reasoning_effort in the community's config.yaml sets Claude Haiku's thinking "
-        "budget now (low 1024, medium 2048, high 4096 tokens, none no thinking; high "
-        "when unset)"
+        "Claude Haiku no longer thinks with a token budget (Haiku 5.5 thinks adaptively); "
+        "reasoning_effort in the community's config.yaml sets how much (none, low, "
+        "medium or high; high when unset)"
     ),
 }
 
@@ -283,11 +296,12 @@ RETIRED_ENV_VARS: dict[str, str] = {
 def _warn_retired_env_vars() -> None:
     """Log a warning for each retired environment variable that is still set.
 
-    Reads the process environment only. ``Settings`` also reads a ``.env`` file, and ignores
-    names it does not know, so a retired variable that appears only in ``.env`` is neither
-    used nor reported here; the deployment's environment file is where to look for it.
+    Looks in the process environment and in the ``.env`` file ``Settings`` reads. Both feed
+    the same settings, and ``Settings`` ignores a name it does not know, so nothing else
+    would say that a retired name is unused.
     """
     present = {name.upper() for name in os.environ}
+    present |= {name.upper() for name, value in dotenv_values(".env").items() if value is not None}
     for name, replacement in RETIRED_ENV_VARS.items():
         if name in present:
             logger.warning("%s is set but no longer used: %s", name, replacement)
