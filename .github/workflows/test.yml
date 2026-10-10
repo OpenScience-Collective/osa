@@ -351,15 +351,22 @@ jobs:
           OPENROUTER_API_KEY_FOR_TESTING: ${{ secrets.OPENROUTER_API_KEY_FOR_TESTING }}
         run: |
           # Presence only, never the values. A missing key makes its tests skip, which a
-          # green run hides, so each one is named here. A base URL without a workspace ID
-          # stops the whole run at startup, so that pair fails the job now instead.
+          # green run hides, so each one is named here. A run with none of them set would
+          # skip every live test and still pass, so that fails the job now. A base URL
+          # without a workspace ID stops the whole run at startup, so that pair fails it too.
+          keys_set=0
           for name in ANTHROPIC_API_KEY AWS_BEARER_TOKEN_BEDROCK OPENROUTER_API_KEY_FOR_TESTING; do
             if [ -n "${!name}" ]; then
               echo "$name is set"
+              keys_set=$((keys_set + 1))
             else
               echo "::warning::$name is not set; the tests that need it will skip"
             fi
           done
+          if [ "$keys_set" -eq 0 ]; then
+            echo "::error::None of the live credentials is set, so every live test would skip"
+            exit 1
+          fi
           if [ -n "$ANTHROPIC_BASE_URL" ] && [ -z "$ANTHROPIC_WORKSPACE_ID" ]; then
             echo "::error::ANTHROPIC_BASE_URL is set without ANTHROPIC_WORKSPACE_ID"
             exit 1
