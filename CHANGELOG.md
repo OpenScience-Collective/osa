@@ -13,6 +13,8 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+## [0.8.18] - 2026-10-10
+
 ### Added
 
 - **A failure names the model to try, and the widget offers it** (issue #593, from #514): where a failed request said "Please choose another model.", it now says "Try Claude Haiku 5.5, or choose another model." (Claude Sonnet 5.5 when Haiku is the model that failed; it never names the model that failed).
@@ -26,7 +28,8 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
-- **Models are named by class, and Claude Haiku 5.5 replaces Claude Haiku 4.5** (ADR 0016): `haiku`, `sonnet`, `opus` and `fable` for Anthropic and `luna`, `terra`, `sol` and `astra` for OpenAI are accepted wherever a model is named (a community's `default_model`, an agent's `model`, a request, the CLI, `DEFAULT_MODEL`), and `MODEL_CLASSES` in `src/core/services/anthropic_models.py` says which model each is today.
+- **Models are named by class, and Claude Haiku 5.5 replaces Claude Haiku 4.5** (ADR 0016): `haiku`, `sonnet` and `luna` are accepted wherever a model is named (a community's `default_model`, an agent's `model`, a request, the CLI, `DEFAULT_MODEL`), and `MODEL_CLASSES` in `src/core/services/anthropic_models.py` says which model each class is today.
+  `opus`, `fable`, `terra`, `sol` and `astra` are in that table too, and are refused as unknown models until they are offered.
   Moving a class to a new generation is an edit there, the id it replaces in `PREVIOUS_GENERATIONS`, and the new model's own price and thinking facts.
   The communities now name `haiku`, `sonnet` and `luna`; the config endpoint reports the id they resolve to.
   A saved widget setting, a `config.yaml` or a `DEFAULT_MODEL` that names Claude Haiku 4.5 runs Claude Haiku 5.5.
@@ -38,7 +41,7 @@ the version being released and start a new `[Unreleased]` section above it.
   The Bedrock cost-ceiling test now holds the Bedrock models to $1 / $5, since Haiku is no longer the more expensive option.
   Not measured: the HED and NEMAR answers on Haiku 5.5.
 
-- **HED runs Claude Haiku** (issue #591): HED's `default_model` is `haiku` (Claude Haiku 5.5, see the model classes entry below), where it was GPT-6 Luna.
+- **HED runs Claude Haiku** (issue #591): HED's `default_model` is `haiku` (Claude Haiku 5.5, see the model classes entry above), where it was GPT-6 Luna.
   HED's annotation questions are a tag, validate and correct loop.
   On dev, Luna answered 1 of 3 of them (the others ended in a dropped stream and in a stall past the read timeout, each after tool calls), GPT-OSS answered 1 of 2 (the other hit the recursion limit), and Claude Haiku 4.5, which Haiku was then, answered all 3 in 12 to 24 s; Haiku 5.5 has not been measured on them.
   NWB, EEGLAB and BIDS run Haiku too (see below), and a reader can still choose Luna for HED from the model menu.
@@ -52,6 +55,15 @@ the version being released and start a new `[Unreleased]` section above it.
   A reply that keeps sending data is not cut off by a time limit; the step limit and the cap on browser runs still bound its length.
   A request sent with streaming off, and a JSON reply to a request that asked for a stream, have 2 minutes.
   The CLI already bounds silence (its 120 s read timeout is between chunks) and is unchanged, and so is the Cloudflare worker, which hands the stream through after the backend has started to answer.
+- **`DEFAULT_MODEL` is checked when the server starts** (ADR 0016): a value that is not an offered model or a class name (`haiku`, `sonnet`, `luna`) stops the server from starting, with the model error.
+  A server whose `.env` pins something else, for example an OpenRouter slug such as `openai/gpt-oss-120b`, needs that line changed before this release is pulled.
+- **HED's prompt asks for one validated annotation per kind of event** (PR #600, refs issue #596): when a task describes several kinds of events (a stimulus onset and a response), the assistant shows one validated annotation for each, at most four, and one for an event that repeats.
+  The 200 to 300 word limit counts prose, not the code blocks that hold an annotation string.
+  The tool-use example uses suggestions that validate against HED 8.4.0, and the prompt calls what `suggest_hed_tags` returns candidates, since `Button` and `Flash` are not tags.
+- **The live model tests run by hand only** (PR #605): the tests that call the Claude Platform, OpenRouter and Amazon Bedrock no longer run on a push or a pull request.
+  `integration-tests` in `test.yml` runs from Actions > Tests > Run workflow, with a `model` input (`all`, or part of a test or model name such as `haiku`, `sonnet`, `luna` or `openrouter`) that limits the run, and `tests.yml` leaves the `llm` tests out.
+  The OpenRouter ones use `OPENROUTER_API_KEY_FOR_TESTING` only, so no live test can spend the production credit.
+  The job starts by naming each live key that is missing, and fails when none is set, since every test would skip and the run would still be green, or when `ANTHROPIC_BASE_URL` is set without `ANTHROPIC_WORKSPACE_ID`.
 
 ### Fixed
 
@@ -72,6 +84,17 @@ the version being released and start a new `[Unreleased]` section above it.
   A source whose URL ends in `.md` is never converted because of its `Content-Type`, and a bare `<div>` or `<p>` at the start does not make a markdown file a page.
   The text of `<script>` and `<style>` elements was kept as page content (up to 18 KB of JavaScript in one MNE tutorial); it is now dropped with the element.
   Of the 48 HTML pages among the shipped sources, 20 change (18 MNE tutorial pages, the BIDS specification page and PetSurfer), by script and style text only in the pages sampled.
+- **HED's `suggest_hed_tags` works in the image** (issue #595; PR #599): the tool runs `hed-suggest`, the command-line program of hed-lsp's server package, and the image did not contain it, so every call answered that the tool is not available and nothing else noticed.
+  The Dockerfile now builds the program in a `hed-lsp` stage at a pinned commit, copies it and Node into the image and sets `HED_LSP_PATH`.
+  The build fails unless `button press` returns `Press`, a tag HED 8.4.0 defines, and `docker-build.yml` runs the real tool in the final image with no network.
+  The tool drops a search term that begins with `-`, which the program would read as an option, and answers `[]` for it, and it runs the program with only `PATH` from the server's environment, so the model keys are not in it.
+  Its suggestions are candidates: hed-lsp's keyword map is not checked against the schema, so some of them (`Button`, `Flash`) are not tags in HED 8.4.0, and the tool's description says to validate the result.
+  The image build now clones `hed-standard/hed-lsp` and runs `pnpm install` in a Node 22 stage, so a build needs GitHub and npm to be reachable.
+- **The widget keeps a host page's styles off its code, lists and text** (PR #601, part of issue #597): the widget lives in the host page's document, so a host rule on a bare element (`code`, `p`, `li`, `h2`) reached a reply wherever the widget's own rules left a property unset.
+  The Read the Docs theme turned inline code red, gave it a border and put a code block on one line (`white-space: nowrap`), and the PyData theme colored inline code purple.
+  Reply and code-card elements now declare the properties such a theme sets, with values that leave a page without host styles unchanged.
+  A happy-dom test, `frontend/test-widget-host-styles.js`, runs in both test workflows.
+  The widget's bytes change, so a page that pins its integrity hash keeps the old widget until it is re-pinned.
 
 ## [0.8.17] - 2026-10-06
 
