@@ -32,7 +32,9 @@ the version being released and start a new `[Unreleased]` section above it.
   A saved widget setting, a `config.yaml` or a `DEFAULT_MODEL` that names Claude Haiku 4.5 runs Claude Haiku 5.5.
   Haiku 5.5 thinks adaptively at an effort level (`high` unless a community sets another; `none` sends effort `low` and `thinking: {"type": "disabled"}`), where 4.5 thought with a token budget, so `THINKING_BUDGET_TOKENS` is gone.
   It rejects `temperature`, so no offered Claude model takes one: EEGLAB's FAQ agents lose the 0.0 and 0.1 they set, and their `temperature` lines are removed.
-  It costs $0.10 / $0.50 per million tokens up to a 100,000-token prompt and $0.50 / $2.50 above (4.5 cost $1 / $5), and counts about 30% more tokens for the same text; cost estimates price a long prompt at the higher rate.
+  It costs $0.10 / $0.50 per million tokens up to a 100,000-token prompt and $0.50 / $2.50 above (4.5 cost $1 / $5), and counts about 30% more tokens for the same text.
+  The higher rate is judged on the largest single model call of a reply, not on the reply's total: a tool loop sends the conversation again with each call, so its calls add up past 100,000 tokens while no prompt is near that line, and only a call whose own prompt is over it puts the reply at the higher rate.
+  The usage line under a reply, the request log and the FAQ cost estimate (per thread) all price it this way.
   The Bedrock cost-ceiling test now holds the Bedrock models to $1 / $5, since Haiku is no longer the more expensive option.
   Not measured: the HED and NEMAR answers on Haiku 5.5.
 

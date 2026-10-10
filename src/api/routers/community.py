@@ -2245,6 +2245,7 @@ class AgentResult:
     total_tokens: int
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    longest_prompt_tokens: int = 0
     citations: list[CitationInfo] = field(default_factory=list)
     model_runs: ModelRuns = field(default_factory=ModelRuns)
 
@@ -2346,6 +2347,7 @@ def _extract_agent_result(result: dict) -> AgentResult:
         total_tokens=usage.total_tokens,
         cache_read_tokens=usage.cache_read_tokens,
         cache_creation_tokens=usage.cache_creation_tokens,
+        longest_prompt_tokens=usage.longest_prompt_tokens,
         citations=citations,
         model_runs=ModelRuns.from_messages(result.get("messages", [])),
     )
@@ -2358,6 +2360,7 @@ def _safe_reply_usage(
     output_tokens: int,
     cache_read_tokens: int,
     cache_creation_tokens: int,
+    longest_prompt_tokens: int,
     model_runs: ModelRuns,
     community_id: str,
     request_id: str | None,
@@ -2388,6 +2391,7 @@ def _safe_reply_usage(
             cache_read_tokens,
             cache_creation_tokens,
             partial=model_runs.without_usage > 0,
+            longest_prompt_tokens=longest_prompt_tokens,
         )
     except ValidationError as error:
         problems = "; ".join(
@@ -2449,6 +2453,7 @@ def _reply_usage_of(
         output_tokens=agent_result.output_tokens,
         cache_read_tokens=agent_result.cache_read_tokens,
         cache_creation_tokens=agent_result.cache_creation_tokens,
+        longest_prompt_tokens=agent_result.longest_prompt_tokens,
         model_runs=agent_result.model_runs,
         community_id=community_id,
         request_id=getattr(http_request.state, "request_id", None),
@@ -2462,6 +2467,7 @@ def _usage_for_event(
     output_tokens: int,
     cache_read_tokens: int,
     cache_creation_tokens: int,
+    longest_prompt_tokens: int,
     model_runs: ModelRuns,
     community_id: str,
     request_id: str | None,
@@ -2475,6 +2481,7 @@ def _usage_for_event(
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
         cache_creation_tokens=cache_creation_tokens,
+        longest_prompt_tokens=longest_prompt_tokens,
         model_runs=model_runs,
         community_id=community_id,
         request_id=request_id,
@@ -2508,6 +2515,7 @@ def _set_metrics_on_request(
                 agent_result.output_tokens,
                 cache_read_tokens=agent_result.cache_read_tokens,
                 cache_creation_tokens=agent_result.cache_creation_tokens,
+                longest_prompt_tokens=agent_result.longest_prompt_tokens,
             )
             if has_tokens
             else None
@@ -3740,6 +3748,7 @@ def _log_streaming_metrics(
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
     error_message: str | None = None,
+    longest_prompt_tokens: int | None = None,
 ) -> None:
     """Log metrics at the end of a streaming response.
 
@@ -3766,6 +3775,7 @@ def _log_streaming_metrics(
                 output_tokens,
                 cache_read_tokens=cache_read_tokens,
                 cache_creation_tokens=cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
             )
             if has_tokens
             else None
@@ -4105,6 +4115,7 @@ async def _stream_ask_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
+    longest_prompt_tokens = 0
     citation_assembler = CitationAssembler()
     announced_tool_calls: set[tuple[Any, ...]] = set()
     model_runs = ModelRuns()
@@ -4180,6 +4191,7 @@ async def _stream_ask_response(
                 total_output_tokens += out
                 total_cache_read_tokens += cache_read
                 total_cache_creation_tokens += cache_creation
+                longest_prompt_tokens = max(longest_prompt_tokens, inp)
                 model_runs.note(event.get("data", {}).get("output"))
                 citation_assembler.finish_model_run()
                 last_run_text = full_response[run_start:]
@@ -4243,6 +4255,7 @@ async def _stream_ask_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
                 error_message=problem.summary,
             )
             return
@@ -4270,6 +4283,7 @@ async def _stream_ask_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
                 model_runs=model_runs,
                 community_id=community_id,
                 request_id=request_id,
@@ -4290,6 +4304,7 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
         )
 
     except HTTPException as e:
@@ -4315,6 +4330,7 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
         )
     except ValueError as e:
         if classify_model_error(e).from_provider:
@@ -4359,6 +4375,7 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
             error_message=error_message,
         )
     except Exception as e:
@@ -4385,6 +4402,7 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
             error_message=failure.detail,
         )
 
@@ -4518,6 +4536,7 @@ async def _stream_chat_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
+    longest_prompt_tokens = 0
     model_runs = ModelRuns()
     retry = RetryState()
 
@@ -4660,6 +4679,7 @@ async def _stream_chat_response(
                 total_output_tokens += out
                 total_cache_read_tokens += cache_read
                 total_cache_creation_tokens += cache_creation
+                longest_prompt_tokens = max(longest_prompt_tokens, inp)
                 model_runs.note(event.get("data", {}).get("output"))
                 citation_assembler.finish_model_run()
                 last_run_text = full_response[run_start:]
@@ -4755,6 +4775,7 @@ async def _stream_chat_response(
                     output_tokens=total_output_tokens,
                     cache_read_tokens=total_cache_read_tokens,
                     cache_creation_tokens=total_cache_creation_tokens,
+                    longest_prompt_tokens=longest_prompt_tokens,
                     model_runs=model_runs,
                     community_id=community_id,
                     request_id=request_id,
@@ -4779,6 +4800,7 @@ async def _stream_chat_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
             )
             return
 
@@ -4823,6 +4845,7 @@ async def _stream_chat_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
                 error_message=problem.summary,
             )
             return
@@ -4852,6 +4875,7 @@ async def _stream_chat_response(
                     output_tokens=total_output_tokens,
                     cache_read_tokens=total_cache_read_tokens,
                     cache_creation_tokens=total_cache_creation_tokens,
+                    longest_prompt_tokens=longest_prompt_tokens,
                     error_message=f"session limit: {e}",
                 )
                 return
@@ -4891,6 +4915,7 @@ async def _stream_chat_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
                 model_runs=model_runs,
                 community_id=community_id,
                 request_id=request_id,
@@ -4911,6 +4936,7 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
         )
 
     except HTTPException as e:
@@ -4937,6 +4963,7 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
         )
     except ValueError as e:
         if classify_model_error(e).from_provider:
@@ -4976,6 +5003,7 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
             error_message=error_message,
         )
     except Exception as e:
@@ -5003,6 +5031,7 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
             error_message=failure.detail,
         )
     finally:

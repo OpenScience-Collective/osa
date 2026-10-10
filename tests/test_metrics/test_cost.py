@@ -233,6 +233,32 @@ class TestLongPromptPricing:
         cost = estimate_cost(HAIKU, input_tokens=100_001, output_tokens=1_000_000)
         assert cost == round(100_001 * 0.50 / 1_000_000 + 1_000_000 * 2.50 / 1_000_000, 6)
 
+    def test_calls_that_are_each_under_the_line_are_billed_at_the_base_rates(self):
+        """Five calls with 25,000-token prompts add up to 125,000 input tokens, and no
+        prompt is near the line: the reply costs $0.10 / $0.50, not $0.50 / $2.50."""
+        cost = estimate_cost(
+            HAIKU, input_tokens=125_000, output_tokens=5_000, longest_prompt_tokens=25_000
+        )
+        assert cost == round(125_000 * 0.10 / 1_000_000 + 5_000 * 0.50 / 1_000_000, 6)
+
+    def test_a_longest_prompt_at_the_line_is_in_the_base_tier(self):
+        cost = estimate_cost(
+            HAIKU, input_tokens=300_000, output_tokens=1_000_000, longest_prompt_tokens=100_000
+        )
+        assert cost == round(300_000 * 0.10 / 1_000_000 + 1_000_000 * 0.50 / 1_000_000, 6)
+
+    def test_a_longest_prompt_over_the_line_puts_the_whole_request_in_the_long_tier(self):
+        cost = estimate_cost(
+            HAIKU, input_tokens=130_000, output_tokens=1_000_000, longest_prompt_tokens=100_001
+        )
+        assert cost == round(130_000 * 0.50 / 1_000_000 + 1_000_000 * 2.50 / 1_000_000, 6)
+
+    def test_without_a_longest_prompt_the_request_is_one_call(self):
+        """Callers that price a single call need not say so."""
+        assert estimate_cost(HAIKU, 300_000, 1_000) == estimate_cost(
+            HAIKU, 300_000, 1_000, longest_prompt_tokens=300_000
+        )
+
     def test_cache_multipliers_apply_to_the_long_input_rate(self):
         cost = estimate_cost(
             HAIKU,

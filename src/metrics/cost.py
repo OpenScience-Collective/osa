@@ -186,8 +186,15 @@ def estimate_cost(
     output_tokens: int,
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
+    *,
+    longest_prompt_tokens: int | None = None,
 ) -> float:
     """Estimate the USD cost for a request.
+
+    A request can be several model calls (a tool loop), and each call sends the whole
+    conversation again, so the token arguments are sums over its calls. A price that
+    depends on the length of a prompt (``LONG_PROMPT_RATES``) belongs to one call's
+    prompt, never to that sum: five calls of 25,000 tokens are not a prompt of 125,000.
 
     Args:
         model: Model name (e.g., "qwen/qwen3-235b-a22b-2507" or a first-party
@@ -204,6 +211,12 @@ def estimate_cost(
         cache_creation_tokens: Of ``input_tokens``, how many wrote a new
             prompt-cache entry (priced at ``CACHE_WRITE_MULTIPLIER``).
             Defaults to 0.
+        longest_prompt_tokens: The input tokens of the largest single model call in the
+            request. The long-prompt rate applies when this is over the line. A request
+            of several calls must pass it. Left out, the request is taken as one call
+            and ``input_tokens`` is its prompt. When one call of several is over the line,
+            the whole request is priced at the long rate, which can overstate the cost of
+            the calls that were not.
 
     Returns:
         Estimated cost in USD, rounded to 6 decimal places.
@@ -215,8 +228,9 @@ def estimate_cost(
             logger.warning("No pricing data for model %s, using fallback rates", model)
         rate = _FALLBACK_RATE
 
+    prompt_tokens = input_tokens if longest_prompt_tokens is None else longest_prompt_tokens
     long_prompt = LONG_PROMPT_RATES.get(model or "")
-    if long_prompt is not None and input_tokens > long_prompt.above_tokens:
+    if long_prompt is not None and prompt_tokens > long_prompt.above_tokens:
         # Priced by prompt length: this whole request is in the higher tier.
         rate = long_prompt.rate
 

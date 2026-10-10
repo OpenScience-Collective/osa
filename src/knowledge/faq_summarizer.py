@@ -316,10 +316,23 @@ def estimate_summarization_cost(
         avg_tokens = sum(row["msg_count"] * 600 for row in threads) // max(thread_count, 1)
         total_input_tokens = thread_count * avg_tokens
         total_output_tokens = thread_count * SUMMARY_OUTPUT_TOKENS
+        # Each thread is a model call of its own: a price that depends on the length of a
+        # prompt applies to the longest thread, never to the corpus.
+        longest_thread_tokens = max(row["msg_count"] * 600 for row in threads)
 
         # Cost of running every thread through one model or the other.
-        haiku_cost = estimate_cost(CHEAP_MODEL, total_input_tokens, total_output_tokens)
-        sonnet_cost = estimate_cost(QUALITY_MODEL, total_input_tokens, total_output_tokens)
+        haiku_cost = estimate_cost(
+            CHEAP_MODEL,
+            total_input_tokens,
+            total_output_tokens,
+            longest_prompt_tokens=longest_thread_tokens,
+        )
+        sonnet_cost = estimate_cost(
+            QUALITY_MODEL,
+            total_input_tokens,
+            total_output_tokens,
+            longest_prompt_tokens=longest_thread_tokens,
+        )
 
         # Hybrid: score everything on the cheap model, summarize the survivors
         # on the quality model.

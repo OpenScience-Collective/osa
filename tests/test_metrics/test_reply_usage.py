@@ -53,6 +53,17 @@ class TestPricing:
 
         assert usage is not None and usage.estimated_cost == round(by_hand, 6)
 
+    def test_a_reply_of_several_short_prompts_is_not_priced_as_one_long_prompt(self) -> None:
+        """Five model runs of 25,000 input tokens are 125,000 in all, with no prompt over
+        Claude Haiku 5.5's 100,000-token line: $0.10 / $0.50 per million tokens. One run
+        over the line puts the reply at $0.50 / $2.50."""
+        short = reply_usage(HAIKU, 125_000, 5_000, longest_prompt_tokens=25_000)
+        long = reply_usage(HAIKU, 125_000, 5_000, longest_prompt_tokens=100_001)
+
+        assert short is not None and long is not None
+        assert short.estimated_cost == round(125_000 * 0.10 / 1e6 + 5_000 * 0.50 / 1e6, 6)
+        assert long.estimated_cost == round(125_000 * 0.50 / 1e6 + 5_000 * 2.50 / 1e6, 6)
+
     @pytest.mark.parametrize("model", sorted(OFFERED_MODELS))
     def test_every_offered_model_has_a_price(self, model: str) -> None:
         """A model that is offered but not priced would show the reader tokens and no cost,
