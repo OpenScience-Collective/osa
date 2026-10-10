@@ -41,7 +41,7 @@ A community sets `reasoning_effort` in its `config.yaml`, one key that every pro
 - **Each model keeps its own predetermined levels** (`REASONING_LEVELS` in `src/core/services/anthropic_models.py`).
   A level a model does not accept is never sent: it is lowered to the highest level the model accepts at or below the ask,
   or raised to its lowest when the ask is below all of them (gpt-oss cannot go below `low`).
-- **Claude Sonnet is never run above `high`**, on any platform, whatever a community asks.
+- **Claude Sonnet and Claude Haiku are never run above `high`**, on any platform, whatever a community asks.
   The API accepts more; this is a policy, and it lives in the levels table so it holds on Bedrock, the Claude Platform and OpenRouter alike.
 - **Claude Haiku 4.5 has no effort field, so its level is a thinking budget** (`THINKING_BUDGET_TOKENS`, issue #548; Update, 2026-10-08: Claude Haiku 5.5 replaced it as the `haiku` class and takes an effort level like Sonnet, so the budgets and `THINKING_BUDGET_TOKENS` are gone, see [0016](0016-model-classes.md)):
   `low` 1024 tokens (the API's floor), `medium` 2048 (what Haiku ran at before levels), `high` 4096, `none` no thinking;
@@ -54,8 +54,9 @@ A community sets `reasoning_effort` in its `config.yaml`, one key that every pro
   Every offered model has to be classified as having levels or not, which a test enforces.
 - **Every model runs at `high` when a community sets none**, on every provider, so a model behaves the same whichever key paid for it (`DEFAULT_REASONING_EFFORT`, issue #548; #545 had per-model defaults for Luna and gpt-oss only).
   Claude Sonnet is then sent `high` explicitly, which is the Claude Platform's own default, so nothing changes there; Haiku's default budget goes from 2048 to 4096.
-  The communities that default to Luna (NWB, Hierarchical Event Descriptors (HED), EEGLAB and Brain Imaging Data Structure (BIDS)) set `high` explicitly, and so does NEMAR, so the key is discoverable there.
-  (HED has defaulted to Claude Haiku 4.5 since 2026-10-07, issue #591, and keeps `high`, which is a 4096-token thinking budget there.)
+  The communities that defaulted to Luna (NWB, Hierarchical Event Descriptors (HED), EEGLAB and Brain Imaging Data Structure (BIDS)) set `high` explicitly, and so does NEMAR, so the key is discoverable there.
+  (Update, 2026-10-08, [0016](0016-model-classes.md): NWB, HED, EEGLAB, BIDS and NEMAR now default to Claude Haiku 5.5 and keep `high`.
+  Haiku 5.5 thinks adaptively at an effort level and has no thinking budget; its own default is `medium`, so `high` is sent to it explicitly.)
 - **Per platform**:
   - Bedrock: Luna gets the nested field, gpt-oss the flat one, Qwen nothing (`BedrockModel.reasoning_field`).
   - Claude Platform on AWS: Sonnet gets `output_config.effort` (`low`, `medium` or `high`) beside its default adaptive thinking.
@@ -103,8 +104,8 @@ A community sets `reasoning_effort` in its `config.yaml`, one key that every pro
   The defaults do not reach them, and the config comment says why.
 - **Sonnet `none` is effort `low` on both platforms**, with no up-front thinking on the Claude Platform (the short progress notes Sonnet writes between tool calls still arrive as `thinking` blocks) and,
   on OpenRouter, where its reasoning is mandatory, with whatever reasoning `low` gives.
-- **Haiku thinks up to twice as much by default** (a 4096-token budget against 2048):
-  more output tokens billed (Haiku is $1 / $5 per 1M) and a longer wait before the first word.
+- **Haiku thinks up to twice as much by default** (a 4096-token budget against 2048; Update, 2026-10-08, [0016](0016-model-classes.md): Claude Haiku 5.5 replaced 4.5 and has no budget, so what follows about budgets and about $1 / $5 per 1M describes 4.5, and Haiku 5.5 costs $0.10 / $0.50 and is sent `high`, its own default being `medium`):
+  more output tokens billed and a longer wait before the first word.
   It is the default model of FieldTrip, HED, MNE, MetaBCI and OpenNeuroPET,
   and the model a Luna default falls back to when Luna cannot be served (for EEGLAB, BIDS and NWB: a deployment with no Bedrock key, or a caller's own Anthropic key with no model named).
   A community that wants the old behavior sets `reasoning_effort: medium`.
@@ -112,13 +113,14 @@ A community sets `reasoning_effort` in its `config.yaml`, one key that every pro
   it defaulted to the same number the example file shipped, so a server that copied it would have kept Haiku off the new default.
   `Settings` ignores unknown variables, so a leftover one is harmless to startup, and `get_settings` logs a warning naming `reasoning_effort` as the replacement,
   so an operator who had lowered the budget on purpose is told it no longer applies.
-- **On OpenRouter, Haiku is sent its budget itself**, `reasoning: {"max_tokens": <the level's budget>}`, not an effort:
+- **On OpenRouter, Haiku 4.5 was sent its budget itself**, `reasoning: {"max_tokens": <the level's budget>}`, not an effort:
   OpenRouter's documentation turns an effort into a share of `max_tokens` for Claude models (`max_tokens` is unset on this path),
   which would not be OSA's budget, and says `reasoning.max_tokens` is used as given (1024 at least).
   `none` sends no reasoning field (without one Haiku does not think there), and no temperature is sent while it thinks,
   as on the Claude Platform path (Anthropic does not allow one with thinking).
   This is bring-your-own-key (BYOK) only and is documented, not live-verified:
   OpenRouter's models listing gives Haiku no `supported_efforts`, which is why an effort is not used.
+  (Update, 2026-10-08, [0016](0016-model-classes.md): Claude Haiku 5.5 is sent `reasoning: {"effort": level}` on OpenRouter like the other models, and the budget code is deleted.)
 - **The config load warns when a community sets a level its default model ignores** (Qwen3 Next).
 - **Changing a community's level changes the request's effort, which invalidates the provider's prompt cache once.**
   A fixed level per community does not.

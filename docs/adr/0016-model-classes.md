@@ -26,13 +26,14 @@ On Amazon Bedrock the OpenAI classes are on different generations: `gpt-6-luna`,
 `MODEL_CLASSES` in `src/core/services/anthropic_models.py` is the one place a generation is chosen:
 `haiku`, `sonnet`, `opus` and `fable` for Anthropic, and `luna`, `terra`, `sol` and `astra` for OpenAI.
 
-- **A class name is accepted wherever a model is named**: a community's `default_model`, an agent's `model`, a request, the CLI, `DEFAULT_MODEL` in the environment.
+- **An offered class name is accepted wherever a model is named**: a community's `default_model`, an agent's `model`, a request, the CLI, `DEFAULT_MODEL` in the environment.
+  Today those are `haiku`, `sonnet` and `luna`; the other five are refused until they are offered (below).
   `normalize_model` resolves it first, so it means the model the class is today.
   The community config endpoint reports the id it resolved to, so the widget compares ids as before.
 - **The facts about a model are keyed by the class's id, never by a literal**:
   `HAIKU`, `SONNET` and `LUNA` in the registry, the reasoning levels, the sampling and thinking tables, the Bedrock serving table, the OpenRouter slugs, the prices and the FAQ summarizer's models.
   The widget label (`Claude Haiku 5.5`) and the OpenRouter slug of a Claude model are derived from its id.
-- **Moving a class to a new generation is three edits in that file**:
+- **Moving a class to a new generation is three edits** (the last also reaches `src/metrics/cost.py`, for the price):
   its entry in `MODEL_CLASSES`, the id it replaces in `PREVIOUS_GENERATIONS` (so a saved widget setting or an old `config.yaml` still resolves), and the new model's own entries where it differs (price in `src/metrics/cost.py`, reasoning levels, `THINKING_OFF`, `SAMPLING_MODELS`).
   Nothing else names the generation, and the tests read the ids from the same constants.
 - **A class that is not offered is refused** as an unknown model until its facts are filled in and it is added to `OFFERED_MODELS`.

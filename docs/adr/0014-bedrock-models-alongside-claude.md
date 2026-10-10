@@ -63,7 +63,7 @@ Serve the three models from Bedrock through the Converse API, one transport for 
   not its own: the community's key is an Anthropic key, and the models are not Anthropic's.
   That is a policy choice, not an accident; a community that wants Bedrock spend attributed to itself needs a Bedrock key of its own, which this record does not add.
 - **A default nobody chose is not a refusal.** When a community's `default_model` is a Bedrock model and the request cannot have it (the caller has an Anthropic key of their own and named no model, which is every CLI request,
-  or the deployment has no Bedrock key), the request runs the deployment's Claude default (`DEFAULT_MODEL`, Claude Haiku 4.5 unless the deployment changes it)
+  or the deployment has no Bedrock key), the request runs the deployment's Claude default (`DEFAULT_MODEL`, the `haiku` class unless the deployment changes it: Claude Haiku 4.5 when this was written, Claude Haiku 5.5 since [0016](0016-model-classes.md))
   and logs an error naming the community, or a warning when the only cause is the caller's own Anthropic key.
   Refusing would take the whole community down for those callers.
   A caller who names the model still gets the 403 or 400, and `osa validate` warns about such a default.
@@ -108,7 +108,8 @@ Serve the three models from Bedrock through the Converse API, one transport for 
   so on a deployment with an Anthropic key and no Bedrock key they run the deployment's Claude default (Claude Haiku 4.5 unless `DEFAULT_MODEL` names another)
   and log an error naming the community on every request that names no model.
   A deployment that serves them should treat the Bedrock key as required, and one that accepts Haiku for those four communities may leave it out.
-  (Update, 2026-10-07, issue #591: HED now defaults to Claude Haiku 4.5, because Luna answered 1 of 3 of its annotation questions, a validate-and-fix loop, on dev; the other three still default to Luna.)
+  (Update, 2026-10-08, [0016](0016-model-classes.md): HED, NWB, EEGLAB and BIDS all default to the `haiku` class now, Claude Haiku 5.5 (HED since 2026-10-07, issue #591, because Luna answered 1 of 3 of its annotation questions, a validate-and-fix loop, on dev).
+  No shipped community defaults to a Bedrock model, so the Bedrock key is needed only for a reader who picks one from the model menu, and the Claude default named above is the `haiku` class.)
 - **A bearer-token client relies on botocore internals** (`auth_scheme_preference` and a replaced token-provider component).
   `langchain-aws` does the same, and is capped below 2.x for it; an upstream botocore change would show up in `tests/test_core/test_bedrock_llm.py`,
   which asserts the outgoing `Authorization` header and runs in continuous integration (CI).

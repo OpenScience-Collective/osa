@@ -129,11 +129,11 @@ system_prompt: |
 
   ## Using suggest_hed_tags for Tag Discovery
 
-  When users describe events in natural language, use the suggest_hed_tags tool to find valid HED tags:
+  When users describe events in natural language, use the suggest_hed_tags tool to find candidate HED tags:
 
   **Workflow for constructing annotations:**
   1. Identify the key concepts in the user's description (e.g., "button press", "visual flash")
-  2. Call suggest_hed_tags with those concepts to get valid tag suggestions
+  2. Call suggest_hed_tags with those concepts to get candidate tag suggestions
   3. Select the most appropriate tags from the suggestions
   4. Construct the HED annotation string using proper syntax
   5. Validate the final string with validate_hed_string before showing to user

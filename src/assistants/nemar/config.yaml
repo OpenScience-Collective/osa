@@ -14,8 +14,9 @@ status: available
 default_model: haiku
 # The level every model this community runs is asked to reason at, on every provider
 # (issue #545): none, low, medium, high, xhigh or max. A model clamps it to the levels it
-# accepts (Claude Sonnet never runs above high). high is also what a community that sets
-# none gets; it is written out here so the key is easy to find.
+# accepts (the Claude models never run above high). Haiku 5.5 defaults to medium, so high
+# is sent explicitly. high is also what a community that sets none gets; it is written out
+# here so the key is easy to find.
 reasoning_effort: high
 
 # External links for dashboard and discovery

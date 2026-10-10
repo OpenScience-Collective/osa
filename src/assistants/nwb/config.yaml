@@ -16,9 +16,10 @@ status: available
 default_model: haiku
 # The level every model this community runs is asked to reason at, on every provider
 # (issue #545): none, low, medium, high, xhigh or max. A model clamps it to the levels it
-# accepts (Claude Sonnet never runs above high). Luna at max took 15 to 50 s to a first
+# accepts (the Claude models never run above high). Luna at max took 15 to 50 s to a first
 # word, and at xhigh skipped the documentation search in the median of three runs on one
-# question, so this community runs high.
+# question, so this community runs high. Haiku 5.5 defaults to medium, so high is sent
+# explicitly.
 reasoning_effort: high
 maintainers:
 - bendichter
