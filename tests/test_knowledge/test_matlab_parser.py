@@ -233,3 +233,241 @@ end
     assert len(results) == 1
     # The % in "50%" should be preserved in docstring
     assert "50%" in results[0].docstring
+
+
+def test_parse_help_after_definition():
+    """MATLAB's own convention: help follows the definition (FieldTrip, Brainstorm)."""
+    code = """function [data] = ft_preprocessing(cfg, data)
+
+% FT_PREPROCESSING reads MEG and/or EEG data according to user-specified trials
+% and applies several user-specified preprocessing steps to the signals.
+%
+% Use as
+%   [data] = ft_preprocessing(cfg)
+
+% Copyright (C) 2003-2013, Robert Oostenveld, SMI, FCDC
+
+ft_defaults
+"""
+    results = parse_matlab_file(code, "ft_preprocessing.m")
+
+    assert len(results) == 1
+    assert results[0].symbol_name == "ft_preprocessing"
+    # FieldTrip leaves a blank line after the definition; the block starts after it
+    assert results[0].line_number == 3
+    assert "FT_PREPROCESSING reads MEG" in results[0].docstring
+    assert "Use as" in results[0].docstring
+    # The block ends at the first blank line, before the copyright notice
+    assert "Copyright" not in results[0].docstring
+
+
+def test_parse_brainstorm_style_leaves_out_license():
+    """Brainstorm's help block is followed by a license block, after a blank line."""
+    code = """function varargout = process_bandpass( varargin )
+% PROCESS_BANDPASS: Frequency filters: Lowpass/Highpass/Bandpass
+%
+% USAGE:  sProcess = process_bandpass('GetDescription')
+%           sInput = process_bandpass('Run', sProcess, sInput)
+
+% @=============================================================================
+% This function is part of the Brainstorm software:
+% https://neuroimage.usc.edu/brainstorm
+% =============================================================================@
+%
+% Authors: Francois Tadel, 2010-2019
+
+eval(macro_method);
+end
+
+
+%% ===== GET DESCRIPTION =====
+function sProcess = GetDescription()
+    % Description the process
+    sProcess.Comment = 'Band-pass filter';
+end
+"""
+    results = parse_matlab_file(code, "process_bandpass.m")
+    by_name = {r.symbol_name: r for r in results}
+
+    main = by_name["process_bandpass"]
+    assert main.docstring.startswith("PROCESS_BANDPASS: Frequency filters")
+    assert "USAGE:" in main.docstring
+    assert "Brainstorm software" not in main.docstring
+    assert "Authors" not in main.docstring
+    # A subfunction keeps the banner before it rather than its first code comment
+    assert by_name["GetDescription"].docstring == "===== GET DESCRIPTION ====="
+
+
+def test_parse_help_after_continued_definition():
+    """The help block starts after a definition split over lines with ``...``."""
+    code = """function out = long_signature(a, ...
+                                b)
+% LONG_SIGNATURE does something
+out = a + b;
+"""
+    results = parse_matlab_file(code, "long_signature.m")
+
+    assert len(results) == 1
+    assert results[0].docstring == "LONG_SIGNATURE does something"
+    assert results[0].line_number == 3
+
+
+def test_parse_help_before_definition_wins():
+    """EEGLAB's header before the definition is kept over a comment after it."""
+    code = """% POP_THING - the documented help
+
+function out = pop_thing(x)
+% internal note
+out = x;
+"""
+    results = parse_matlab_file(code, "pop_thing.m")
+
+    assert len(results) == 1
+    assert results[0].docstring == "POP_THING - the documented help"
+
+
+def test_parse_block_comment_license_is_not_help():
+    """A %{ ... %} license block before the definition is skipped for the help after it."""
+    code = """%{
+    Copyright (C) Cambridge Electronic Design Limited 2014
+    This file is part of CEDS64ML.
+%}
+
+function [ iOk ] = CEDS64Close( fhand )
+%CEDS64CLOSE Closes an SON file
+iOk = 0;
+"""
+    results = parse_matlab_file(code, "CEDS64Close.m")
+
+    assert len(results) == 1
+    assert results[0].symbol_name == "CEDS64Close"
+    assert results[0].docstring == "CEDS64CLOSE Closes an SON file"
+
+
+def test_parse_license_only_block_is_not_help():
+    """A function whose only comment after its definition is a license has no help."""
+    code = """function y = bst_nanmean(varargin)
+
+% @=============================================================================
+% This function is part of the Brainstorm software:
+% =============================================================================@
+
+y = 1;
+"""
+    assert parse_matlab_file(code, "bst_nanmean.m") == []
+
+
+def test_parse_help_stops_at_license_without_blank_line():
+    """A help block that runs into the license notice ends where the notice starts."""
+    code = """function X = bst_epoching(X)
+% BST_EPOCHING: Divides X in epochs
+%
+% @=============================================================================
+% This function is part of the Brainstorm software:
+X = X;
+"""
+    results = parse_matlab_file(code, "bst_epoching.m")
+
+    assert len(results) == 1
+    assert results[0].docstring == "BST_EPOCHING: Divides X in epochs"
+
+
+def test_parse_classdef_header_is_the_file_help():
+    """A classdef file's top comment block is its help, even when methods have their own."""
+    code = """%CVPARTITION Create a cross-validation partition for data.
+%   An object of the CVPARTITION class defines a random partition.
+
+classdef cvpartition
+  methods
+    function obj = cvpartition(varargin)
+      % constructor
+    end
+    function obj = repartition(obj)
+      % REPARTITION Rerandomize a cross-validation partition.
+    end
+  end
+end
+"""
+    results = parse_matlab_file(code, "cvpartition.m")
+    by_name = {r.symbol_name: r for r in results}
+
+    assert by_name["cvpartition"].symbol_type == "script"
+    assert by_name["cvpartition"].docstring.startswith("CVPARTITION Create a cross-validation")
+    assert "Rerandomize" in by_name["repartition"].docstring
+    assert len(results) == 2
+
+
+def test_parse_separator_above_definition_does_not_hide_help_below():
+    """A bare "%%%%" separator above a function is no help; the block below is read."""
+    code = """%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function y = helper(x)
+% HELPER doubles x
+y = 2 * x;
+"""
+    results = parse_matlab_file(code, "helper.m")
+
+    assert len(results) == 1
+    assert results[0].docstring == "HELPER doubles x"
+
+
+def test_parse_continuation_with_trailing_comment():
+    """A "..." continuation followed by a comment still continues the definition."""
+    code = """function out = f(a, ... % first input
+                 b)
+% F adds its inputs
+out = a + b;
+"""
+    results = parse_matlab_file(code, "f.m")
+
+    assert len(results) == 1
+    assert results[0].docstring == "F adds its inputs"
+
+
+def test_parse_script_header_stops_at_license():
+    """A script's help ends where the license notice starts."""
+    code = """% Batch import of the auditory dataset
+%
+% @=============================================================================
+% This function is part of the Brainstorm software:
+
+sFiles = [];
+"""
+    results = parse_matlab_file(code, "batch_import.m")
+
+    assert len(results) == 1
+    assert results[0].docstring == "Batch import of the auditory dataset"
+
+
+def test_parse_classdef_with_license_only_header_keeps_constructor():
+    """A classdef whose top block is only a license keeps its constructor's help."""
+    code = """% Copyright (C) 2020 Someone
+
+classdef Foo < handle
+  methods
+    function obj = Foo()
+      % FOO builds a Foo
+    end
+  end
+end
+"""
+    results = parse_matlab_file(code, "Foo.m")
+
+    assert len(results) == 1
+    assert results[0].symbol_type == "function"
+    assert results[0].docstring == "FOO builds a Foo"
+
+
+def test_parse_classdef_help_after_classdef_line():
+    """MATLAB's convention also puts a class's help after its classdef line."""
+    code = """classdef Bar < handle
+% BAR holds a value
+  properties
+    value
+  end
+end
+"""
+    results = parse_matlab_file(code, "Bar.m")
+
+    assert len(results) == 1
+    assert results[0].symbol_name == "Bar"
+    assert results[0].docstring == "BAR holds a value"
