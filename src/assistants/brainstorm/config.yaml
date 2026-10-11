@@ -48,9 +48,12 @@ budget:
 # Placeholders (in curly braces) are replaced by CommunityAssistant at runtime:
 #   {preloaded_docs_section} - Embedded documentation content
 #   {available_docs_section} - List of on-demand retrievable docs
+#   {repo_list} - The GitHub repositories synced for this community
+#   {paper_dois} - The tracked papers' DOIs
 #   {page_context_section} - Widget context tool instructions
 #   {additional_instructions} - Runtime-specific instructions
-# Don't modify the placeholder syntax - they're processed in src/agents/base.py
+# Don't modify the placeholder syntax: they are filled in by _build_system_prompt in
+# src/assistants/community.py
 system_prompt: |
   You are a technical assistant specialized in helping users with Brainstorm, a collaborative, open-source application dedicated to the analysis of brain recordings: MEG, EEG, fNIRS, ECoG, sEEG and single/multi-unit electrophysiology.
   Brainstorm is developed by the University of Southern California and McGill University, and is distributed under the GNU General Public License (GPLv3).
@@ -73,7 +76,7 @@ system_prompt: |
   The Brainstorm GitHub organization is at https://github.com/brainstorm-tools
   Scripts shared by Brainstorm users are at https://github.com/brainstorm-tools/bst-users
 
-  ## Response Style (IMPORTANT -- follow this strictly)
+  ## Response Style (IMPORTANT: follow this strictly)
 
   Your responses must be structured but brief:
   - Use markdown headers to organize, but keep each section to 1-2 sentences
@@ -160,21 +163,21 @@ system_prompt: |
   - Example: "How do I query the database from a script?" -> CALL `search_brainstorm_code_docs(query="bst_get")`
 
   **For tutorials and guides:** Use `retrieve_brainstorm_docs`
-  - Example: "How do I compute a head model?" -> CALL `retrieve_brainstorm_docs(title="Tutorial 20: Head modeling")`
+  - Example: "How do I compute a head model?" -> CALL `retrieve_brainstorm_docs(url="https://neuroimage.usc.edu/brainstorm/Tutorials/HeadModel")`
 
   **For errors and troubleshooting:** Use `search_brainstorm_forum`
   - Example: "Error when importing my EDF file" -> CALL `search_brainstorm_forum(query="EDF import error")`
   - Example: "OpenMEEG crashes" -> CALL `search_brainstorm_forum(query="OpenMEEG")`
 
   **For current development issues:** Use `search_brainstorm_discussions`
-  - Example: "Any open issues with DUNEuro?" -> CALL `search_brainstorm_discussions(query="DUNEuro", status="open")`
+  - Example: "Any reported issues with DUNEuro?" -> CALL `search_brainstorm_discussions(query="DUNEuro", include_prs=False)`
 
   **For community contributions:** Scripts shared by users (repo brainstorm-tools/bst-users) are indexed in the code docs.
   - Example: "Is there a user script for batch import?" -> CALL `search_brainstorm_code_docs(query="batch import")`
 
   Always cite sources with links to tutorials, forum topics, or GitHub issues.
 
-  ## Knowledge Discovery Tools - YOU MUST USE THESE
+  ## Knowledge Discovery Tools: YOU MUST USE THESE
 
   You have access to a synced knowledge database with forum topics, GitHub issues, PRs, academic papers, and function documentation.
   **You MUST use these tools when users ask about errors, recent activity, issues, PRs, function usage, or troubleshooting.**
@@ -226,8 +229,9 @@ system_prompt: |
 # - preload: true = embedded in system prompt (recommended: 2-3 core docs to keep prompt lean)
 # - preload: false/omitted = fetched on demand via retrieve_docs tool
 # The tutorials are pages of a MoinMoin wiki. Each source_url is the page itself: the fetcher
-# keeps the page body (div#content) and converts it to markdown. A page longer than 50,000
-# characters (Tutorial 28: Scripting, Plugins) is cut to its first 50,000 when retrieved.
+# keeps the page body (div#content) and converts it to markdown. A retrieved page longer than
+# _MAX_CITABLE_CONTENT_CHARS (src/assistants/community.py, 50,000 characters) is cut to that
+# length; about 15 of these pages are, for example Tutorial 22, Tutorial 28 and Plugins.
 documentation:
   # === PRELOADED: Core overview (2 docs, ~10k tokens) ===
   - title: Brainstorm overview
@@ -244,7 +248,7 @@ documentation:
     category: quickstart
     description: Interface, database structure (protocols, subjects, anatomy, functional data), and creating a first protocol.
 
-  # === ON-DEMAND: Getting started (4 docs) ===
+  # === ON-DEMAND: Getting started (6 docs) ===
   - title: Installation and updates
     url: https://neuroimage.usc.edu/brainstorm/Installation
     source_url: https://neuroimage.usc.edu/brainstorm/Installation
@@ -533,7 +537,7 @@ documentation:
     category: scenarios
     description: Designing an optimal fNIRS probe montage with NIRSTORM.
 
-  # === ON-DEMAND: Anatomy and registration (14 docs) ===
+  # === ON-DEMAND: Anatomy and registration (15 docs) ===
   - title: Coordinate systems
     url: https://neuroimage.usc.edu/brainstorm/CoordinateSystems
     source_url: https://neuroimage.usc.edu/brainstorm/CoordinateSystems
@@ -641,7 +645,7 @@ documentation:
     url: https://neuroimage.usc.edu/brainstorm/Tutorials/MovementDetect
     source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/MovementDetect
     category: recordings
-    description: Detecting subject movements in the recordings.
+    description: Detecting head movements in continuous CTF MEG recordings that include head-localization channels.
 
   - title: Synchronization with eye tracker
     url: https://neuroimage.usc.edu/brainstorm/Tutorials/EyetrackSynchro
@@ -709,7 +713,7 @@ documentation:
     url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutDipScan
     source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutDipScan
     category: source_advanced
-    description: Dipole scanning and displaying dipoles.
+    description: Finding the most significant dipole at each time point in an existing source grid, and displaying dipoles.
 
   - title: Fitting dipoles with FieldTrip
     url: https://neuroimage.usc.edu/brainstorm/Tutorials/DipoleFitting
@@ -936,9 +940,11 @@ citations:
     "10.1016/j.neuroimage.2022.119851": "DUNEuro FEM (Medani 2023)"
 
 # Discourse forum: the Brainstorm user forum, where users and the development team discuss
-# problems. Job postings and forum announcements are left out. The forum does not use the
-# "solved" plugin, so each topic's answer is its most-liked reply or else the first reply
-# from the development team (forum staff).
+# problems. Synced categories: Discussions, Bugs, Requests, News (slug "announce", release
+# news) and Uncategorized. Left out: Job opportunities (id 19) and Announcements (id 21,
+# notices about the forum). The forum has no topics marked solved, so most topics are
+# answered by their most-liked reply or else by a reply from the development team (forum
+# staff); see _get_accepted_answer in src/knowledge/discourse_sync.py for the full order.
 discourse:
   - url: https://neuroimage.usc.edu/forums
     categories:

@@ -145,8 +145,8 @@ system_prompt: |
   - Example: "Are there any plans for P300 speller?" -> CALL `search_metabci_discussions(query="P300 speller")`
 
   **For tutorials and guides:** Use `retrieve_metabci_docs`
-  - Example: "How to design a MI experiment?" -> CALL `retrieve_metabci_docs(title="MI experiment design")`
-  - Example: "Show me the introduction to brainflow" -> CALL `retrieve_metabci_docs(title="brainflow introduction")`
+  - Example: "How do I show MI cues to the subject?" -> CALL `retrieve_metabci_docs(url="https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainstim.paradigm.html")`
+  - Example: "How does real-time streaming work in brainflow?" -> CALL `retrieve_metabci_docs(url="https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainflow.workers.html")`
 
   **For academic research:** Use `search_metabci_papers`
   - Example: "Papers on transfer learning methods in MetaBCI" -> CALL `search_metabci_papers(query="transfer learning MetaBCI")`
