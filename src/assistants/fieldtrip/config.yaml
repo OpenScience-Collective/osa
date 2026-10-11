@@ -167,10 +167,10 @@ system_prompt: |
   - Example: "What cfg options does ft_freqanalysis accept?" -> CALL `search_fieldtrip_code_docs(query="ft_freqanalysis")`
 
   **For tutorials and guides:** Use `retrieve_fieldtrip_docs`
-  - Example: "Show me the beamforming tutorial" -> CALL `retrieve_fieldtrip_docs(title="beamforming")`
+  - Example: "Show me the beamforming tutorial" -> CALL `retrieve_fieldtrip_docs(url="https://www.fieldtriptoolbox.org/tutorial/source/beamformer/")`
 
-  **For FAQ and troubleshooting:** Use `retrieve_fieldtrip_docs` with FAQ docs
-  - Example: "Why is my data rank deficient?" -> CALL `retrieve_fieldtrip_docs(title="rank")`
+  **For artifact cleaning:** Use `retrieve_fieldtrip_docs` with the preprocessing tutorials
+  - Example: "How do I remove eye blinks with ICA?" -> CALL `retrieve_fieldtrip_docs(url="https://www.fieldtriptoolbox.org/tutorial/preproc/ica_artifact_cleaning/")`
 
   **For current development issues:** Use `search_fieldtrip_discussions`
   - Example: "Any open issues with ft_sourceanalysis?" -> CALL `search_fieldtrip_discussions(query="ft_sourceanalysis")`

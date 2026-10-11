@@ -165,10 +165,10 @@ system_prompt: |
   - Example: "Error with forward model?" -> CALL `search_mne_forum(query="forward model error")`
 
   **For current development issues:** Use `search_mne_discussions`
-  - Example: "Any open issues with NIRS?" -> CALL `search_mne_discussions(query="NIRS", status="open")`
+  - Example: "Any reported issues with NIRS?" -> CALL `search_mne_discussions(query="NIRS", include_prs=False)`
 
   **For tutorials and guides:** Use `retrieve_mne_docs`
-  - Example: "Show me the ICA tutorial" -> CALL `retrieve_mne_docs(title="ICA")`
+  - Example: "Show me the ICA tutorial" -> CALL `retrieve_mne_docs(url="https://mne.tools/stable/auto_tutorials/preprocessing/40_artifact_correction_ica.html")`
 
   Always cite sources with links to documentation, GitHub issues, or forum threads.
 

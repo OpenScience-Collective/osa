@@ -637,6 +637,7 @@ def sync_all(
                         base_url=str(discourse_cfg.url),
                         project=comm_id,
                         categories=discourse_cfg.categories or None,
+                        tags=discourse_cfg.tags or None,
                         incremental=not full,
                     )
                 console.print(f"[green]Discourse: {discourse_total} topics[/green]")
@@ -943,17 +944,24 @@ def sync_discourse(
         console.print(f"[red]Error: No Discourse forum configured for {community}[/red]")
         raise typer.Exit(1)
 
-    from src.knowledge.discourse_sync import sync_discourse_topics
+    from src.knowledge.discourse_sync import DiscourseSyncError, sync_discourse_topics
 
     total = 0
+    incomplete = False
     for discourse_config in info.community_config.discourse:
-        count = sync_discourse_topics(
-            base_url=str(discourse_config.url),
-            project=community,
-            categories=discourse_config.categories or None,
-            incremental=not full,
-            max_topics=max_topics,
-        )
-        total += count
+        try:
+            total += sync_discourse_topics(
+                base_url=str(discourse_config.url),
+                project=community,
+                categories=discourse_config.categories or None,
+                tags=discourse_config.tags or None,
+                incremental=not full,
+                max_topics=max_topics,
+            )
+        except DiscourseSyncError as e:
+            console.print(f"[red]{e}[/red]")
+            incomplete = True
 
     console.print(f"\n[green]Synced {total} Discourse topics for {community}[/green]")
+    if incomplete:
+        raise typer.Exit(1)

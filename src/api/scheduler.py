@@ -8,6 +8,7 @@ sync configuration in their config.yaml. Sync types:
 - Mailing list archive sync
 - FAQ generation from discussions (LLM-powered)
 - BIDS Extension Proposals (BEP) sync
+- Discourse forum topic sync
 - Community budget checks (every 15 minutes, global)
 
 Each community controls its own schedule via the `sync:` section in config.yaml.
@@ -282,6 +283,35 @@ def _run_beps_sync_for_community(community_id: str) -> bool:
         return False
 
 
+def _run_discourse_sync_for_community(community_id: str) -> bool:
+    """Run Discourse forum topic sync for a single community. Returns True on success."""
+    logger.info("Starting scheduled Discourse sync for %s", community_id)
+    try:
+        info = registry.get(community_id)
+        if not info or not info.community_config or not info.community_config.discourse:
+            logger.debug("No Discourse config for %s", community_id)
+            return True
+
+        from src.knowledge.discourse_sync import sync_discourse_topics
+
+        init_db(community_id)
+        total = 0
+        for discourse_config in info.community_config.discourse:
+            total += sync_discourse_topics(
+                base_url=str(discourse_config.url),
+                project=community_id,
+                categories=discourse_config.categories or None,
+                tags=discourse_config.tags or None,
+            )
+
+        logger.info("Discourse sync complete for %s: %d topics", community_id, total)
+        _reset_failure("discourse", community_id)
+        return True
+    except Exception as e:
+        _track_failure("discourse", community_id, e)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Budget check (global, not per-community scheduled)
 # ---------------------------------------------------------------------------
@@ -414,8 +444,19 @@ _SYNC_TYPE_MAP: dict[str, tuple[Callable[[str], bool], Callable[[Any], Any]]] = 
         _run_beps_sync_for_community,
         lambda _cfg: True,  # BEP sync doesn't need special data config
     ),
+    "discourse": (
+        _run_discourse_sync_for_community,
+        lambda cfg: bool(cfg.discourse),
+    ),
 }
 
+
+#: Sync types run at startup for a community whose database lacks them. FAQ is left out
+#: because it calls an LLM and needs the mailing list synced first; Discourse because a
+#: first sync of a large forum fetches one topic per second for hours, which would hold
+#: up the seeding of every community after it (it runs on its schedule, or by hand with
+#: ``osa sync discourse``).
+SEED_SYNC_TYPES = ("github", "papers", "docstrings", "mailman", "beps")
 
 # ---------------------------------------------------------------------------
 # Startup seed: populate empty databases
@@ -426,10 +467,8 @@ def _check_and_seed_databases() -> None:
     """Check for empty databases and trigger immediate sync if needed.
 
     Runs in a background thread to avoid blocking app startup.
-    Only seeds sync types that the community has configured in both
-    its data config and sync schedule. FAQ is excluded from startup
-    seeding because it requires LLM calls (expensive, slow) and depends
-    on mailman data being populated first.
+    Only seeds the types in SEED_SYNC_TYPES that the community has configured
+    in both its data config and sync schedule.
     """
     try:
         _do_seed_databases()
@@ -451,8 +490,7 @@ def _do_seed_databases() -> None:
         sync_config = config.sync
         populated = is_db_populated(community_id)
 
-        # FAQ excluded: requires LLM calls and depends on mailman data
-        for sync_type in ("github", "papers", "docstrings", "mailman", "beps"):
+        for sync_type in SEED_SYNC_TYPES:
             schedule = getattr(sync_config, sync_type, None)
             if not schedule:
                 continue
@@ -631,7 +669,8 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
     """Run sync immediately for all communities (for manual triggers).
 
     Args:
-        sync_type: "github", "papers", "docstrings", "mailman", "faq", "beps", or "all"
+        sync_type: "github", "papers", "docstrings", "mailman", "faq", "beps",
+            "discourse", or "all"
 
     Returns:
         Dict mapping sync type to number of communities successfully synced.

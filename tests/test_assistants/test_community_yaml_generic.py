@@ -296,6 +296,38 @@ class TestCommunityYAMLConfiguration:
         for tool in assistant.tools:
             assert tool.description, f"{community_id}/{tool.name} missing description"
 
+    def test_prompt_tool_examples_match_the_tools(self, community_id):
+        """Every example call in the system prompt, such as `retrieve_x_docs(url="...")`,
+        names a tool this community has and passes only arguments that tool takes.
+
+        A wrong example teaches the model a call that fails: the prompts once showed
+        `retrieve_x_docs(title=...)`, a tool that takes only a url, and
+        `search_x_discussions(status=...)`, a filter that tool does not have.
+        """
+        from src.assistants import registry
+
+        assistant = registry.create_assistant(community_id, model=MagicMock(), preload_docs=False)
+        tools = {tool.name: set(tool.args) for tool in assistant.tools}
+        config = registry.get_community_config(community_id)
+        doc_urls = {str(doc.url) for doc in config.documentation}
+
+        calls = re.findall(r"`(\w+)\(([^`]*)\)`", config.system_prompt or "")
+        problems = []
+        for name, arguments in calls:
+            if community_id not in name:
+                continue  # a MATLAB or Python call shown as code, not a tool call
+            if name not in tools:
+                problems.append(f"{name}: no such tool")
+                continue
+            for argument in re.findall(r"(\w+)\s*=", arguments):
+                if argument not in tools[name]:
+                    problems.append(f"{name}: no argument {argument!r}")
+            if name == f"retrieve_{community_id}_docs":
+                for url in re.findall(r'url\s*=\s*"([^"]+)"', arguments):
+                    if url not in doc_urls:
+                        problems.append(f"{name}: {url} is not a configured document")
+        assert problems == []
+
     def test_documentation_categories_valid(self, community_id):
         """Documentation should have valid category values."""
         from src.assistants import registry

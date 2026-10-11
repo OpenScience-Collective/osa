@@ -471,6 +471,33 @@ class TestFetchOverHttp:
             assert "Body text" in content, name
             assert "tracker" not in content and "margin" not in content, name
 
+    def test_wiki_page_with_unclosed_paragraphs_is_converted_whole(
+        self, site: _LocalSite, fetcher: DocumentFetcher
+    ) -> None:
+        """A MoinMoin page (Brainstorm's tutorials) leaves its <p> tags open and holds its
+        text in div#content beside a sidebar: every section is kept, the sidebar is not."""
+        page = (
+            "<!DOCTYPE html><html><head><title>T</title></head><body>"
+            '<div id="sidebar"><p>Sidebar link list</div>'
+            '<div id="content"><h1>Tutorial 20: Head modeling</h1>'
+            '<p class="line862">Intro text <em> </em>'
+            '<p class="line867"><img alt="origins.gif" src="/a.gif"> '
+            "<div style='float: right'> Advanced </div>"
+            '<p class="line867">\n<h2 id="Source_models">Source models</h2>'
+            '<p class="line862">Source text'
+            '<p class="line867">\n<h2 id="Forward_model">Forward model</h2>'
+            '<p class="line862">Forward text</div>'
+            '<div id="footer">Footer</div></body></html>'
+        )
+        url = site.serve("/brainstorm/Tutorials/HeadModel", page, "text/html; charset=utf-8")
+
+        content = self._fetch(fetcher, url)
+
+        assert "# Tutorial 20: Head modeling" in content
+        assert "## Source models" in content and "Source text" in content
+        assert "## Forward model" in content and "Forward text" in content
+        assert "Sidebar link list" not in content and "Footer" not in content
+
     def test_html_page_is_cached_as_markdown(
         self, site: _LocalSite, fetcher: DocumentFetcher
     ) -> None:

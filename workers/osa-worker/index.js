@@ -323,6 +323,7 @@ function isAllowedOrigin(origin) {
     'https://nemar.org',
     'https://neuroconv--2064.org.readthedocs.build',
     'https://neuroconv.readthedocs.io',
+    'https://neuroimage.usc.edu',
     'https://nwb-overview--197.org.readthedocs.build',
     'https://nwb-overview.readthedocs.io',
     'https://nwb.org',
@@ -356,6 +357,7 @@ function isAllowedOrigin(origin) {
   if (origin.startsWith('https://') && origin.endsWith('.nwb.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.readthedocs.build')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.readthedocs.io')) return true;
+  if (origin.startsWith('https://') && origin.endsWith('.usc.edu')) return true;
 
   // Allow demo.osc.earth and single-level subdomains (develop-demo, PR previews)
   if (origin === 'https://demo.osc.earth') return true;

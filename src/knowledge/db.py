@@ -720,6 +720,65 @@ def upsert_docstring(
     )
 
 
+def delete_stale_docstrings(
+    conn: sqlite3.Connection,
+    *,
+    repo: str,
+    language: str,
+    file_path: str,
+    keep_symbols: set[str],
+) -> int:
+    """Delete a file's docstrings for symbols its latest parse no longer produced.
+
+    A symbol renamed or removed in the source, or text the parser no longer
+    counts as help (a license notice), would otherwise stay searchable.
+
+    Args:
+        conn: Database connection
+        repo: Repository in owner/name format
+        language: 'matlab' or 'python'
+        file_path: Relative path from repo root
+        keep_symbols: The symbols the file's latest parse produced
+
+    Returns:
+        Number of rows deleted
+    """
+    rows = conn.execute(
+        "SELECT id, symbol_name FROM docstrings WHERE repo = ? AND language = ? AND file_path = ?",
+        (repo, language, file_path),
+    ).fetchall()
+    stale = [row["id"] for row in rows if row["symbol_name"] not in keep_symbols]
+    conn.executemany("DELETE FROM docstrings WHERE id = ?", [(i,) for i in stale])
+    return len(stale)
+
+
+def delete_docstrings_of_missing_files(
+    conn: sqlite3.Connection,
+    *,
+    repo: str,
+    language: str,
+    present_files: set[str],
+) -> int:
+    """Delete the docstrings of files that are no longer in the repository.
+
+    Args:
+        conn: Database connection
+        repo: Repository in owner/name format
+        language: 'matlab' or 'python'
+        present_files: Every file of that language in the repository now
+
+    Returns:
+        Number of rows deleted
+    """
+    rows = conn.execute(
+        "SELECT id, file_path FROM docstrings WHERE repo = ? AND language = ?",
+        (repo, language),
+    ).fetchall()
+    gone = [row["id"] for row in rows if row["file_path"] not in present_files]
+    conn.executemany("DELETE FROM docstrings WHERE id = ?", [(i,) for i in gone])
+    return len(gone)
+
+
 def get_last_sync(source_type: str, source_name: str, project: str = "hed") -> str | None:
     """Get last sync time for a source.
 
@@ -740,7 +799,11 @@ def get_last_sync(source_type: str, source_name: str, project: str = "hed") -> s
 
 
 def update_sync_metadata(
-    source_type: str, source_name: str, items_synced: int, project: str = "hed"
+    source_type: str,
+    source_name: str,
+    items_synced: int,
+    project: str = "hed",
+    synced_at: str | None = None,
 ) -> None:
     """Update sync metadata for a source.
 
@@ -749,6 +812,9 @@ def update_sync_metadata(
         source_name: Repository name, paper source name, or base URL
         items_synced: Number of items synced in this run
         project: Assistant/project name. Defaults to 'hed'.
+        synced_at: ISO 8601 time the synced data was read as of. Defaults to now; a
+            sync that runs long passes its start, so the next incremental sync does
+            not skip what changed while it ran.
     """
     with get_connection(project) as conn:
         conn.execute(
@@ -759,7 +825,7 @@ def update_sync_metadata(
                 last_sync_at=excluded.last_sync_at,
                 items_synced=excluded.items_synced
             """,
-            (source_type, source_name, _now_iso(), items_synced),
+            (source_type, source_name, synced_at or _now_iso(), items_synced),
         )
         conn.commit()
 
