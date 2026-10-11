@@ -432,8 +432,6 @@ sync:
     cron: "0 2 * * *"       # daily at 2am UTC
   papers:
     cron: "0 3 * * 0"       # weekly Sunday at 3am UTC
-  discourse:
-    cron: "50 5 * * *"      # daily at 5:50am UTC (NeuroStars topics tagged hed; incremental)
 
 # GitHub repositories for issue/PR sync
 github:
@@ -455,12 +453,6 @@ citations:
     - "10.3389/fninf.2024.1292667"        # HED SCORE 1.0: A library schema for scoring events
     - "10.1038/s41597-024-04282-0"        # HED-based annotation for BIDS datasets
     - "10.1038/s41597-025-05791-2"        # HED validation framework
-
-# Discourse forums (will be a standard tool available to all communities)
-discourse:
-  - url: https://neurostars.org
-    tags:
-      - hed
 
 # Extension points for specialized tools
 # These are Python tools that cannot be auto-generated from YAML
