@@ -175,6 +175,32 @@ class TestFetchPageContentImpl:
 
     @patch("src.utils.page_fetcher.is_safe_url")
     @respx.mock
+    def test_wiki_page_keeps_its_content_and_drops_scripts(self, mock_is_safe):
+        """A Brainstorm tutorial (a MoinMoin page with inline analytics code, a sidebar and
+        unclosed <p> tags) reads as its body: every section, no script text, no sidebar."""
+        mock_is_safe.return_value = (True, "", "128.125.253.1")
+        page = (
+            "<!DOCTYPE html><html><head><script>var _gaq = _gaq || [];</script></head><body>"
+            '<div id="sidebar"><p>Sidebar link list</div>'
+            '<div id="content"><h1>Tutorial 20: Head modeling</h1>'
+            "<p>Intro text<p>\n<h2>Source models</h2><p>Source text"
+            "<script>window.chatbaseConfig = {};</script>"
+            "<p>\n<h2>Forward model</h2><p>Forward text</div>"
+            '<div id="footer">Footer</div></body></html>'
+        )
+        respx.get("https://neuroimage.usc.edu/brainstorm/Tutorials/HeadModel").mock(
+            return_value=httpx.Response(200, headers={"content-type": "text/html"}, text=page)
+        )
+
+        result = fetch_page_content("https://neuroimage.usc.edu/brainstorm/Tutorials/HeadModel")
+
+        assert "# Tutorial 20: Head modeling" in result
+        assert "Source text" in result and "Forward text" in result
+        assert "_gaq" not in result and "chatbaseConfig" not in result
+        assert "Sidebar link list" not in result and "Footer" not in result
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
     def test_rejects_non_html_content(self, mock_is_safe):
         """Should reject non-HTML content types."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")

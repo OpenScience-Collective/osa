@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
-from markdownify import markdownify
+
+from src.tools.fetcher import _html_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,10 @@ def fetch_page(url: str) -> PageFetchResult:
             logger.warning("Non-HTML content type from %s: %s", url, content_type)
             return PageFetchResult(False, f"Error: URL returned non-HTML content: {content_type}")
 
-        content = markdownify(response.text, heading_style="ATX", strip=["script", "style"])
+        # The page's main content without its scripts, navigation or footer, read with
+        # the documentation fetcher's conversion (markdownify's ``strip`` keeps the text
+        # of a <script>, which filled the page of a site with inline analytics code)
+        content = _html_to_markdown(response.text)
         lines = [line.strip() for line in content.split("\n")]
         content = "\n".join(line for line in lines if line)
 
