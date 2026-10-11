@@ -321,6 +321,7 @@ function isAllowedOrigin(origin) {
     'https://metabci.readthedocs.io',
     'https://mne.tools',
     'https://nemar.org',
+    'https://neuroimage.usc.edu',
     'https://neuroconv--2064.org.readthedocs.build',
     'https://neuroconv.readthedocs.io',
     'https://nwb-overview--197.org.readthedocs.build',

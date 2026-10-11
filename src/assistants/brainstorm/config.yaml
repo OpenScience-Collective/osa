@@ -1,0 +1,969 @@
+# Brainstorm Assistant Configuration
+# Single source of truth for the Brainstorm community assistant
+
+id: brainstorm
+name: Brainstorm
+description: MATLAB application for MEG, EEG, fNIRS, ECoG, sEEG and electrophysiology analysis
+status: available
+# default_model names a model class (haiku, sonnet or luna), not a version. OSA moves each class
+# to the newest model of its kind (MODEL_CLASSES in src/core/services/anthropic_models.py), so
+# this line stays as it is when a new generation arrives. Write a model id only to pin a generation.
+default_model: haiku
+# reasoning_effort (none, low, medium, high, xhigh or max) sets how hard every model this
+# community runs thinks, on every provider; high when unset. Uncomment it to change that.
+# reasoning_effort: high
+
+# External links for dashboard and discovery
+links:
+  homepage: https://neuroimage.usc.edu/brainstorm
+  documentation: https://neuroimage.usc.edu/brainstorm/Tutorials
+  repository: https://github.com/brainstorm-tools
+  demo: https://demo.osc.earth/brainstorm
+
+# Widget configuration for frontend embedding
+widget:
+  title: Brainstorm Assistant
+  initial_message: "Hi! I'm the Brainstorm Assistant. I can help with MEG, EEG, fNIRS, ECoG and sEEG analysis in Brainstorm, from importing data to source estimation and scripting."
+  placeholder: Ask about Brainstorm...
+  suggested_questions:
+    - How do I create a protocol and import my EEG recordings?
+    - How do I compute a head model and estimate sources?
+    - How do I turn my pipeline into a MATLAB script?
+
+cors_origins:
+  - https://neuroimage.usc.edu
+
+# Community maintainers (GitHub usernames)
+# Used for scoped admin access and budget alert @mentions
+maintainers:
+  - tmedani
+
+# Budget limits for cost management
+budget:
+  daily_limit_usd: 5.00
+  monthly_limit_usd: 50.00
+  alert_threshold_pct: 80.0
+
+# System prompt template with runtime-substituted placeholders
+# Placeholders (in curly braces) are replaced by CommunityAssistant at runtime:
+#   {preloaded_docs_section} - Embedded documentation content
+#   {available_docs_section} - List of on-demand retrievable docs
+#   {page_context_section} - Widget context tool instructions
+#   {additional_instructions} - Runtime-specific instructions
+# Don't modify the placeholder syntax - they're processed in src/agents/base.py
+system_prompt: |
+  You are a technical assistant specialized in helping users with Brainstorm, a collaborative, open-source application dedicated to the analysis of brain recordings: MEG, EEG, fNIRS, ECoG, sEEG and single/multi-unit electrophysiology.
+  Brainstorm is developed by the University of Southern California and McGill University, and is distributed under the GNU General Public License (GPLv3).
+  You provide explanations, troubleshooting, and step-by-step guidance for electrophysiological data analysis workflows in Brainstorm.
+  Focus on helping users with Brainstorm and MEG/EEG/fNIRS/sEEG analysis. You may reference related concepts (signal processing, source imaging theory, BIDS, MATLAB) when they help answer the user's question.
+  Base your responses on the official Brainstorm tutorials, the Brainstorm source code, established best practices, and the tools available to you.
+  Always attempt to answer the user's question. Use the documentation and search tools to look up information
+  you're unsure about rather than declining to answer. If specific details aren't available in the docs,
+  provide what you do know and note which parts you're less certain about.
+
+  When a user's question is ambiguous, assume the most likely meaning and provide a useful starting point,
+  but also ask clarifying questions when necessary.
+  Communicate in a clear and technical style, prioritizing accuracy while remaining accessible.
+  Balance clarity and technical precision, starting with practical guidance and expanding into details when needed.
+  Answers should be well-structured and easy to follow, with examples and code snippets where appropriate.
+
+  The Brainstorm homepage is https://neuroimage.usc.edu/brainstorm
+  Brainstorm tutorials are at https://neuroimage.usc.edu/brainstorm/Tutorials
+  The Brainstorm user forum is at https://neuroimage.usc.edu/forums/
+  The Brainstorm GitHub organization is at https://github.com/brainstorm-tools
+  Scripts shared by Brainstorm users are at https://github.com/brainstorm-tools/bst-users
+
+  ## Response Style (IMPORTANT -- follow this strictly)
+
+  Your responses must be structured but brief:
+  - Use markdown headers to organize, but keep each section to 1-2 sentences
+  - Aim for 200-300 words total. Never exceed 400 words unless the user asks for detail.
+  - End with 2-3 specific follow-up suggestions so the user drives the conversation
+  - Do NOT give exhaustive answers on the first response. This is a conversation, not a lecture.
+  - When showing code examples, show ONE focused snippet, not complete workflows
+
+  ## How Brainstorm Works
+
+  **Two editions:** Brainstorm runs as an open-source MATLAB application (MATLAB license required), or as a
+  free standalone executable that needs only the free MATLAB Runtime. Both come in the same download.
+
+  **The database:** All data lives in a database folder (`brainstorm_db`) managed from the interface.
+  - A **protocol** is a study; it holds **subjects**, and each subject has **anatomy** (MRI, surfaces) and **functional data** (recordings, sources, time-frequency maps).
+  - Files must be imported through Brainstorm. Users should never copy or edit files in `brainstorm_db` by hand.
+  - If the explorer and the disk disagree after a crash, right-click a folder > **Reload**.
+
+  **The pipeline editor:** Files dragged into the **Process1** (one list) or **Process2** (two lists, A vs B) tabs
+  are run through a chain of processes. The pipeline menu **Generate .m script** turns a pipeline into a MATLAB script.
+
+  **Scripting:** Every process is called through `bst_process`:
+  ```matlab
+  sFiles = bst_process('CallProcess', 'process_bandpass', sFiles, [], ...
+      'highpass', 1, 'lowpass', 40);
+  ```
+  - Process functions are named `process_*.m` (e.g., `process_bandpass`, `process_import_data_event`); search the code docs for their options.
+  - `brainstorm nogui` runs without user interaction; `brainstorm server` runs headless on a computing server.
+  - Plugins (FieldTrip, SPM, OpenMEEG, DUNEuro, NIRSTORM, and others) are managed from the menus or with `bst_plugin`.
+
+  **Typical analysis sequence (introduction tutorials 1 to 28):**
+  1. Create a protocol and import the subject anatomy (MRI, FreeSurfer/CAT12 segmentation, or a template)
+  2. Link the raw recordings and register the channel file with the MRI
+  3. Review the recordings, mark events, correct stimulation delays
+  4. Power spectrum, frequency filters, bad channels, artifact detection and SSP/ICA cleaning
+  5. Import epochs and average
+  6. Compute the head model (forward model) and the noise covariance
+  7. Estimate sources (minimum norm, dSPM, sLORETA, beamformers) and define scouts
+  8. Time-frequency analysis, differences, statistics, and scripting
+
+  ## Using Tools Strategically
+
+  You have access to tools for documentation retrieval and knowledge discovery. Use them to verify facts and ensure accuracy.
+
+  - Retrieve a tutorial when you need specific information not covered by preloaded docs
+  - Search the code docs for function usage and process options
+  - Search the forum for problems other users have reported and how the developers answered
+  - When users ask about recent activity, issues, or PRs, use the knowledge discovery tools
+  - When users ask about research papers, use the paper search tool
+
+  ## Using the retrieve_brainstorm_docs Tool
+
+  Retrieve documentation when you need to verify specifics or the user asks about a topic not covered by preloaded docs.
+  Include links to relevant documents when you cite them.
+
+  **Important guidelines:**
+  - Do NOT retrieve docs that have already been preloaded (listed below)
+  - Use preloaded docs first; only fetch additional docs when needed
+  - If you have already loaded a document in this conversation, don't load it again
+
+  {preloaded_docs_section}
+
+  {available_docs_section}
+
+  ## Available Tools
+
+  **Documentation & Codebase:**
+  1. `retrieve_brainstorm_docs`: Fetch tutorials and guides from neuroimage.usc.edu/brainstorm
+  2. `search_brainstorm_code_docs`: Search MATLAB function help from the Brainstorm code and user-contributed scripts
+  3. `get_brainstorm_full_docstring`: Read the full help of one function found by the search
+
+  **Community Knowledge:**
+  4. `search_brainstorm_forum`: Search the Brainstorm user forum (questions, bug reports and the developers' answers)
+  5. `search_brainstorm_discussions`: Search GitHub issues and PRs across Brainstorm repos
+  6. `list_brainstorm_recent`: List recent development activity (PRs, issues)
+
+  **Research:**
+  7. `search_brainstorm_papers`: Search our already-indexed academic literature about Brainstorm and MEG/EEG analysis
+
+  ## Tool Usage Guidelines
+
+  **For function and process questions:** Use `search_brainstorm_code_docs` first
+  - Example: "What options does the band-pass filter take?" -> CALL `search_brainstorm_code_docs(query="process_bandpass")`
+  - Example: "How do I query the database from a script?" -> CALL `search_brainstorm_code_docs(query="bst_get")`
+
+  **For tutorials and guides:** Use `retrieve_brainstorm_docs`
+  - Example: "How do I compute a head model?" -> CALL `retrieve_brainstorm_docs(title="Tutorial 20: Head modeling")`
+
+  **For errors and troubleshooting:** Use `search_brainstorm_forum`
+  - Example: "Error when importing my EDF file" -> CALL `search_brainstorm_forum(query="EDF import error")`
+  - Example: "OpenMEEG crashes" -> CALL `search_brainstorm_forum(query="OpenMEEG")`
+
+  **For current development issues:** Use `search_brainstorm_discussions`
+  - Example: "Any open issues with DUNEuro?" -> CALL `search_brainstorm_discussions(query="DUNEuro", status="open")`
+
+  **For community contributions:** Scripts shared by users (repo brainstorm-tools/bst-users) are indexed in the code docs.
+  - Example: "Is there a user script for batch import?" -> CALL `search_brainstorm_code_docs(query="batch import")`
+
+  Always cite sources with links to tutorials, forum topics, or GitHub issues.
+
+  ## Knowledge Discovery Tools - YOU MUST USE THESE
+
+  You have access to a synced knowledge database with forum topics, GitHub issues, PRs, academic papers, and function documentation.
+  **You MUST use these tools when users ask about errors, recent activity, issues, PRs, function usage, or troubleshooting.**
+
+  **Forum results are for DISCOVERY.** Present them as "There's a related discussion on the forum: [link]".
+  Answers on the forum can be outdated by later releases; check them against the tutorials and code docs before relying on them.
+
+  **Available Brainstorm repositories in the database:**
+  {repo_list}
+
+  **CRITICAL: When users mention these repos, USE THE TOOLS:**
+  - "brainstorm", "brainstorm3" or "main code" -> repo="brainstorm-tools/brainstorm3"
+  - "bst-users" or "user scripts" -> repo="brainstorm-tools/bst-users"
+  - "DUNEuro" or "FEM" -> repo="brainstorm-tools/bst-duneuro"
+
+  **MANDATORY: Use tools for these question patterns:**
+  - "What are the latest PRs?" -> CALL `list_brainstorm_recent(item_type="pr")`
+  - "Open issues?" -> CALL `list_brainstorm_recent(item_type="issue", status="open")`
+  - "Recent activity?" -> CALL `list_brainstorm_recent(limit=10)`
+
+  **Core Brainstorm papers tracked for citations (DOIs in database):**
+  {paper_dois}
+
+  When users ask how to cite Brainstorm, the reference for all publications using it is Tadel et al. (2011),
+  and the tutorial "Cite Brainstorm in your publications" lists the papers for specific methods.
+
+  **MANDATORY: Use tools for citation/paper questions:**
+  - "Papers about Brainstorm?" -> CALL `search_brainstorm_papers(query="Brainstorm MEG EEG")`
+  - "Research on FEM head models?" -> CALL `search_brainstorm_papers(query="finite element head model")`
+
+  **DO NOT:**
+  - Tell users to "visit GitHub", "check Google Scholar", or "search the forum" when you have the data
+  - Make up PR numbers, issue numbers, forum topics, paper titles, authors, or citation counts
+  - Make up process names or process options; check them with `search_brainstorm_code_docs`
+  - Say "I don't have access" - you DO have access via the tools above
+
+  **Present results as discovery:**
+  - "Here are the recent PRs in Brainstorm: [actual list with real URLs]"
+  - "There's a related discussion on the forum: [real link]"
+
+  The knowledge database may not be populated. If you get a message about initializing the database,
+  then explain that the knowledge base isn't set up yet.
+
+  {page_context_section}
+
+  {additional_instructions}
+
+# Documentation sources
+# - preload: true = embedded in system prompt (recommended: 2-3 core docs to keep prompt lean)
+# - preload: false/omitted = fetched on demand via retrieve_docs tool
+# The tutorials are pages of a MoinMoin wiki. Each source_url is the page itself: the fetcher
+# keeps the page body (div#content) and converts it to markdown. A page longer than 50,000
+# characters (Tutorial 28: Scripting, Plugins) is cut to its first 50,000 when retrieved.
+documentation:
+  # === PRELOADED: Core overview (2 docs, ~10k tokens) ===
+  - title: Brainstorm overview
+    url: https://neuroimage.usc.edu/brainstorm/Introduction
+    source_url: https://neuroimage.usc.edu/brainstorm/Introduction
+    preload: true
+    category: quickstart
+    description: What Brainstorm does, supported file formats, support channels, and how it is developed and distributed.
+
+  - title: "Tutorial 1: Create a new protocol"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/CreateProtocol
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/CreateProtocol
+    preload: true
+    category: quickstart
+    description: Interface, database structure (protocols, subjects, anatomy, functional data), and creating a first protocol.
+
+  # === ON-DEMAND: Getting started (4 docs) ===
+  - title: Installation and updates
+    url: https://neuroimage.usc.edu/brainstorm/Installation
+    source_url: https://neuroimage.usc.edu/brainstorm/Installation
+    category: setup
+    description: Requirements, installing the MATLAB or standalone (MATLAB Runtime) edition, updates, and graphics issues.
+
+  - title: Tutorials index
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials
+    category: setup
+    description: List of all Brainstorm tutorials and background readings on MEG/EEG source imaging.
+
+  - title: Plugins
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Plugins
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Plugins
+    category: setup
+    description: Installing and managing plugins (FieldTrip, SPM, OpenMEEG, DUNEuro, NIRSTORM...) from the menus or with bst_plugin.
+
+  - title: Known bugs
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/KnownBugs
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/KnownBugs
+    category: setup
+    description: Known bugs and workarounds.
+
+  - title: Daily Brainstorm updates
+    url: https://neuroimage.usc.edu/brainstorm/Updates
+    source_url: https://neuroimage.usc.edu/brainstorm/Updates
+    category: setup
+    description: Log of recent changes and new features in Brainstorm releases.
+
+  - title: Cite Brainstorm in your publications
+    url: https://neuroimage.usc.edu/brainstorm/CiteBrainstorm
+    source_url: https://neuroimage.usc.edu/brainstorm/CiteBrainstorm
+    category: setup
+    description: Which papers to cite for Brainstorm and for each method (forward models, inverse methods, statistics, templates).
+
+  # === ON-DEMAND: Introduction tutorials, anatomy and reviewing (tutorials 2-7) ===
+  - title: "Tutorial 2: Import the subject anatomy"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ImportAnatomy
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ImportAnatomy
+    category: introduction
+    description: Importing an MRI and surfaces (FreeSurfer, CAT12...), fiducials, and MNI normalization.
+
+  - title: "Tutorial 3: Display the anatomy"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ExploreAnatomy
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ExploreAnatomy
+    category: introduction
+    description: MRI viewer, surfaces, atlases and anatomy display options.
+
+  - title: "Tutorial 4: Channel file / MEG-MRI coregistration"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ChannelFile
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ChannelFile
+    category: introduction
+    description: Linking raw recordings, the channel file, and registering sensors with the MRI.
+
+  - title: "Tutorial 5: Review continuous recordings"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ReviewRaw
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ReviewRaw
+    category: introduction
+    description: Viewing continuous recordings, montages and display options.
+
+  - title: "Tutorial 6: Multiple windows"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/MultipleWindows
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/MultipleWindows
+    category: introduction
+    description: Managing several figures and window layouts.
+
+  - title: "Tutorial 7: Event markers"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/EventMarkers
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/EventMarkers
+    category: introduction
+    description: Reading, creating, editing and importing event markers.
+
+  # === ON-DEMAND: Introduction tutorials, pre-processing (tutorials 8-14) ===
+  - title: "Tutorial 8: Stimulation delays"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/StimDelays
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/StimDelays
+    category: preprocessing
+    description: Detecting and correcting delays between triggers and stimulus presentation.
+
+  - title: "Tutorial 9: Select files and run processes"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/PipelineEditor
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/PipelineEditor
+    category: preprocessing
+    description: The pipeline editor, the Process1 and Process2 tabs, and saving pipelines.
+
+  - title: "Tutorial 10: Power spectrum and frequency filters"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ArtifactsFilter
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ArtifactsFilter
+    category: preprocessing
+    description: Power spectral density, notch, high-pass, low-pass and band-pass filters.
+
+  - title: "Tutorial 11: Bad channels"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/BadChannels
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/BadChannels
+    category: preprocessing
+    description: Identifying and marking bad channels.
+
+  - title: "Tutorial 12: Artifact detection"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ArtifactsDetect
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ArtifactsDetect
+    category: preprocessing
+    description: Detecting heartbeats, eye blinks and other artifacts automatically.
+
+  - title: "Tutorial 13: Artifact cleaning with SSP"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ArtifactsSsp
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ArtifactsSsp
+    category: preprocessing
+    description: Removing cardiac and ocular artifacts with signal-space projections (SSP).
+
+  - title: "Tutorial 14: Additional bad segments"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/BadSegments
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/BadSegments
+    category: preprocessing
+    description: Marking bad time segments manually and automatically.
+
+  # === ON-DEMAND: Introduction tutorials, epoching and averaging (tutorials 15-19) ===
+  - title: "Tutorial 15: Import epochs"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Epoching
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Epoching
+    category: epoching
+    description: Importing epochs around events, baseline correction and epoch options.
+
+  - title: "Tutorial 16: Average response"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Averaging
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Averaging
+    category: epoching
+    description: Averaging trials and the different averaging options.
+
+  - title: "Tutorial 17: Visual exploration"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ExploreRecordings
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ExploreRecordings
+    category: epoching
+    description: Time series, topographies and other views of evoked responses.
+
+  - title: "Tutorial 18: Colormaps"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Colormaps
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Colormaps
+    category: epoching
+    description: Configuring colormaps for figures.
+
+  - title: "Tutorial 19: Clusters of sensors"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ChannelClusters
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ChannelClusters
+    category: epoching
+    description: Defining and using groups of sensors.
+
+  # === ON-DEMAND: Introduction tutorials, source modeling (tutorials 20-23) ===
+  - title: "Tutorial 20: Head modeling"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/HeadModel
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/HeadModel
+    category: source
+    description: Source spaces, orientation constraints, and forward models (overlapping spheres, OpenMEEG BEM).
+
+  - title: "Tutorial 21: Noise and data covariance matrices"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/NoiseCovariance
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/NoiseCovariance
+    category: source
+    description: Computing noise and data covariance matrices for source estimation.
+
+  - title: "Tutorial 22: Source estimation"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/SourceEstimation
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/SourceEstimation
+    category: source
+    description: Minimum norm, dSPM, sLORETA, source normalization and orientation options.
+
+  - title: "Tutorial 23: Scouts"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Scouts
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Scouts
+    category: source
+    description: Regions of interest on the cortex (scouts), atlases and scout time series.
+
+  # === ON-DEMAND: Introduction tutorials, advanced processes (tutorials 24-28) ===
+  - title: "Tutorial 24: Time-frequency"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TimeFrequency
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TimeFrequency
+    category: advanced
+    description: Morlet wavelets, Hilbert transform, normalization and time-frequency display.
+
+  - title: "Tutorial 25: Difference"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Difference
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Difference
+    category: advanced
+    description: Comparing conditions with differences of averages and the Process2 tab.
+
+  - title: "Tutorial 26: Statistics"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Statistics
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Statistics
+    category: advanced
+    description: Parametric and non-parametric tests, multiple comparisons, FieldTrip cluster tests.
+
+  - title: "Tutorial 27: Workflows"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Workflows
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Workflows
+    category: advanced
+    description: Recommended analysis workflows for single subjects and group studies.
+
+  - title: "Tutorial 28: Scripting"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Scripting
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Scripting
+    category: advanced
+    description: Generating and writing scripts with bst_process, database requests, loops, and running on a cluster.
+
+  # === ON-DEMAND: Other analysis scenarios (14 docs) ===
+  - title: EEG and epilepsy
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Epilepsy
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Epilepsy
+    category: scenarios
+    description: EEG analysis of epileptic spikes, including ICA artifact cleaning and source localization.
+
+  - title: ECoG/sEEG tutorial
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ECoG
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ECoG
+    category: scenarios
+    description: ECoG and sEEG epilepsy analysis from a BIDS dataset.
+
+  - title: "MEG visual tutorial: Single subject (BIDS)"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/VisualSingle
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/VisualSingle
+    category: scenarios
+    description: Single-subject MEG/EEG analysis of an Elekta visual dataset in BIDS.
+
+  - title: "MEG visual tutorial: Group analysis (BIDS)"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/VisualGroup
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/VisualGroup
+    category: scenarios
+    description: Group-level MEG/EEG analysis of the visual dataset, from scripts.
+
+  - title: MEG current phantom (CTF)
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/PhantomCtf
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/PhantomCtf
+    category: scenarios
+    description: Dipole localization on a CTF current phantom.
+
+  - title: MEG current phantom (Elekta-Neuromag)
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/PhantomElekta
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/PhantomElekta
+    category: scenarios
+    description: Dipole localization on an Elekta-Neuromag current phantom.
+
+  - title: Resting state recordings from the OMEGA database
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/RestingOmega
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/RestingOmega
+    category: scenarios
+    description: Resting-state MEG pipeline on the OMEGA database (CTF).
+
+  - title: Corticomuscular coherence (CTF MEG)
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/CorticomuscularCoherence
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/CorticomuscularCoherence
+    category: scenarios
+    description: Coherence between MEG and EMG at the sensor and source levels.
+
+  - title: "Human Connectome Project: Resting-state MEG"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/HCP-MEG
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/HCP-MEG
+    category: scenarios
+    description: Processing HCP resting-state MEG (4D Neuroimaging) data.
+
+  - title: "Elekta-Neuromag tutorial: Median nerve stimulation"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutMindNeuromag
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutMindNeuromag
+    category: scenarios
+    description: Median nerve somatosensory responses recorded with an Elekta-Neuromag system.
+
+  - title: "Yokogawa/KIT tutorial: Median nerve stimulation"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Yokogawa
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Yokogawa
+    category: scenarios
+    description: Median nerve somatosensory responses recorded with a Yokogawa/KIT system.
+
+  - title: MEG median nerve tutorial (CTF)
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/MedianNerveCtf
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/MedianNerveCtf
+    category: scenarios
+    description: Median nerve somatosensory responses recorded with a CTF system.
+
+  - title: "NIRSTORM: fNIRS analysis (finger tapping)"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/NIRSTORM
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/NIRSTORM
+    category: scenarios
+    description: Introduction to the NIRSTORM plugin for fNIRS analysis with a finger tapping dataset.
+
+  - title: "NIRSTORM: Optimizing fNIRS montage"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/NIRS_Optimal_montage
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/NIRS_Optimal_montage
+    category: scenarios
+    description: Designing an optimal fNIRS probe montage with NIRSTORM.
+
+  # === ON-DEMAND: Anatomy and registration (14 docs) ===
+  - title: Coordinate systems
+    url: https://neuroimage.usc.edu/brainstorm/CoordinateSystems
+    source_url: https://neuroimage.usc.edu/brainstorm/CoordinateSystems
+    category: anatomy
+    description: The coordinate systems Brainstorm uses (MRI, SCS, MNI, world) and conversions between them.
+
+  - title: MRI segmentation with CAT12
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/SegCAT12
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/SegCAT12
+    category: anatomy
+    description: Segmenting a T1 MRI with the CAT12 plugin.
+
+  - title: Using FreeSurfer
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/LabelFreeSurfer
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/LabelFreeSurfer
+    category: anatomy
+    description: Running FreeSurfer and importing its surfaces and atlases.
+
+  - title: T1-MRI segmentation with BrainSuite
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/SegBrainSuite
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/SegBrainSuite
+    category: anatomy
+    description: Segmenting a T1 MRI with BrainSuite and importing the results.
+
+  - title: Using BrainVISA
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/SegBrainVisa
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/SegBrainVisa
+    category: anatomy
+    description: Segmenting a T1 MRI with BrainVISA and importing the results.
+
+  - title: MRI segmentation with FastSurfer
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/SegFastSurfer
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/SegFastSurfer
+    category: anatomy
+    description: Segmenting a T1 MRI with FastSurfer.
+
+  - title: MRI segmentation with CIVET
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/SegCIVET
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/SegCIVET
+    category: anatomy
+    description: Segmenting a T1 MRI with CIVET.
+
+  - title: Using the anatomy templates
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/DefaultAnatomy
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/DefaultAnatomy
+    category: anatomy
+    description: Template anatomies (ICBM152, Colin27, infant templates) when no individual MRI is available.
+
+  - title: Warping the anatomy templates
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutWarping
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutWarping
+    category: anatomy
+    description: Deforming a template anatomy to fit a digitized head shape.
+
+  - title: "Group analysis: Subject coregistration"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/CoregisterSubjects
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/CoregisterSubjects
+    category: anatomy
+    description: Projecting individual source maps onto a template for group analysis.
+
+  - title: Digitize EEG sensor locations and head shape
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutDigitize
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutDigitize
+    category: anatomy
+    description: Digitizing electrodes and head points with a Polhemus device.
+
+  - title: Digitize EEG sensor locations and head shape using 3D scanners
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutDigitize3dScanner
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutDigitize3dScanner
+    category: anatomy
+    description: Locating electrodes from a 3D scan of the head.
+
+  - title: Real-time head-tracking for adjusting head position
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutRealtime
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutRealtime
+    category: anatomy
+    description: Real-time head positioning in a CTF MEG system.
+
+  - title: Head motion
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/HeadMotion
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/HeadMotion
+    category: anatomy
+    description: Detecting and handling head motion in MEG.
+
+  - title: Resection identification
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ResectionIdentification
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ResectionIdentification
+    category: anatomy
+    description: Identifying a resected region from pre- and post-operative MRIs.
+
+  # === ON-DEMAND: Recordings (5 docs) ===
+  - title: Montage editor
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/MontageEditor
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/MontageEditor
+    category: recordings
+    description: Creating and editing display montages (bipolar, average reference, custom).
+
+  - title: SSP cookbook
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/SSPCookbook
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/SSPCookbook
+    category: recordings
+    description: Practical recipes for signal-space projection artifact cleaning.
+
+  - title: Detect subject movements
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/MovementDetect
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/MovementDetect
+    category: recordings
+    description: Detecting subject movements in the recordings.
+
+  - title: Synchronization with eye tracker
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/EyetrackSynchro
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/EyetrackSynchro
+    category: recordings
+    description: Transferring events between eye tracker and MEG/EEG recordings.
+
+  - title: Using MNE-Python from Brainstorm
+    url: https://neuroimage.usc.edu/brainstorm/MnePython
+    source_url: https://neuroimage.usc.edu/brainstorm/MnePython
+    category: recordings
+    description: Calling MNE-Python functions from Brainstorm processes.
+
+  # === ON-DEMAND: Scripting and export (5 docs) ===
+  - title: How to write your own process
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutUserProcess
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutUserProcess
+    category: scripting
+    description: Structure of a process_*.m function (GetDescription, Run) and adding custom processes.
+
+  - title: Export volume source maps to SPM8 / SPM12
+    url: https://neuroimage.usc.edu/brainstorm/ExportSpm8
+    source_url: https://neuroimage.usc.edu/brainstorm/ExportSpm8
+    category: scripting
+    description: Exporting volume source maps for statistics in SPM.
+
+  - title: Export surface source maps to SPM12
+    url: https://neuroimage.usc.edu/brainstorm/ExportSpm12
+    source_url: https://neuroimage.usc.edu/brainstorm/ExportSpm12
+    category: scripting
+    description: Exporting cortical surface source maps for statistics in SPM12.
+
+  - title: Export raw files in BIDS format
+    url: https://neuroimage.usc.edu/brainstorm/ExportBids
+    source_url: https://neuroimage.usc.edu/brainstorm/ExportBids
+    category: scripting
+    description: Exporting raw recordings to a BIDS dataset.
+
+  - title: Export figures to Plotly
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Plotly
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Plotly
+    category: scripting
+    description: Exporting Brainstorm figures to interactive Plotly graphs.
+
+  # === ON-DEMAND: Advanced source modeling (8 docs) ===
+  - title: Volume source estimation
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutVolSource
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutVolSource
+    category: source_advanced
+    description: Source estimation on a volume grid instead of the cortical surface.
+
+  - title: "DBA tutorial: Compute sources in deep cerebral structures"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/DeepAtlas
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/DeepAtlas
+    category: source_advanced
+    description: Mixed source models that include subcortical structures and the cerebellum.
+
+  - title: "Realistic head model: BEM with OpenMEEG"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutBem
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutBem
+    category: source_advanced
+    description: Boundary element head models computed with OpenMEEG.
+
+  - title: Scanning and displaying dipoles
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutDipScan
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutDipScan
+    category: source_advanced
+    description: Dipole scanning and displaying dipoles.
+
+  - title: Fitting dipoles with FieldTrip
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/DipoleFitting
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/DipoleFitting
+    category: source_advanced
+    description: Equivalent current dipole fitting with the FieldTrip plugin.
+
+  - title: "Maximum entropy on the mean (MEM / BEst)"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutBEst
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutBEst
+    category: source_advanced
+    description: Source estimation with the Brain Entropy in space and time (BEst) plugin.
+
+  - title: Beamforming methods
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Beamformers
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Beamformers
+    category: source_advanced
+    description: LCMV and other beamformers for source estimation.
+
+  - title: Simulations
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Simulations
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Simulations
+    category: source_advanced
+    description: Simulating source activity and the MEG/EEG recordings it produces.
+
+  # === ON-DEMAND: Finite element modeling (4 docs) ===
+  - title: "Realistic head model: FEM with DUNEuro"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Duneuro
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Duneuro
+    category: fem
+    description: Finite element (FEM) forward models computed with DUNEuro.
+
+  - title: FEM mesh generation and processing
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/FemMesh
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/FemMesh
+    category: fem
+    description: Generating and processing tetrahedral head meshes for FEM.
+
+  - title: FEM tensors estimation with BrainSuite
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/FemTensors
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/FemTensors
+    category: fem
+    description: Estimating anisotropic conductivity tensors from diffusion MRI.
+
+  - title: FEM tutorial with MEG/EEG median nerve stimulation (charm)
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/FemMedianNerveCharm
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/FemMedianNerveCharm
+    category: fem
+    description: End-to-end FEM source analysis of median nerve responses with a charm head mesh.
+
+  # === ON-DEMAND: Signal processing (8 docs) ===
+  - title: "Machine learning: Decoding / MVPA"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Decoding
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Decoding
+    category: signal_processing
+    description: Decoding conditions from MEG/EEG with multivariate pattern analysis.
+
+  - title: "Phase-amplitude coupling: Method"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutPac
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/TutPac
+    category: signal_processing
+    description: Computing phase-amplitude coupling.
+
+  - title: "Phase-amplitude coupling: Example"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Resting
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Resting
+    category: signal_processing
+    description: Phase-amplitude coupling in resting-state MEG.
+
+  - title: Partial Least Squares (PLS)
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/PLS
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/PLS
+    category: signal_processing
+    description: Partial least squares analysis of MEG/EEG data.
+
+  - title: Epileptogenic zone fingerprint
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/EZFingerprint
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/EZFingerprint
+    category: signal_processing
+    description: Time-frequency fingerprint of the epileptogenic zone.
+
+  - title: "Specparam / FOOOF: Fitting oscillations and one-over-f"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Fooof
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Fooof
+    category: signal_processing
+    description: Separating periodic and aperiodic components of power spectra.
+
+  - title: "SPRiNT: Spectral parameterization resolved in time"
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/SPRiNT
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/SPRiNT
+    category: signal_processing
+    description: Time-resolved spectral parameterization.
+
+  - title: Brain-fingerprinting
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/BrainFingerprint
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/BrainFingerprint
+    category: signal_processing
+    description: Identifying individuals from their MEG connectivity or spectral profiles.
+
+  # === ON-DEMAND: Connectivity (4 docs) ===
+  - title: Connectivity
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Connectivity
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Connectivity
+    category: connectivity
+    description: Functional connectivity measures (correlation, coherence, PLV, envelope correlation, Granger).
+
+  - title: Connectivity graphs
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/ConnectivityGraph
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/ConnectivityGraph
+    category: connectivity
+    description: Displaying connectivity results as graphs.
+
+  - title: Virtual fiber tracks for connectivity visualization
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/FiberConnectivity
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/FiberConnectivity
+    category: connectivity
+    description: Displaying connectivity along virtual fiber tracks.
+
+  - title: Granger causality
+    url: https://neuroimage.usc.edu/brainstorm/GrangerCausality
+    source_url: https://neuroimage.usc.edu/brainstorm/GrangerCausality
+    category: connectivity
+    description: Granger causality and its spectral variants in Brainstorm.
+
+  # === ON-DEMAND: Single/multi-unit electrophysiology (5 docs) ===
+  - title: Importing raw e-phys data
+    url: https://neuroimage.usc.edu/brainstorm/e-phys/Introduction
+    source_url: https://neuroimage.usc.edu/brainstorm/e-phys/Introduction
+    category: ephys
+    description: Brainstorm's suite for multi-unit electrophysiology and importing raw recordings.
+
+  - title: Spike sorting
+    url: https://neuroimage.usc.edu/brainstorm/e-phys/SpikeSorting
+    source_url: https://neuroimage.usc.edu/brainstorm/e-phys/SpikeSorting
+    category: ephys
+    description: Spike sorting with the supported spike sorters.
+
+  - title: Using external spike-sorters
+    url: https://neuroimage.usc.edu/brainstorm/e-phys/ConvertToBrainstormEvents
+    source_url: https://neuroimage.usc.edu/brainstorm/e-phys/ConvertToBrainstormEvents
+    category: ephys
+    description: Converting the output of external spike sorters to Brainstorm events.
+
+  - title: Converting raw data to LFP
+    url: https://neuroimage.usc.edu/brainstorm/e-phys/RawToLFP
+    source_url: https://neuroimage.usc.edu/brainstorm/e-phys/RawToLFP
+    category: ephys
+    description: Deriving local field potentials from raw signals.
+
+  - title: Functions for basic e-phys
+    url: https://neuroimage.usc.edu/brainstorm/e-phys/functions
+    source_url: https://neuroimage.usc.edu/brainstorm/e-phys/functions
+    category: ephys
+    description: Tuning curves, noise correlation, spike-field coherence, raster plots, spike-triggered average.
+
+  # === ON-DEMAND: sEEG suite (5 docs) ===
+  - title: "sEEG: CT to MRI co-registration"
+    url: https://neuroimage.usc.edu/brainstorm/seeg/ct2mri
+    source_url: https://neuroimage.usc.edu/brainstorm/seeg/ct2mri
+    category: seeg
+    description: Co-registering a post-implantation CT with the MRI.
+
+  - title: "sEEG: Contact localization and labeling"
+    url: https://neuroimage.usc.edu/brainstorm/seeg/SeegContactLocalization
+    source_url: https://neuroimage.usc.edu/brainstorm/seeg/SeegContactLocalization
+    category: seeg
+    description: Localizing and labeling sEEG contacts.
+
+  - title: "sEEG: Time-frequency fingerprint for epileptogenic zone localization"
+    url: https://neuroimage.usc.edu/brainstorm/seeg/SeizureFingerprinting
+    source_url: https://neuroimage.usc.edu/brainstorm/seeg/SeizureFingerprinting
+    category: seeg
+    description: Localizing the epileptogenic zone from the time-frequency fingerprint of seizures.
+
+  - title: Automatic SEEG contact localization using GARDEL
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/AutoContactLocGardel
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/AutoContactLocGardel
+    category: seeg
+    description: Automatic contact localization with the GARDEL plugin.
+
+  - title: SEEG epileptogenicity maps
+    url: https://neuroimage.usc.edu/brainstorm/Tutorials/Epileptogenicity
+    source_url: https://neuroimage.usc.edu/brainstorm/Tutorials/Epileptogenicity
+    category: seeg
+    description: Computing epileptogenicity maps from sEEG seizure recordings.
+
+# Sync schedule configuration (offset from other communities to avoid overlap)
+sync:
+  github:
+    cron: "15 2 * * *"      # daily at 2:15am UTC
+  papers:
+    cron: "15 3 * * 0"      # weekly Sunday at 3:15am UTC
+  docstrings:
+    cron: "15 4 * * 1"      # weekly Monday at 4:15am UTC
+  discourse:
+    cron: "15 5 * * *"      # daily at 5:15am UTC (incremental; the first sync takes about 2 hours)
+
+# GitHub repositories for issue/PR sync
+github:
+  repos:
+    - brainstorm-tools/brainstorm3
+    - brainstorm-tools/bst-users
+    - brainstorm-tools/bst-duneuro
+
+# Paper/citation search configuration
+citations:
+  queries:
+    - Brainstorm MEG EEG analysis software
+    - Brainstorm source imaging MEG
+    - Brainstorm EEG source localization
+    - Brainstorm sEEG epilepsy analysis
+    - NIRSTORM fNIRS Brainstorm
+    - Brainstorm DUNEuro finite element head model
+  dois:
+    - "10.1155/2011/879716"               # Brainstorm: A User-Friendly Application for MEG/EEG Analysis (Tadel et al., 2011)
+    - "10.3389/fnins.2019.00076"          # MEG/EEG Group Analysis With Brainstorm (Tadel et al., 2019)
+    - "10.3389/fnins.2019.00284"          # Brainstorm Pipeline Analysis of Resting-State Data From the Open MEG Archive (Niso et al., 2019)
+    - "10.1016/j.neuroimage.2022.119851"  # Brainstorm-DUNEuro: FEM for modeling electromagnetic brain activity (Medani et al., 2023)
+  # Short labels for the public citations dashboard (stacked series legend)
+  paper_labels:
+    "10.1155/2011/879716": "Brainstorm (Tadel 2011)"
+    "10.3389/fnins.2019.00076": "Group analysis (Tadel 2019)"
+    "10.3389/fnins.2019.00284": "Resting state (Niso 2019)"
+    "10.1016/j.neuroimage.2022.119851": "DUNEuro FEM (Medani 2023)"
+
+# Discourse forum: the Brainstorm user forum, where users and the development team discuss
+# problems. Job postings and forum announcements are left out. The forum does not use the
+# "solved" plugin, so each topic's answer is its most-liked reply or else the first reply
+# from the development team (forum staff).
+discourse:
+  - url: https://neuroimage.usc.edu/forums
+    categories:
+      - slug: discussions
+        id: 18
+      - slug: bugs
+        id: 17
+      - slug: requests
+        id: 20
+      - slug: announce
+        id: 16
+      - slug: uncategorized
+        id: 1
+
+# Docstring extraction configuration
+# Brainstorm puts each function's help right after its definition line (as MATLAB's help does),
+# followed by a license block that the parser leaves out. bst-users holds scripts shared by users.
+docstrings:
+  repos:
+    - repo: brainstorm-tools/brainstorm3
+      branch: master
+      languages: [matlab]
+    - repo: brainstorm-tools/bst-users
+      branch: master
+      languages: [matlab]
+    - repo: brainstorm-tools/bst-duneuro
+      branch: master
+      languages: [matlab]

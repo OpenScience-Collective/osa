@@ -1214,6 +1214,7 @@ class TestTheShippedDefaults:
 
     CHOSEN = {
         "bids": "haiku",
+        "brainstorm": "haiku",
         "eeglab": "haiku",
         "fieldtrip": "haiku",
         "hed": "haiku",
