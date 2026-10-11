@@ -98,8 +98,9 @@ discourse:
 With neither filter the whole forum is synced from `/latest.json`; use a filter for a
 shared forum. Tags and categories together sync the tagged topics within the categories.
 A category's slug and id are in the forum's `/site.json`. Each topic is stored with its
-first post and its best answer: the accepted answer, else the most-liked reply, else the
-first substantive reply from forum staff (for forums without the "solved" plugin).
+first post and its best answer: the accepted answer, else the most-liked reply by someone
+other than the asker, else the first substantive reply from forum staff (for forums without
+the "solved" plugin), else the asker's own liked reply.
 Add `sync.discourse` with a cron to schedule it; the first sync of a large forum takes
 hours (one topic per second), so it is not part of the startup seed.
 

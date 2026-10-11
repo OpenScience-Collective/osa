@@ -201,6 +201,22 @@ class TestFetchPageContentImpl:
 
     @patch("src.utils.page_fetcher.is_safe_url")
     @respx.mock
+    def test_page_without_text_is_not_a_success(self, mock_is_safe):
+        """A page whose content JavaScript draws has no text in its HTML: that is reported,
+        not handed to the model as an empty page."""
+        mock_is_safe.return_value = (True, "", "93.184.216.34")
+        page = '<html><body><div id="app"></div><script>render()</script></body></html>'
+        respx.get("https://example.com/app").mock(
+            return_value=httpx.Response(200, headers={"content-type": "text/html"}, text=page)
+        )
+
+        result = fetch_page("https://example.com/app")
+
+        assert result.success is False
+        assert "no readable text" in result.content
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
     def test_rejects_non_html_content(self, mock_is_safe):
         """Should reject non-HTML content types."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")

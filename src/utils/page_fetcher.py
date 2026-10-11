@@ -182,6 +182,15 @@ def fetch_page(url: str) -> PageFetchResult:
         lines = [line.strip() for line in content.split("\n")]
         content = "\n".join(line for line in lines if line)
 
+        if not content:
+            # A page whose text is drawn by JavaScript has none in its HTML
+            logger.warning("No readable text in the page at %s", url)
+            return PageFetchResult(
+                False,
+                f"Error: The page at {url} has no readable text "
+                "(its content may be drawn by JavaScript).",
+            )
+
         if len(content) > MAX_PAGE_CONTENT_LENGTH:
             logger.info(
                 "Content from %s truncated from %d to %d chars",
