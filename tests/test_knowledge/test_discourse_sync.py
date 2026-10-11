@@ -257,6 +257,157 @@ class TestGetAcceptedAnswer:
         result = _get_accepted_answer(posts)
         assert result is None
 
+    def test_reads_likes_from_actions_summary(self):
+        """A topic's posts carry likes in actions_summary, not like_count."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>"},
+            {"post_number": 2, "cooked": "<p>Unliked</p>", "actions_summary": []},
+            {
+                "post_number": 3,
+                "cooked": "<p>Liked answer</p>",
+                "actions_summary": [{"id": 2, "count": 3}],
+            },
+        ]
+        assert "Liked answer" in _get_accepted_answer(posts)
+
+    def test_falls_back_to_staff_reply(self):
+        """With no accepted or liked reply, the first staff reply other than the asker's."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "asker"},
+            {"post_number": 2, "cooked": "<p>Me too</p>", "username": "user2", "staff": False},
+            {
+                "post_number": 3,
+                "cooked": "<p>Update to the latest version: this was fixed last week.</p>",
+                "username": "dev",
+                "staff": True,
+            },
+            {
+                "post_number": 4,
+                "cooked": "<p>Another note from the team, long enough to count.</p>",
+                "username": "dev",
+                "staff": True,
+            },
+        ]
+        assert "fixed last week" in _get_accepted_answer(posts)
+
+    def test_staff_ping_is_not_an_answer(self):
+        """A staff reply that only mentions someone is skipped for a later substantive one."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        ping = '<p>FYI <a class="mention" href="/forums/u/samuelmedina">@samuelmedina</a></p>'
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "asker"},
+            {"post_number": 2, "cooked": ping, "username": "dev", "staff": True},
+        ]
+        assert _get_accepted_answer(posts) is None
+
+        posts.append(
+            {
+                "post_number": 3,
+                "cooked": "<p>The plugin moved; reinstall it from the plugin manager.</p>",
+                "username": "dev2",
+                "staff": True,
+            }
+        )
+        assert "reinstall it" in _get_accepted_answer(posts)
+
+    def test_asker_thanks_does_not_beat_the_answer(self):
+        """A liked "thanks" from the asker loses to another member's reply."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        answer = "<p>Set the sampling rate in the import options, then reimport.</p>"
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "asker"},
+            {"post_number": 2, "cooked": answer, "username": "dev", "staff": True},
+            {"post_number": 3, "cooked": "<p>Thanks!</p>", "username": "asker", "like_count": 1},
+        ]
+        assert "sampling rate" in _get_accepted_answer(posts)
+
+    def test_asker_own_liked_solution_is_the_last_resort(self):
+        """With no other answer, the asker's own liked reply (their solution) is kept."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "asker"},
+            {"post_number": 2, "cooked": "<p>Me too</p>", "username": "other"},
+            {
+                "post_number": 3,
+                "cooked": "<p>Deleting the second surface fixed it.</p>",
+                "username": "asker",
+                "like_count": 1,
+            },
+        ]
+        assert "Deleting the second surface" in _get_accepted_answer(posts)
+
+    def test_staff_asker_follow_up_is_not_an_answer(self):
+        """A staff member's follow-up on their own question is not its answer."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "dev", "staff": True},
+            {"post_number": 2, "cooked": "<p>Follow-up</p>", "username": "dev", "staff": True},
+        ]
+        assert _get_accepted_answer(posts) is None
+
+    def test_skips_small_actions(self):
+        """A "closed this topic" small action (post_type 3) is not a reply."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "asker"},
+            {"post_number": 2, "cooked": "", "post_type": 3, "username": "dev", "staff": True},
+        ]
+        assert _get_accepted_answer(posts) is None
+
+
+class TestListingUrls:
+    """Tests for the listings that the category and tag filters select."""
+
+    BASE = "https://neurostars.org"
+
+    def _cat(self, slug: str, cat_id: int):
+        from src.core.config.community import DiscourseCategoryConfig
+
+        return DiscourseCategoryConfig(slug=slug, id=cat_id)
+
+    def test_no_filters_uses_latest(self):
+        from src.knowledge.discourse_sync import _listing_urls
+
+        assert _listing_urls(self.BASE, None, None) == [f"{self.BASE}/latest.json"]
+
+    def test_tags_use_tag_listings(self):
+        from src.knowledge.discourse_sync import _listing_urls
+
+        assert _listing_urls(self.BASE, None, ["bids", "bids validator"]) == [
+            f"{self.BASE}/tag/bids.json",
+            f"{self.BASE}/tag/bids%20validator.json",
+        ]
+
+    def test_categories_use_category_listings(self):
+        from src.knowledge.discourse_sync import _listing_urls
+
+        assert _listing_urls(self.BASE, [self._cat("software-support", 234)], None) == [
+            f"{self.BASE}/c/software-support/234.json"
+        ]
+
+    def test_categories_and_tags_intersect(self):
+        from src.knowledge.discourse_sync import _listing_urls
+
+        assert _listing_urls(self.BASE, [self._cat("software-support", 234)], ["bids"]) == [
+            f"{self.BASE}/tags/c/software-support/234/bids.json"
+        ]
+
+    def test_forum_under_a_path(self):
+        """A forum served under a path (Brainstorm's /forums) keeps the path."""
+        from src.knowledge.discourse_sync import _listing_urls
+
+        base = "https://neuroimage.usc.edu/forums"
+        assert _listing_urls(base, [self._cat("bugs", 17)], None) == [f"{base}/c/bugs/17.json"]
+
 
 class TestMNEConfig:
     """Tests for MNE community configuration."""
@@ -369,3 +520,40 @@ class TestDiscourseApiLive:
             with get_connection("test_discourse") as conn:
                 rows = conn.execute("SELECT COUNT(*) FROM discourse_topics").fetchone()
                 assert rows[0] >= 1
+
+    @pytest.mark.network
+    def test_tag_listing_only_returns_tagged_topics(self):
+        """A tag listing on a shared forum holds only topics with that tag."""
+        from src.knowledge.discourse_sync import _fetch_json
+
+        data = _fetch_json("https://neurostars.org/tag/bids.json", delay=0.5)
+        assert data is not None
+        topics = data["topic_list"]["topics"]
+        assert topics
+        for topic in topics:
+            tag_names = [t["name"] if isinstance(t, dict) else t for t in topic.get("tags", [])]
+            assert "bids" in tag_names
+
+    @pytest.mark.network
+    def test_sync_brainstorm_category_stores_category_names(self, temp_db: Path):
+        """Syncing a category of a forum under a path stores each topic's category name."""
+        from src.core.config.community import CommunityConfig
+        from src.knowledge.discourse_sync import sync_discourse_topics
+
+        config = CommunityConfig.from_yaml("src/assistants/brainstorm/config.yaml")
+        forum = config.discourse[0]
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            count = sync_discourse_topics(
+                base_url=str(forum.url).rstrip("/"),
+                project="test_discourse",
+                categories=forum.categories[:1],
+                incremental=False,
+                max_topics=2,
+                request_delay=0.5,
+            )
+            assert count >= 1
+            with get_connection("test_discourse") as conn:
+                names = {
+                    row[0] for row in conn.execute("SELECT category_name FROM discourse_topics")
+                }
+            assert None not in names

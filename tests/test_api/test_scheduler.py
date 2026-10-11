@@ -163,7 +163,7 @@ class TestSyncTypeMap:
 
     def test_all_sync_types_mapped(self):
         """All expected sync types should be in the mapping."""
-        expected = {"github", "papers", "docstrings", "mailman", "faq", "beps"}
+        expected = {"github", "papers", "docstrings", "mailman", "faq", "beps", "discourse"}
         assert set(_SYNC_TYPE_MAP.keys()) == expected
 
     def test_data_checks_return_bool(self):

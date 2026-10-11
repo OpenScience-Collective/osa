@@ -637,6 +637,7 @@ def sync_all(
                         base_url=str(discourse_cfg.url),
                         project=comm_id,
                         categories=discourse_cfg.categories or None,
+                        tags=discourse_cfg.tags or None,
                         incremental=not full,
                     )
                 console.print(f"[green]Discourse: {discourse_total} topics[/green]")
@@ -951,6 +952,7 @@ def sync_discourse(
             base_url=str(discourse_config.url),
             project=community,
             categories=discourse_config.categories or None,
+            tags=discourse_config.tags or None,
             incremental=not full,
             max_topics=max_topics,
         )

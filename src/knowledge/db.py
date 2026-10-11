@@ -740,7 +740,11 @@ def get_last_sync(source_type: str, source_name: str, project: str = "hed") -> s
 
 
 def update_sync_metadata(
-    source_type: str, source_name: str, items_synced: int, project: str = "hed"
+    source_type: str,
+    source_name: str,
+    items_synced: int,
+    project: str = "hed",
+    synced_at: str | None = None,
 ) -> None:
     """Update sync metadata for a source.
 
@@ -749,6 +753,9 @@ def update_sync_metadata(
         source_name: Repository name, paper source name, or base URL
         items_synced: Number of items synced in this run
         project: Assistant/project name. Defaults to 'hed'.
+        synced_at: ISO 8601 time the synced data was read as of. Defaults to now; a
+            sync that runs long passes its start, so the next incremental sync does
+            not skip what changed while it ran.
     """
     with get_connection(project) as conn:
         conn.execute(
@@ -759,7 +766,7 @@ def update_sync_metadata(
                 last_sync_at=excluded.last_sync_at,
                 items_synced=excluded.items_synced
             """,
-            (source_type, source_name, _now_iso(), items_synced),
+            (source_type, source_name, synced_at or _now_iso(), items_synced),
         )
         conn.commit()
 
