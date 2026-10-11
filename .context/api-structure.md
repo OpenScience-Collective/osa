@@ -409,7 +409,7 @@ The section above predates the move to the Claude Platform on AWS (ADR 0004) and
    Anthropic provider). A community's Anthropic key (`anthropic_api_key_env_var`) does not pay for
    Bedrock either: the platform does. When the model came from a community's `default_model`
    rather than the request, and the caller cannot have it, the request runs the deployment's Claude
-   default instead (`_claude_fallback`: `DEFAULT_MODEL`, Haiku 4.5 unless the deployment changes it)
+   default instead (`_claude_fallback`: `DEFAULT_MODEL`, the Haiku class unless the deployment changes it)
    and logs an error naming the community (`_log_bedrock_fallback`), or a warning when the only cause
    is the caller's own Anthropic key (the CLI); naming the model gets the 403 or 400. With no
    `ANTHROPIC_API_KEY` a platform-funded request is not on the Anthropic provider at all: it goes to

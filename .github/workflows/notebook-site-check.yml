@@ -3,8 +3,8 @@ name: Notebook site check
 # The two checks that would actually catch a real regression in the hosted
 # JupyterLite notebook site (issue #453, docs/adr/0011-the-notebook-site.md),
 # neither of which gates anything today: TestFullBuildEndToEnd is network-
-# marked and runs only in test.yml's post-merge Integration Tests job, with
-# continue-on-error; notebook/e2e-check.js runs in no workflow at all. A PR
+# marked and runs only in test.yml's Integration Tests job, which is started by
+# hand (workflow_dispatch), with continue-on-error; notebook/e2e-check.js runs in no workflow at all. A PR
 # review demonstrated this concretely -- writing _headers/_redirects into the
 # site subdirectory instead of the true publish root, and removing the
 # no-overwrite rule, both passed every offline test that runs on a PR.

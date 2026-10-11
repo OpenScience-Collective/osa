@@ -209,16 +209,34 @@ class TestExtractTokenUsage:
         assert usage.output_tokens == 15
         assert usage.total_tokens == 45
 
+    def test_the_longest_prompt_is_the_largest_message_not_the_sum(self):
+        """A price that depends on prompt length belongs to one model call: three calls of
+        40,000 and 25,000 and 30,000 input tokens add up to 95,000, and their longest
+        prompt is 40,000."""
+        messages = []
+        for tokens in (40_000, 25_000, 30_000):
+            msg = AIMessage(content="call")
+            msg.usage_metadata = {
+                "input_tokens": tokens,
+                "output_tokens": 10,
+                "total_tokens": tokens + 10,
+            }
+            messages.append(msg)
+
+        usage = extract_token_usage({"messages": messages})
+        assert usage.input_tokens == 95_000
+        assert usage.longest_prompt_tokens == 40_000
+
     def test_returns_zeros_when_no_usage(self):
         """Returns all zeros when no usage_metadata."""
         result = {"messages": [AIMessage(content="hello")]}
         usage = extract_token_usage(result)
-        assert usage == (0, 0, 0, 0, 0)
+        assert usage == (0, 0, 0, 0, 0, 0)
 
     def test_returns_zeros_for_empty_result(self):
         """Returns all zeros for empty result."""
-        assert extract_token_usage({}) == (0, 0, 0, 0, 0)
-        assert extract_token_usage({"messages": []}) == (0, 0, 0, 0, 0)
+        assert extract_token_usage({}) == (0, 0, 0, 0, 0, 0)
+        assert extract_token_usage({"messages": []}) == (0, 0, 0, 0, 0, 0)
 
     def test_extracts_cache_read_and_creation_tokens(self):
         """Extracts the cache breakdown from input_token_details."""

@@ -374,6 +374,9 @@ class TokenUsage(NamedTuple):
     cache fields are broken out so callers can price them at their own
     rates (see ``src.metrics.cost.estimate_cost``) instead of the flat
     input rate.
+
+    ``longest_prompt_tokens`` is the input of the largest single message, since a price
+    that depends on prompt length belongs to one model call and not to the sum of several.
     """
 
     input_tokens: int
@@ -381,6 +384,7 @@ class TokenUsage(NamedTuple):
     total_tokens: int
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    longest_prompt_tokens: int = 0
 
 
 def resolve_cache_creation_tokens(details: dict) -> int:
@@ -441,6 +445,7 @@ def extract_token_usage(result: dict) -> TokenUsage:
     total_tokens = 0
     cache_read_tokens = 0
     cache_creation_tokens = 0
+    longest_prompt_tokens = 0
 
     messages: list[BaseMessage] = result.get("messages", [])
     for msg in messages:
@@ -451,7 +456,9 @@ def extract_token_usage(result: dict) -> TokenUsage:
             continue
         # usage_metadata is a dict with input_tokens, output_tokens, total_tokens
         if isinstance(usage, dict):
-            input_tokens += usage.get("input_tokens", 0)
+            call_input_tokens = usage.get("input_tokens", 0)
+            input_tokens += call_input_tokens
+            longest_prompt_tokens = max(longest_prompt_tokens, call_input_tokens)
             output_tokens += usage.get("output_tokens", 0)
             total_tokens += usage.get("total_tokens", 0)
             details = usage.get("input_token_details") or {}
@@ -460,7 +467,12 @@ def extract_token_usage(result: dict) -> TokenUsage:
                 cache_creation_tokens += resolve_cache_creation_tokens(details)
 
     return TokenUsage(
-        input_tokens, output_tokens, total_tokens, cache_read_tokens, cache_creation_tokens
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+        longest_prompt_tokens,
     )
 
 

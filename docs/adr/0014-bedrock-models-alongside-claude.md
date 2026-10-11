@@ -63,7 +63,7 @@ Serve the three models from Bedrock through the Converse API, one transport for 
   not its own: the community's key is an Anthropic key, and the models are not Anthropic's.
   That is a policy choice, not an accident; a community that wants Bedrock spend attributed to itself needs a Bedrock key of its own, which this record does not add.
 - **A default nobody chose is not a refusal.** When a community's `default_model` is a Bedrock model and the request cannot have it (the caller has an Anthropic key of their own and named no model, which is every CLI request,
-  or the deployment has no Bedrock key), the request runs the deployment's Claude default (`DEFAULT_MODEL`, Claude Haiku 4.5 unless the deployment changes it)
+  or the deployment has no Bedrock key), the request runs the deployment's Claude default (`DEFAULT_MODEL`, the `haiku` class unless the deployment changes it: Claude Haiku 4.5 when this was written, Claude Haiku 5.5 since [0016](0016-model-classes.md))
   and logs an error naming the community, or a warning when the only cause is the caller's own Anthropic key.
   Refusing would take the whole community down for those callers.
   A caller who names the model still gets the 403 or 400, and `osa validate` warns about such a default.
@@ -88,7 +88,7 @@ Serve the three models from Bedrock through the Converse API, one transport for 
   `langchain-aws` adds the cache read and write counts back, so `input_tokens` is the whole prompt, which is what the cost arithmetic (ordinary = input - read - write) assumes.
   `tests/test_integration/test_bedrock_platform.py` asserts it against the service.
 - **Per-model prompt notes**: a built-in note for the two models that loop, and a `model_instructions:` section in a community's `config.yaml` for the community's own, applied only on requests that run that model.
-- **A cost ceiling by test**: every Bedrock-served model must be priced at or below Claude Haiku 4.5.
+- **A cost ceiling by test**: every Bedrock-served model must be priced at or below Claude Haiku 4.5. (Update, 2026-10-08, [0016](0016-model-classes.md): the `haiku` class is now Claude Haiku 5.5, which costs about what Luna does, so the ceiling is held at the old $1 / $5 per million tokens instead.)
 - **Frequently asked questions (FAQ) generation stays on Claude.** It builds its agents with `create_anthropic_llm`, which refuses a Bedrock id, and community config validation warns.
 - The boto clients are built in `bedrock_llm.py`, with the key in the client's own token chain and placeholder credentials to stop the ambient walk.
   Nothing is written to `os.environ`.
@@ -108,6 +108,8 @@ Serve the three models from Bedrock through the Converse API, one transport for 
   so on a deployment with an Anthropic key and no Bedrock key they run the deployment's Claude default (Claude Haiku 4.5 unless `DEFAULT_MODEL` names another)
   and log an error naming the community on every request that names no model.
   A deployment that serves them should treat the Bedrock key as required, and one that accepts Haiku for those four communities may leave it out.
+  (Update, 2026-10-08, [0016](0016-model-classes.md): HED, NWB, EEGLAB and BIDS all default to the `haiku` class now, Claude Haiku 5.5 (HED since 2026-10-07, issue #591, because Luna answered 1 of 3 of its annotation questions, a validate-and-fix loop, on dev).
+  No shipped community defaults to a Bedrock model, so the Bedrock key is needed only for a reader who picks one from the model menu, and the Claude default named above is the `haiku` class.)
 - **A bearer-token client relies on botocore internals** (`auth_scheme_preference` and a replaced token-provider component).
   `langchain-aws` does the same, and is capped below 2.x for it; an upstream botocore change would show up in `tests/test_core/test_bedrock_llm.py`,
   which asserts the outgoing `Authorization` header and runs in continuous integration (CI).

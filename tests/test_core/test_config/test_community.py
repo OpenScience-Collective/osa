@@ -52,6 +52,7 @@ from src.core.config.community import (
 )
 from src.core.config.notebook_lock import NOTEBOOK_SITE_PYODIDE_VERSION
 from src.core.services.anthropic_models import (
+    HAIKU,
     OPENROUTER_MODEL_IDS,
     OPENROUTER_ROUTING_VARIANTS,
     normalize_model,
@@ -2053,7 +2054,7 @@ class TestModelNameValidation:
     def test_valid_bare_first_party_ids(self) -> None:
         """Should accept a bare first-party id with no provider prefix, and
         not warn: these are real, resolvable Anthropic ids/aliases."""
-        valid_bare_ids = ["claude-haiku-4-5", "claude-sonnet-5-5"]
+        valid_bare_ids = [HAIKU, "claude-sonnet-5-5"]
         for model in valid_bare_ids:
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
@@ -2247,9 +2248,9 @@ class TestFAQAgentRoleWarning:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            config = FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-haiku-4-5"))
+            config = FAQGenerationConfig(**self._faq_config(HAIKU, HAIKU))
 
-        assert config.evaluation_agent.model == "claude-haiku-4-5"
+        assert config.evaluation_agent.model == HAIKU
 
     def test_expensive_evaluation_agent_is_warned_about(self) -> None:
         from src.core.config.community import FAQGenerationConfig
@@ -2263,7 +2264,7 @@ class TestFAQAgentRoleWarning:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-sonnet-5-5"))
+            FAQGenerationConfig(**self._faq_config(HAIKU, "claude-sonnet-5-5"))
 
     @pytest.mark.parametrize("role", ["evaluation_agent", "summary_agent"])
     def test_a_bedrock_model_is_warned_about_because_faq_runs_on_claude_only(
@@ -2271,7 +2272,7 @@ class TestFAQAgentRoleWarning:
     ) -> None:
         from src.core.config.community import FAQGenerationConfig
 
-        config = self._faq_config("claude-haiku-4-5", "claude-haiku-4-5")
+        config = self._faq_config(HAIKU, HAIKU)
         config[role] = {"model": "openai.gpt-oss-120b"}
 
         with pytest.warns(UserWarning, match=rf"{role}\.model is openai\.gpt-oss-120b"):
@@ -2283,8 +2284,8 @@ class TestFAQAgentRoleWarning:
         from src.core.config.community import FAQGenerationConfig
 
         config = FAQGenerationConfig(
-            evaluation_agent={"model": "claude-haiku-4-5", "provider": "DeepInfra/FP8"},
-            summary_agent={"model": "claude-haiku-4-5", "provider": "Anthropic"},
+            evaluation_agent={"model": HAIKU, "provider": "DeepInfra/FP8"},
+            summary_agent={"model": HAIKU, "provider": "Anthropic"},
         )
         assert config.evaluation_agent.provider == "DeepInfra/FP8"
 
@@ -2328,9 +2329,7 @@ class TestFAQAgentRoleWarning:
         from src.core.config.community import FAQGenerationConfig
 
         with pytest.warns(UserWarning, match="evaluation_agent.model is not usable"):
-            config = FAQGenerationConfig(
-                **self._faq_config("qwen/qwen3-235b-a22b-2507", "claude-haiku-4-5")
-            )
+            config = FAQGenerationConfig(**self._faq_config("qwen/qwen3-235b-a22b-2507", HAIKU))
 
         assert config.evaluation_agent.model == "qwen/qwen3-235b-a22b-2507"
 
@@ -2338,10 +2337,10 @@ class TestFAQAgentRoleWarning:
 class TestFAQTemperatureWarning:
     """A temperature the API never sees should not pass in silence.
 
-    ``claude-sonnet-5-5`` accepts only its default temperature, so
-    ``create_anthropic_llm`` drops the field instead of sending a value that
-    would 400. A community that set 0.0 for deterministic scoring is entitled
-    to hear that it stopped applying.
+    The Claude 5 models (Haiku 5.5, Sonnet 5.5) accept only their default temperature, so
+    ``create_anthropic_llm`` drops the field instead of sending a value that would 400.
+    A community that set 0.0 for deterministic scoring is entitled to hear that it
+    stopped applying.
     """
 
     def test_temperature_on_the_expensive_model_is_warned_about(self) -> None:
@@ -2349,7 +2348,7 @@ class TestFAQTemperatureWarning:
 
         with pytest.warns(UserWarning, match="summary_agent.temperature=0.4 is ignored"):
             FAQGenerationConfig(
-                evaluation_agent={"model": "claude-haiku-4-5"},
+                evaluation_agent={"model": HAIKU},
                 summary_agent={"model": "claude-sonnet-5-5", "temperature": 0.4},
             )
 
@@ -2358,41 +2357,31 @@ class TestFAQTemperatureWarning:
 
         with pytest.warns(UserWarning, match="temperature=0.2 is ignored"):
             FAQGenerationConfig(
-                evaluation_agent={"model": "claude-haiku-4-5"},
+                evaluation_agent={"model": HAIKU},
                 summary_agent={"model": "anthropic/claude-sonnet-4.6", "temperature": 0.2},
             )
 
-    def test_temperature_behind_a_legacy_haiku_id_is_silent(self) -> None:
-        """The mirror of the case above, and the one an alias table gets wrong.
-
-        "anthropic/claude-haiku-4.5" resolves to a model that does honor a
-        temperature, so warning here would be a false alarm on a config that
-        works.
-        """
+    @pytest.mark.parametrize(
+        "written", [HAIKU, "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4.5"]
+    )
+    def test_temperature_on_haiku_is_warned_about_however_the_model_is_written(
+        self, written: str
+    ) -> None:
+        """Haiku 4.5 honored a temperature and Haiku 5.5 does not, so the case that used
+        to be the silent one is now warned about, for the class name and the old ids too."""
         from src.core.config.community import FAQGenerationConfig
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", UserWarning)
+        with pytest.warns(UserWarning, match="evaluation_agent.temperature=0.0 is ignored"):
             FAQGenerationConfig(
-                evaluation_agent={"model": "anthropic/claude-haiku-4.5", "temperature": 0.0},
-                summary_agent={"model": "claude-haiku-4-5"},
-            )
-
-    def test_temperature_on_a_model_that_honors_it_is_silent(self) -> None:
-        from src.core.config.community import FAQGenerationConfig
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", UserWarning)
-            FAQGenerationConfig(
-                evaluation_agent={"model": "claude-haiku-4-5", "temperature": 0.0},
-                summary_agent={"model": "claude-haiku-4-5", "temperature": 0.1},
+                evaluation_agent={"model": written, "temperature": 0.0},
+                summary_agent={"model": HAIKU},
             )
 
     def test_the_fields_own_default_is_not_warned_about(self) -> None:
         """Only a temperature the community actually wrote is worth a warning.
 
-        AgentConfig.temperature defaults to 0.1, which claude-sonnet-5-5 also
-        ignores. Warning about it would fire on every config that names the
+        AgentConfig.temperature defaults to 0.1, which the Claude 5 models
+        ignore. Warning about it would fire on every config that names the
         model and sets nothing, which is the recommended summary_agent.
         """
         from src.core.config.community import FAQGenerationConfig
@@ -2400,7 +2389,7 @@ class TestFAQTemperatureWarning:
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
             config = FAQGenerationConfig(
-                evaluation_agent={"model": "claude-haiku-4-5"},
+                evaluation_agent={"model": HAIKU},
                 summary_agent={"model": "claude-sonnet-5-5"},
             )
 
@@ -3296,7 +3285,7 @@ class TestModelInstructions:
     def test_a_claude_default_does_not_warn(self) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            CommunityConfig(id="d", name="D", description="x", default_model="claude-haiku-4-5")
+            CommunityConfig(id="d", name="D", description="x", default_model=HAIKU)
 
     @pytest.mark.parametrize(
         "model",

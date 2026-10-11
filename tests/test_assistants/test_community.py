@@ -14,7 +14,7 @@ from src.core.config.community import (
     CommunityConfig,
     GitHubConfig,
 )
-from src.core.services.anthropic_models import BEDROCK_MODELS
+from src.core.services.anthropic_models import BEDROCK_MODELS, HAIKU
 from src.core.services.tagged_citations import CITATION_INSTRUCTION
 
 
@@ -333,15 +333,15 @@ class TestBedrockModelPrompts:
         config = self._config(model_instructions={"openai.gpt-oss-120b": "Answer in French."})
 
         other = CommunityAssistant(model=model, config=config, model_id="openai.gpt-6-luna")
-        claude = CommunityAssistant(model=model, config=config, model_id="claude-haiku-4-5")
+        claude = CommunityAssistant(model=model, config=config, model_id=HAIKU)
 
         assert "Answer in French." not in other.get_system_prompt()
         assert "Answer in French." not in claude.get_system_prompt()
 
     def test_instructions_for_a_claude_model_are_added_too(self, model):
         """The setting is not Bedrock-only; any offered model can be tuned."""
-        config = self._config(model_instructions={"claude-haiku-4-5": "Be brief."})
-        assistant = CommunityAssistant(model=model, config=config, model_id="claude-haiku-4-5")
+        config = self._config(model_instructions={HAIKU: "Be brief."})
+        assistant = CommunityAssistant(model=model, config=config, model_id=HAIKU)
 
         assert "Be brief." in assistant.get_system_prompt()
 

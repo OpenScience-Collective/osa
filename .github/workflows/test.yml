@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      model:
+        description: 'Live tests to run: all, or a part of a test or model name (haiku, sonnet, luna, openrouter)'
+        required: false
+        default: 'all'
+        type: string
 
 jobs:
   lint:
@@ -263,6 +269,9 @@ jobs:
       - name: Run the light and dark appearance tests on a real DOM
         run: bun frontend/test-widget-color-scheme.js
 
+      - name: Run the host page style tests on a real DOM
+        run: bun frontend/test-widget-host-styles.js
+
       - name: Run the notebook tab tests on a real DOM
         run: bun frontend/test-widget-notebook-tab.js
 
@@ -315,12 +324,9 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    # Run on push to main or workflow_dispatch, but not on PRs (to save API costs)
-    # Skip for automated version-strip commits (version-only changes)
-    if: |
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      !(github.actor == 'github-actions[bot]' &&
-        contains(github.event.head_commit.message || '', 'strip dev suffix'))
+    # Manual only (Actions > Tests > Run workflow). These tests make paid calls to the Claude
+    # Platform, OpenRouter and Amazon Bedrock, so they never run on push or on pull requests.
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
 
@@ -336,25 +342,52 @@ jobs:
         run: |
           uv sync --frozen --extra dev
 
-      - name: Check for Anthropic credentials
-        id: check-anthropic-key
-        run: |
-          if [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
-            echo "has_anthropic_key=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_anthropic_key=false" >> $GITHUB_OUTPUT
-            echo "::warning::ANTHROPIC_API_KEY not set - skipping integration tests"
-          fi
-
-      - name: Run integration tests
-        if: steps.check-anthropic-key.outputs.has_anthropic_key == 'true'
+      - name: Check the live credentials
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
           ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          OPENROUTER_API_KEY_FOR_TESTING: ${{ secrets.OPENROUTER_API_KEY_FOR_TESTING }}
         run: |
-          uv run pytest tests/ -v -m "integration or llm" --tb=short
+          # Presence only, never the values. A missing key makes its tests skip, which a
+          # green run hides, so each one is named here. A run with none of them set would
+          # skip every live test and still pass, so that fails the job now. A base URL
+          # without a workspace ID stops the whole run at startup, so that pair fails it too.
+          keys_set=0
+          for name in ANTHROPIC_API_KEY AWS_BEARER_TOKEN_BEDROCK OPENROUTER_API_KEY_FOR_TESTING; do
+            if [ -n "${!name}" ]; then
+              echo "$name is set"
+              keys_set=$((keys_set + 1))
+            else
+              echo "::warning::$name is not set; the tests that need it will skip"
+            fi
+          done
+          if [ "$keys_set" -eq 0 ]; then
+            echo "::error::None of the live credentials is set, so every live test would skip"
+            exit 1
+          fi
+          if [ -n "$ANTHROPIC_BASE_URL" ] && [ -z "$ANTHROPIC_WORKSPACE_ID" ]; then
+            echo "::error::ANTHROPIC_BASE_URL is set without ANTHROPIC_WORKSPACE_ID"
+            exit 1
+          fi
+
+      - name: Run live model tests
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          OPENROUTER_API_KEY_FOR_TESTING: ${{ secrets.OPENROUTER_API_KEY_FOR_TESTING }}
+          MODEL_FILTER: ${{ inputs.model }}
+        run: |
+          # Each module skips itself when its credential is missing, so a Bedrock-only run
+          # still runs the Bedrock cases. -k keeps only the cases whose ids name the model.
+          SELECT=()
+          if [ -n "$MODEL_FILTER" ] && [ "$MODEL_FILTER" != "all" ]; then
+            SELECT=(-k "$MODEL_FILTER")
+          fi
+          uv run pytest tests/ -v -m "integration or llm" --tb=short "${SELECT[@]}"
 
       - name: Run network tests
         env:

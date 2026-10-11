@@ -22,9 +22,14 @@ from src.api.security import ByokCredential
 from src.assistants import discover_assistants, registry
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import CommunityConfig
-from src.core.services.anthropic_models import BEDROCK_MODELS, is_bedrock_model
+from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,
+    HAIKU,
+    is_bedrock_model,
+    normalize_model,
+)
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
-from tests.helpers.deployment import set_platform_keys
+from tests.helpers.deployment import name_luna_as_the_default, set_platform_keys
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -139,7 +144,7 @@ class TestRouteRequest:
         _platform(monkeypatch)
         info = _hed()
 
-        route = _route_request(info, "hed", None, _origin(info), "claude-haiku-4-5")
+        route = _route_request(info, "hed", None, _origin(info), HAIKU)
 
         assert route.choice.provider == "anthropic"
 
@@ -229,7 +234,7 @@ class TestABedrockDefaultThatCannotBeServed:
         route = _route_request(_luna_default_community(), "hed", byok, None, None)
 
         assert (route.choice.provider, route.choice.key_source) == ("anthropic", "byok")
-        assert route.model == "claude-haiku-4-5"
+        assert route.model == HAIKU
         assert "openai.gpt-6-luna" in caplog.text
 
     def test_a_deployment_without_a_bedrock_key_runs_claude(self, monkeypatch):
@@ -238,7 +243,7 @@ class TestABedrockDefaultThatCannotBeServed:
 
         route = _route_request(info, "hed", None, _origin(_hed()), None)
 
-        assert (route.choice.provider, route.model) == ("anthropic", "claude-haiku-4-5")
+        assert (route.choice.provider, route.model) == ("anthropic", HAIKU)
 
     def test_the_deployments_own_claude_default_is_the_fallback(self, monkeypatch):
         _platform(monkeypatch, bedrock=None)
@@ -254,7 +259,7 @@ class TestABedrockDefaultThatCannotBeServed:
 
         route = _route_request(_luna_default_community(), "hed", None, _origin(_hed()), None)
 
-        assert route.model == "claude-haiku-4-5"
+        assert route.model == HAIKU
 
     def test_naming_the_model_still_gets_the_refusal(self, monkeypatch):
         """A caller who asked for Luna with their own key is told why not."""
@@ -301,7 +306,7 @@ class TestTheFallbackLog:
         assert record.levelno == logging.ERROR
         assert record.community_id == "hed"
         assert record.model == "openai.gpt-6-luna"
-        assert record.fallback == "claude-haiku-4-5"
+        assert record.fallback == HAIKU
         assert (record.key_source, record.cause) == ("platform", "no_bedrock_key")
         assert "AWS_BEARER_TOKEN_BEDROCK" in record.getMessage()
 
@@ -317,7 +322,7 @@ class TestTheFallbackLog:
         assert record.levelno == logging.WARNING
         assert record.community_id == "hed"
         assert record.model == "openai.gpt-6-luna"
-        assert record.fallback == "claude-haiku-4-5"
+        assert record.fallback == HAIKU
         assert (record.key_source, record.cause) == ("byok", "callers_own_key")
 
     def test_a_callers_own_key_on_a_deployment_without_the_key_is_still_an_error(
@@ -411,15 +416,16 @@ class TestTheFallbackLog:
     def test_every_shipped_bedrock_default_fails_loudly_on_a_deployment_without_the_key(
         self, monkeypatch, caplog
     ):
-        """Dynamic: each community whose default is a Bedrock model, as shipped."""
+        """Dynamic: each community whose default is a Bedrock model, once a test names one."""
         set_platform_keys(monkeypatch, bedrock=None)
         caplog.set_level(logging.WARNING)
+        name_luna_as_the_default(monkeypatch)
         bedrock_communities = [
             info
             for info in registry.list_all()
             if info.community_config and is_bedrock_model(info.community_config.default_model)
         ]
-        assert bedrock_communities, "no shipped community defaults to a Bedrock model"
+        assert bedrock_communities, "no community defaults to a Bedrock model"
 
         for info in bedrock_communities:
             caplog.clear()
@@ -431,7 +437,7 @@ class TestTheFallbackLog:
             assert record.levelno == logging.ERROR, info.id
             assert record.community_id == info.id
             assert info.id in record.getMessage()
-            assert record.model == info.community_config.default_model
+            assert record.model == normalize_model(info.community_config.default_model)
             assert record.fallback == route.model
 
 
@@ -491,7 +497,7 @@ class TestBedrockAndOpenRouterWithoutAnthropic:
 
         route = _route_request(info, "hed", None, _origin(info), None)
 
-        default = info.community_config.default_model
+        default = normalize_model(info.community_config.default_model)
         assert route.choice.provider == "openrouter"
         assert route.choice.key_source == "platform"
         assert route.model == OPENROUTER_MODEL_IDS[default]

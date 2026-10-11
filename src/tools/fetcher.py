@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -27,10 +28,57 @@ _CONTENT_SELECTORS = [
 ]
 
 
+#: Source files written in markdown. Only these have inline HTML to strip.
+_MARKDOWN_SUFFIXES = (".md", ".markdown", ".mdx")
+
+
+def _strips_html(source_url: str) -> bool:
+    r"""Whether a document's text has its HTML tags stripped when it is cleaned.
+
+    Only a markdown source does: there an inline ``<details>``, ``<img>`` or ``<br>`` is
+    markup the model does not need. Every other source is text in which an angle bracket
+    is content, and the stripper removes whatever sits between a ``<`` and the next ``>``:
+
+    - reStructuredText: the target of every ``\`text <https://...>\`_`` link.
+    - Python (sphinx-gallery examples): ``a<b and c>d`` becomes ``ad``.
+    - An HTML page (``_is_html``, or labeled HTML by its server): it was converted to
+      markdown before it reached the cleaner (see ``_html_to_markdown``), so no tags are
+      left, only the page's own text, such as a ``<Raw | sample_audvis_raw.fif>`` repr in
+      a tutorial's output.
+    """
+    return urlparse(source_url).path.lower().endswith(_MARKDOWN_SUFFIXES)
+
+
+#: The start of an HTML document: the first tag, after whatever may precede it
+#: (whitespace, a byte order mark that ``response.text`` keeps when a server sends UTF-8
+#: with one, an XML prolog, comments). ``\b`` keeps ``<header>`` from matching ``<head``.
+#: The ``*+`` is possessive, so a run of comments is read once, not re-split on failure.
+_HTML_START = re.compile(
+    r"(?:\s|﻿|<\?xml[^>]*\?>|<!--.*?-->)*+<(?:!doctype|html|head|body)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: Media types a server uses for HTML.
+_HTML_MEDIA_TYPES = ("text/html", "application/xhtml+xml")
+
+
 def _is_html(content: str) -> bool:
-    """Check if content appears to be HTML."""
-    stripped = content.lstrip()
-    return stripped.startswith(("<!DOCTYPE", "<!doctype", "<html", "<HTML"))
+    """Check if content appears to be HTML, from its first tag.
+
+    A bare ``<div>`` or ``<p>`` does not count: a markdown README often starts with
+    ``<p align="center">``. A fragment like that is recognized by ``_served_as_html``.
+    """
+    return _HTML_START.match(content) is not None
+
+
+def _served_as_html(content_type: str, source_url: str) -> bool:
+    """Whether the server labels the response HTML, for a source that is not markdown.
+
+    Catches an HTML fragment that ``_is_html`` cannot tell from markdown by its first
+    tag. A markdown source (by its URL) is never converted on the server's say-so.
+    """
+    media_type = content_type.split(";")[0].strip().lower()
+    return media_type in _HTML_MEDIA_TYPES and not _strips_html(source_url)
 
 
 def _html_to_markdown(html: str) -> str:
@@ -57,15 +105,12 @@ def _html_to_markdown(html: str) -> str:
     if content_element is None:
         content_element = soup.body or soup
 
-    # Remove nav, sidebar, footer elements within content
-    for tag in content_element.find_all(["nav", "footer", "aside"]):
+    # Remove nav, sidebar, footer elements within content, and script and style elements
+    # with their text (markdownify's ``strip`` drops a tag but keeps the text inside it)
+    for tag in content_element.find_all(["nav", "footer", "aside", "script", "style"]):
         tag.decompose()
 
-    md = markdownify.markdownify(
-        str(content_element),
-        heading_style="ATX",
-        strip=["script", "style"],
-    )
+    md = markdownify.markdownify(str(content_element), heading_style="ATX")
 
     # Clean up Sphinx anchor links like [#](#heading "Link to this heading")
     md = re.sub(r'\[#\]\([^)]*"Link to this [^"]*"\)', "", md)
@@ -224,7 +269,11 @@ class DocumentFetcher:
         # Check cache first
         cached = self.get_cached(doc.source_url)
         if cached is not None:
-            content = clean_markdown(cached) if self.clean_markdown_content else cached
+            content = (
+                clean_markdown(cached, strip_html=_strips_html(doc.source_url))
+                if self.clean_markdown_content
+                else cached
+            )
             return RetrievedDoc(
                 title=doc.title,
                 url=doc.url,
@@ -243,7 +292,9 @@ class DocumentFetcher:
                 content = response.text
 
                 # Convert HTML to markdown before caching
-                if _is_html(content):
+                if _is_html(content) or _served_as_html(
+                    response.headers.get("content-type", ""), doc.source_url
+                ):
                     logger.debug(
                         "Detected HTML content, converting to markdown: %s", doc.source_url
                     )
@@ -254,7 +305,7 @@ class DocumentFetcher:
 
                 # Clean markdown if enabled
                 if self.clean_markdown_content:
-                    content = clean_markdown(content)
+                    content = clean_markdown(content, strip_html=_strips_html(doc.source_url))
 
                 return RetrievedDoc(
                     title=doc.title,

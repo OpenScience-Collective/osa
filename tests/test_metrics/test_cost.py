@@ -2,10 +2,11 @@
 
 import pytest
 
-from src.core.services.anthropic_models import BEDROCK_MODELS
+from src.core.services.anthropic_models import BEDROCK_MODELS, HAIKU, OPENROUTER_MODEL_IDS
 from src.metrics.cost import (
     CACHE_READ_MULTIPLIER,
     CACHE_WRITE_MULTIPLIER,
+    LONG_PROMPT_RATES,
     MODEL_PRICING,
     estimate_cost,
 )
@@ -100,9 +101,9 @@ class TestEstimateCostCacheAware:
 
     def test_no_cache_detail_matches_pre_cache_aware_pricing(self):
         """Omitting cache args reproduces the flat-rate pricing exactly."""
-        without_cache = estimate_cost("claude-haiku-4-5", input_tokens=1000, output_tokens=500)
+        without_cache = estimate_cost(HAIKU, input_tokens=1000, output_tokens=500)
         with_explicit_zeros = estimate_cost(
-            "claude-haiku-4-5",
+            HAIKU,
             input_tokens=1000,
             output_tokens=500,
             cache_read_tokens=0,
@@ -112,7 +113,7 @@ class TestEstimateCostCacheAware:
 
     def test_cache_read_cheaper_than_fresh_input(self):
         """Identical token counts cost less when most input was a cache read."""
-        model = "claude-haiku-4-5"
+        model = HAIKU
         total_input = 100_000
         output_tokens = 1000
 
@@ -127,30 +128,33 @@ class TestEstimateCostCacheAware:
         assert mostly_cache_read < all_fresh
 
     def test_cache_read_priced_at_read_multiplier(self):
-        """A fully cache-read request costs input_rate * CACHE_READ_MULTIPLIER."""
-        rate = MODEL_PRICING["claude-haiku-4-5"]
+        """A fully cache-read request costs input_rate * CACHE_READ_MULTIPLIER.
+
+        A prompt of 100,000 tokens, the longest one in Haiku's base price tier.
+        """
+        rate = MODEL_PRICING[HAIKU]
         cost = estimate_cost(
-            "claude-haiku-4-5",
-            input_tokens=1_000_000,
+            HAIKU,
+            input_tokens=100_000,
             output_tokens=0,
-            cache_read_tokens=1_000_000,
+            cache_read_tokens=100_000,
         )
-        assert cost == round(rate.input_per_1m * CACHE_READ_MULTIPLIER, 6)
+        assert cost == round(100_000 * rate.input_per_1m * CACHE_READ_MULTIPLIER / 1_000_000, 6)
 
     def test_cache_creation_priced_at_write_multiplier(self):
         """A fully cache-write request costs input_rate * CACHE_WRITE_MULTIPLIER."""
-        rate = MODEL_PRICING["claude-haiku-4-5"]
+        rate = MODEL_PRICING[HAIKU]
         cost = estimate_cost(
-            "claude-haiku-4-5",
-            input_tokens=1_000_000,
+            HAIKU,
+            input_tokens=100_000,
             output_tokens=0,
-            cache_creation_tokens=1_000_000,
+            cache_creation_tokens=100_000,
         )
-        assert cost == round(rate.input_per_1m * CACHE_WRITE_MULTIPLIER, 6)
+        assert cost == round(100_000 * rate.input_per_1m * CACHE_WRITE_MULTIPLIER / 1_000_000, 6)
 
     def test_cache_write_costs_more_than_fresh_input(self):
         """A cache write premium costs more than the same tokens as fresh input."""
-        model = "claude-haiku-4-5"
+        model = HAIKU
         all_fresh = estimate_cost(model, input_tokens=100_000, output_tokens=0)
         all_cache_write = estimate_cost(
             model, input_tokens=100_000, output_tokens=0, cache_creation_tokens=100_000
@@ -159,9 +163,9 @@ class TestEstimateCostCacheAware:
 
     def test_mixed_cache_and_fresh_input(self):
         """Ordinary, cache-read, and cache-write portions are priced independently."""
-        rate = MODEL_PRICING["claude-haiku-4-5"]
+        rate = MODEL_PRICING[HAIKU]
         cost = estimate_cost(
-            "claude-haiku-4-5",
+            HAIKU,
             input_tokens=1000,
             output_tokens=0,
             cache_read_tokens=300,
@@ -176,24 +180,30 @@ class TestEstimateCostCacheAware:
         assert cost == round(expected, 6)
 
 
-class TestBedrockModelsAreCheaperThanTheDefault:
-    """The Bedrock-served models exist to be cheaper than Claude Haiku 4.5.
+#: The price tier the Bedrock-served models are held to, USD per 1M tokens (input, output):
+#: what Claude Haiku 4.5 cost. Claude Haiku 5.5 replaced it as the Claude default at about
+#: a tenth of that price, so it is no longer the ceiling; this one is written out so a model
+#: that costs more than the cheap tier cannot be added by accident.
+CHEAP_TIER_CEILING = (1.00, 5.00)
 
-    The point of offering them is a cheaper option for small deployments, so a
-    price change or a newly added model that cost more than the default would
-    defeat the reason they are offered. Queried from the registry, not listed.
+
+class TestBedrockModelsStayInTheCheapTier:
+    """The Bedrock-served models exist to be a cheap option for small deployments.
+
+    A price change or a newly added model that cost more than the cheap tier would defeat
+    the reason they are offered. Queried from the registry, not listed.
     """
 
     def test_every_bedrock_model_is_priced(self):
         missing = set(BEDROCK_MODELS) - set(MODEL_PRICING)
         assert not missing, f"Bedrock models missing from MODEL_PRICING: {missing}"
 
-    def test_no_bedrock_model_costs_more_than_haiku(self):
-        haiku = MODEL_PRICING["claude-haiku-4-5"]
+    def test_no_bedrock_model_costs_more_than_the_cheap_tier(self):
+        max_input, max_output = CHEAP_TIER_CEILING
         for model_id in BEDROCK_MODELS:
             rate = MODEL_PRICING[model_id]
-            assert rate.input_per_1m <= haiku.input_per_1m, model_id
-            assert rate.output_per_1m <= haiku.output_per_1m, model_id
+            assert rate.input_per_1m <= max_input, model_id
+            assert rate.output_per_1m <= max_output, model_id
 
     def test_automatic_caching_uses_the_platform_cache_multipliers(self):
         """Luna bills cache writes at 1.25x and reads at 0.1x its input rate.
@@ -204,3 +214,79 @@ class TestBedrockModelsAreCheaperThanTheDefault:
         rate = MODEL_PRICING["openai.gpt-6-luna"]
         assert rate.input_per_1m * CACHE_WRITE_MULTIPLIER == pytest.approx(0.1375)
         assert rate.input_per_1m * CACHE_READ_MULTIPLIER == pytest.approx(0.011)
+
+
+class TestLongPromptPricing:
+    """Claude Haiku 5.5 is priced by prompt length: the whole request moves to the higher
+    rates once its prompt is over 100,000 tokens. The prices are Anthropic's published
+    ones ($0.10 / $0.50, and $0.50 / $2.50 above), so they are written out here."""
+
+    def test_the_base_tier_is_the_models_pricing_entry(self):
+        rate = MODEL_PRICING[HAIKU]
+        assert (rate.input_per_1m, rate.output_per_1m) == (0.10, 0.50)
+
+    def test_a_prompt_at_the_line_is_in_the_base_tier(self):
+        cost = estimate_cost(HAIKU, input_tokens=100_000, output_tokens=1_000_000)
+        assert cost == round(100_000 * 0.10 / 1_000_000 + 1_000_000 * 0.50 / 1_000_000, 6)
+
+    def test_a_prompt_one_token_over_the_line_is_billed_whole_at_the_long_rates(self):
+        cost = estimate_cost(HAIKU, input_tokens=100_001, output_tokens=1_000_000)
+        assert cost == round(100_001 * 0.50 / 1_000_000 + 1_000_000 * 2.50 / 1_000_000, 6)
+
+    def test_calls_that_are_each_under_the_line_are_billed_at_the_base_rates(self):
+        """Five calls with 25,000-token prompts add up to 125,000 input tokens, and no
+        prompt is near the line: the reply costs $0.10 / $0.50, not $0.50 / $2.50."""
+        cost = estimate_cost(
+            HAIKU, input_tokens=125_000, output_tokens=5_000, longest_prompt_tokens=25_000
+        )
+        assert cost == round(125_000 * 0.10 / 1_000_000 + 5_000 * 0.50 / 1_000_000, 6)
+
+    def test_a_longest_prompt_at_the_line_is_in_the_base_tier(self):
+        cost = estimate_cost(
+            HAIKU, input_tokens=300_000, output_tokens=1_000_000, longest_prompt_tokens=100_000
+        )
+        assert cost == round(300_000 * 0.10 / 1_000_000 + 1_000_000 * 0.50 / 1_000_000, 6)
+
+    def test_a_longest_prompt_over_the_line_puts_the_whole_request_in_the_long_tier(self):
+        cost = estimate_cost(
+            HAIKU, input_tokens=130_000, output_tokens=1_000_000, longest_prompt_tokens=100_001
+        )
+        assert cost == round(130_000 * 0.50 / 1_000_000 + 1_000_000 * 2.50 / 1_000_000, 6)
+
+    def test_without_a_longest_prompt_the_request_is_one_call(self):
+        """Callers that price a single call need not say so."""
+        assert estimate_cost(HAIKU, 300_000, 1_000) == estimate_cost(
+            HAIKU, 300_000, 1_000, longest_prompt_tokens=300_000
+        )
+
+    def test_cache_multipliers_apply_to_the_long_input_rate(self):
+        cost = estimate_cost(
+            HAIKU,
+            input_tokens=200_000,
+            output_tokens=0,
+            cache_read_tokens=150_000,
+            cache_creation_tokens=20_000,
+        )
+        expected = (
+            30_000 * 0.50
+            + 20_000 * 0.50 * CACHE_WRITE_MULTIPLIER
+            + 150_000 * 0.50 * CACHE_READ_MULTIPLIER
+        ) / 1_000_000
+        assert cost == round(expected, 6)
+
+    def test_the_openrouter_slug_is_priced_the_same(self):
+        slug = OPENROUTER_MODEL_IDS[HAIKU]
+        assert MODEL_PRICING[slug] == MODEL_PRICING[HAIKU]
+        assert LONG_PROMPT_RATES[slug] == LONG_PROMPT_RATES[HAIKU]
+        assert estimate_cost(slug, 300_000, 1_000) == estimate_cost(HAIKU, 300_000, 1_000)
+
+    def test_every_long_prompt_rate_is_for_a_priced_model_and_costs_more(self):
+        for model, tier in LONG_PROMPT_RATES.items():
+            base = MODEL_PRICING[model]
+            assert tier.rate.input_per_1m > base.input_per_1m, model
+            assert tier.rate.output_per_1m > base.output_per_1m, model
+
+    def test_the_retired_generation_stays_priced_for_old_request_logs(self):
+        """Logs written before Haiku 5.5 name claude-haiku-4-5; the dashboard prices them."""
+        old = MODEL_PRICING["claude-haiku-4-5"]
+        assert (old.input_per_1m, old.output_per_1m) == (1.00, 5.00)

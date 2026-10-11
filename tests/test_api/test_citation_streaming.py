@@ -25,6 +25,7 @@ from src.api.routers.community import (
     _stream_ask_response,
     _stream_chat_response,
 )
+from src.core.services.anthropic_models import HAIKU
 
 
 class _FakeChunk:
@@ -131,7 +132,7 @@ class TestStreamAskResponseCitations:
         ]
         fake_awm = AssistantWithMetrics(
             assistant=_FakeAssistant(events_in),
-            model="claude-haiku-4-5",
+            model=HAIKU,
             key_source="platform",
         )
         with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
@@ -159,7 +160,7 @@ class TestStreamAskResponseCitations:
         ]
         fake_awm = AssistantWithMetrics(
             assistant=_FakeAssistant(events_in),
-            model="claude-haiku-4-5",
+            model=HAIKU,
             key_source="platform",
         )
         with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
@@ -192,7 +193,7 @@ class TestStreamAskResponseCitations:
         ]
         fake_awm = AssistantWithMetrics(
             assistant=_FakeAssistant(events_in),
-            model="claude-haiku-4-5",
+            model=HAIKU,
             key_source="platform",
         )
         with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
@@ -207,7 +208,7 @@ class TestStreamAskResponseCitations:
     async def test_citation_event_and_inline_marker_emitted(self) -> None:
         fake_awm = AssistantWithMetrics(
             assistant=_FakeAssistant(_events_for_one_citation()),
-            model="claude-haiku-4-5",
+            model=HAIKU,
             key_source="platform",
         )
         with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
@@ -249,7 +250,7 @@ class TestStreamAskResponseCitations:
     async def test_no_citations_yields_empty_list_on_done(self) -> None:
         fake_awm = AssistantWithMetrics(
             assistant=_FakeAssistant([_text_event("Just an answer, nothing cited.")]),
-            model="claude-haiku-4-5",
+            model=HAIKU,
             key_source="platform",
         )
         with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
@@ -272,7 +273,7 @@ class TestStreamAskResponseCitations:
             _text_event(citations=[{"source": CITED_DOC_URL, "title": "Doc", "cited_text": "b"}]),
         ]
         fake_awm = AssistantWithMetrics(
-            assistant=_FakeAssistant(events_in), model="claude-haiku-4-5", key_source="platform"
+            assistant=_FakeAssistant(events_in), model=HAIKU, key_source="platform"
         )
         with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
             events = await _collect_sse_events(
@@ -295,7 +296,7 @@ class TestStreamChatResponseCitations:
 
         fake_awm = AssistantWithMetrics(
             assistant=_FakeAssistant(_events_for_one_citation()),
-            model="claude-haiku-4-5",
+            model=HAIKU,
             key_source="platform",
         )
         with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
@@ -335,7 +336,7 @@ class TestStreamChatResponseCitations:
         session.add_user_message("A question")
         fake_awm = AssistantWithMetrics(
             assistant=_FakeAssistant(events_in),
-            model="claude-haiku-4-5",
+            model=HAIKU,
             key_source="platform",
         )
         with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
@@ -365,7 +366,7 @@ class TestStreamChatResponseCitations:
         session.add_user_message("A question")
         fake_awm = AssistantWithMetrics(
             assistant=_FakeAssistant(events_in),
-            model="claude-haiku-4-5",
+            model=HAIKU,
             key_source="platform",
         )
         with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
@@ -432,7 +433,7 @@ class TestCitationsAcrossABrowserTurn:
 
     async def _stream(self, session: ChatSession, events_in: list[dict], **kwargs) -> list[dict]:
         fake_awm = AssistantWithMetrics(
-            assistant=_FakeAssistant(events_in), model="claude-haiku-4-5", key_source="platform"
+            assistant=_FakeAssistant(events_in), model=HAIKU, key_source="platform"
         )
         with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
             return await _collect_sse_events(

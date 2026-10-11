@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessageChunk
 
 from src.api.routers.community import ChatSession, _get_session_store, _stream_chat_response
 from src.cli.output import format_usage
+from src.core.services.anthropic_models import HAIKU
 from src.metrics.cost import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER, MODEL_PRICING
 from tests.helpers.provider_replies import (
     ANSWER,
@@ -38,7 +39,13 @@ from tests.helpers.provider_replies import (
     real_request,
     scripted_reply,
 )
-from tests.test_api.test_missing_usage import _ask, _chat, client, metrics_db  # noqa: F401
+from tests.test_api.test_missing_usage import (  # noqa: F401
+    _ask,
+    _chat,
+    _rows,
+    client,
+    metrics_db,
+)
 from tests.test_api.test_tool_call_streaming import ALLOWED_ORIGIN as BROWSER_ORIGIN
 from tests.test_api.test_tool_call_streaming import (
     CODE_CALL_ID,
@@ -211,7 +218,7 @@ class TestAParkedBrowserRun:
             )
 
         assert events[-1]["event"] == "tool_request"
-        assert events[-1]["usage"] == _usage("claude-haiku-4-5")
+        assert events[-1]["usage"] == _usage(HAIKU)
 
     async def test_its_cache_reads_and_writes_are_its_own(self) -> None:
         call = _anthropic_call("execute_code", "toolu_01cached", {"code": "x", "description": "d"})
@@ -234,7 +241,7 @@ class TestAParkedBrowserRun:
                 )
             )
 
-        assert events[-1]["usage"] == _cached_usage("claude-haiku-4-5")
+        assert events[-1]["usage"] == _cached_usage(HAIKU)
 
     def test_each_run_of_a_reply_reports_only_its_own_through_the_real_endpoints(
         self,
@@ -525,9 +532,10 @@ class TestWhatTheOperatorReads:
             "output_tokens": 10,
             "cache_read_tokens": 0,
             "cache_creation_tokens": 0,
+            "longest_prompt_tokens": 100,
         } | counts
         return _safe_reply_usage(
-            "claude-haiku-4-5",
+            HAIKU,
             model_runs=ModelRuns(),
             community_id=COMMUNITY,
             request_id="req-log",
@@ -556,3 +564,95 @@ class TestWhatTheOperatorReads:
         (record,) = caplog.records
         assert record.levelno == logging.WARNING
         assert "output_tokens" in record.getMessage()
+
+
+ANTHROPIC = next(p for p in PROVIDERS if p.name == "anthropic")
+
+
+def _reported(input_tokens: int, output_tokens: int = 100) -> AIMessageChunk:
+    """The usage a model run reports at its end."""
+    return AIMessageChunk(
+        content="",
+        usage_metadata={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    )
+
+
+def _runs(*prompts: int) -> list[list[AIMessageChunk]]:
+    """A reply of one model run per prompt size: each run but the last calls a tool, as a
+    tool loop does, and the last answers. Each run sends the conversation again, so a run's
+    input is the size of its own prompt, and a run writes 100 tokens."""
+    script = []
+    for position, tokens in enumerate(prompts[:-1]):
+        call = _anthropic_call(
+            "lookup_scriptedreply_docs", f"toolu_01loop{position}", {"query": "x"}
+        )
+        script.append([*call, *scripted_reply(ANTHROPIC, "", usage=False), _reported(tokens)])
+    script.append([*scripted_reply(ANTHROPIC, ANSWER, usage=False), _reported(prompts[-1])])
+    return script
+
+
+class TestTheLongPromptRateBelongsToOneModelRun:
+    """Claude Haiku 5.5 is priced by the length of one prompt: $0.10 / $0.50 per million
+    tokens, and $0.50 / $2.50 for a prompt over 100,000 tokens. A reply that calls the model
+    several times sends the conversation each time, so its prompts add up past the line
+    while none of them is near it. That reply is not a long prompt. The expected figures are
+    written out from the published prices."""
+
+    def test_the_provider_under_test_is_the_one_priced_by_prompt_length(self) -> None:
+        assert ANTHROPIC.model == HAIKU
+
+    async def test_a_stream_of_runs_that_are_each_under_the_line_is_billed_at_the_base_rates(
+        self,
+    ) -> None:
+        events = await _chat(ANTHROPIC, _runs(40_000, 40_000, 40_000))
+
+        usage = events[-1]["usage"]
+        assert (usage["input_tokens"], usage["output_tokens"]) == (120_000, 300)
+        assert usage["estimated_cost"] == pytest.approx(120_000 * 0.10 / 1e6 + 300 * 0.50 / 1e6)
+        (row,) = _rows()
+        assert row["input_tokens"] == 120_000
+        assert row["estimated_cost"] == pytest.approx(usage["estimated_cost"])
+
+    async def test_a_stream_with_one_run_over_the_line_is_billed_at_the_long_rates(self) -> None:
+        events = await _chat(ANTHROPIC, _runs(10_000, 100_002))
+
+        usage = events[-1]["usage"]
+        assert (usage["input_tokens"], usage["output_tokens"]) == (110_002, 200)
+        assert usage["estimated_cost"] == pytest.approx(110_002 * 0.50 / 1e6 + 200 * 2.50 / 1e6)
+        (row,) = _rows()
+        assert row["estimated_cost"] == pytest.approx(usage["estimated_cost"])
+
+    def test_a_response_that_is_not_streamed_is_billed_at_the_base_rates_too(
+        self,
+        client: TestClient,  # noqa: F811
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _serve(monkeypatch, ANTHROPIC, _runs(40_000, 40_000, 40_000))
+
+        response = _ask_without_streaming(client)
+
+        assert response.status_code == 200
+        usage = response.json()["usage"]
+        assert usage["input_tokens"] == 120_000
+        assert usage["estimated_cost"] == pytest.approx(120_000 * 0.10 / 1e6 + 300 * 0.50 / 1e6)
+        (row,) = _rows()
+        assert row["estimated_cost"] == pytest.approx(usage["estimated_cost"])
+
+    def test_a_response_that_is_not_streamed_with_a_run_over_the_line_is_billed_long(
+        self,
+        client: TestClient,  # noqa: F811
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _serve(monkeypatch, ANTHROPIC, _runs(10_000, 100_002))
+
+        response = _ask_without_streaming(client)
+
+        assert response.status_code == 200
+        usage = response.json()["usage"]
+        assert usage["estimated_cost"] == pytest.approx(110_002 * 0.50 / 1e6 + 200 * 2.50 / 1e6)
+        (row,) = _rows()
+        assert row["estimated_cost"] == pytest.approx(usage["estimated_cost"])

@@ -6,12 +6,21 @@ behavior against a live document; see the ``@pytest.mark.network`` tests
 below.
 """
 
+import http.server
+import threading
 import time
+from collections.abc import Iterator
 
 import pytest
 
 from src.tools.base import DocPage
-from src.tools.fetcher import CacheEntry, DocumentFetcher, get_fetcher
+from src.tools.fetcher import (
+    CacheEntry,
+    DocumentFetcher,
+    _is_html,
+    _served_as_html,
+    get_fetcher,
+)
 
 
 class TestCacheEntry:
@@ -180,6 +189,75 @@ class TestDocumentFetcher:
         assert result.success is True
         assert result.content == cached_content
 
+    def _fetch_cached(self, fetcher: DocumentFetcher, source_url: str, text: str) -> str:
+        """Put text in the cache as a document's source, and return what fetch() gives for it."""
+        fetcher._save_to_cache(source_url, text)
+        doc = DocPage(title="Doc", url="https://example.com/doc.html", source_url=source_url)
+        result = fetcher.fetch(doc)
+        assert result.success is True
+        return result.content
+
+    def test_rst_source_keeps_link_targets(self, fetcher: DocumentFetcher) -> None:
+        """An RST link's target sits in angle brackets and is content, not an HTML tag."""
+        text = "See the `NWB Inspector <https://nwbinspector.readthedocs.io/>`_ docs."
+        content = self._fetch_cached(fetcher, "https://example.com/raw/docs/index.rst", text)
+        assert content == text
+
+    def test_python_source_keeps_comparisons_and_generics(self, fetcher: DocumentFetcher) -> None:
+        """Code between a `<` and a later `>` is code: a comparison, a generic, a repr."""
+        text = (
+            "if a<b and c>d:\n"
+            "    x: Mapping<str, int> = load()\n"
+            "    print(raw)  # <Raw | sample_audvis_raw.fif, 376 x 166800>"
+        )
+        content = self._fetch_cached(
+            fetcher, "https://example.com/raw/tutorials/plot_file.py", text
+        )
+        assert content == text
+
+    def test_converted_html_page_keeps_angle_brackets(self, fetcher: DocumentFetcher) -> None:
+        """An HTML page is cached as the markdown it was converted to, which has no tags
+        left to strip; what is in angle brackets there is the page's own text."""
+        text = (
+            "The reader returns `<Info | 10 non-empty values>`.\n\nUse sub-<label> in file names."
+        )
+        content = self._fetch_cached(fetcher, "https://example.com/stable/overview.html", text)
+        assert content == text
+
+    def test_markdown_source_still_loses_inline_html(self, fetcher: DocumentFetcher) -> None:
+        """A markdown source keeps the cleaning it had: inline HTML tags are dropped."""
+        text = "# Title\n\n<details><summary>More</summary>Hidden text</details>\n\nLine<br/>break"
+        for suffix in (".md", ".MD", ".markdown", ".mdx"):
+            content = self._fetch_cached(fetcher, f"https://example.com/raw/README{suffix}", text)
+            assert "<" not in content and ">" not in content
+            assert "MoreHidden text" in content
+            assert "Linebreak" in content
+
+    def test_markdown_source_keeps_placeholders_and_code(self, fetcher: DocumentFetcher) -> None:
+        """Only HTML markup is dropped from markdown: a placeholder, an autolink and the
+        inside of a code block are content."""
+        text = (
+            "# Names\n\nUse sub-<label>_task-<label> and <https://example.org>.\n\n"
+            '```html\n<div class="x">Hi</div>\n```\n\n<b>Bold</b> text'
+        )
+        content = self._fetch_cached(fetcher, "https://example.com/raw/spec.md", text)
+        assert "sub-<label>_task-<label>" in content
+        assert "<https://example.org>" in content
+        assert '<div class="x">Hi</div>' in content
+        assert "<b>" not in content and "Bold text" in content
+
+    def test_markdown_suffix_is_read_from_the_path_not_the_query(
+        self, fetcher: DocumentFetcher
+    ) -> None:
+        """A query string or fragment does not change what kind of source a URL names."""
+        markdown = self._fetch_cached(
+            fetcher, "https://example.com/doc.md?ref=main#top", "Line<br/>break"
+        )
+        assert markdown == "Linebreak"
+        text = "Line<br/>break and `link <https://example.org>`_"
+        rst = self._fetch_cached(fetcher, "https://example.com/doc.rst?format=.md", text)
+        assert rst == text
+
     @pytest.mark.network
     def test_fetch_invalid_url(self, fetcher: DocumentFetcher) -> None:
         """Test fetching from an invalid URL."""
@@ -279,6 +357,291 @@ class TestDocumentFetcher:
         assert stats["memory_entries"] == 2
         assert stats["file_entries"] == 2
         assert stats["ttl_seconds"] == 60
+
+
+class _LocalSite:
+    """A real HTTP server on 127.0.0.1 that serves the pages a test registers."""
+
+    def __init__(self) -> None:
+        pages: dict[str, tuple[bytes, str]] = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                page = pages.get(self.path.split("?")[0])
+                if page is None:
+                    self.send_error(404)
+                    return
+                body, content_type = page
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args: object) -> None:
+                """Keep the test output quiet."""
+
+        self._pages = pages
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
+        self._thread.start()
+
+    def serve(self, path: str, body: str, content_type: str, encoding: str = "utf-8") -> str:
+        """Serve body at path with the given Content-Type, and return its URL."""
+        self._pages[path] = (body.encode(encoding), content_type)
+        return f"http://127.0.0.1:{self._server.server_port}{path}"
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join()
+
+
+class TestFetchOverHttp:
+    """fetch() against a real local server: the network branch, with no mocks.
+
+    These cover what the cached-source tests above cannot: the Content-Type header, the
+    HTML sniffing and conversion, and what is written to the cache.
+    """
+
+    @pytest.fixture
+    def site(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[_LocalSite]:
+        """A local server; the environment's proxy settings must not intercept it."""
+        monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+        monkeypatch.setenv("no_proxy", "127.0.0.1")
+        server = _LocalSite()
+        yield server
+        server.close()
+
+    @pytest.fixture
+    def fetcher(self, tmp_path) -> DocumentFetcher:
+        """A fetcher whose file cache is in the test's temporary directory."""
+        return DocumentFetcher(cache_dir=tmp_path / "cache", cache_ttl_seconds=60)
+
+    def _fetch(self, fetcher: DocumentFetcher, source_url: str) -> str:
+        doc = DocPage(title="Doc", url="https://example.com/doc.html", source_url=source_url)
+        result = fetcher.fetch(doc)
+        assert result.success is True, result.error
+        return result.content
+
+    @pytest.mark.parametrize(
+        ("name", "prefix"),
+        [
+            ("doctype", ""),
+            ("byte order mark", "\ufeff"),
+            ("xml prolog", '<?xml version="1.0" encoding="utf-8"?>\n'),
+            ("comment", "<!-- generated by a docs tool -->\n"),
+            ("xml prolog and comment", '<?xml version="1.0"?>\n<!-- built -->\n'),
+        ],
+    )
+    def test_html_page_is_converted_whatever_precedes_the_doctype(
+        self, site: _LocalSite, fetcher: DocumentFetcher, name: str, prefix: str
+    ) -> None:
+        """A page is HTML whether or not a BOM, XML prolog or comment comes first: its
+        markup is converted, and what its text shows as `List<String>` stays."""
+        page = (
+            f"{prefix}<!DOCTYPE html><html><head><title>T</title></head><body>"
+            "<main><h1>Title</h1><p>Use <code>List&lt;String&gt;</code> and <b>bold</b>.</p>"
+            "</main></body></html>"
+        )
+        url = site.serve("/guide.html", page, "text/html; charset=utf-8")
+
+        content = self._fetch(fetcher, url)
+
+        assert "# Title" in content, name
+        assert "**bold**" in content, name
+        assert "List<String>" in content, name
+        assert "<main>" not in content and "<b>" not in content and "&lt;" not in content, name
+
+    def test_script_and_style_text_is_dropped(
+        self, site: _LocalSite, fetcher: DocumentFetcher
+    ) -> None:
+        """The text of a <script> or <style> is not page content, with or without a <main>."""
+        script = "<script>\n<!--//\nvar tracker = 1;\n//-->\n</script>"
+        style = "<style>p { margin: 0 }</style>"
+        with_main = (
+            f"<!DOCTYPE html><html><head>{style}</head><body><main><h1>T</h1>{script}"
+            f"<p>Body text</p>{style}</main></body></html>"
+        )
+        without_main = f"<!DOCTYPE html><html><head>{style}</head><body>{script}<p>Body text</p>"
+        for name, page in (("main.html", with_main), ("plain.html", without_main)):
+            content = self._fetch(fetcher, site.serve(f"/{name}", page, "text/html"))
+            assert "Body text" in content, name
+            assert "tracker" not in content and "margin" not in content, name
+
+    def test_html_page_is_cached_as_markdown(
+        self, site: _LocalSite, fetcher: DocumentFetcher
+    ) -> None:
+        """The cache holds the converted page, so a second fetch cleans it the same way."""
+        url = site.serve(
+            "/page.html",
+            "<!DOCTYPE html><html><body><main><h1>T</h1><p>See <code>List&lt;int&gt;</code>"
+            "</p></main></body></html>",
+            "text/html",
+        )
+        first = self._fetch(fetcher, url)
+        cached = fetcher.get_cached(url)
+        assert cached is not None and not cached.lstrip().startswith("<")
+        assert self._fetch(fetcher, url) == first
+
+    def test_html_fragment_served_as_html_is_converted(
+        self, site: _LocalSite, fetcher: DocumentFetcher
+    ) -> None:
+        """A fragment has no doctype to sniff; the server's Content-Type says it is HTML."""
+        body = "<div><h1>Title</h1><p>Use <b>bold</b> and <code>List&lt;String&gt;</code></p></div>"
+        url = site.serve("/fragment", body, "text/html; charset=utf-8")
+
+        content = self._fetch(fetcher, url)
+
+        assert "# Title" in content
+        assert "**bold**" in content
+        assert "List<String>" in content
+        assert "<div>" not in content and "<b>" not in content
+
+    def test_same_fragment_served_as_text_is_left_alone(
+        self, site: _LocalSite, fetcher: DocumentFetcher
+    ) -> None:
+        """The Content-Type decides: the same bytes labeled text/plain are not HTML."""
+        body = "<div><h1>Title</h1><p>Use <b>bold</b></p></div>"
+        url = site.serve("/fragment.txt", body, "text/plain; charset=utf-8")
+
+        assert self._fetch(fetcher, url) == body
+
+    def test_markdown_source_served_as_html_stays_markdown(
+        self, site: _LocalSite, fetcher: DocumentFetcher
+    ) -> None:
+        """A .md URL is markdown even when its server labels it text/html."""
+        body = '<p align="center">Logo</p>\n\n# Title\n\nSome *emphasis*<br/>text'
+        url = site.serve("/README.md", body, "text/html")
+
+        content = self._fetch(fetcher, url)
+
+        assert "*emphasis*" in content and "\\*" not in content
+        assert "<" not in content and ">" not in content
+        assert "Logo" in content
+
+    @pytest.mark.parametrize(
+        "start",
+        [
+            '<p align="center">Logo</p>\n\n',
+            "<!-- markdownlint-disable -->\n",
+            "<header>Top</header>\n\n",
+        ],
+    )
+    def test_markdown_that_starts_with_a_tag_or_comment_is_not_html(
+        self, site: _LocalSite, fetcher: DocumentFetcher, start: str
+    ) -> None:
+        """READMEs start with a <p>, a lint comment or a <header>; none of these is a page."""
+        url = site.serve("/README.md", f"{start}# Title\n\nSome *emphasis* here", "text/plain")
+
+        content = self._fetch(fetcher, url)
+
+        assert "# Title" in content
+        assert "*emphasis*" in content and "\\*" not in content
+
+    def test_rst_source_keeps_link_targets(
+        self, site: _LocalSite, fetcher: DocumentFetcher
+    ) -> None:
+        text = "See the `NWB Inspector <https://nwbinspector.readthedocs.io/>`_ docs."
+        url = site.serve("/docs/index.rst", text, "text/plain; charset=utf-8")
+
+        assert self._fetch(fetcher, url) == text
+
+    def test_python_source_keeps_comparisons_and_generics(
+        self, site: _LocalSite, fetcher: DocumentFetcher
+    ) -> None:
+        text = "if a<b and c>d:\n    x: Mapping<str, int> = load()\n    print(raw)  # <Raw | f.fif>"
+        url = site.serve("/tutorials/plot_file.py", text, "text/plain; charset=utf-8")
+
+        assert self._fetch(fetcher, url) == text
+
+    def test_markdown_source_loses_inline_html(
+        self, site: _LocalSite, fetcher: DocumentFetcher
+    ) -> None:
+        body = "# Title\n\n<details><summary>More</summary>Hidden text</details>\n\nLine<br/>break"
+        url = site.serve("/docs/guide.md", body, "text/plain; charset=utf-8")
+
+        content = self._fetch(fetcher, url)
+
+        assert "<" not in content and ">" not in content
+        assert "MoreHidden text" in content and "Linebreak" in content
+
+    def test_a_missing_page_is_reported_not_cleaned(
+        self, site: _LocalSite, fetcher: DocumentFetcher
+    ) -> None:
+        url = site.serve("/exists.md", "# Here", "text/plain")
+        missing = url.replace("exists.md", "missing.md")
+
+        result = fetcher.fetch(
+            DocPage(title="Doc", url="https://example.com/x", source_url=missing)
+        )
+
+        assert result.success is False
+        assert result.error is not None and "404" in result.error
+
+
+class TestHtmlDetection:
+    """_is_html and _served_as_html decide whether a response is converted."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "<!DOCTYPE html><html>",
+            "<!doctype html>",
+            '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN">',
+            "<HTML>",
+            "<Html lang=en>",
+            "  \n<html>",
+            "\ufeff<!DOCTYPE html>",
+            '<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>',
+            '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml">',
+            "<!-- a -->\n<!DOCTYPE html>",
+            "<!-- a -->\n<!-- b -->\n<head><title>T</title>",
+            "<body>text",
+        ],
+    )
+    def test_html(self, text: str) -> None:
+        assert _is_html(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "# Title",
+            "See `x <https://example.org>`_",
+            '<p align="center">Logo</p>\n# Title',
+            "<div><h1>T</h1></div>",
+            "<header>Top</header>",
+            "<htmlfoo>",
+            "<!-- lint -->\n# Title",
+            "<!-- unclosed comment",
+        ],
+    )
+    def test_not_html(self, text: str) -> None:
+        assert _is_html(text) is False
+
+    def test_a_run_of_comments_before_markdown_is_read_once(self) -> None:
+        """Failing after many comments must not retry every way of splitting them."""
+        assert _is_html("<!-- x -->" * 200 + "\n# Title\n" + "-->" * 2000) is False
+
+    @pytest.mark.parametrize(
+        ("content_type", "source_url", "expected"),
+        [
+            ("text/html", "https://example.com/page", True),
+            ("text/html; charset=utf-8", "https://example.com/page", True),
+            ("TEXT/HTML", "https://example.com/page.rst", True),
+            ("application/xhtml+xml", "https://example.com/page", True),
+            ("text/plain", "https://example.com/page", False),
+            ("application/octet-stream", "https://example.com/page", False),
+            ("", "https://example.com/page", False),
+            ("text/html", "https://example.com/README.md", False),
+            ("text/html", "https://example.com/README.md?ref=main", False),
+        ],
+    )
+    def test_served_as_html(self, content_type: str, source_url: str, expected: bool) -> None:
+        assert _served_as_html(content_type, source_url) is expected
 
 
 class TestGetFetcher:

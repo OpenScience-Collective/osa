@@ -55,6 +55,78 @@ class TestStripHtmlTags:
         assert result == "Text with  line break"
 
 
+class TestStripHtmlTagsKeepsContent:
+    """Angle brackets that are not HTML markup, and code, survive the stripping."""
+
+    def test_placeholders_are_kept(self):
+        text = "Files are named sub-<label>_ses-<label>_task-<label>_<suffix>.<extension>."
+        assert strip_html_tags(text) == text
+
+    def test_autolinks_are_kept(self):
+        text = "See <https://example.org/a?b=c> or write to <someone@example.org>."
+        assert strip_html_tags(text) == text
+
+    def test_unknown_tag_with_attributes_and_a_closing_tag_is_kept(self):
+        text = "Use <node id='1'>text</node> in the schema."
+        assert strip_html_tags(text) == text
+
+    def test_a_placeholder_named_like_an_element_is_kept_when_never_closed(self):
+        text = "The entity is `key-<label>`; a bare sub-<label> is the same."
+        assert strip_html_tags(text) == text
+
+    def test_an_element_named_like_a_placeholder_is_markup_when_closed_or_given_attributes(self):
+        assert strip_html_tags("<label>Name</label>: value") == "Name: value"
+        assert strip_html_tags('<label for="x">Name</label>') == "Name"
+
+    def test_standalone_elements_are_markup_without_a_closing_tag(self):
+        assert strip_html_tags("a<br>b<hr>c<p>d<li>e") == "abcde"
+        assert strip_html_tags("a<br />b<img src='x.png'>c") == "abc"
+
+    def test_comments_are_dropped(self):
+        assert strip_html_tags("a<!-- note\n```\n<b>x</b> -->b") == "ab"
+
+    def test_fenced_code_is_kept_as_written(self):
+        text = 'Intro <b>bold</b>\n\n```html\n<div class="x">&amp;</div>\n```\n\nOutro <i>it</i>'
+        assert strip_html_tags(text) == (
+            'Intro bold\n\n```html\n<div class="x">&amp;</div>\n```\n\nOutro it'
+        )
+
+    def test_tilde_and_long_fences_are_kept_as_written(self):
+        tilde = "~~~\n<b>x</b>\n~~~"
+        long_fence = "````\n```\n<b>x</b>\n```\n````"
+        assert strip_html_tags(tilde) == tilde
+        assert strip_html_tags(long_fence) == long_fence
+
+    def test_an_unterminated_fence_is_code_to_the_end(self):
+        text = "<b>a</b>\n```\n<b>b</b>\nmore"
+        assert strip_html_tags(text) == "a\n```\n<b>b</b>\nmore"
+
+    def test_inline_code_is_kept_as_written(self):
+        assert strip_html_tags("Use `<b>` for <b>bold</b> and ``a ` <i>`` too") == (
+            "Use `<b>` for bold and ``a ` <i>`` too"
+        )
+
+    def test_a_stray_backtick_does_not_protect_the_next_paragraph(self):
+        assert strip_html_tags("a ` b\n\n<b>c</b> `d`") == "a ` b\n\nc `d`"
+
+    def test_a_directive_fence_holds_markdown_and_a_code_directive_holds_code(self):
+        note = "```{admonition} Title <code>Def</code>\n<em>x</em> and <br>\n```"
+        assert strip_html_tags(note) == "```{admonition} Title Def\nx and \n```"
+        code = "```{code-block} html\n<em>x</em>\n```"
+        assert strip_html_tags(code) == code
+
+    def test_a_directive_fence_may_hold_a_fenced_block(self):
+        text = "`````{note}\n<b>a</b>\n```html\n<b>b</b>\n```\n`````"
+        assert strip_html_tags(text) == "`````{note}\na\n```html\n<b>b</b>\n```\n`````"
+
+    def test_entities_are_decoded_outside_code(self):
+        assert strip_html_tags("a &amp; b `&amp;`") == "a & b `&amp;`"
+
+    def test_a_long_run_of_backticks_without_a_blank_line_is_linear(self):
+        text = "`a " * 20000
+        assert strip_html_tags(text) == text
+
+
 class TestNormalizeWhitespace:
     """Tests for whitespace normalization."""
 

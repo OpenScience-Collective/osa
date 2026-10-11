@@ -40,6 +40,7 @@ from src.api.tool_results import (
 )
 from src.assistants.community import CommunityAssistant
 from src.core.config.community import FULL_OUTPUT_TOOL_NAME, CommunityConfig
+from src.core.services.anthropic_models import HAIKU
 from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
 from tests.helpers.chat_models import (
     ScriptedChatModel,
@@ -137,9 +138,7 @@ def _assistant(
 
 
 def _awm(assistant: CommunityAssistant) -> AssistantWithMetrics:
-    return AssistantWithMetrics(
-        assistant=assistant, model="claude-haiku-4-5", key_source="platform"
-    )
+    return AssistantWithMetrics(assistant=assistant, model=HAIKU, key_source="platform")
 
 
 async def _collect(agen) -> list[dict]:

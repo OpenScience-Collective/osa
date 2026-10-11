@@ -56,15 +56,25 @@ async function waitUntil(predicate, label, timeoutMs = 5000) {
 }
 
 const SOURCE = readFileSync(new URL('./osa-chat-widget.js', import.meta.url), 'utf8');
+
+// The offered Claude models as the widget's own fallback list names them (tests/test_frontend/
+// test_widget_drift.py keeps that list equal to the backend's), so these tests do not repeat a
+// model generation.
+const WIDGET_MODELS = [...SOURCE.matchAll(/\{ value: '([^']+)', label: '([^']+)' \}/g)].map(
+  ([, id, label]) => ({ id, label })
+);
+const widgetModel = (family) => WIDGET_MODELS.find((m) => m.id.startsWith(`claude-${family}-`));
+const HAIKU = widgetModel('haiku').id;
+const HAIKU_LABEL = widgetModel('haiku').label;
 const API = 'http://localhost/api';
 const SETTINGS_KEY = 'osa-settings-hed';
 const ANTHROPIC_KEY = `sk-ant-${'a'.repeat(90)}`;
 const OPENROUTER_KEY = `sk-or-v1-${'b'.repeat(64)}`;
 
 const CONFIG = {
-  default_model: 'claude-haiku-4-5',
+  default_model: HAIKU,
   offered_models: [
-    { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+    { id: HAIKU, label: HAIKU_LABEL },
     { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
     { id: 'openai.gpt-6-luna', label: 'OpenAI GPT-6 Luna', platform_only: true },
   ],
@@ -86,13 +96,14 @@ function makeConfigFetch(config = CONFIG) {
 
 // A fresh page load; `saved` seeds the reader's saved settings, `config` is what the
 // community config endpoint answers.
-function loadWidget({ saved = null, config = CONFIG } = {}) {
+function loadWidget({ saved = null, rawSaved = null, config = CONFIG } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
   });
   window.__OSA_TEST__ = true;
-  if (saved) window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved));
+  if (rawSaved !== null) window.localStorage.setItem(SETTINGS_KEY, rawSaved);
+  else if (saved) window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved));
   const script = window.document.createElement('script');
   script.setAttribute('src', 'http://localhost/static/osa-chat-widget.js');
   script.setAttribute('data-no-auto-init', '');
@@ -398,9 +409,10 @@ for (const modelId of ['openai.gpt-oss-120b', 'us.openai.gpt-6-luna', 'openai/gp
 
 console.log('\nwith Default chosen, no model is named, so the key is saved: the server swaps a default it cannot run for Claude');
 {
-  // Luna is what HED, EEGLAB, BIDS and NWB default to, and the service's own key alone runs
-  // it. _route_request does not refuse a request that names no model, and so has no model
-  // to refuse: it runs a Claude model in its place. Only a model the request names is refused.
+  // LUNA_DEFAULT stands in for a community that defaults to Luna (no shipped one does now),
+  // and the service's own key alone runs that default. _route_request does not refuse a
+  // request that names no model, and so has no model to refuse: it runs a Claude model in
+  // its place. Only a model the request names is refused.
   const seed = { apiKey: ANTHROPIC_KEY, model: null };
   const { window, q, saved } = await openSettingsDialog({ config: LUNA_DEFAULT, saved: seed });
   assertEqual(q('#osa-settings-model').value, 'default', 'Default is chosen');
@@ -458,9 +470,9 @@ for (const [label, saved, menu] of [
 
 console.log('\na saved model that is the community default selects Default, not a blank menu');
 for (const [label, config, model, defaultModel] of [
-  ['the default itself', CONFIG, 'claude-haiku-4-5', 'claude-haiku-4-5'],
+  ['the default itself', CONFIG, HAIKU, HAIKU],
   ['a retired id the default replaced (NEMAR)', NEMAR_LIKE, 'claude-sonnet-5', 'claude-sonnet-5-5'],
-  ['an alias of the default', CONFIG, 'claude-haiku-4.5', 'claude-haiku-4-5'],
+  ['an alias of the default', CONFIG, 'claude-haiku-4.5', HAIKU],
   ['the default, itself given as an alias', { ...CONFIG, default_model: 'claude-sonnet-5' }, 'claude-sonnet-5-5', 'claude-sonnet-5-5'],
 ]) {
   const { window, q, saved } = await openSettingsDialog({ config, saved: { apiKey: null, model } });
@@ -522,6 +534,13 @@ console.log('\na saved model with a variant suffix comes back as Custom, kept');
   assertEqual(q('#osa-settings-model').value, 'custom', 'the menu is on Custom');
   assertEqual(q('#osa-settings-custom-model').value, slug, 'the model name is kept whole');
   assert(!window.document.body.textContent.includes('was ignored'), 'and no notice says it was dropped');
+}
+
+console.log('\na saved value that is not an object is cleared, and not reported as a storage failure');
+{
+  const { window } = await openSettingsDialog({ rawSaved: 'null' });
+  assert(window.localStorage.getItem(SETTINGS_KEY) === null, 'the corrupt value is removed from storage');
+  assert(!window.document.body.textContent.includes('Cannot access browser storage'), 'and no notice says storage cannot be accessed');
 }
 
 console.log(`\nTotal: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);

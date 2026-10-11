@@ -25,20 +25,18 @@ from langchain_core.messages import HumanMessage
 
 from src.api.config import Settings
 from src.core.services import anthropic_models
-from src.core.services.anthropic_llm import (
-    _ADAPTIVE_THINKING_MODELS,
-    MIN_THINKING_BUDGET_TOKENS,
-    create_anthropic_llm,
-    default_thinking,
-)
+from src.core.services.anthropic_llm import create_anthropic_llm
 from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
     DEFAULT_REASONING_EFFORT,
+    HAIKU,
+    LUNA,
     MODEL_ALIASES,
     OFFERED_MODELS,
     REASONING_LEVELS,
     REASONING_SCALE,
-    THINKING_BUDGET_TOKENS,
+    SONNET,
+    THINKING_OFF,
     effective_reasoning_effort,
 )
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
@@ -51,9 +49,8 @@ from src.core.services.litellm_llm import (
 from tests.helpers.openrouter import FakeOpenRouter, stream_of
 from tests.test_core.test_bedrock_llm import _converse_reply, _settings, _Wire
 
-SONNET = "claude-sonnet-5-5"
-HAIKU = "claude-haiku-4-5"
-LUNA = "openai.gpt-6-luna"
+#: The offered Claude models, which think adaptively at an effort level.
+CLAUDE_MODELS = sorted(THINKING_OFF)
 GPT_OSS = "openai.gpt-oss-120b"
 QWEN = "qwen.qwen3-next-80b-a3b"
 
@@ -64,8 +61,7 @@ QWEN = "qwen.qwen3-next-80b-a3b"
 @pytest.fixture(autouse=True)
 def _no_deployment_token_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """`Settings(_env_file=None)` still reads the process environment: a developer's
-    exported ANTHROPIC_MAX_OUTPUT_TOKENS must not decide what these tests see (a Haiku
-    budget is lowered to fit under it)."""
+    exported ANTHROPIC_MAX_OUTPUT_TOKENS must not decide what these tests see."""
     monkeypatch.delenv("ANTHROPIC_MAX_OUTPUT_TOKENS", raising=False)
 
 
@@ -151,49 +147,49 @@ def _anthropic_payload(
     return llm._get_request_payload([HumanMessage(content="hi")])  # type: ignore[attr-defined]
 
 
-def _wire_temperature(payload: dict[str, Any]) -> float | None:
-    """The temperature a payload carries: this client puts it in `extra_body`."""
-    return payload.get("temperature", (payload.get("extra_body") or {}).get("temperature"))
-
-
 class TestAnthropicPayload:
+    @pytest.mark.parametrize("model", CLAUDE_MODELS)
     @pytest.mark.parametrize("level", ["low", "medium", "high"])
-    def test_sonnet_gets_adaptive_thinking_and_the_level_as_output_config(self, level: str) -> None:
-        payload = _anthropic_payload(SONNET, reasoning_effort=level)
+    def test_a_claude_model_gets_adaptive_thinking_and_the_level_as_output_config(
+        self, model: str, level: str
+    ) -> None:
+        payload = _anthropic_payload(model, reasoning_effort=level)
         assert payload["output_config"] == {"effort": level}
         assert payload["thinking"] == {"type": "adaptive"}
 
+    @pytest.mark.parametrize("model", CLAUDE_MODELS)
     @pytest.mark.parametrize("asked", ["xhigh", "max"])
-    def test_sonnet_is_never_sent_more_than_high(self, asked: str) -> None:
+    def test_a_claude_model_is_never_sent_more_than_high(self, model: str, asked: str) -> None:
         """The maintainer's rule, read off the request itself."""
-        payload = _anthropic_payload(SONNET, reasoning_effort=asked)
+        payload = _anthropic_payload(model, reasoning_effort=asked)
         assert payload["output_config"] == {"effort": "high"}
 
-    def test_none_is_no_upfront_thinking_at_the_lowest_effort(self) -> None:
-        """No level is lower than `low`, and `between_tools` (Sonnet 5.5's lowest thinking
-        setting, accepted only at effort `high` or below) is what turns thinking down."""
-        payload = _anthropic_payload(SONNET, reasoning_effort="none")
-        assert payload["thinking"] == {"type": "between_tools"}
+    @pytest.mark.parametrize("model", CLAUDE_MODELS)
+    def test_none_is_no_upfront_thinking_at_the_lowest_effort(self, model: str) -> None:
+        """No level is lower than `low`, and the model's own off value (Sonnet 5.5's
+        `between_tools`, Haiku 5.5's `disabled`; each accepted only at effort `high` or
+        below) is what turns thinking down."""
+        payload = _anthropic_payload(model, reasoning_effort="none")
+        assert payload["thinking"] == THINKING_OFF[model]
         assert payload["output_config"] == {"effort": "low"}
 
-    def test_a_community_that_sets_nothing_gets_high_sent_explicitly(self) -> None:
-        """The API's own default is high too, so nothing changes on the Claude Platform;
-        it is sent so the level is OSA's, not the API's, to change."""
-        payload = _anthropic_payload(SONNET)
+    @pytest.mark.parametrize("model", CLAUDE_MODELS)
+    def test_a_community_that_sets_nothing_gets_high_sent_explicitly(self, model: str) -> None:
+        """Sonnet's API default is high too, so nothing changes there; Haiku 5.5's own
+        default is medium, so high is what a community that sets nothing gets only because
+        it is sent. Either way the level is OSA's, not the API's, to change."""
+        payload = _anthropic_payload(model)
         assert (
             payload["output_config"] == {"effort": DEFAULT_REASONING_EFFORT} == {"effort": "high"}
         )
         assert payload["thinking"] == {"type": "adaptive"}
 
-    @pytest.mark.parametrize("level", [None, *REASONING_SCALE])
-    def test_haiku_is_never_sent_an_effort_field(self, level: str | None) -> None:
-        """Haiku 4.5 thinks with a token budget; the effort field is not on its list."""
-        payload = _anthropic_payload(HAIKU, reasoning_effort=level)
-        assert "output_config" not in payload
-
-    def test_an_explicit_thinking_setting_wins_over_the_one_a_level_implies(self) -> None:
-        payload = _anthropic_payload(SONNET, reasoning_effort="high", thinking=None)
-        assert payload["thinking"] == {"type": "between_tools"}
+    @pytest.mark.parametrize("model", CLAUDE_MODELS)
+    def test_an_explicit_thinking_setting_wins_over_the_one_a_level_implies(
+        self, model: str
+    ) -> None:
+        payload = _anthropic_payload(model, reasoning_effort="high", thinking=None)
+        assert payload["thinking"] == THINKING_OFF[model]
         assert payload["output_config"] == {"effort": "high"}
 
     def test_the_effort_is_sent_without_the_caching_layer_too(self) -> None:
@@ -207,111 +203,22 @@ class TestAnthropicPayload:
         assert payload["output_config"] == {"effort": "medium"}
         assert "cache_control" in payload
 
+    @pytest.mark.parametrize("model", CLAUDE_MODELS)
     def test_the_pairing_the_api_refuses_is_stopped_here(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, model: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """`between_tools` is a 400 above `high`. The table never produces it; if it were
+        """The off value is a 400 above `high`. The table never produces it; if it were
         ever widened, this fails at construction, not as a 400 from the endpoint."""
-        monkeypatch.setitem(REASONING_LEVELS, SONNET, (*REASONING_LEVELS[SONNET], "xhigh", "max"))
+        monkeypatch.setitem(REASONING_LEVELS, model, (*REASONING_LEVELS[model], "xhigh", "max"))
+        with pytest.raises(ValueError, match=THINKING_OFF[model]["type"]):
+            _anthropic_payload(model, reasoning_effort="max", thinking=None)
+
+    def test_the_wrong_models_off_value_is_refused(self) -> None:
+        """Sonnet 5.5 400s on `disabled` and Haiku 5.5 has no `between_tools`."""
         with pytest.raises(ValueError, match="between_tools"):
-            _anthropic_payload(SONNET, reasoning_effort="max", thinking=None)
-
-
-class TestHaikuThinkingBudget:
-    """Haiku has no effort levels, so a level is a thinking budget (issue #548)."""
-
-    def test_the_table_is_written_out(self) -> None:
-        assert THINKING_BUDGET_TOKENS[HAIKU] == {"low": 1024, "medium": 2048, "high": 4096}
-
-    def test_every_level_but_none_has_a_budget_the_api_accepts_in_increasing_order(self) -> None:
-        budgets = THINKING_BUDGET_TOKENS[HAIKU]
-        assert set(budgets) == set(REASONING_LEVELS[HAIKU]) - {"none"}
-        ordered = [budgets[level] for level in REASONING_LEVELS[HAIKU] if level != "none"]
-        assert ordered == sorted(set(ordered))
-        assert min(ordered) >= MIN_THINKING_BUDGET_TOKENS
-
-    def test_the_default_level_budget_is_what_default_thinking_gives(self) -> None:
-        assert default_thinking(HAIKU) == {
-            "type": "enabled",
-            "budget_tokens": THINKING_BUDGET_TOKENS[HAIKU][DEFAULT_REASONING_EFFORT],
-        }
-
-    @pytest.mark.parametrize(
-        ("level", "budget"),
-        [("low", 1024), ("medium", 2048), ("high", 4096), ("xhigh", 4096), ("max", 4096)],
-    )
-    def test_a_communitys_level_is_the_budget_capped_at_high(self, level: str, budget: int) -> None:
-        payload = _anthropic_payload(HAIKU, reasoning_effort=level)
-        assert payload["thinking"] == {"type": "enabled", "budget_tokens": budget}
-
-    def test_none_is_no_thinking(self) -> None:
-        payload = _anthropic_payload(HAIKU, reasoning_effort="none")
-        assert "thinking" not in payload
-
-    def test_unset_is_high(self) -> None:
-        payload = _anthropic_payload(HAIKU)
-        assert payload["thinking"] == {"type": "enabled", "budget_tokens": 4096}
-
-    def test_an_explicit_thinking_setting_wins(self) -> None:
-        custom = {"type": "enabled", "budget_tokens": 1500}
-        payload = _anthropic_payload(HAIKU, reasoning_effort="high", thinking=custom)
-        assert payload["thinking"] == custom
-        assert "thinking" not in _anthropic_payload(HAIKU, reasoning_effort="high", thinking=None)
-
-    @pytest.mark.parametrize("level", [None, "high"])
-    @pytest.mark.parametrize(
-        ("max_tokens", "budget"),
-        [
-            (8000, 4096),  # fits: not lowered
-            (5121, 4096),  # room is 4097, above the budget
-            (5120, 4096),  # room equals the budget
-            (5119, 4095),  # one token short: lowered by one
-            (3000, 1976),  # leaves the API's minimum budget's worth for the answer
-            (2049, 1025),
-            (2048, 1024),  # the boundary: room is exactly the minimum budget
-            (1500, 1024),  # the minimum itself, valid below max_tokens though tight
-            (1025, 1024),
-        ],
-    )
-    def test_a_budget_that_would_not_fit_max_tokens_is_lowered_not_refused(
-        self, level: str | None, max_tokens: int, budget: int
-    ) -> None:
-        """A deployment whose max output is below a level's budget still answers."""
-        payload = _anthropic_payload(HAIKU, reasoning_effort=level, max_tokens=max_tokens)
-        assert payload["thinking"]["budget_tokens"] == budget
-        assert payload["thinking"]["budget_tokens"] < max_tokens
-
-    @pytest.mark.parametrize("max_tokens", [1024, 1000])
-    def test_a_max_tokens_that_does_not_exceed_the_minimum_budget_is_still_refused(
-        self, max_tokens: int
-    ) -> None:
-        """No budget is valid: the API's smallest is 1024 and must be below max_tokens."""
-        with pytest.raises(ValueError, match="below max_tokens"):
-            _anthropic_payload(HAIKU, reasoning_effort="high", max_tokens=max_tokens)
-
-    def test_a_budget_a_level_gives_that_is_already_below_max_tokens_is_kept(self) -> None:
-        """low is 1024: nothing to lower, whatever the room."""
-        payload = _anthropic_payload(HAIKU, reasoning_effort="low", max_tokens=1500)
-        assert payload["thinking"]["budget_tokens"] == 1024
-
-    def test_a_callers_own_budget_is_never_lowered_only_refused(self) -> None:
-        """The fit rule is for budgets OSA chose; an explicit one that does not fit is the
-        caller's error, as before."""
-        explicit = {"type": "enabled", "budget_tokens": 4000}
-        with pytest.raises(ValueError, match="below max_tokens"):
-            _anthropic_payload(HAIKU, reasoning_effort="high", thinking=explicit, max_tokens=3000)
-        fits = _anthropic_payload(HAIKU, thinking=explicit, max_tokens=8000)
-        assert fits["thinking"] == explicit
-
-    def test_temperature_is_dropped_while_thinking_and_kept_when_it_is_off(self) -> None:
-        """Anthropic does not allow a temperature with thinking: `none` turns thinking off,
-        so it is forwarded there and only there."""
-        assert _wire_temperature(
-            _anthropic_payload(HAIKU, reasoning_effort="none", temperature=0.1)
-        ) == pytest.approx(0.1)
-        for level in (None, "low", "high"):
-            payload = _anthropic_payload(HAIKU, reasoning_effort=level, temperature=0.1)
-            assert _wire_temperature(payload) is None, level
+            _anthropic_payload(SONNET, thinking={"type": "disabled"})
+        with pytest.raises(ValueError, match="disabled"):
+            _anthropic_payload(HAIKU, thinking={"type": "between_tools"})
 
 
 # ------------------------------------------------------------------------ OpenRouter
@@ -371,40 +278,44 @@ class TestOpenRouterBody:
         assert "reasoning_effort" not in body
 
     @pytest.mark.parametrize(
-        ("asked", "budget"),
-        [("low", 1024), ("medium", 2048), ("high", 4096), ("xhigh", 4096), ("max", 4096)],
+        ("asked", "sent"),
+        [
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("xhigh", "high"),
+            ("max", "high"),
+        ],
     )
-    def test_haiku_is_sent_its_levels_budget_not_an_effort(
-        self, openrouter: FakeOpenRouter, asked: str, budget: int
+    def test_haiku_is_sent_an_effort_like_any_other_adaptive_model(
+        self, openrouter: FakeOpenRouter, asked: str, sent: str
     ) -> None:
-        """OpenRouter would turn an effort into a share of an unset max_tokens; its
-        `reasoning.max_tokens` is used as given, the budget the Claude Platform path uses."""
+        """Never above high, as on every other path."""
         body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[HAIKU], reasoning_effort=asked)
-        assert body["reasoning"] == {"max_tokens": budget}
+        assert body["reasoning"] == {"effort": sent}
 
-    def test_haiku_none_is_no_reasoning_field_and_keeps_its_temperature(
+    def test_haiku_keeps_none_on_openrouter_where_its_reasoning_is_not_mandatory(
         self, openrouter: FakeOpenRouter
     ) -> None:
-        """Without the field it does not think, so a temperature is allowed."""
+        """OpenRouter's metadata for Haiku 5.5 says its reasoning is not mandatory, so
+        `none` is sent as it is (Sonnet's is raised to `low`, see above)."""
         body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[HAIKU], reasoning_effort="none")
-        assert "reasoning" not in body
-        assert body["temperature"] == pytest.approx(0.1)
+        assert body["reasoning"] == {"effort": "none"}
 
-    @pytest.mark.parametrize("level", [None, "low", "high"])
-    def test_haiku_is_sent_no_temperature_while_it_thinks(
-        self, openrouter: FakeOpenRouter, level: str | None
-    ) -> None:
-        """Anthropic does not allow a temperature with thinking, so it is not sent, as on
-        the direct path."""
-        body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[HAIKU], reasoning_effort=level)
-        assert "temperature" not in body
-
-    @pytest.mark.parametrize("model", [SONNET, LUNA, GPT_OSS])
-    def test_the_other_models_keep_their_temperature_beside_reasoning(
+    @pytest.mark.parametrize("model", [SONNET, HAIKU, LUNA])
+    def test_a_model_that_takes_no_temperature_is_sent_none_beside_reasoning(
         self, openrouter: FakeOpenRouter, model: str
     ) -> None:
-        """Unchanged behavior: only a budget model is held to the no-temperature rule."""
+        """ADR 0016: these models refuse a temperature, so none is sent, reasoning or not."""
         body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[model], reasoning_effort="high")
+        assert body.get("temperature") is None
+        assert "reasoning" in body
+
+    def test_the_sampling_models_keep_their_temperature_beside_reasoning(
+        self, openrouter: FakeOpenRouter
+    ) -> None:
+        """A model that still takes sampling parameters keeps the temperature while it reasons."""
+        body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[GPT_OSS], reasoning_effort="high")
         assert body["temperature"] == pytest.approx(0.1)
         assert "reasoning" in body
 
@@ -415,7 +326,7 @@ class TestOpenRouterBody:
         body = _openrouter_body(openrouter, "some-lab/unknown-model", reasoning_effort="high")
         assert "reasoning" not in body
 
-    @pytest.mark.parametrize("model", [SONNET, LUNA, GPT_OSS])
+    @pytest.mark.parametrize("model", [SONNET, HAIKU, LUNA, GPT_OSS])
     def test_a_community_that_sets_nothing_gets_high(
         self, openrouter: FakeOpenRouter, model: str
     ) -> None:
@@ -423,10 +334,6 @@ class TestOpenRouterBody:
         same whichever key paid for it (OpenRouter's own default for Luna is `medium`)."""
         body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[model])
         assert body["reasoning"] == {"effort": "high"}
-
-    def test_haiku_unset_is_the_high_budget(self, openrouter: FakeOpenRouter) -> None:
-        body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[HAIKU])
-        assert body["reasoning"] == {"max_tokens": THINKING_BUDGET_TOKENS[HAIKU]["high"]}
 
     def test_qwen_is_sent_nothing_by_default_either(self, openrouter: FakeOpenRouter) -> None:
         assert "reasoning" not in _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[QWEN])
@@ -547,7 +454,7 @@ class TestOpenRouterSlugs:
         assert openrouter_model_id("some-lab/unknown-model:nitro") is None
 
     @pytest.mark.parametrize("variant", OPENROUTER_ROUTING_VARIANTS)
-    @pytest.mark.parametrize("model", [SONNET, LUNA, GPT_OSS])
+    @pytest.mark.parametrize("model", [SONNET, HAIKU, LUNA, GPT_OSS])
     def test_a_routing_variant_runs_at_the_same_level_as_the_plain_slug(
         self, openrouter: FakeOpenRouter, model: str, variant: str
     ) -> None:
@@ -557,16 +464,6 @@ class TestOpenRouterSlugs:
         varied = _openrouter_body(openrouter, f"{slug}:{variant}", reasoning_effort="medium")
         assert varied["model"] == f"{slug}:{variant}"
         assert varied["reasoning"] == plain["reasoning"] == {"effort": "medium"}
-
-    @pytest.mark.parametrize("variant", OPENROUTER_ROUTING_VARIANTS)
-    def test_haiku_through_a_routing_variant_gets_its_budget_and_no_temperature(
-        self, openrouter: FakeOpenRouter, variant: str
-    ) -> None:
-        body = _openrouter_body(
-            openrouter, f"{OPENROUTER_MODEL_IDS[HAIKU]}:{variant}", reasoning_effort="low"
-        )
-        assert body["reasoning"] == {"max_tokens": 1024}
-        assert "temperature" not in body
 
     @pytest.mark.parametrize("variant", OPENROUTER_ROUTING_VARIANTS)
     def test_an_anthropic_slug_with_a_variant_is_not_pinned_to_a_provider(
@@ -597,12 +494,12 @@ class TestEveryModelWithLevelsCanBeSentThem:
     @pytest.mark.parametrize("model", sorted(REASONING_LEVELS))
     def test_a_model_with_levels_has_a_path_that_sends_them(self, model: str) -> None:
         """Bedrock models name a request field; Claude models must be in the set the
-        Anthropic factory sends `output_config` for, or have a thinking budget per level,
-        or their level is silently dropped."""
+        Anthropic factory sends `output_config` for (THINKING_OFF), or their level is
+        silently dropped."""
         if model in BEDROCK_MODELS:
             assert BEDROCK_MODELS[model].reasoning_field is not None
         else:
-            assert model in _ADAPTIVE_THINKING_MODELS or model in THINKING_BUDGET_TOKENS
+            assert model in THINKING_OFF
 
 
 class TestTheSameRuleOnEveryPath:
@@ -619,5 +516,8 @@ class TestTheSameRuleOnEveryPath:
 
     @pytest.mark.parametrize("provider", ["anthropic", "bedrock", "openrouter"])
     @pytest.mark.parametrize("asked", ["xhigh", "max"])
-    def test_sonnet_is_capped_at_high_on_every_platform(self, provider: str, asked: str) -> None:
-        assert effective_reasoning_effort(SONNET, asked, provider) == "high"  # type: ignore[arg-type]
+    @pytest.mark.parametrize("model", CLAUDE_MODELS)
+    def test_a_claude_model_is_capped_at_high_on_every_platform(
+        self, model: str, provider: str, asked: str
+    ) -> None:
+        assert effective_reasoning_effort(model, asked, provider) == "high"  # type: ignore[arg-type]

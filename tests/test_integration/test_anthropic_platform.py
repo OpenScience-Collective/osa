@@ -22,6 +22,7 @@ from langchain_core.tools import tool
 
 from src.api.config import get_settings
 from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm
+from src.core.services.anthropic_models import HAIKU
 from tests.helpers.images import BAR_FIXTURES, bar_chart_png, tallest_and_shortest
 
 pytestmark = [
@@ -62,7 +63,7 @@ class TestHaikuDefaultThinking:
     """claude-haiku-4-5 with its default (budget-style) thinking configuration."""
 
     def test_answers_short_question(self) -> None:
-        llm = create_anthropic_llm(model="claude-haiku-4-5")
+        llm = create_anthropic_llm(model=HAIKU)
         response = llm.invoke([HumanMessage(content="Reply with exactly: OK")])
 
         text = _extract_text(response.content)
@@ -83,7 +84,7 @@ class TestHaikuDefaultThinking:
         this test exercises the same bind_tools() -> invoke() path to prove
         it end to end against the live endpoint.
         """
-        llm = create_anthropic_llm(model="claude-haiku-4-5")
+        llm = create_anthropic_llm(model=HAIKU)
         bound = llm.bind_tools([get_secret_number])
 
         messages: list[AIMessage | HumanMessage | ToolMessage] = [
@@ -160,7 +161,7 @@ class TestPromptCaching:
         # thinking=None keeps the generated output tiny and avoids any
         # budget/max_tokens interaction; caching (enable_caching defaults to
         # True) is exactly what this test is exercising.
-        llm = create_anthropic_llm(model="claude-haiku-4-5", max_tokens=32, thinking=None)
+        llm = create_anthropic_llm(model=HAIKU, max_tokens=32, thinking=None)
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content="Reply with exactly: OK"),

@@ -101,8 +101,9 @@ class TestEnvExampleCoversAnthropicSettings:
         assert missing == [], f"Undocumented ANTHROPIC_* env vars in .env.example: {missing}"
 
     def test_default_model_is_an_offered_claude_model(self) -> None:
-        """DEFAULT_MODEL and TEST_MODEL in .env.example must be real offered ids."""
-        from src.core.services.anthropic_llm import OFFERED_MODELS
+        """DEFAULT_MODEL and TEST_MODEL in .env.example must name an offered Claude model:
+        by id, or by class (``haiku``), which resolves to the id the platform runs today."""
+        from src.core.services.anthropic_models import BEDROCK_MODELS, normalize_model
 
         env_example_path = REPO_ROOT / ".env.example"
         values = {}
@@ -113,8 +114,9 @@ class TestEnvExampleCoversAnthropicSettings:
             key, _, value = stripped.partition("=")
             values[key.strip()] = value.strip()
 
-        assert values.get("DEFAULT_MODEL") in OFFERED_MODELS
-        assert values.get("TEST_MODEL") in OFFERED_MODELS
+        for name in ("DEFAULT_MODEL", "TEST_MODEL"):
+            assert name in values, name
+            assert normalize_model(values[name]) not in BEDROCK_MODELS, name
 
 
 class TestEveryLaunchPathNamesItsDeployment:

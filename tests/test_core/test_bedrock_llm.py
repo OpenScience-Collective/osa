@@ -16,7 +16,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from src.api.config import Settings
-from src.core.services.anthropic_models import BEDROCK_MODELS
+from src.core.services.anthropic_models import BEDROCK_MODELS, HAIKU
 from src.core.services.bedrock_llm import (
     TaggedCitationChatBedrock,
     _bedrock_client,
@@ -183,7 +183,7 @@ class TestCreateBedrockLlm:
 
     def test_a_claude_model_is_refused(self) -> None:
         with pytest.raises(ValueError, match="create_anthropic_llm"):
-            create_bedrock_llm("claude-haiku-4-5", settings=_settings())
+            create_bedrock_llm(HAIKU, settings=_settings())
 
     def test_a_missing_key_is_a_clear_error(self) -> None:
         with pytest.raises(RuntimeError, match="AWS_BEARER_TOKEN_BEDROCK"):

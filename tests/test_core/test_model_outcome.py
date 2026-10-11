@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessageChunk, HumanMessage
 
 from src.api.config import Settings
 from src.core.services.anthropic_llm import create_anthropic_llm
+from src.core.services.anthropic_models import HAIKU
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
 from src.core.services.model_outcome import (
     CONTEXT_WINDOW_STOP_REASON,
@@ -186,7 +187,7 @@ class TestBedrockConverse:
 
 def _anthropic_llm():
     settings = Settings(_env_file=None)
-    return create_anthropic_llm("claude-haiku-4-5", api_key="sk-ant-test", settings=settings)
+    return create_anthropic_llm(HAIKU, api_key="sk-ant-test", settings=settings)
 
 
 class TestAnthropicMessages:

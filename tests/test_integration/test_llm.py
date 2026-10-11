@@ -1,6 +1,7 @@
 """Integration tests with real LLM API calls.
 
-These tests require OPENROUTER_API_KEY in the environment.
+These tests require OPENROUTER_API_KEY_FOR_TESTING in the environment: the key with a
+small credit balance, never the production key.
 Run with: pytest -m llm
 
 Note: These tests make real API calls and cost money.
@@ -16,12 +17,12 @@ from src.api.main import app
 
 
 def get_test_api_key() -> str | None:
-    """Get the testing API key from environment.
+    """Get the testing API key from the environment.
 
-    Checks both OPENROUTER_API_KEY and OPENROUTER_API_KEY_FOR_TESTING
-    for backwards compatibility.
+    Only OPENROUTER_API_KEY_FOR_TESTING is read: the production OpenRouter key is never
+    used by a test, even when it is set in the environment.
     """
-    return os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENROUTER_API_KEY_FOR_TESTING")
+    return os.environ.get("OPENROUTER_API_KEY_FOR_TESTING")
 
 
 # Skip all tests in this module if no API key is available
@@ -29,7 +30,7 @@ pytestmark = [
     pytest.mark.llm,
     pytest.mark.skipif(
         not get_test_api_key(),
-        reason="OPENROUTER_API_KEY not set",
+        reason="OPENROUTER_API_KEY_FOR_TESTING not set",
     ),
 ]
 
@@ -38,7 +39,7 @@ pytestmark = [
 def api_key() -> str:
     """Get the testing API key."""
     key = get_test_api_key()
-    assert key, "OPENROUTER_API_KEY must be set"
+    assert key, "OPENROUTER_API_KEY_FOR_TESTING must be set"
     return key
 
 

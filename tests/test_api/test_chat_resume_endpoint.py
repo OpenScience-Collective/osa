@@ -27,6 +27,7 @@ from src.api.routers.community import (
 from src.api.tool_results import PendingClientCall
 from src.assistants.community import CommunityAssistant
 from src.core.config.community import CommunityConfig
+from src.core.services.anthropic_models import HAIKU
 from tests.helpers.chat_models import ScriptedChatModel
 
 COMMUNITY = "resumetest"
@@ -134,9 +135,7 @@ def _assistant(
         declared_client_tools={"execute_code"},
         browser_runs_left=browser_runs_left,
     )
-    return AssistantWithMetrics(
-        assistant=assistant, model="claude-haiku-4-5", key_source="platform"
-    )
+    return AssistantWithMetrics(assistant=assistant, model=HAIKU, key_source="platform")
 
 
 class TestRefusals:
@@ -388,7 +387,7 @@ class TestTheProviderDecidesWhetherImagesGo:
                 preload_docs=False,
                 declared_client_tools={"execute_code"},
             ),
-            model="claude-haiku-4-5",
+            model=HAIKU,
             key_source="byok",
         )
         monkeypatch.setattr(
@@ -449,7 +448,7 @@ class TestTheProviderDecidesWhetherImagesGo:
         self._platform_keys(monkeypatch)
 
         content, png = self._what_run_two_saw(
-            client, monkeypatch, {"Origin": ALLOWED_ORIGIN}, requested_model="claude-haiku-4-5"
+            client, monkeypatch, {"Origin": ALLOWED_ORIGIN}, requested_model=HAIKU
         )
 
         assert [b["source"]["data"] for b in content if b.get("type") == "image"] == [png]
@@ -554,13 +553,13 @@ class TestABedrockDefaultOnResume:
         built, content, png = self._resume(client, monkeypatch, bedrock=None)
 
         # The probe and the stream agree: Claude runs, so the image goes with it.
-        assert built == {"anthropic": ["claude-haiku-4-5"], "bedrock": []}
+        assert built == {"anthropic": [HAIKU], "bedrock": []}
         assert [b["source"]["data"] for b in content if b.get("type") == "image"] == [png]
         (record,) = self._fallback_records(caplog)
         assert record.levelno == logging.ERROR
         assert record.community_id == COMMUNITY
         assert record.model == "openai.gpt-6-luna"
-        assert record.fallback == "claude-haiku-4-5"
+        assert record.fallback == HAIKU
 
     def test_with_a_bedrock_key_it_runs_the_default_without_the_image_and_logs_nothing(
         self, client: TestClient, monkeypatch, caplog

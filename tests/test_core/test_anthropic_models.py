@@ -15,10 +15,20 @@ from src.core.services import anthropic_llm, anthropic_models
 from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
     DEFAULT_REASONING_EFFORT,
+    HAIKU,
     IMAGE_MEDIA_TYPES,
+    LUNA,
     MODEL_ALIASES,
+    MODEL_CLASSES,
+    NO_REASONING_LEVELS,
     OFFERED_MODELS,
+    OPENROUTER_MODEL_IDS,
+    PREVIOUS_GENERATIONS,
+    REASONING_LEVELS,
     SAMPLING_MODELS,
+    SONNET,
+    SUGGESTED_MODELS,
+    THINKING_OFF,
     accepts_temperature,
     is_bedrock_model,
     normalize_model,
@@ -28,12 +38,15 @@ from src.core.services.anthropic_models import (
 class TestAcceptsTemperature:
     """Which models honor a configured temperature."""
 
-    def test_haiku_accepts_temperature(self) -> None:
-        assert accepts_temperature("claude-haiku-4-5") is True
+    @pytest.mark.parametrize("model", [HAIKU, "claude-sonnet-5-5"])
+    def test_claude_5_models_do_not(self, model: str) -> None:
+        """Claude 5-generation models 400 on any non-default temperature (Haiku 5.5 took
+        over from Haiku 4.5, which accepted one)."""
+        assert accepts_temperature(model) is False
 
-    def test_sonnet_5_5_does_not(self) -> None:
-        """Claude 5-generation models 400 on any non-default temperature."""
-        assert accepts_temperature("claude-sonnet-5-5") is False
+    @pytest.mark.parametrize("model", ["openai.gpt-oss-120b", "qwen.qwen3-next-80b-a3b"])
+    def test_models_that_still_take_sampling_parameters_do(self, model: str) -> None:
+        assert accepts_temperature(model) is True
 
     @pytest.mark.parametrize("alias", sorted(MODEL_ALIASES))
     def test_aliases_answer_for_the_model_they_resolve_to(self, alias: str) -> None:
@@ -137,6 +150,113 @@ class TestSonnetAliases:
         assert set(MODEL_ALIASES.values()) <= set(OFFERED_MODELS)
 
 
+class TestModelClasses:
+    """A class names a tier; MODEL_CLASSES says which model it is today (ADR 0016)."""
+
+    EXPECTED_CLASSES = {"haiku", "sonnet", "opus", "fable", "luna", "terra", "sol", "astra"}
+
+    def test_the_classes_are_the_eight_the_decision_names(self) -> None:
+        assert set(MODEL_CLASSES) == self.EXPECTED_CLASSES
+
+    def test_the_constants_are_the_classes_ids(self) -> None:
+        assert (
+            MODEL_CLASSES["haiku"],
+            MODEL_CLASSES["sonnet"],
+            MODEL_CLASSES["luna"],
+        ) == (HAIKU, SONNET, LUNA)
+
+    def test_two_classes_are_never_the_same_model(self) -> None:
+        assert len(set(MODEL_CLASSES.values())) == len(MODEL_CLASSES)
+
+    @pytest.mark.parametrize("name", sorted(MODEL_CLASSES))
+    def test_a_class_name_is_an_offered_model_or_refused_as_unavailable(self, name: str) -> None:
+        if MODEL_CLASSES[name] in OFFERED_MODELS:
+            assert normalize_model(name) == MODEL_CLASSES[name]
+        else:
+            with pytest.raises(ValueError, match="not available"):
+                normalize_model(name)
+
+    def test_the_default_is_the_haiku_class(self) -> None:
+        assert normalize_model(None) == normalize_model("haiku") == HAIKU
+
+    def test_the_classes_that_are_offered_are_the_ones_the_deployment_runs(self) -> None:
+        """If this changes, a community config naming a class changes with it."""
+        offered = {name for name, model in MODEL_CLASSES.items() if model in OFFERED_MODELS}
+        assert {"haiku", "sonnet", "luna"} <= offered
+
+    @pytest.mark.parametrize("name", sorted(PREVIOUS_GENERATIONS))
+    def test_a_class_has_only_classes_it_names_as_previous_generations(self, name: str) -> None:
+        assert name in MODEL_CLASSES
+
+    @pytest.mark.parametrize(
+        ("name", "old"),
+        sorted((name, old) for name, olds in PREVIOUS_GENERATIONS.items() for old in olds),
+    )
+    def test_a_previous_generation_resolves_to_the_classes_current_model(
+        self, name: str, old: str
+    ) -> None:
+        assert normalize_model(old) == MODEL_CLASSES[name]
+        assert old not in OFFERED_MODELS, "a previous id is not itself offered"
+
+    def test_haiku_4_5_resolves_to_haiku_5_5(self) -> None:
+        """The move the decision was made for: a saved setting that names the old Haiku."""
+        for legacy in ("claude-haiku-4-5", "claude-haiku-4.5", "anthropic/claude-haiku-4.5"):
+            assert normalize_model(legacy) == HAIKU
+
+    def test_no_alias_hides_an_offered_model(self) -> None:
+        """An offered id that is also an alias would make two answers to one question."""
+        assert not set(MODEL_ALIASES) & set(OFFERED_MODELS)
+
+    @pytest.mark.parametrize("model", sorted(OFFERED_MODELS))
+    def test_every_offered_model_has_everything_the_deployment_needs(self, model: str) -> None:
+        assert OFFERED_MODELS[model], "a label"
+        assert model in OPENROUTER_MODEL_IDS, "an OpenRouter slug"
+        assert model in REASONING_LEVELS or model in NO_REASONING_LEVELS, "a reasoning verdict"
+        assert model in THINKING_OFF or model in BEDROCK_MODELS, "a way to be served"
+
+    def test_the_suggested_models_are_offered_classes(self) -> None:
+        assert SUGGESTED_MODELS == (HAIKU, SONNET)
+        assert set(SUGGESTED_MODELS) <= set(OFFERED_MODELS)
+
+
+class TestDerivedFromTheId:
+    """The label and the OpenRouter slug of a Claude model follow from its id, so a new
+    generation needs neither written out."""
+
+    def test_the_label_names_the_family_and_the_dotted_version(self) -> None:
+        family, major, minor = HAIKU.removeprefix("claude-").split("-")
+        assert OFFERED_MODELS[HAIKU] == f"Claude {family.title()} {major}.{minor}"
+
+    def test_the_openrouter_slug_is_the_anthropic_creator_and_the_dotted_id(self) -> None:
+        for model in (HAIKU, SONNET):
+            major_minor = model.rsplit("-", 2)[-2:]
+            dotted = model.rsplit("-", 2)[0] + "-" + ".".join(major_minor)
+            assert OPENROUTER_MODEL_IDS[model] == f"anthropic/{dotted}"
+
+    def test_the_spellings_of_the_current_ids_resolve(self) -> None:
+        for model in (HAIKU, SONNET):
+            dotted = OPENROUTER_MODEL_IDS[model].removeprefix("anthropic/")
+            for spelling in (dotted, f"anthropic/{model}", OPENROUTER_MODEL_IDS[model]):
+                assert normalize_model(spelling) == model
+
+
+class TestThinkingOff:
+    """How each offered Claude model turns thinking off, which differs per generation."""
+
+    def test_it_covers_exactly_the_offered_claude_models(self) -> None:
+        claude = {model for model in OFFERED_MODELS if model not in BEDROCK_MODELS}
+        assert set(THINKING_OFF) == claude
+
+    @pytest.mark.parametrize("model", sorted(THINKING_OFF))
+    def test_each_value_is_a_bare_type_and_never_the_budget_style(self, model: str) -> None:
+        off = THINKING_OFF[model]
+        assert set(off) == {"type"}
+        assert off["type"] in {"between_tools", "disabled"}
+
+    def test_no_claude_model_offered_takes_sampling_parameters(self) -> None:
+        assert not set(THINKING_OFF) & SAMPLING_MODELS
+
+
 class TestBedrockModels:
     """The models served from Amazon Bedrock are offered like any other."""
 
@@ -153,7 +273,7 @@ class TestBedrockModels:
         assert is_bedrock_model(model_id) is True
 
     def test_claude_models_are_not_bedrock_models(self) -> None:
-        assert is_bedrock_model("claude-haiku-4-5") is False
+        assert is_bedrock_model(HAIKU) is False
         assert is_bedrock_model("claude-sonnet-5") is False
         assert is_bedrock_model(None) is False
 

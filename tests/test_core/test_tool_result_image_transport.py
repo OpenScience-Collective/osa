@@ -23,7 +23,7 @@ from mcp.types import CallToolResult, ImageContent
 
 from src.api.config import Settings
 from src.core.services.anthropic_llm import CachingChatAnthropic, create_anthropic_llm
-from src.core.services.anthropic_models import IMAGE_MEDIA_TYPES
+from src.core.services.anthropic_models import HAIKU, IMAGE_MEDIA_TYPES
 from src.tools.mcp_client import _content_of
 from tests.helpers.images import BAR_FIXTURES, bar_chart_png, tallest_and_shortest, tiny_png
 
@@ -70,7 +70,7 @@ def _tool_result(tool_content: list[dict], *, status: str = "success") -> dict:
 
     Returns the ``tool_result`` block as it would leave this process.
     """
-    llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=_settings())
+    llm = create_anthropic_llm(model=HAIKU, thinking=None, settings=_settings())
     # Assert the class, as TestCachingChatAnthropicPayload._llm does: caching is
     # on by default, and if that default is ever flipped these tests would go on
     # passing while measuring a plain ChatAnthropic instead of what ships.

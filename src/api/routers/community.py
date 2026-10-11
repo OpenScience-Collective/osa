@@ -4,6 +4,7 @@ Creates parameterized routers for any registered community.
 Each community gets endpoints like /{community_id}/ask, /{community_id}/chat, etc.
 """
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -95,6 +96,7 @@ from src.core.services.anthropic_models import (
     ProviderName,
     is_bedrock_model,
     openrouter_model_id,
+    suggest_another_model,
 )
 from src.core.services.bedrock_llm import create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
@@ -1369,8 +1371,8 @@ def _to_openrouter_model_via_canonical(model: str) -> str | None:
 
     ``to_openrouter_model`` only recognizes the canonical ids in
     ``OPENROUTER_MODEL_IDS`` (the offered Claude and Bedrock-served models, for
-    example "claude-haiku-4-5"), not the bare legacy aliases in ``MODEL_ALIASES``
-    (e.g. "claude-haiku-4.5", "claude-sonnet-4.5"). Passing one of those straight to
+    example "claude-haiku-5-5"), not the class names or legacy aliases in ``MODEL_ALIASES``
+    (e.g. "haiku", "claude-haiku-4.5", "claude-sonnet-4.5"). Passing one of those straight to
     ``to_openrouter_model`` returns None and falls through to the emergency
     default -- the exact model-family substitution this migration set out to
     eliminate. Resolving through ``normalize_model`` first fixes that, since
@@ -1385,6 +1387,36 @@ def _to_openrouter_model_via_canonical(model: str) -> str | None:
     except ValueError:
         canonical = model
     return to_openrouter_model(canonical)
+
+
+def _same_model(first: str | None, second: str | None) -> bool:
+    """Whether two model names are one model, whatever spelling each uses.
+
+    A community names a class ("haiku") or an offered id, the widget may send a legacy
+    alias, and a caller may name an OpenRouter slug. A name that ``normalize_model``
+    accepts is compared by the model it resolves to; any other pair is compared as written.
+    """
+    if not first or not second:
+        return first == second
+    try:
+        return normalize_model(first) == normalize_model(second)
+    except ValueError:
+        return first == second
+
+
+def _current_slug_for_retired(slug: str) -> str | None:
+    """The OpenRouter slug that a retired Claude slug runs today, else None.
+
+    ``anthropic/claude-haiku-4.5`` names a model whose class has moved on (ADR 0016).
+    Run as written, OpenRouter would answer with the retired model while the config
+    endpoint reports the current id, so the slug is mapped to the current one. None when
+    the slug already is the current one, or is not an offered model's.
+    """
+    try:
+        current = to_openrouter_model(normalize_model(slug))
+    except ValueError:
+        return None
+    return current if current and current != slug else None
 
 
 def _select_model(
@@ -1448,7 +1480,7 @@ def _select_model(
         return (resolved_model, None)
 
     # OpenRouter path: if user requests a custom model, require BYOK
-    if requested_model and requested_model != default_model:
+    if requested_model and not _same_model(requested_model, default_model):
         if not has_byok:
             raise HTTPException(
                 status_code=403,
@@ -1460,7 +1492,7 @@ def _select_model(
             )
         # User has BYOK, allow custom model. A caller may name an offered
         # model by its first-party id or a legacy alias (e.g.
-        # "claude-sonnet-5-5" or "claude-sonnet-4.5"), neither of which is a
+        # "claude-sonnet-5-5" or "claude-sonnet-4.5", or a class such as "sonnet"), none of which is a
         # valid OpenRouter slug, so map it across; anything else passes
         # through untouched. Provider routing is left to OpenRouter, which
         # auto-selects the Anthropic provider for anthropic/* models.
@@ -1468,7 +1500,7 @@ def _select_model(
 
     if default_model and "/" not in default_model:
         # A community or platform default_model is a bare offered-model id such as
-        # "claude-haiku-4-5" or "openai.gpt-6-luna" (or a legacy alias of one), which is
+        # "claude-haiku-5-5" or "openai.gpt-6-luna" (or a class name or legacy alias of one), which is
         # not a valid OpenRouter slug. Map it to the same model's OpenRouter slug so a
         # request funded by an OpenRouter key still answers with the model
         # the community chose. Switching to OpenRouter's own default here
@@ -1496,6 +1528,10 @@ def _select_model(
             )
         return (OPENROUTER_DEFAULT_MODEL, OPENROUTER_DEFAULT_PROVIDER)
 
+    # A retired slug runs the model its class is today, as the config endpoint reports it.
+    current = _current_slug_for_retired(default_model) if default_model else None
+    if current:
+        return (current, None)
     # Use community or platform default
     return (default_model, default_provider)
 
@@ -1580,12 +1616,9 @@ def _claude_fallback(settings: Settings) -> str:
     """The Claude model that stands in for a Bedrock default that cannot be served.
 
     The deployment's own default when that is a Claude model, else the platform-wide
-    default.
+    default. Settings has already refused a default_model that is not offered.
     """
-    try:
-        candidate = normalize_model(settings.default_model)
-    except ValueError:
-        return DEFAULT_MODEL
+    candidate = normalize_model(settings.default_model)
     return DEFAULT_MODEL if is_bedrock_model(candidate) else candidate
 
 
@@ -1651,8 +1684,9 @@ def _effective_default(info: AssistantInfo, settings: Settings) -> tuple[str, st
 def log_unserved_bedrock_defaults(settings: Settings | None = None) -> list[str]:
     """At startup, log each community whose Bedrock default this deployment cannot serve.
 
-    Without the keys, the request runs Claude Haiku at about nine times GPT-6 Luna's
-    price, and the only signal was a log line per request, after the bill had started.
+    Without the keys, the request runs the deployment's Claude default instead of the
+    model the community chose, and the only signal was a log line per request, after the
+    bill had started.
     One record per community, at ERROR when requests run Claude or fail, and WARNING
     when they run the model through OpenRouter (which works, and is warned about on
     every such request too). Every record names the keys that serve the model from
@@ -2211,6 +2245,7 @@ class AgentResult:
     total_tokens: int
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    longest_prompt_tokens: int = 0
     citations: list[CitationInfo] = field(default_factory=list)
     model_runs: ModelRuns = field(default_factory=ModelRuns)
 
@@ -2312,6 +2347,7 @@ def _extract_agent_result(result: dict) -> AgentResult:
         total_tokens=usage.total_tokens,
         cache_read_tokens=usage.cache_read_tokens,
         cache_creation_tokens=usage.cache_creation_tokens,
+        longest_prompt_tokens=usage.longest_prompt_tokens,
         citations=citations,
         model_runs=ModelRuns.from_messages(result.get("messages", [])),
     )
@@ -2324,6 +2360,7 @@ def _safe_reply_usage(
     output_tokens: int,
     cache_read_tokens: int,
     cache_creation_tokens: int,
+    longest_prompt_tokens: int,
     model_runs: ModelRuns,
     community_id: str,
     request_id: str | None,
@@ -2354,6 +2391,7 @@ def _safe_reply_usage(
             cache_read_tokens,
             cache_creation_tokens,
             partial=model_runs.without_usage > 0,
+            longest_prompt_tokens=longest_prompt_tokens,
         )
     except ValidationError as error:
         problems = "; ".join(
@@ -2415,6 +2453,7 @@ def _reply_usage_of(
         output_tokens=agent_result.output_tokens,
         cache_read_tokens=agent_result.cache_read_tokens,
         cache_creation_tokens=agent_result.cache_creation_tokens,
+        longest_prompt_tokens=agent_result.longest_prompt_tokens,
         model_runs=agent_result.model_runs,
         community_id=community_id,
         request_id=getattr(http_request.state, "request_id", None),
@@ -2428,6 +2467,7 @@ def _usage_for_event(
     output_tokens: int,
     cache_read_tokens: int,
     cache_creation_tokens: int,
+    longest_prompt_tokens: int,
     model_runs: ModelRuns,
     community_id: str,
     request_id: str | None,
@@ -2441,6 +2481,7 @@ def _usage_for_event(
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
         cache_creation_tokens=cache_creation_tokens,
+        longest_prompt_tokens=longest_prompt_tokens,
         model_runs=model_runs,
         community_id=community_id,
         request_id=request_id,
@@ -2474,6 +2515,7 @@ def _set_metrics_on_request(
                 agent_result.output_tokens,
                 cache_read_tokens=agent_result.cache_read_tokens,
                 cache_creation_tokens=agent_result.cache_creation_tokens,
+                longest_prompt_tokens=agent_result.longest_prompt_tokens,
             )
             if has_tokens
             else None
@@ -2750,6 +2792,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 },
             )
 
+        awm: AssistantWithMetrics | None = None
         try:
             awm = create_community_assistant(
                 community_id,
@@ -2783,6 +2826,8 @@ def create_community_router(community_id: str) -> APIRouter:
         except HTTPException:
             raise
         except Exception as e:
+            if step_limit := _step_limit_error(e, awm, community_id=community_id):
+                raise step_limit from e
             logger.error(
                 "Error in ask endpoint for community %s: %s",
                 community_id,
@@ -2877,6 +2922,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 },
             )
 
+        awm: AssistantWithMetrics | None = None
         try:
             awm = create_community_assistant(
                 community_id,
@@ -2932,6 +2978,8 @@ def create_community_router(community_id: str) -> APIRouter:
             # A ValueError the model call raised (langchain-aws raises one for a service
             # exception event) is the provider's failure, not a request the caller got
             # wrong: it is logged and answered like any other model error, not echoed.
+            if step_limit := _step_limit_error(e, awm, community_id=community_id):
+                raise step_limit from e
             logger.error(
                 "Error in chat endpoint for session %s (community: %s): %s",
                 session.session_id,
@@ -3154,6 +3202,11 @@ def create_community_router(community_id: str) -> APIRouter:
         # Bedrock model this deployment cannot serve: the widget would call that model
         # the community default while the server answers with Claude.
         default_model, default_provider = _effective_default(info, settings)
+        # A community writes a model class ("haiku") or an old id; the widget compares
+        # this with the ids of offered_models, so say the id it runs. Not an offered model
+        # (a slug the community runs over OpenRouter): as written.
+        with contextlib.suppress(ValueError):
+            default_model = normalize_model(default_model)
 
         return CommunityConfigResponse(
             id=info.id,
@@ -3695,6 +3748,7 @@ def _log_streaming_metrics(
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
     error_message: str | None = None,
+    longest_prompt_tokens: int | None = None,
 ) -> None:
     """Log metrics at the end of a streaming response.
 
@@ -3721,6 +3775,7 @@ def _log_streaming_metrics(
                 output_tokens,
                 cache_read_tokens=cache_read_tokens,
                 cache_creation_tokens=cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
             )
             if has_tokens
             else None
@@ -3770,9 +3825,9 @@ class _FailureWording:
             tool of ours failed, say), so nothing is known about retrying. A model call
             that failed in a way a retry might fix is reported with ``_model_unavailable``.
         cannot_retry: When the provider refused the request outright (see
-            ``classify_model_error``), which fails the same way every time. Short, since
-            the widget shows an error for a few seconds; the error id that finds the log
-            line is a field of the event (and in the log), not part of this text.
+            ``classify_model_error``), which fails the same way every time. Short, since a
+            reader takes it in at a glance; the error id that finds the log line is a field
+            of the event (and in the log), not part of this text.
     """
 
     unrecognized: str
@@ -3816,10 +3871,48 @@ def _model_unavailable(model: str | None) -> str:
     the same way.
 
     There is no automatic switch to another model (it would change what the community
-    chose and what a request costs), so the reader is asked to choose.
+    chose and what a request costs), so the reader is told which one to try (see
+    ``suggest_another_model``) and asked to choose.
     """
     name = f" ({model})" if model else ""
-    return f"The current model{name} is not available right now. Please choose another model."
+    suggestion = suggest_another_model(model)
+    advice = (
+        f"Try {suggestion[1]}, or choose another model."
+        if suggestion
+        else ("Please choose another model.")
+    )
+    return f"The current model{name} is not available right now. {advice}"
+
+
+def _step_limit_reached(model: str | None) -> str:
+    """The reader's message for a run that used all its steps without finishing: the model
+    kept calling tools (a check, fix, check loop it does not converge in) until the graph's
+    step limit. Nothing was wrong with the service, so it is not called unavailable."""
+    name = f" ({model})" if model else ""
+    suggestion = suggest_another_model(model)
+    advice = (
+        f"Try {suggestion[1]}, or ask for a smaller part of the task."
+        if suggestion
+        else ("Try another model, or ask for a smaller part of the task.")
+    )
+    return f"The current model{name} used all its steps without finishing. {advice}"
+
+
+def _step_limit_error(
+    error: Exception, awm: AssistantWithMetrics | None, *, community_id: str
+) -> HTTPException | None:
+    """The response for a run that used all its steps, on an endpoint that is not streamed.
+
+    A model that keeps calling tools until the graph's step limit is the model's behavior,
+    not a fault of the service: it is logged as a warning with no traceback, and the caller
+    is told what happened and which model to try, as a streamed reply is. None for any other
+    error, which keeps the endpoint's generic 500.
+    """
+    if classify_model_error(error).kind != "step_limit":
+        return None
+    model = awm.model if awm else None
+    logger.warning("A run used all its steps (community=%s, model=%s)", community_id, model)
+    return HTTPException(status_code=500, detail=_step_limit_reached(model))
 
 
 class _StreamFailure(NamedTuple):
@@ -3851,21 +3944,23 @@ def _stream_failure_event(
 
     The log says which failure it was (the exception class, the provider's code or status,
     and whether a retry can succeed). A throttle, and the caller's own key being refused
-    (theirs to fix, and nothing the operator did), are WARNING. Everything else is ERROR,
+    (theirs to fix, and nothing the operator did), and a run that used all its steps (the
+    model's behavior, not a fault of the service), are WARNING. Everything else is ERROR,
     including a provider outage (the service unavailable, the connection lost, or a read
     that timed out) in whichever phase of the call it came, so that an alert on ERROR sees
-    it. The traceback is left off where the line already says all there is: the two WARNINGs,
-    and an outage that was not worth a retry (one that came before the response began, or a
-    read that timed out). It is kept for a failure that cannot clear, one that was worth a
+    it. The traceback is left off where the line already says all there is: the three
+    WARNINGs, and an outage that was not worth a retry (one that came before the response
+    began, or a read that timed out). It is kept for a failure that cannot clear, one that was worth a
     retry and reached the reader anyway (the retry failed, or output was already shown, or it
     came too late), a platform or community key the provider refused, and any exception that
     is not a recognized model-provider error (a tool of ours failing is one, and its
     traceback is the only clue).
 
     The reader is told what is honest: a failure no retry can fix says so, a refused
-    credential says whose it is, a throttle on the caller's own key says so, any other
-    model-call failure is reported as the model being unavailable with the ask to choose
-    another, and a failure that is not a model call's keeps the stream's own wording.
+    credential says whose it is, a throttle on the caller's own key says so, a run that used
+    all its steps says so, any other model-call failure is reported as the model being
+    unavailable, and the last two name another model to try (``suggested_model`` on the
+    event). A failure that is not a model call's keeps the stream's own wording.
 
     Args:
         error: What the stream raised.
@@ -3884,8 +3979,9 @@ def _stream_failure_event(
     Returns:
         The event to send: ``message``, an ``error_id`` (the key of the log line) and the
         ``request_id`` (the key of the metrics row), which are for a report and not part of
-        what the reader is shown, and ``retryable`` when known. And the failure's detail,
-        for that row's ``error_message``.
+        what the reader is shown, ``retryable`` when known, and ``suggested_model`` when the
+        message names a model to try. And the failure's detail, for that row's
+        ``error_message``.
     """
     failure = classify_model_error(error)
     detail = f"{failure.detail} (after one retry)" if after_retry else failure.detail
@@ -3893,6 +3989,8 @@ def _stream_failure_event(
     refused_callers_key = failure.kind == "unauthorized" and key_source == "byok"
     if refused_callers_key:
         summary = "Model call failed while streaming, the caller's own API key was refused"
+    elif failure.kind == "step_limit":
+        summary = "A run used all its steps"
     elif failure.from_provider:
         summary = "Model call failed while streaming"
     else:
@@ -3935,10 +4033,16 @@ def _stream_failure_event(
             "key_source": key_source,
         },
     )
+    suggested: tuple[str, str] | None = None
     if failure.kind == "throttled" and key_source == "byok":
         message = _BYOK_RATE_LIMITED_MESSAGE
+    elif failure.kind == "step_limit":
+        message = _step_limit_reached(model)
+        suggested = suggest_another_model(model)
     elif failure.retryable is not False:
         message = _model_unavailable(model) if failure.from_provider else wording.unrecognized
+        if failure.from_provider:
+            suggested = suggest_another_model(model)
     elif failure.kind == "unauthorized":
         message = _KEY_REFUSED_MESSAGE if refused_callers_key else _SERVER_KEY_MESSAGE
     else:
@@ -3951,6 +4055,10 @@ def _stream_failure_event(
     }
     if failure.retryable is not None:
         event["retryable"] = failure.retryable
+    if suggested:
+        # The model the message names, for a client that can offer to send the question
+        # again with it (the widget does).
+        event["suggested_model"] = {"id": suggested[0], "label": suggested[1]}
     return _StreamFailure(event, detail)
 
 
@@ -3979,7 +4087,9 @@ async def _stream_ask_response(
                "usage": {...}}  (`usage`: this request's tokens, cache tokens and estimated cost, or null;
                see ReplyUsage, whose `input_tokens` includes the cached ones)
         data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
-               "retryable": true}  (ends the stream, no `done`; `retryable` only when known)
+               "retryable": true, "suggested_model": {"id": "claude-haiku-5-5", "label": "..."}}
+               (ends the stream, no `done`; `retryable` only when known; `suggested_model` only
+               when the message tells the reader to try another model, and names it)
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
@@ -4005,6 +4115,7 @@ async def _stream_ask_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
+    longest_prompt_tokens = 0
     citation_assembler = CitationAssembler()
     announced_tool_calls: set[tuple[Any, ...]] = set()
     model_runs = ModelRuns()
@@ -4080,6 +4191,7 @@ async def _stream_ask_response(
                 total_output_tokens += out
                 total_cache_read_tokens += cache_read
                 total_cache_creation_tokens += cache_creation
+                longest_prompt_tokens = max(longest_prompt_tokens, inp)
                 model_runs.note(event.get("data", {}).get("output"))
                 citation_assembler.finish_model_run()
                 last_run_text = full_response[run_start:]
@@ -4143,6 +4255,7 @@ async def _stream_ask_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
                 error_message=problem.summary,
             )
             return
@@ -4170,6 +4283,7 @@ async def _stream_ask_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
                 model_runs=model_runs,
                 community_id=community_id,
                 request_id=request_id,
@@ -4190,6 +4304,7 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
         )
 
     except HTTPException as e:
@@ -4215,6 +4330,7 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
         )
     except ValueError as e:
         if classify_model_error(e).from_provider:
@@ -4259,6 +4375,7 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
             error_message=error_message,
         )
     except Exception as e:
@@ -4285,6 +4402,7 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
             error_message=failure.detail,
         )
 
@@ -4367,7 +4485,9 @@ async def _stream_chat_response(
                "usage": {...}}  (`usage`: this run's tokens, cache tokens and estimated cost, or null;
                see ReplyUsage, whose `input_tokens` includes the cached ones)
         data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
-               "retryable": true}  (ends the stream, no `done`; `retryable` only when known)
+               "retryable": true, "suggested_model": {"id": "claude-haiku-5-5", "label": "..."}}
+               (ends the stream, no `done`; `retryable` only when known; `suggested_model` only
+               when the message tells the reader to try another model, and names it)
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
@@ -4416,6 +4536,7 @@ async def _stream_chat_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
+    longest_prompt_tokens = 0
     model_runs = ModelRuns()
     retry = RetryState()
 
@@ -4558,6 +4679,7 @@ async def _stream_chat_response(
                 total_output_tokens += out
                 total_cache_read_tokens += cache_read
                 total_cache_creation_tokens += cache_creation
+                longest_prompt_tokens = max(longest_prompt_tokens, inp)
                 model_runs.note(event.get("data", {}).get("output"))
                 citation_assembler.finish_model_run()
                 last_run_text = full_response[run_start:]
@@ -4653,6 +4775,7 @@ async def _stream_chat_response(
                     output_tokens=total_output_tokens,
                     cache_read_tokens=total_cache_read_tokens,
                     cache_creation_tokens=total_cache_creation_tokens,
+                    longest_prompt_tokens=longest_prompt_tokens,
                     model_runs=model_runs,
                     community_id=community_id,
                     request_id=request_id,
@@ -4677,6 +4800,7 @@ async def _stream_chat_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
             )
             return
 
@@ -4721,6 +4845,7 @@ async def _stream_chat_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
                 error_message=problem.summary,
             )
             return
@@ -4750,6 +4875,7 @@ async def _stream_chat_response(
                     output_tokens=total_output_tokens,
                     cache_read_tokens=total_cache_read_tokens,
                     cache_creation_tokens=total_cache_creation_tokens,
+                    longest_prompt_tokens=longest_prompt_tokens,
                     error_message=f"session limit: {e}",
                 )
                 return
@@ -4789,6 +4915,7 @@ async def _stream_chat_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
+                longest_prompt_tokens=longest_prompt_tokens,
                 model_runs=model_runs,
                 community_id=community_id,
                 request_id=request_id,
@@ -4809,6 +4936,7 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
         )
 
     except HTTPException as e:
@@ -4835,6 +4963,7 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
         )
     except ValueError as e:
         if classify_model_error(e).from_provider:
@@ -4874,6 +5003,7 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
             error_message=error_message,
         )
     except Exception as e:
@@ -4901,6 +5031,7 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
             error_message=failure.detail,
         )
     finally:

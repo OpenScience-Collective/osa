@@ -29,6 +29,7 @@ letting the reasoning stay buried in a PR nobody will reread.
 | [0013](0013-the-chat-follows-its-deployment.md) | The chat follows the deployment it runs in: per-deployment MCP, fetch and prelude values |
 | [0014](0014-bedrock-models-alongside-claude.md) | Serve GPT-6 Luna, Qwen3 Next and gpt-oss-120b from Amazon Bedrock, next to Claude |
 | [0015](0015-community-reasoning-effort.md) | A community sets reasoning effort once, on one scale, for every provider |
+| [0016](0016-model-classes.md) | A model class names a tier; one table says which model it is today |
 
 ## Adding a new ADR
 

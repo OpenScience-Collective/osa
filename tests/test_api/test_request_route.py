@@ -19,8 +19,14 @@ from src.api.routers.community import (
 )
 from src.api.security import ByokCredential
 from src.assistants import discover_assistants, registry
-from src.core.services.anthropic_models import BEDROCK_MODELS, OFFERED_MODELS
+from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,
+    HAIKU,
+    OFFERED_MODELS,
+    normalize_model,
+)
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
+from tests.helpers.deployment import name_luna_as_the_default
 
 NOTES_HEADING = "Working Notes For This Model"
 
@@ -37,14 +43,13 @@ def _fresh_settings():
     get_settings.cache_clear()
 
 
-@pytest.fixture
-def hed(monkeypatch):
-    """The real hed community on a deployment with every platform key."""
+def _on_a_deployment_with_every_platform_key(monkeypatch, community_id: str):
+    """A real community, on a deployment with every platform key."""
     settings = get_settings()
     monkeypatch.setattr(settings, "anthropic_api_key", "platform-anthropic-key")
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     monkeypatch.setattr(settings, "bedrock_api_key", "bedrock-key")
-    info = registry.get("hed")
+    info = registry.get(community_id)
     assert info is not None
     monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
     monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
@@ -55,6 +60,20 @@ def hed(monkeypatch):
     return info
 
 
+@pytest.fixture
+def hed(monkeypatch):
+    """The real hed community on a deployment with every platform key."""
+    return _on_a_deployment_with_every_platform_key(monkeypatch, "hed")
+
+
+@pytest.fixture
+def a_bedrock_default_community(monkeypatch):
+    """A real community whose default model is one of the Bedrock models, on a deployment
+    with every platform key. No shipped community names one now, so NWB is given one here."""
+    info = name_luna_as_the_default(monkeypatch)
+    return _on_a_deployment_with_every_platform_key(monkeypatch, info.id)
+
+
 def _origin(info) -> str:
     return next(o for o in info.community_config.cors_origins if "*" not in o)
 
@@ -63,9 +82,9 @@ OPENROUTER_BYOK = ByokCredential(key="sk-or-fake-test-key", provider="openrouter
 ANTHROPIC_BYOK = ByokCredential(key="sk-ant-" + "x" * 40, provider="anthropic")
 
 
-def _prompt_on_openrouter(requested_model: str | None) -> str:
+def _prompt_on_openrouter(requested_model: str | None, community_id: str = "hed") -> str:
     awm = create_community_assistant(
-        "hed", byok=OPENROUTER_BYOK, requested_model=requested_model, preload_docs=False
+        community_id, byok=OPENROUTER_BYOK, requested_model=requested_model, preload_docs=False
     )
     assert type(awm.assistant.model).__name__ == "TaggedCitationChatLiteLLM"
     return awm.assistant.get_system_prompt()
@@ -85,9 +104,9 @@ class TestRequestRouteInvariants:
         with pytest.raises(ValueError, match="routing hint"):
             RequestRoute(
                 choice=anthropic,
-                model="claude-haiku-4-5",
+                model=HAIKU,
                 provider_hint="Cerebras",
-                offered_model_id="claude-haiku-4-5",
+                offered_model_id=HAIKU,
             )
 
     def test_a_bedrock_model_on_the_anthropic_provider_is_refused(self):
@@ -101,9 +120,9 @@ class TestRequestRouteInvariants:
         with pytest.raises(ValueError, match="disagree"):
             RequestRoute(
                 choice=bedrock,
-                model="claude-haiku-4-5",
+                model=HAIKU,
                 provider_hint=None,
-                offered_model_id="claude-haiku-4-5",
+                offered_model_id=HAIKU,
             )
 
     @pytest.mark.parametrize("model_id", sorted(BEDROCK_MODELS))
@@ -152,7 +171,7 @@ class TestTheRoutesOfferedModel:
 
     def test_the_communitys_default_on_openrouter_is_found_by_its_offered_id(self, hed):
         route = _route_request(hed, "hed", OPENROUTER_BYOK, None, None)
-        default = hed.community_config.default_model
+        default = normalize_model(hed.community_config.default_model)
         assert route.model == OPENROUTER_MODEL_IDS[default]
         assert route.offered_model_id == default
 
@@ -161,10 +180,14 @@ class TestTheRoutesOfferedModel:
         assert route.model == "some-lab/their-own-model"
         assert route.offered_model_id is None
 
-    def test_the_fallback_model_is_the_offered_one(self, hed, monkeypatch):
+    def test_the_fallback_model_is_the_offered_one(self, a_bedrock_default_community, monkeypatch):
         """A Bedrock default that cannot be served runs Claude, and is that model's id."""
+        community = a_bedrock_default_community
+        assert normalize_model(community.community_config.default_model) in BEDROCK_MODELS, (
+            "nothing to fall back from"
+        )
         monkeypatch.setattr(get_settings(), "bedrock_api_key", None)
-        route = _route_request(hed, "hed", ANTHROPIC_BYOK, None, None)
+        route = _route_request(community, community.id, ANTHROPIC_BYOK, None, None)
         assert route.choice.provider == "anthropic"
         assert route.offered_model_id == route.model
         assert route.model not in BEDROCK_MODELS
@@ -173,10 +196,11 @@ class TestTheRoutesOfferedModel:
 class TestPerModelNotesFollowTheModelOnEveryProvider:
     """The notes are keyed by offered id, which an OpenRouter slug is not (#562 review)."""
 
-    def test_the_default_model_gets_its_note_on_openrouter(self, hed):
-        default = hed.community_config.default_model
+    def test_the_default_model_gets_its_note_on_openrouter(self, a_bedrock_default_community):
+        community = a_bedrock_default_community
+        default = normalize_model(community.community_config.default_model)
         assert BEDROCK_MODELS[default].prompt_addendum, "the shipped default has no note"
-        prompt = _prompt_on_openrouter(None)
+        prompt = _prompt_on_openrouter(None, community.id)
         assert NOTES_HEADING in prompt
         assert BEDROCK_MODELS[default].prompt_addendum in prompt
 
@@ -208,10 +232,8 @@ class TestPerModelNotesFollowTheModelOnEveryProvider:
     def test_a_community_instruction_for_a_claude_model_applies_on_openrouter(
         self, hed, monkeypatch
     ):
-        monkeypatch.setattr(
-            hed.community_config, "model_instructions", {"claude-haiku-4-5": "Be brief."}
-        )
-        assert "Be brief." in _prompt_on_openrouter("claude-haiku-4-5")
+        monkeypatch.setattr(hed.community_config, "model_instructions", {HAIKU: "Be brief."})
+        assert "Be brief." in _prompt_on_openrouter(HAIKU)
         # and only on that model
         assert "Be brief." not in _prompt_on_openrouter("claude-sonnet-5-5")
 
@@ -226,16 +248,12 @@ class TestPerModelNotesFollowTheModelOnEveryProvider:
         assert prompt.index(builtin) < prompt.index("Answer in French.")
 
     def test_a_slug_osa_does_not_know_gets_no_notes(self, hed, monkeypatch):
-        monkeypatch.setattr(
-            hed.community_config, "model_instructions", {"claude-haiku-4-5": "Be brief."}
-        )
+        monkeypatch.setattr(hed.community_config, "model_instructions", {HAIKU: "Be brief."})
         assert NOTES_HEADING not in _prompt_on_openrouter("some-lab/their-own-model")
 
     def test_the_anthropic_path_still_finds_a_claude_instruction(self, hed, monkeypatch):
-        monkeypatch.setattr(
-            hed.community_config, "model_instructions", {"claude-haiku-4-5": "Be brief."}
-        )
+        monkeypatch.setattr(hed.community_config, "model_instructions", {HAIKU: "Be brief."})
         awm = create_community_assistant(
-            "hed", byok=ANTHROPIC_BYOK, requested_model="claude-haiku-4-5", preload_docs=False
+            "hed", byok=ANTHROPIC_BYOK, requested_model=HAIKU, preload_docs=False
         )
         assert "Be brief." in awm.assistant.get_system_prompt()
