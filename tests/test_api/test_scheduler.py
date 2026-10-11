@@ -169,8 +169,7 @@ class TestSyncTypeMap:
     def test_every_configured_forum_is_scheduled(self):
         """A community with a Discourse forum names a sync.discourse schedule.
 
-        Without one the forum is never synced, or never refreshed after a sync by hand:
-        MNE's topics went stale for months while the scheduler had no Discourse job.
+        Without one the forum is never synced, or never refreshed after a sync by hand.
         """
         unscheduled = [
             info.id
@@ -227,3 +226,54 @@ class TestFailureTracking:
     def test_reset_failure_noop_if_not_tracked(self):
         """reset_failure should not error if no failure was tracked."""
         _reset_failure("nonexistent", "nonexistent")
+
+
+class TestDiscourseJob:
+    """The scheduled Discourse job and the startup seed."""
+
+    def test_discourse_is_not_seeded_at_startup(self):
+        """A first forum sync takes hours; it would hold up every community's seed."""
+        from src.api.scheduler import SEED_SYNC_TYPES
+
+        assert "discourse" not in SEED_SYNC_TYPES
+        assert set(SEED_SYNC_TYPES) <= set(_SYNC_TYPE_MAP)
+
+    def test_community_without_a_forum_succeeds_without_syncing(self):
+        from src.api.scheduler import _run_discourse_sync_for_community
+
+        without_forum = [
+            info.id
+            for info in registry.list_all()
+            if info.community_config and not info.community_config.discourse
+        ]
+        assert without_forum, "expected a community without a Discourse forum"
+        assert _run_discourse_sync_for_community(without_forum[0]) is True
+
+    def test_unreachable_forum_is_tracked_as_a_failure(self, tmp_path, monkeypatch):
+        """A forum whose listings cannot be read fails the job, so it reaches the failure
+        count and its alert, rather than passing as a sync of 0 topics."""
+        from unittest.mock import patch
+
+        import respx
+
+        from src.api.scheduler import _run_discourse_sync_for_community
+
+        with_forum = next(
+            info
+            for info in registry.list_all()
+            if info.community_config and info.community_config.discourse
+        )
+        forum_url = str(with_forum.community_config.discourse[0].url).rstrip("/")
+        key = _failure_key("discourse", with_forum.id)
+        _sync_failures.pop(key, None)
+        monkeypatch.setattr("src.knowledge.discourse_sync.DEFAULT_REQUEST_DELAY", 0)
+
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=tmp_path / "forum.db"),
+            respx.mock() as router,
+        ):
+            router.get(url__startswith=forum_url).respond(503)
+            assert _run_discourse_sync_for_community(with_forum.id) is False
+
+        assert _sync_failures.get(key) == 1
+        _sync_failures.pop(key, None)

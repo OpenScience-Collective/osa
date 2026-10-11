@@ -11,6 +11,7 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from src.knowledge.db import (
@@ -163,6 +164,39 @@ class TestDiscourseSearch:
             assert isinstance(results[0], DiscourseTopicResult)
             assert "Epoch rejection" in results[0].title
             assert results[0].reply_count == 8
+
+    def test_forum_tool_labels_the_stored_answer_best_answer(self, temp_db: Path):
+        """The stored answer may be a liked or staff reply, so it is not called accepted."""
+        from src.tools.knowledge import create_search_discourse_tool
+
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db), get_connection() as conn:
+            upsert_discourse_topic(
+                conn,
+                forum_url="https://neuroimage.usc.edu/forums",
+                topic_id=7,
+                title="Head model fails with OpenMEEG",
+                first_post="OpenMEEG stops with an error.",
+                accepted_answer="Update OpenMEEG from the plugin manager.",
+                category_name="Bugs",
+                tags=[],
+                reply_count=1,
+                like_count=0,
+                views=10,
+                url="https://neuroimage.usc.edu/forums/t/head-model/7",
+                created_at="2026-10-01T00:00:00Z",
+                last_posted_at=None,
+            )
+            conn.commit()
+
+        tool = create_search_discourse_tool("test", "Test")
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_db),
+            patch("src.tools.knowledge.get_db_path", return_value=temp_db),
+        ):
+            result = tool.invoke({"query": "OpenMEEG"})
+
+        assert "Best answer: Update OpenMEEG" in result
+        assert "Accepted answer" not in result
 
     def test_search_empty_query_returns_empty(self, temp_db: Path):
         """Test that an empty or nonsensical query returns no results."""
@@ -557,3 +591,180 @@ class TestDiscourseApiLive:
                     row[0] for row in conn.execute("SELECT category_name FROM discourse_topics")
                 }
             assert None not in names
+
+
+class TestSyncOverHttp:
+    """sync_discourse_topics end to end against a forum served at the HTTP boundary.
+
+    respx answers the forum's JSON API, as the other HTTP-level tests in this repo do; the
+    sync, the answer selection and the database are the real ones.
+    """
+
+    BASE = "https://forum.example.org/forums"
+
+    @staticmethod
+    def _listing(topic_ids: list[int], more: bool = False) -> dict:
+        topics = [
+            {"id": i, "title": f"Topic {i}", "last_posted_at": "2026-10-01T00:00:00.000Z"}
+            for i in topic_ids
+        ]
+        listing: dict = {"topic_list": {"topics": topics}}
+        if more:
+            listing["topic_list"]["more_topics_url"] = "/forums/latest?page=1"
+        return listing
+
+    @staticmethod
+    def _topic(topic_id: int, category_id: int = 18) -> dict:
+        return {
+            "id": topic_id,
+            "slug": f"topic-{topic_id}",
+            "title": f"Topic {topic_id}",
+            "category_id": category_id,
+            "post_stream": {
+                "posts": [
+                    {"post_number": 1, "cooked": "<p>How do I filter?</p>", "username": "a"},
+                    {
+                        "post_number": 2,
+                        "cooked": "<p>Use the band-pass process in the pipeline editor.</p>",
+                        "username": "dev",
+                        "staff": True,
+                    },
+                ]
+            },
+        }
+
+    def _serve_topics(self, router, ids: list[int]) -> None:
+        for i in ids:
+            router.get(f"{self.BASE}/t/{i}.json").respond(json=self._topic(i))
+
+    def _sync(self, temp_db: Path, **kwargs) -> int:
+        from src.knowledge.discourse_sync import sync_discourse_topics
+
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            return sync_discourse_topics(
+                base_url=self.BASE, project="test_discourse", request_delay=0, **kwargs
+            )
+
+    def _last_sync(self, temp_db: Path) -> str | None:
+        from src.knowledge.db import get_last_sync
+
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            return get_last_sync("discourse", self.BASE, "test_discourse")
+
+    def _rows(self, temp_db: Path) -> list[sqlite3.Row]:
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_db),
+            get_connection("test_discourse") as conn,
+        ):
+            return conn.execute(
+                "SELECT topic_id, category_name, accepted_answer FROM discourse_topics "
+                "ORDER BY topic_id"
+            ).fetchall()
+
+    def test_stores_category_names_and_records_the_start_time(self, temp_db: Path):
+        """Topics get their category's name from /site.json and the staff answer; the
+        last sync is when the sync started, not when it ended."""
+        from datetime import UTC, datetime
+
+        import respx
+
+        served_at: list[str] = []
+
+        def topic(request):
+            served_at.append(datetime.now(UTC).isoformat())
+            topic_id = int(request.url.path.rsplit("/", 1)[1].split(".")[0])
+            return httpx.Response(200, json=self._topic(topic_id))
+
+        before = datetime.now(UTC).isoformat()
+        with respx.mock(assert_all_called=False) as router:
+            router.get(f"{self.BASE}/latest.json").respond(json=self._listing([1, 2]))
+            router.get(url__regex=rf"{self.BASE}/t/\d+\.json").mock(side_effect=topic)
+            router.get(f"{self.BASE}/site.json").respond(
+                json={"categories": [{"id": 18, "name": "Discussions"}]}
+            )
+            assert self._sync(temp_db, incremental=False) == 2
+
+        rows = self._rows(temp_db)
+        assert [r["category_name"] for r in rows] == ["Discussions", "Discussions"]
+        assert all("band-pass" in r["accepted_answer"] for r in rows)
+        last_sync = self._last_sync(temp_db)
+        assert before <= last_sync <= served_at[0]
+
+    def test_unreadable_category_list_still_syncs_topics(self, temp_db: Path):
+        """A failed /site.json only costs the category names."""
+        import respx
+
+        with respx.mock(assert_all_called=False) as router:
+            router.get(f"{self.BASE}/latest.json").respond(json=self._listing([1]))
+            self._serve_topics(router, [1])
+            router.get(f"{self.BASE}/site.json").respond(404)
+            assert self._sync(temp_db, incremental=False) == 1
+
+        assert [r["category_name"] for r in self._rows(temp_db)] == [None]
+        assert self._last_sync(temp_db) is not None
+
+    def test_failed_listing_page_raises_and_keeps_the_last_sync(self, temp_db: Path):
+        """A listing page that cannot be read stores what was read, raises, and leaves the
+        last sync where it was, so the next sync looks for the missing topics again."""
+        import respx
+
+        from src.knowledge.db import update_sync_metadata
+        from src.knowledge.discourse_sync import DiscourseSyncError
+
+        earlier = "2020-01-01T00:00:00+00:00"
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            update_sync_metadata("discourse", self.BASE, 0, "test_discourse", synced_at=earlier)
+
+        with respx.mock(assert_all_called=False) as router:
+            router.get(f"{self.BASE}/latest.json", params={"page": "1"}).respond(500)
+            router.get(f"{self.BASE}/latest.json").respond(json=self._listing([1], more=True))
+            self._serve_topics(router, [1])
+            router.get(f"{self.BASE}/site.json").respond(json={"categories": []})
+            with pytest.raises(DiscourseSyncError, match="some may be missing"):
+                self._sync(temp_db)
+
+        assert [r["topic_id"] for r in self._rows(temp_db)] == [1]
+        assert self._last_sync(temp_db) == earlier
+
+    def test_unknown_tag_raises(self, temp_db: Path):
+        """A tag the forum does not have (a typo in the config) is an error, not 0 topics."""
+        import respx
+
+        from src.knowledge.discourse_sync import DiscourseSyncError
+
+        with respx.mock() as router:
+            router.get(f"{self.BASE}/tag/bidss.json").respond(404)
+            with pytest.raises(DiscourseSyncError, match="configured tags"):
+                self._sync(temp_db, tags=["bidss"], incremental=False)
+
+        assert self._last_sync(temp_db) is None
+
+    def test_topic_in_two_tag_listings_is_synced_once(self, temp_db: Path):
+        """A topic carrying two configured tags is fetched once."""
+        import respx
+
+        with respx.mock(assert_all_called=False) as router:
+            router.get(f"{self.BASE}/tag/bids.json").respond(json=self._listing([1]))
+            router.get(f"{self.BASE}/tag/validator.json").respond(json=self._listing([1, 2]))
+            topic_one = router.get(f"{self.BASE}/t/1.json").respond(json=self._topic(1))
+            router.get(f"{self.BASE}/t/2.json").respond(json=self._topic(2))
+            router.get(f"{self.BASE}/site.json").respond(json={"categories": []})
+            assert self._sync(temp_db, tags=["bids", "validator"], incremental=False) == 2
+
+        assert topic_one.call_count == 1
+
+    def test_max_topics_stops_early_and_keeps_the_last_sync(self, temp_db: Path):
+        """At max_topics the later listings are not read, and the last sync stays unset,
+        since the topics past the cap were not synced."""
+        import respx
+
+        with respx.mock(assert_all_called=False) as router:
+            router.get(f"{self.BASE}/tag/bids.json").respond(json=self._listing([1]))
+            later = router.get(f"{self.BASE}/tag/validator.json").respond(json=self._listing([2]))
+            self._serve_topics(router, [1, 2])
+            router.get(f"{self.BASE}/site.json").respond(json={"categories": []})
+            count = self._sync(temp_db, tags=["bids", "validator"], incremental=False, max_topics=1)
+
+        assert count == 1
+        assert later.call_count == 0
+        assert self._last_sync(temp_db) is None

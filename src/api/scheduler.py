@@ -451,6 +451,13 @@ _SYNC_TYPE_MAP: dict[str, tuple[Callable[[str], bool], Callable[[Any], Any]]] = 
 }
 
 
+#: Sync types run at startup for a community whose database lacks them. FAQ is left out
+#: because it calls an LLM and needs the mailing list synced first; Discourse because a
+#: first sync of a large forum fetches one topic per second for hours, which would hold
+#: up the seeding of every community after it (it runs on its schedule, or by hand with
+#: ``osa sync discourse``).
+SEED_SYNC_TYPES = ("github", "papers", "docstrings", "mailman", "beps")
+
 # ---------------------------------------------------------------------------
 # Startup seed: populate empty databases
 # ---------------------------------------------------------------------------
@@ -460,13 +467,8 @@ def _check_and_seed_databases() -> None:
     """Check for empty databases and trigger immediate sync if needed.
 
     Runs in a background thread to avoid blocking app startup.
-    Only seeds sync types that the community has configured in both
-    its data config and sync schedule. FAQ is excluded from startup
-    seeding because it requires LLM calls (expensive, slow) and depends
-    on mailman data being populated first. Discourse is excluded because a
-    first sync of a large forum fetches one topic per second for hours, which
-    would hold up the seeding of every community after it; its first sync
-    runs on its schedule, or by hand with ``osa sync discourse``.
+    Only seeds the types in SEED_SYNC_TYPES that the community has configured
+    in both its data config and sync schedule.
     """
     try:
         _do_seed_databases()
@@ -488,9 +490,7 @@ def _do_seed_databases() -> None:
         sync_config = config.sync
         populated = is_db_populated(community_id)
 
-        # FAQ excluded: requires LLM calls and depends on mailman data.
-        # Discourse excluded: a first sync of a large forum takes hours.
-        for sync_type in ("github", "papers", "docstrings", "mailman", "beps"):
+        for sync_type in SEED_SYNC_TYPES:
             schedule = getattr(sync_config, sync_type, None)
             if not schedule:
                 continue
