@@ -554,6 +554,8 @@ sync:
     cron: "0 3 * * 0"       # weekly Sunday at 3am UTC
   beps:
     cron: "0 4 * * 1"       # weekly Monday at 4am UTC
+  discourse:
+    cron: "45 5 * * *"      # daily at 5:45am UTC (NeuroStars topics tagged bids; incremental)
 
 # GitHub repositories for issue/PR sync
 github:

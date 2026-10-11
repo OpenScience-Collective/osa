@@ -166,6 +166,21 @@ class TestSyncTypeMap:
         expected = {"github", "papers", "docstrings", "mailman", "faq", "beps", "discourse"}
         assert set(_SYNC_TYPE_MAP.keys()) == expected
 
+    def test_every_configured_forum_is_scheduled(self):
+        """A community with a Discourse forum names a sync.discourse schedule.
+
+        Without one the forum is never synced, or never refreshed after a sync by hand:
+        MNE's topics went stale for months while the scheduler had no Discourse job.
+        """
+        unscheduled = [
+            info.id
+            for info in registry.list_all()
+            if info.community_config
+            and info.community_config.discourse
+            and not (info.community_config.sync and info.community_config.sync.discourse)
+        ]
+        assert unscheduled == []
+
     def test_data_checks_return_bool(self):
         """Data check functions should return truthy/falsy values."""
         for info in registry.list_all():

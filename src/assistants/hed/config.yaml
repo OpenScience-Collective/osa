@@ -432,6 +432,8 @@ sync:
     cron: "0 2 * * *"       # daily at 2am UTC
   papers:
     cron: "0 3 * * 0"       # weekly Sunday at 3am UTC
+  discourse:
+    cron: "50 5 * * *"      # daily at 5:50am UTC (NeuroStars topics tagged hed; incremental)
 
 # GitHub repositories for issue/PR sync
 github:
