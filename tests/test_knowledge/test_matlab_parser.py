@@ -471,3 +471,23 @@ end
     assert len(results) == 1
     assert results[0].symbol_name == "Bar"
     assert results[0].docstring == "BAR holds a value"
+
+
+def test_parse_script_header_skips_block_comment_license():
+    """A script whose %{ ... %} license block comes before its help keeps the help."""
+    code = """%{
+    Copyright (C) 2014 Someone
+%}
+% BATCH_EPOCHS imports the epochs of every subject
+
+sFiles = [];
+"""
+    results = parse_matlab_file(code, "batch_epochs.m")
+
+    assert len(results) == 1
+    assert results[0].docstring == "BATCH_EPOCHS imports the epochs of every subject"
+
+
+def test_parse_unterminated_block_comment_does_not_fail():
+    """A %{ that never closes leaves no help, and no error."""
+    assert parse_matlab_file("%{\n% not help\nx = 1;\n", "broken.m") == []

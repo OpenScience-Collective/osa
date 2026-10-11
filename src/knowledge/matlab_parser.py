@@ -1,7 +1,7 @@
 """MATLAB docstring parser using regex.
 
 Extracts docstrings from MATLAB files for indexing and search.
-Supports: functions (including nested) and scripts with header comments.
+Supports: functions (including nested), scripts, and classdef files, each with header comments.
 
 MATLAB documentation conventions:
 - Comments start with %
@@ -33,7 +33,7 @@ class MatlabDocstring:
     """Parsed MATLAB docstring with metadata."""
 
     symbol_name: str
-    symbol_type: str  # 'function' or 'script'
+    symbol_type: str  # 'function', or 'script' for a script's or class's header help
     docstring: str
     line_number: int
 
@@ -70,7 +70,8 @@ def parse_matlab_file(content: str, file_path: str) -> list[MatlabDocstring]:
             while j >= 0:
                 stripped = lines[j].strip()
                 if stripped == "%}":
-                    # The end of a %{ ... %} block comment, a license rather than help
+                    # The end of a %{ ... %} block comment, skipped: in the files we
+                    # index it holds a license, not help
                     break
                 if stripped.startswith("%"):
                     # Remove comment marker and optional space
@@ -86,7 +87,8 @@ def parse_matlab_file(content: str, file_path: str) -> list[MatlabDocstring]:
 
             # Calculate the line where the comment block starts
             comment_start_line = i - len(comments) + 1
-            # A block of bare "%" or "%%%%" separator lines is no help either
+            # No help above the definition (no comments, or only blank or "%%%%"
+            # separator lines): read the block after it
             if not any(c.strip() for c in comments):
                 comments, comment_start_line = _help_after_definition(lines, i)
 
@@ -112,7 +114,7 @@ def parse_matlab_file(content: str, file_path: str) -> list[MatlabDocstring]:
     in_license = False
     for index, line in enumerate(lines):
         stripped = line.strip()
-        # A %{ ... %} block comment holds a license, not help: skip it
+        # Skip %{ ... %} block comments: in the files we index they hold a license
         if in_block_comment or stripped == "%{":
             in_block_comment = stripped != "%}"
             continue

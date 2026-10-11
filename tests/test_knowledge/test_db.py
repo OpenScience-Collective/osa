@@ -302,6 +302,20 @@ class TestSyncMetadata:
                 assert row["items_synced"] == 10
                 assert row["source_type"] == "github"
 
+    def test_update_sync_metadata_records_the_given_time(self, temp_db: Path):
+        """A sync that ran long passes its start, which is what the next sync reads."""
+        from datetime import UTC, datetime
+
+        from src.knowledge.db import get_last_sync
+
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            update_sync_metadata("discourse", "https://f.org", 3, synced_at="2026-01-02T03:04:05")
+            assert get_last_sync("discourse", "https://f.org") == "2026-01-02T03:04:05"
+
+            before = datetime.now(UTC).isoformat()
+            update_sync_metadata("discourse", "https://f.org", 3)
+            assert get_last_sync("discourse", "https://f.org") >= before
+
 
 class TestProjectNameValidation:
     """Tests for project name validation in get_db_path."""
@@ -392,3 +406,93 @@ class TestIsDbPopulated:
             assert result["github"] is True
             assert result["papers"] is False
             assert result["docstrings"] is False
+
+
+class TestDocstringPruning:
+    """Deleting docstrings that are gone from the source, and only those."""
+
+    @staticmethod
+    def _insert(conn, file_path: str, symbol: str, repo="org/repo", language="matlab") -> None:
+        from src.knowledge.db import upsert_docstring
+
+        upsert_docstring(
+            conn,
+            repo=repo,
+            file_path=file_path,
+            language=language,
+            symbol_name=symbol,
+            symbol_type="function",
+            docstring=f"{symbol} zebradoc",
+        )
+
+    @staticmethod
+    def _indexed(conn) -> set[tuple[str, str]]:
+        """(repo, symbol) pairs the full-text index finds: a deleted row must leave it too."""
+        rows = conn.execute(
+            "SELECT d.repo, d.symbol_name FROM docstrings_fts f "
+            "JOIN docstrings d ON d.id = f.rowid WHERE docstrings_fts MATCH 'zebradoc'"
+        ).fetchall()
+        return {(r["repo"], r["symbol_name"]) for r in rows}
+
+    def test_stale_symbols_of_a_parsed_file_are_deleted(self, temp_db: Path):
+        """Only the parsed file of this repo and language loses what its parse lacks."""
+        from src.knowledge.db import delete_stale_docstrings
+
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db), get_connection() as conn:
+            self._insert(conn, "a.m", "kept")
+            self._insert(conn, "a.m", "license_only")
+            self._insert(conn, "b.m", "other_file")
+            self._insert(conn, "a.m", "license_only", repo="other/repo")
+            conn.commit()
+
+            deleted = delete_stale_docstrings(
+                conn, repo="org/repo", language="matlab", file_path="a.m", keep_symbols={"kept"}
+            )
+            conn.commit()
+
+            assert deleted == 1
+            assert self._indexed(conn) == {
+                ("org/repo", "kept"),
+                ("org/repo", "other_file"),
+                ("other/repo", "license_only"),
+            }
+
+    def test_file_that_parses_to_nothing_loses_all_its_docstrings(self, temp_db: Path):
+        """A file whose only "help" was a license notice keeps nothing."""
+        from src.knowledge.db import delete_stale_docstrings
+
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db), get_connection() as conn:
+            self._insert(conn, "lic.m", "lic")
+            self._insert(conn, "lic.m", "helper")
+            conn.commit()
+
+            deleted = delete_stale_docstrings(
+                conn, repo="org/repo", language="matlab", file_path="lic.m", keep_symbols=set()
+            )
+            conn.commit()
+
+            assert deleted == 2
+            assert self._indexed(conn) == set()
+
+    def test_docstrings_of_removed_files_are_deleted(self, temp_db: Path):
+        """A file gone from the repo loses its docstrings; other languages and repos keep theirs."""
+        from src.knowledge.db import delete_docstrings_of_missing_files
+
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db), get_connection() as conn:
+            self._insert(conn, "still_here.m", "present")
+            self._insert(conn, "removed.m", "gone")
+            self._insert(conn, "module.py", "python_symbol", language="python")
+            self._insert(conn, "removed.m", "gone", repo="other/repo")
+            conn.commit()
+
+            deleted = delete_docstrings_of_missing_files(
+                conn, repo="org/repo", language="matlab", present_files={"still_here.m"}
+            )
+            conn.commit()
+
+            assert deleted == 1
+            assert self._indexed(conn) == {
+                ("org/repo", "present"),
+                ("org/repo", "python_symbol"),
+                ("other/repo", "gone"),
+            }

@@ -730,8 +730,8 @@ def delete_stale_docstrings(
 ) -> int:
     """Delete a file's docstrings for symbols its latest parse no longer produced.
 
-    A symbol renamed or removed in the source, or no longer taken for documented
-    (a license notice the parser now leaves out), would otherwise stay searchable.
+    A symbol renamed or removed in the source, or text the parser no longer
+    counts as help (a license notice), would otherwise stay searchable.
 
     Args:
         conn: Database connection

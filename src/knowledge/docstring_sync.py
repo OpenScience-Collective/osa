@@ -37,6 +37,9 @@ def sync_repo_docstrings(
 ) -> int:
     """Sync docstrings from a GitHub repository.
 
+    Symbols and files no longer in the repository are removed from the index
+    (removed files only when GitHub's file listing is complete).
+
     Args:
         repo: Repository in owner/name format (e.g., 'sccn/eeglab')
         language: 'matlab' or 'python'
@@ -143,6 +146,12 @@ def sync_repo_docstrings(
             conn.commit()
 
     if stale_deleted:
+        logger.info(
+            "Removed %d %s docstrings of %s that are no longer in the source",
+            stale_deleted,
+            language,
+            repo,
+        )
         console.print(f"Removed {stale_deleted} docstrings no longer in the source")
 
     # Update sync metadata
