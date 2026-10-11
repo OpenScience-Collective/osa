@@ -12,7 +12,13 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from src.api.config import get_settings
-from src.knowledge.db import get_connection, update_sync_metadata, upsert_docstring
+from src.knowledge.db import (
+    delete_docstrings_of_missing_files,
+    delete_stale_docstrings,
+    get_connection,
+    update_sync_metadata,
+    upsert_docstring,
+)
 from src.knowledge.matlab_parser import parse_matlab_file
 from src.knowledge.python_parser import parse_python_file
 
@@ -49,7 +55,7 @@ def sync_repo_docstrings(
     extension = ".m" if language == "matlab" else ".py"
 
     # Get list of files from GitHub
-    files = _get_repo_files(repo, branch, extension)
+    files, listing_complete = _get_repo_files(repo, branch, extension)
     console.print(f"Found {len(files)} {extension} files")
 
     if not files:
@@ -58,6 +64,7 @@ def sync_repo_docstrings(
 
     # Process files and extract docstrings
     total_docstrings = 0
+    stale_deleted = 0
     failed_files: list[tuple[str, str]] = []
     uncommitted = 0
 
@@ -96,6 +103,15 @@ def sync_repo_docstrings(
                         total_docstrings += 1
                         uncommitted += 1
 
+                    # Only a file that was read and parsed loses what it no longer has
+                    stale_deleted += delete_stale_docstrings(
+                        conn,
+                        repo=repo,
+                        language=language,
+                        file_path=file_path,
+                        keep_symbols={doc.symbol_name for doc in docstrings},
+                    )
+
                     # Commit every 50 docstrings to avoid large transactions
                     if uncommitted >= 50:
                         conn.commit()
@@ -117,8 +133,17 @@ def sync_repo_docstrings(
 
                 progress.update(task, advance=1)
 
+            # Files removed from the repository, known only from a complete listing
+            if listing_complete:
+                stale_deleted += delete_docstrings_of_missing_files(
+                    conn, repo=repo, language=language, present_files=set(files)
+                )
+
             # Final commit
             conn.commit()
+
+    if stale_deleted:
+        console.print(f"Removed {stale_deleted} docstrings no longer in the source")
 
     # Update sync metadata
     update_sync_metadata("docstrings", f"{repo}:{language}", total_docstrings, project)
@@ -136,7 +161,7 @@ def sync_repo_docstrings(
     return total_docstrings
 
 
-def _get_repo_files(repo: str, branch: str, extension: str) -> list[str]:
+def _get_repo_files(repo: str, branch: str, extension: str) -> tuple[list[str], bool]:
     """Get list of files with given extension from repository.
 
     Uses GitHub API with optional authentication for higher rate limits.
@@ -147,7 +172,8 @@ def _get_repo_files(repo: str, branch: str, extension: str) -> list[str]:
         extension: File extension (e.g., '.py' or '.m')
 
     Returns:
-        List of file paths relative to repo root
+        File paths relative to repo root, and whether the listing is complete
+        (GitHub truncates the tree of a very large repository)
 
     Raises:
         httpx.HTTPStatusError: If API request fails
@@ -192,7 +218,11 @@ def _get_repo_files(repo: str, branch: str, extension: str) -> list[str]:
         if item.get("type") == "blob" and item["path"].endswith(extension)
     ]
 
-    return files
+    complete = not tree.get("truncated", False)
+    if not complete:
+        logger.warning("GitHub truncated the file tree of %s; deleted files are kept", repo)
+
+    return files, complete
 
 
 def _fetch_file_content(repo: str, branch: str, file_path: str) -> str:

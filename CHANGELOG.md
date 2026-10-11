@@ -16,9 +16,15 @@ the version being released and start a new `[Unreleased]` section above it.
 ### Added
 
 - **Brainstorm community**: an assistant for Brainstorm (MEG, EEG, fNIRS, ECoG, sEEG and electrophysiology), configured with the tutorials of its wiki (108 pages, two preloaded), its user forum, the issues and MATLAB function help of `brainstorm3`, `bst-users` (scripts shared by users) and `bst-duneuro`, and its four reference papers. Maintained by `tmedani`.
-- **Discourse sync is scheduled**: a community's `sync.discourse` cron now runs, and `POST /sync/trigger` with `discourse` syncs forums instead of failing. MNE had a weekly schedule that never ran, so its forum topics were last synced by hand on 2026-02-25. BIDS and HED, whose NeuroStars tags were configured but never synced, now sync daily, and a test fails when a community configures a forum with no schedule. Discourse is left out of the startup seed, since a first sync of a large forum takes hours.
+- **Discourse sync is scheduled**: a community's `sync.discourse` cron now runs, and `POST /sync/trigger` with `discourse` syncs forums instead of failing. MNE had a weekly schedule that never ran, so its forum topics were last synced by hand on 2026-02-25. BIDS, whose NeuroStars tag was configured but never synced, now syncs daily, and a test fails when a community configures a forum with no schedule. Discourse is left out of the startup seed, since a first sync of a large forum takes hours.
+
+### Changed
+
+- **HED has no forum**: NeuroStars (tag `hed`, three topics) is removed from HED's sources, with its `search_hed_forum` tool. It had never been synced.
 
 ### Fixed
+
+- **Docstrings removed from the source leave the index**: the docstring sync only inserted and updated, so a function deleted or renamed upstream, a deleted file, or text the parser no longer takes for help (a license notice) stayed searchable. Each parsed file now loses the symbols it no longer has, and files gone from the repository lose theirs, when GitHub's file listing is complete.
 
 - **Discourse sync honors `tags`**: a forum's `tags` were read from the config and never used, so the BIDS forum (NeuroStars, tag `bids`) would have synced all of NeuroStars. Tags now select the tag listings, alone or within the configured categories.
 - **Discourse answers and categories are stored**: a topic's posts carry their likes in `actions_summary`, which the most-liked fallback never read, and a topic names only its `category_id`, so every topic was stored without a category. Likes and category names (from `/site.json`) are now read, and on a forum without accepted answers the first substantive staff reply stands as the answer. The forum search labels it "Best answer", not "Accepted answer".
