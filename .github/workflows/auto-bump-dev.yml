@@ -23,6 +23,16 @@ name: Auto Bump Dev
 #   3. Otherwise bump to `.dev(N+1)` via scripts/bump_version.py.
 #   4. Push back to develop. The commit message starts with "Bump version
 #      to" so this workflow self-filters on the next push event.
+#   5. Deploy develop once (the `deploy` job below): dispatch the dev image
+#      build and the TestPyPI publish for the final commit.
+#
+# The bump commit carries no skip-ci marker, on purpose. GitHub reads the
+# marker from a pull request's head commit, and the head of develop is
+# almost always a bump commit, so a marker here would stop every release
+# pull request (develop -> main) from running its required checks. Instead,
+# the workflows that would re-run on it skip it themselves: tests.yml skips
+# its steps for a bot version commit pushed alone, and the dev image and
+# TestPyPI no longer run on push at all.
 
 on:
   push:
@@ -42,6 +52,9 @@ jobs:
       && !contains(github.event.head_commit.message, '[skip ci]')
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      # The bump commit, when this run pushed one.
+      sha: ${{ steps.push.outputs.sha }}
     steps:
       - name: Checkout develop
         uses: actions/checkout@v4
@@ -104,6 +117,7 @@ jobs:
           fi
 
       - name: Commit and push bump
+        id: push
         if: steps.compute.outputs.skip == 'false'
         run: |
           git add src/version.py
@@ -111,7 +125,51 @@ jobs:
 
           # If a parallel push raced us, abort cleanly: the racing push
           # will retrigger this workflow from the new HEAD.
-          git push origin develop || {
+          if git push origin develop; then
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          else
             echo "::warning::push to develop rejected (likely concurrent push); skipping"
-            exit 0
-          }
+          fi
+
+  # The develop deploy, once per push: the dev image (`:dev`, which the
+  # development host pulls, `:develop` and `sha-<commit>`) and the TestPyPI dev
+  # release. docker-build.yml and publish-testpypi.yml used to run on every
+  # push to develop, so a merge deployed its own commit and then, seconds
+  # later, its bump commit: two dev images per merge, and after a release two
+  # TestPyPI releases (the sync merge's X.dev0, then the bump's X.dev1). Now
+  # both run only from here, after the bump, for the bumped commit, so the
+  # image and the package carry the version develop ends at.
+  #
+  # With no bump (a skip-bump commit, a version with no .devN, a lost push race,
+  # a failed bump) it still deploys, the head of develop as it is, so nothing
+  # that deployed before goes undeployed. It skips only the bump commit's own
+  # push, whose deploy the run that pushed it already started: a lone commit
+  # authored and committed by the bot whose message starts "Bump version to".
+  deploy:
+    name: Deploy develop
+    needs: bump
+    if: >-
+      ${{ !cancelled() && !(
+      github.event.head_commit.author.email == 'github-actions[bot]@users.noreply.github.com' &&
+      github.event.head_commit.committer.email == 'github-actions[bot]@users.noreply.github.com' &&
+      startsWith(github.event.head_commit.message, 'Bump version to') &&
+      !github.event.commits[1]) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # GITHUB_TOKEN starts no workflow run, except by workflow_dispatch or
+      # repository_dispatch, so dispatching needs no personal token.
+      actions: write
+    steps:
+      # The image is built from the head of develop when the dispatched run
+      # starts, which is the bump commit unless another push landed since, and
+      # then that newer push deploys too. TestPyPI gets the exact commit, and
+      # publishes only if that commit changed the version.
+      - name: Dispatch the dev image build and the TestPyPI publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.bump.outputs.sha || github.sha }}
+        run: |
+          echo "Deploying develop; TestPyPI checks $SHA"
+          gh workflow run docker-build.yml --repo "$GITHUB_REPOSITORY" --ref develop
+          gh workflow run publish-testpypi.yml --repo "$GITHUB_REPOSITORY" --ref develop -f sha="$SHA"

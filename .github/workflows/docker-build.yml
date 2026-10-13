@@ -2,9 +2,13 @@ name: Build and Push Docker Image
 
 on:
   push:
+    # Not develop. The dev image (`:dev`, `:develop`) is built only when
+    # auto-bump-dev.yml's deploy job dispatches this workflow on develop, once per
+    # push, after the dev-version bump. A push trigger here built every merge
+    # twice: the merge commit, then its bump commit seconds later, with the
+    # development host pulling whichever it saw first.
     branches:
       - main
-      - develop
     # Kept, but it has never fired for an automated release and never will.
     # `tag-release.yml` pushes the tag with `git push origin "$TAG"` after an
     # `actions/checkout@v4` that takes no `token:` override, so the push is
@@ -22,6 +26,7 @@ on:
   # Lets a maintainer rebuild a specific tag on demand:
   #   gh workflow run docker-build.yml --ref v0.8.9
   # Which is also how to republish images for a release that predates this fix.
+  # And how auto-bump-dev.yml builds the dev image: --ref develop.
   workflow_dispatch:
   pull_request:
     branches:
@@ -167,7 +172,10 @@ jobs:
           docker stop osa-test || true
           docker rm osa-test || true
 
-  # Second job: Push to registry (on main, develop, and tags - not PRs)
+  # Second job: Push to registry (on main, develop, and tags - not PRs).
+  # develop arrives as a workflow_dispatch from auto-bump-dev.yml; the tags it
+  # writes are the same as a push would write, since docker/metadata-action reads
+  # the ref and the sha, not the event.
   build-and-push:
     name: Build and Push to GHCR
     needs: build-and-test

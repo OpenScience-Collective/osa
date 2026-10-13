@@ -30,6 +30,7 @@ A precise, reliable AI assistant platform for researchers working with open scie
 - **On every push to `develop`** (`.github/workflows/auto-bump-dev.yml`):
   1. Increments `.devN` (e.g., `0.5.1.dev0` -> `0.5.1.dev1`)
   2. Skips on bot commits, `Bump version to ...` messages, `[skip ci]`, `[skip-bump]`
+  3. Then deploys develop once: dispatches `docker-build.yml` (the dev image, `:dev`) and `publish-testpypi.yml` (the new dev version on TestPyPI) for the bumped commit, or for the pushed commit when there was no bump. Neither workflow runs on a push to `develop` itself, and Tests skips the bump commit, so a merge is tested once and deployed once, at the version `develop` ends at
 - **When `src/version.py` changes on `main`**:
   1. `ensure-stable-version.yml` strips `.dev` suffix if present
   2. `tag-release.yml` creates git tag (e.g., `v0.5.1`)

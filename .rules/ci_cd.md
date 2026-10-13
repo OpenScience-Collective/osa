@@ -18,11 +18,11 @@
 - There used to be a second workflow, `test.yml`, also named "Tests", that re-ran the same jobs on every pull request into and push to `main`. It was merged into `tests.yml`; do not reintroduce a second workflow that runs the same tests.
 
 ### Docker / Release Images
-- **`docker-build.yml`** - builds and pushes to GHCR. Uses a `concurrency` group keyed on `${{ github.workflow }}-<ref>` with `cancel-in-progress` only for `pull_request` events, specifically to stop two builds racing to write the `:latest` tag (see `docs/adr/` for the incident this fixed). Never remove the concurrency group without understanding that history.
+- **`docker-build.yml`** - builds and pushes to GHCR: `:main` on a push to `main`, `:latest`/`X.Y.Z`/`X.Y` on a release or tag, and the dev image (`:dev`, `:develop`) only when `auto-bump-dev.yml` dispatches it, once per push to `develop`, after the version bump. It has no `push: develop` trigger: that built every merge twice (the merge, then its bump commit). Uses a `concurrency` group keyed on `${{ github.workflow }}-<ref>` with `cancel-in-progress` only for `pull_request` events, specifically to stop two builds racing to write the `:latest` tag (see `docs/adr/` for the incident this fixed). Never remove the concurrency group without understanding that history.
 - **`tests/test_latest_tag_policy.py`** - tests the semver/prerelease logic that decides whether a build is allowed to move `:latest`.
 
 ### Versioning & Release (see AGENTS.md "Version Management" for the full automated flow)
-- `auto-bump-dev.yml` - bumps `.devN` on every push to `develop`
+- `auto-bump-dev.yml` - bumps `.devN` on every push to `develop`, then its `deploy` job dispatches `docker-build.yml` and `publish-testpypi.yml` for the final commit (the bump, or the pushed commit when there was none). The bump commit carries no skip-ci marker: develop's head is a release pull request's head commit, and a marker there would skip its required checks
 - `ensure-stable-version.yml` - strips `.dev` suffix if `src/version.py` changes on `main`
 - `tag-release.yml` - tags `main` when the version is stable
 - `release.yml` - creates the GitHub release
@@ -32,7 +32,7 @@
 - `claude.yml` - Claude-based PR assistance, answering `@claude` mentions (there is no automated review bot; pull requests are reviewed locally)
 - `deploy-pages.yml`, `deploy-dashboard.yml` - docs/dashboard deployment
 - `community-admin-pr-merge.yml` - community-maintainer "LGTM/merge" comment command (see `.context/community-admin-merge.md`)
-- `publish.yml` / `publish-testpypi.yml` - package publishing
+- `publish.yml` / `publish-testpypi.yml` - package publishing; `publish-testpypi.yml` runs only by dispatch (from `auto-bump-dev.yml`, or by hand on `develop`)
 - `sync-worker-cors.yml`, `cleanup-preview-dns.yml`, `notify-docs.yml` - infra housekeeping
 
 ## Key Practices (Think About Pipeline Flow)

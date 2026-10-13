@@ -1,12 +1,20 @@
 name: Publish to TestPyPI (Dev)
 
-# Triggers on push to develop branch when version changes
+# Publishes each new dev version on develop to TestPyPI. Started by
+# auto-bump-dev.yml's deploy job once per push to develop, with `sha` set to the
+# commit to publish: the bump commit when that run pushed one, otherwise the
+# pushed commit. It used to run on every push to develop that changed
+# src/version.py, which published twice after each release (the sync merge's
+# X.dev0, then the bump commit's X.dev1); develop ends at X.dev1 either way.
+# Still a dispatch, so a maintainer can start it by hand: Actions > Publish to
+# TestPyPI (Dev) > Run workflow, on develop.
 on:
-  push:
-    branches:
-      - develop
-    paths:
-      - 'src/version.py'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Commit on develop to publish (default: the head of develop)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -14,6 +22,8 @@ permissions:
 jobs:
   check-version:
     name: Check version change
+    # develop only, as when this ran on push.
+    if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -22,6 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.sha || github.sha }}
           fetch-depth: 2
 
       - name: Get current version
@@ -58,6 +69,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
