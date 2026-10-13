@@ -246,7 +246,7 @@ jobs:
       - name: Run the test that reads documentation
         if: env.RUN_DOCS == 'true'
         run: |
-          uv run pytest tests/test_frontend/test_embed_snippet_hygiene.py -v
+          uv run pytest tests/test_frontend/test_embed_snippet_hygiene.py -v -m "not network and not llm"
 
       # The widget's light and dark appearance in real Chrome (#469). The bug is the
       # browser's own drawing of form controls on a dark host page, which the happy-dom
