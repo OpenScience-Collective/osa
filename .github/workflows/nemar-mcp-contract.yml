@@ -26,6 +26,7 @@ jobs:
   contract:
     name: Check NEMAR's MCP contract
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       failed: ${{ steps.contract.outputs.failed }}
       report: ${{ steps.contract.outputs.report }}
@@ -113,6 +114,7 @@ jobs:
     needs: contract
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write

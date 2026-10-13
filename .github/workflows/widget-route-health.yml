@@ -29,6 +29,7 @@ jobs:
   probe:
     name: Probe the mounted widget hosts
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       failed: ${{ steps.probe.outputs.failed }}
       report: ${{ steps.probe.outputs.report }}
@@ -93,6 +94,7 @@ jobs:
     needs: probe
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write

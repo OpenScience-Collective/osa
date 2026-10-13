@@ -5,9 +5,9 @@ copy, starters, bootstrap files, sourcemap stripping) are tested here directly,
 each against real files under tmp_path, no mocks. The one piece that genuinely
 needs the network -- the real `jupyter lite build` and the real Pyodide lock
 fetch -- is a single end-to-end test, marked ``network`` the way this repo marks
-its other live tests (see .rules/testing.md and test.yml's separate "Run network
-tests" step): CI's ordinary Test job excludes it (``-m "not network"``), and it
-runs on push to main/workflow_dispatch instead.
+its other live tests (see .rules/testing.md and the "Run network tests" step of
+tests.yml's Integration Tests job): CI's ordinary Test job excludes it
+(``-m "not network"``), and it runs on workflow_dispatch instead.
 
 fetch_pyodide_lock's sha256-mismatch path is tested against a REAL local HTTP
 server (a real socket, real bytes) rather than a stubbed return value, matching
@@ -882,8 +882,8 @@ class TestFullBuildEndToEnd:
     NEMAR overlay, into a temp directory. Needs the network (PyPI, for the
     JupyterLite build tools; jsDelivr, for Pyodide's own lock) and runs `uv tool
     run`, so it is slow (a couple of minutes) -- marked ``network``, excluded from
-    the ordinary `-m "not network"` runs in test.yml/tests.yml, and run in
-    test.yml's separate "Run network tests" step (push to main / workflow_dispatch,
+    the ordinary `-m "not network"` runs in tests.yml, and run in the "Run network
+    tests" step of tests.yml's Integration Tests job (workflow_dispatch,
     continue-on-error) the same way every other real-network test in this suite is.
     """
 

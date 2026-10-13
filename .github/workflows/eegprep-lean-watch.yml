@@ -25,6 +25,7 @@ jobs:
   watch:
     name: Check eegprep-lean against upstream
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       status: ${{ steps.drift.outputs.status }}
       report: ${{ steps.drift.outputs.report }}
@@ -79,6 +80,7 @@ jobs:
     needs: watch
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write
