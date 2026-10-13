@@ -196,6 +196,8 @@ jobs:
       RUN_ALL: ${{ needs.changes.outputs.code != 'false' }}
       RUN_DOCS: ${{ needs.changes.outputs.code == 'false' && needs.changes.outputs.docs == 'true' }}
     strategy:
+      # 3.13 is not a required check; its failure must not cancel the required legs.
+      fail-fast: false
       matrix:
         # 3.11 and 3.12 everywhere; 3.13 as well where the old test.yml ran it, on
         # a pull request into main, a push to main and a manual run.
