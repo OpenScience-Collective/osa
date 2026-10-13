@@ -1,7 +1,7 @@
 # Code Review Standards
 
 ## PR Review Toolkit
-Use the `pr-review-toolkit` plugin (`/pr-review-toolkit:review-pr`) before creating a PR, and again on any PR that bundles multiple already-merged commits (e.g. a `develop` -> `main` release PR), per the Development Workflow in AGENTS.md.
+Use the `pr-review-toolkit` plugin (`/pr-review-toolkit:review-pr`) before creating a PR, per the Development Workflow in AGENTS.md. A PR that bundles already-reviewed commits (e.g. a `develop` -> `main` release PR) gets one integration-scoped reviewer, not a second full panel.
 
 ### Available Agents
 - `code-reviewer` - Review for style, best practices, project guidelines
@@ -12,12 +12,12 @@ Use the `pr-review-toolkit` plugin (`/pr-review-toolkit:review-pr`) before creat
 - `type-design-analyzer` - Analyze type design and invariants
 
 ### Workflow
-**No technical debt carried forward.** Address all findings, not just critical ones.
-1. Create PR with `gh pr create`
-2. Run code review agents on the changes (all agents in parallel)
-3. Address ALL findings: critical, important, suggestions, and nice-to-haves
-4. Only skip genuine false positives or intentionally different design choices
-5. Document skipped findings with clear reasoning (false positive / intended behavior)
+**No technical debt carried forward, and no review loops.** Review converges in at most two rounds, per [review-convergence](https://github.com/neuromechanist/research-skills/blob/main/plugins/project/skills/pr-review-toolkit/references/review-convergence.md).
+1. **Rounds:** Round 1 is a full review: one reviewer for docs-only PRs or under 50 changed lines, otherwise a panel of at most 3. Round 2 is one reviewer on the fix commits only, and runs only if round 1 was substantial: an accepted Critical; fixes over 150 non-test, non-doc lines; a public contract change; authorization, encryption, data integrity, or concurrency touched; or the approach replaced. It reports only Critical or Important defects the fixes introduce or fail to resolve. No third round unless the owner asks.
+2. **Outcomes:** Every finding gets one outcome: fixed (suggestions included), rejected with a one-sentence reason, or filed as an issue (only for code the PR did not touch). Accepted findings are fixed BEFORE merge, never in a follow-up PR or the next release.
+3. **Feature PRs:** Fix commits go on the feature branch, pushed once per round. No new PR.
+4. **Release PRs (`develop` -> `main`):** One integration-scoped reviewer, since the feature PRs were already reviewed. `develop` blocks direct pushes, so all fixes from a round go in ONE fix PR into `develop`, never one PR per finding; it gets the round-2 delta review only if the fixes were substantial. Open the release PR only when it is ready, and merge it promptly. Merge methods are unchanged (squash into `develop`, regular merge into `main`).
+5. **Merge gate:** The round-1 report is in, every finding has an outcome, and CI is green. Never merge while a review is still running.
 
 Use the Sonnet model for PR review agents (see AGENTS.md).
 
