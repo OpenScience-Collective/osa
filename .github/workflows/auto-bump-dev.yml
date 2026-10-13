@@ -41,6 +41,7 @@ jobs:
       && !contains(github.event.head_commit.message, '[skip-bump]')
       && !contains(github.event.head_commit.message, '[skip ci]')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout develop
         uses: actions/checkout@v4

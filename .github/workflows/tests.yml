@@ -138,6 +138,7 @@ jobs:
     # changed. A failed `changes` job leaves `code` empty, which runs everything.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       RUN_ALL: ${{ needs.changes.outputs.code != 'false' }}
     steps:
@@ -190,6 +191,7 @@ jobs:
     # decide what to do from `changes`.
     if: ${{ !cancelled() && (needs.lint.result == 'success' || needs.lint.result == 'skipped') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 21
     env:
       RUN_ALL: ${{ needs.changes.outputs.code != 'false' }}
       RUN_DOCS: ${{ needs.changes.outputs.code == 'false' && needs.changes.outputs.docs == 'true' }}
@@ -291,6 +293,7 @@ jobs:
     # Not a required check, so a job-level skip is fine here.
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -480,6 +483,7 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Manual only (Actions > Tests > Run workflow). These tests make paid calls to the Claude
     # Platform, OpenRouter and Amazon Bedrock, so they never run on push or on pull requests.
     if: github.event_name == 'workflow_dispatch'
@@ -556,6 +560,7 @@ jobs:
     name: All Tests Passed
     needs: [changes, lint, test, frontend-tests]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: always()
     steps:
       # Not a required check (the rulesets require Lint and the Test legs by name),

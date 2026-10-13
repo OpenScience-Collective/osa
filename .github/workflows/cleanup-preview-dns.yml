@@ -21,6 +21,7 @@ concurrency:
 jobs:
   cleanup:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Only run for branch deletions (not tag deletions)
     if: github.event_name != 'delete' || github.event.ref_type == 'branch'
     steps:

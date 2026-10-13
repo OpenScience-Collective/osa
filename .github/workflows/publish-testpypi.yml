@@ -15,6 +15,7 @@ jobs:
   check-version:
     name: Check version change
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.get_version.outputs.version }}
       should_publish: ${{ steps.check.outputs.should_publish }}
@@ -54,6 +55,7 @@ jobs:
     needs: check-version
     if: needs.check-version.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -86,6 +88,7 @@ jobs:
     needs: [check-version, build]
     if: needs.check-version.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: testpypi
       url: https://test.pypi.org/p/open-science-assistant
