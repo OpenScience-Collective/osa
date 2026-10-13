@@ -33,7 +33,7 @@ See AGENTS.md's "Branch Strategy" section for the full `main`/`develop`/`feature
 2. `git checkout develop && git pull && git checkout -b feature/issue-N-short-description`
 3. Make atomic commits
 4. Push branch
-5. Run `/pr-review-toolkit:review-pr` and address ALL findings (critical + important) before opening the PR
+5. Review per `.rules/code_review.md` (two rounds at most), with fixes as commits on this branch, before opening the PR
 6. Create PR with `gh pr create --base develop`:
    - Clear, concise title (<70 chars, no emojis)
    - Description with "Fixes #123" if applicable

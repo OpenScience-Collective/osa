@@ -74,7 +74,7 @@ cd ../osa-phase1  # or phase2, phase3
 # Run review before PR
 /pr-review-toolkit:review-pr
 
-# Address all critical + important issues
+# Fix accepted findings as commits on this branch (max two review rounds, see .rules/code_review.md)
 
 # Create PR to EPIC BRANCH (not develop!)
 gh pr create --base epic/issue-97-eeglab \
@@ -109,7 +109,8 @@ uv run osa chat --community eeglab --standalone
 
 ### 5. Merge Epic to Develop (Final Step)
 
-Only when ALL phases are complete and tested:
+Only when ALL phases are complete and tested.
+The final epic PR gets one integration-scoped review (the phase PRs were already reviewed), and its fixes are commits on the epic branch (`.rules/code_review.md`):
 
 ```bash
 cd /Users/yahya/Documents/git/osa

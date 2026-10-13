@@ -2,7 +2,7 @@
 
 ## Pre-Merge Verification
 
-- [x] All PR review issues addressed (critical + important)
+- [x] Every PR review finding has an outcome (fixed, rejected with a reason, or filed as an issue)
 - [x] All tests passing locally
 - [x] Database migration added for `branch` column
 - [x] No breaking changes to existing APIs

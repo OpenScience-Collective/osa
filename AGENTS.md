@@ -44,8 +44,8 @@ A precise, reliable AI assistant platform for researchers working with open scie
 1. **Pick an issue** from GitHub Issues
 2. **Create feature branch from develop**: `git checkout develop && git pull && git checkout -b feature/issue-N-short-description`
 3. **Implement** with atomic commits
-4. **Review** using `/pr-review-toolkit:review-pr` before creating PR
-5. **Address ALL review findings** - fix critical AND important issues, not just critical
+4. **Review** using `/pr-review-toolkit:review-pr` before creating PR: at most two rounds, per `.rules/code_review.md`
+5. **Give every finding an outcome** (fixed, rejected with a reason, or filed as an issue for untouched code); fix commits go on the feature branch, never a follow-up PR (a large fix is the one exception, see `.rules/code_review.md`)
 6. **Create PR to develop**: `gh pr create --base develop`
 7. **Squash and merge**: `gh pr merge --squash --delete-branch` (always squash to keep history clean)
 
@@ -57,16 +57,19 @@ git checkout -b feature/issue-7-interfaces       # Create branch
 # ... implement ...
 git add -A && git commit -m "feat: add X"       # Atomic commits
 /pr-review-toolkit:review-pr                     # Review before PR
-# FIX ALL ISSUES from review (critical + important)
+# Fix accepted findings as commits on this branch (max two rounds), no follow-up PR
 gh pr create --base develop --title "feat: add X" --body "Closes #7"
 git push -u origin feature/issue-7-interfaces
 gh pr merge --squash --delete-branch             # SQUASH MERGE to keep history clean
 ```
 
-Releases (`develop` -> `main`) follow the same review discipline but use a
-regular merge (not squash) and require sign-off from a maintainer other than
-the PR author. See `docs/adr/` for the rationale behind the branch strategy
-and the review requirement.
+Releases (`develop` -> `main`) get one integration-scoped reviewer (the
+feature PRs were already reviewed), use a regular merge (not squash), and
+require sign-off from a maintainer other than the PR author. `develop` blocks
+direct pushes, so all fixes from a review round go in ONE fix PR into
+`develop`, never one PR per finding. Open the release PR only when it is
+ready, and merge it promptly. See `docs/adr/` for the rationale behind the
+branch strategy and the review requirement.
 
 ## GitHub Labels
 
@@ -213,8 +216,8 @@ src/
 - `main` is production only; merge `develop` -> `main` for releases
 - **ALWAYS squash merge** into `develop` - keep develop history clean with single commit per feature
 - Release PRs (`develop` -> `main`) use a regular merge, not squash - `main`'s branch ruleset only allows `merge`
-- Use PR review toolkit before creating PRs
-- **Address ALL review issues** (critical + important) before merging
+- Use PR review toolkit before creating PRs; at most two review rounds (`.rules/code_review.md`), fixes as commits on the PR branch (release PRs: one fix PR into `develop`)
+- **Every review finding gets an outcome** (fixed, rejected with a reason, or filed as an issue) before merging; never merge while a review is still running
 - **Documentation-only changes**: see below
 
 ### Documentation-only changes
