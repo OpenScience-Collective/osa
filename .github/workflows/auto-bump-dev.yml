@@ -161,9 +161,9 @@ jobs:
       # repository_dispatch, so dispatching needs no personal token.
       actions: write
     steps:
-      # The image is built from the head of develop when the dispatched run
-      # starts, which is the bump commit unless another push landed since, and
-      # then that newer push deploys too. TestPyPI gets the exact commit, and
+      # The image is built from the head of develop when the build is dispatched,
+      # which is the bump commit unless another push landed since, and then that
+      # newer push deploys too. TestPyPI gets the exact commit, and
       # publishes only if that commit changed the version.
       - name: Dispatch the dev image build and the TestPyPI publish
         env:
@@ -171,5 +171,8 @@ jobs:
           SHA: ${{ needs.bump.outputs.sha || github.sha }}
         run: |
           echo "Deploying develop; TestPyPI checks $SHA"
-          gh workflow run docker-build.yml --repo "$GITHUB_REPOSITORY" --ref develop
-          gh workflow run publish-testpypi.yml --repo "$GITHUB_REPOSITORY" --ref develop -f sha="$SHA"
+          # Try both, then fail: one failed dispatch must not skip the other.
+          rc=0
+          gh workflow run docker-build.yml --repo "$GITHUB_REPOSITORY" --ref develop || rc=1
+          gh workflow run publish-testpypi.yml --repo "$GITHUB_REPOSITORY" --ref develop -f sha="$SHA" || rc=1
+          exit "$rc"
