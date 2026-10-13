@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: 'Commit on develop to publish (default: the head of develop)'
+        description: 'Commit on develop to publish (default: the head of develop). Needed to republish an older version, because an unchanged version is skipped.'
         required: false
         type: string
 
@@ -30,6 +30,19 @@ jobs:
       version: ${{ steps.get_version.outputs.version }}
       should_publish: ${{ steps.check.outputs.should_publish }}
     steps:
+      # The ref check above covers the dispatch ref; this covers the commit.
+      - name: Require a commit on develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha || github.sha }}
+        run: |
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/develop...$SHA" --jq .status)
+          echo "$SHA is $status develop"
+          case "$status" in
+            identical|behind) ;;
+            *) echo "::error::$SHA is not on develop"; exit 1 ;;
+          esac
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.sha || github.sha }}
