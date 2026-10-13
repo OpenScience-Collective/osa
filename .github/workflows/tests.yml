@@ -1,9 +1,23 @@
 name: Tests
 
+# The one test workflow. It owns the required checks, `Lint`, `Test (3.11)` and
+# `Test (3.12)` (rulesets `protect-dev` and `protect-main`), so those job names
+# must not change. It used to have a twin, `test.yml`, also named "Tests", that
+# ran the same jobs again on every pull request into and push to `main`; this
+# file now carries the union of the two: its triggers, the `ruff check .` lint,
+# Python 3.13 on main-bound runs, and the hand-started Integration Tests job.
+
 on:
   push:
     branches: [main, develop]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Live tests to run: all, or a part of a test or model name (haiku, sonnet, luna, openrouter)'
+        required: false
+        default: 'all'
+        type: string
 
 jobs:
   lint:
@@ -26,7 +40,7 @@ jobs:
 
       - name: Ruff check
         run: |
-          uv run ruff check src tests
+          uv run ruff check .
 
       - name: Ruff format check
         run: |
@@ -50,7 +64,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.11', '3.12']
+        # 3.11 and 3.12 everywhere; 3.13 as well where the old test.yml ran it, on
+        # a pull request into main, a push to main and a manual run.
+        python-version: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') && '["3.11", "3.12", "3.13"]' || '["3.11", "3.12"]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -76,11 +92,15 @@ jobs:
         with:
           bun-version-file: package.json
 
+      # The union of the two old selections: tests.yml ran everything outside
+      # tests/test_integration that is not network or llm, test.yml everything
+      # not integration, llm or network. Together that is every test that is not
+      # network or llm, which is what this selects.
       - name: Run tests
         env:
           READ_GITHUB_TOKEN: ${{ secrets.READ_GITHUB_TOKEN }}
         run: |
-          uv run pytest --ignore=tests/test_integration -v --cov=src --cov-report=xml -m "not network and not llm"
+          uv run pytest tests/ -v --cov=src --cov-report=xml -m "not network and not llm"
 
       # The widget's light and dark appearance in real Chrome (#469). The bug is the
       # browser's own drawing of form controls on a dark host page, which the happy-dom
@@ -118,6 +138,8 @@ jobs:
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   frontend-tests:
     name: Frontend Tests
@@ -308,12 +330,90 @@ jobs:
       - name: Check worker syntax
         run: node --check workers/osa-worker/index.js
 
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    # Manual only (Actions > Tests > Run workflow). These tests make paid calls to the Claude
+    # Platform, OpenRouter and Amazon Bedrock, so they never run on push or on pull requests.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen --extra dev
+
+      - name: Check the live credentials
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          OPENROUTER_API_KEY_FOR_TESTING: ${{ secrets.OPENROUTER_API_KEY_FOR_TESTING }}
+        run: |
+          # Presence only, never the values. A missing key makes its tests skip, which a
+          # green run hides, so each one is named here. A run with none of them set would
+          # skip every live test and still pass, so that fails the job now. A base URL
+          # without a workspace ID stops the whole run at startup, so that pair fails it too.
+          keys_set=0
+          for name in ANTHROPIC_API_KEY AWS_BEARER_TOKEN_BEDROCK OPENROUTER_API_KEY_FOR_TESTING; do
+            if [ -n "${!name}" ]; then
+              echo "$name is set"
+              keys_set=$((keys_set + 1))
+            else
+              echo "::warning::$name is not set; the tests that need it will skip"
+            fi
+          done
+          if [ "$keys_set" -eq 0 ]; then
+            echo "::error::None of the live credentials is set, so every live test would skip"
+            exit 1
+          fi
+          if [ -n "$ANTHROPIC_BASE_URL" ] && [ -z "$ANTHROPIC_WORKSPACE_ID" ]; then
+            echo "::error::ANTHROPIC_BASE_URL is set without ANTHROPIC_WORKSPACE_ID"
+            exit 1
+          fi
+
+      - name: Run live model tests
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          OPENROUTER_API_KEY_FOR_TESTING: ${{ secrets.OPENROUTER_API_KEY_FOR_TESTING }}
+          MODEL_FILTER: ${{ inputs.model }}
+        run: |
+          # Each module skips itself when its credential is missing, so a Bedrock-only run
+          # still runs the Bedrock cases. -k keeps only the cases whose ids name the model.
+          SELECT=()
+          if [ -n "$MODEL_FILTER" ] && [ "$MODEL_FILTER" != "all" ]; then
+            SELECT=(-k "$MODEL_FILTER")
+          fi
+          uv run pytest tests/ -v -m "integration or llm" --tb=short "${SELECT[@]}"
+
+      - name: Run network tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.READ_GITHUB_TOKEN }}  # read-only PAT for API rate limits
+        run: |
+          uv run pytest tests/ -v -m "network" --tb=short
+        continue-on-error: true
+
   all-tests:
     name: All Tests Passed
     needs: [lint, test, frontend-tests]
     runs-on: ubuntu-latest
     if: always()
     steps:
+      # Not a required check (the rulesets require Lint and the Test legs by name),
+      # but the one place a run says whether everything it ran passed, Frontend
+      # Tests included (#437).
       - name: Check results
         run: |
           if [ "${{ needs.lint.result }}" != "success" ] && [ "${{ needs.lint.result }}" != "skipped" ]; then
