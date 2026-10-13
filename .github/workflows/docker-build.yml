@@ -32,6 +32,19 @@ on:
     branches:
       - main
       - develop
+    # Only what the image is built from: deploy/Dockerfile COPYs src/, pyproject.toml,
+    # uv.lock and README.md (the hed-lsp stage clones a pinned commit), so a pull
+    # request touching none of these builds the same image. Safe as a trigger-level
+    # filter because no job here is a required check. Pushes and releases are not
+    # filtered: a push build bakes in GIT_COMMIT, and releases must always build.
+    paths:
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'README.md'
+      - 'deploy/Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/docker-build.yml'
 
 # Builds that can write a MOVING tag (`latest`, `main`, `dev`) must not
 # interleave. The v0.8.9 release pushed two commits to `main` ten seconds apart;
