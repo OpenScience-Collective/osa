@@ -116,15 +116,15 @@ jobs:
             esac
           fi
 
-          # Documentation: Markdown outside the code directories, docs/, .context/,
-          # .rules/ and LICENSE. Everything else, workflows included, is code.
+          # Documentation is an allow-list: Markdown under docs/, .context/ and
+          # .rules/, Markdown at the repository root, and LICENSE. Any other path,
+          # a new directory or file type included, counts as code.
           while IFS= read -r file; do
             case "$file" in
-              src/*|frontend/*|notebook/*|workers/*|dashboard/*|deploy/*|scripts/*|tests/*|.github/*)
-                everything "$file is code" ;;
-              docs/*|.context/*|.rules/*|*.md|LICENSE) ;;
-              *)
-                everything "$file is code" ;;
+              docs/*.md|.context/*.md|.rules/*.md|LICENSE) ;;
+              */*) everything "$file is not documentation" ;;
+              *.md) ;;
+              *) everything "$file is not documentation" ;;
             esac
           done <<< "$files"
 
