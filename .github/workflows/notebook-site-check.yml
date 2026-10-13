@@ -3,7 +3,7 @@ name: Notebook site check
 # The two checks that would actually catch a real regression in the hosted
 # JupyterLite notebook site (issue #453, docs/adr/0011-the-notebook-site.md),
 # neither of which gates anything today: TestFullBuildEndToEnd is network-
-# marked and runs only in test.yml's Integration Tests job, which is started by
+# marked and runs only in tests.yml's Integration Tests job, which is started by
 # hand (workflow_dispatch), with continue-on-error; notebook/e2e-check.js runs in no workflow at all. A PR
 # review demonstrated this concretely -- writing _headers/_redirects into the
 # site subdirectory instead of the true publish root, and removing the
@@ -32,6 +32,13 @@ on:
     - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC
   workflow_dispatch:
 
+# A newer push to a pull request cancels this workflow's run for the older one.
+# Every other run (push, schedule, dispatch) gets a group of its own, so pushes
+# to develop and main are never cancelled or queued behind each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -39,6 +46,7 @@ jobs:
   check:
     name: Build and open the notebook site
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -62,7 +70,7 @@ jobs:
         run: bun install
 
       # The runner ships Chrome; notebook/e2e-check.js finds it through the
-      # same frontend/browser-harness/chrome.js findChrome() that test.yml's
+      # same frontend/browser-harness/chrome.js findChrome() that tests.yml's
       # Frontend Tests job relies on for the browser harness. Checked here,
       # separately and first, so a missing Chrome fails with its own clear
       # step rather than surfacing as a confusing e2e-check.js failure.
@@ -102,6 +110,7 @@ jobs:
     needs: check
     if: ${{ !cancelled() && github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write

@@ -53,7 +53,7 @@ def test_user_creation(real_db):
 **Ask:** What am I actually testing? Would this catch real bugs?
 
 ## CI Integration
-- `integration-tests` (in `test.yml`) runs only when started by hand (Actions > Tests >
+- `integration-tests` (in `tests.yml`) runs only when started by hand (Actions > Tests >
   Run workflow), because its tests make paid calls to the Claude Platform, OpenRouter and
   Amazon Bedrock. It fails when none of its credentials is set, and each test module skips
   itself when its own credential is missing, rather than failing or faking a response

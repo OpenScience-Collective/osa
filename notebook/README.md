@@ -60,7 +60,7 @@ bun notebook/e2e-check.js --environment develop
 ```
 
 `e2e-check.js` reuses `frontend/browser-harness/chrome.js`'s Chrome-driving primitives (`findChrome`, `launch`, `connect`) rather than duplicating them, the same way `frontend/browser-harness/notebook-bench.js` already does for the surface-comparison measurements behind ADR 0010.
-It is not wired into `test.yml`/`tests.yml` as a required gate (it reads live, third-party-adjacent data over the network, the same reason `frontend/browser-harness/widget_e2e.py` is a manual/`workflow_dispatch` check rather than a required one); run it by hand before a release that touches this site, and see `.context/notebook-surface-measurements.md` for the last recorded run's numbers.
+It is not wired into `tests.yml` as a required gate (it reads live, third-party-adjacent data over the network, the same reason `frontend/browser-harness/widget_e2e.py` is a manual/`workflow_dispatch` check rather than a required one); run it by hand before a release that touches this site, and see `.context/notebook-surface-measurements.md` for the last recorded run's numbers.
 
 ## Serving a preview
 

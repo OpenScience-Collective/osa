@@ -57,6 +57,7 @@ jobs:
       github.event.issue.pull_request != null &&
       github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # Cheap first gate: does the comment carry the "LGTM ... merge" command?
       # Case-insensitive, both keywords required. Skips the rest (and the Python

@@ -30,6 +30,7 @@ A precise, reliable AI assistant platform for researchers working with open scie
 - **On every push to `develop`** (`.github/workflows/auto-bump-dev.yml`):
   1. Increments `.devN` (e.g., `0.5.1.dev0` -> `0.5.1.dev1`)
   2. Skips on bot commits, `Bump version to ...` messages, `[skip ci]`, `[skip-bump]`
+  3. Then deploys develop once: dispatches `docker-build.yml` (the dev image, `:dev`) and `publish-testpypi.yml` (the new dev version on TestPyPI) for the bumped commit, or for the pushed commit when there was no bump. Neither workflow runs on a push to `develop` itself, and Tests skips the bump commit, so a merge is tested once and deployed once, at the version `develop` ends at
 - **When `src/version.py` changes on `main`**:
   1. `ensure-stable-version.yml` strips `.dev` suffix if present
   2. `tag-release.yml` creates git tag (e.g., `v0.5.1`)
@@ -214,15 +215,15 @@ src/
 - Release PRs (`develop` -> `main`) use a regular merge, not squash - `main`'s branch ruleset only allows `merge`
 - Use PR review toolkit before creating PRs
 - **Address ALL review issues** (critical + important) before merging
-- **Documentation-only changes skip CI**: see below
+- **Documentation-only changes**: see below
 
-### Documentation-only changes skip CI
+### Documentation-only changes
 
-A change that touches only documentation (`CHANGELOG.md`, `README.md`, `docs/`, `.context/`, `AGENTS.md`, and other Markdown outside `src/` and `frontend/`) carries `[skip ci]` in the subject of its commit and in its pull request title, so that no workflow runs for it.
+A change that touches only documentation (`CHANGELOG.md`, `README.md`, `docs/`, `.context/`, `.rules/`, `AGENTS.md`, and other Markdown outside the code directories `src/`, `frontend/`, `notebook/`, `workers/`, `dashboard/`, `deploy/`, `scripts/` and `tests/`) needs no CI marker on its branch.
 
-- **Both places matter.** GitHub skips the push and pull-request workflows for a commit whose message contains the marker. The pull request's head commit decides for the pull request; the squash commit on `develop` is the pull request title plus the commit body, and decides for the push.
-- **Nothing else needs to run.** `auto-bump-dev.yml` honors the marker too, so a documentation merge does not bump the dev version, and the docs site is rebuilt from `main` by `notify-docs.yml`, which a release triggers.
-- **An admin merges it.** `develop` requires `Lint` and `Test (3.12)` (and `main` also `Test (3.11)`), which a skipped pull request never reports, so it stays "expected" until an admin merges it; the rulesets exempt the Admin role (see the branch protection notes above).
+- **Its pull request reports on its own.** The `changes` job in `tests.yml` sees that only documentation changed. `Lint` and `Test (3.12)` (and on `main`, `Test (3.11)`) still report, and pass after running only `tests/test_frontend/test_embed_snippet_hygiene.py`, the one test that reads documentation; Frontend Tests and the Docker build do not run. It merges like any other pull request, with no admin merge.
+- **Put `[skip-bump]` in the pull request title, not `[skip ci]`.** `auto-bump-dev.yml` then skips the version bump, and the squash commit does not carry the CI marker. GitHub reads that marker from a pull request's head commit, so a documentation merge that left it as the head of `develop` would make the next `develop` to `main` release pull request run no checks, and it could not backstop a code change that slipped in. The cost is one dev image build per documentation merge. The docs site is rebuilt from `main` by `notify-docs.yml`, which a release triggers.
+- **Not on the branch's own commits.** GitHub reads the marker from a pull request's head commit, and a pull request whose head commit carries it runs no workflow at all, so `Lint` and `Test (3.12)` stay "expected" until an admin merges it (the rulesets exempt the Admin role).
 - **Never** for a change that touches code, configuration, tests, workflows or anything under `src/` or `frontend/` (the widget deploys from there), and never for a release pull request. A release into `main` runs every check, so a change that skipped CI by mistake is caught there.
 
 ## Target Projects

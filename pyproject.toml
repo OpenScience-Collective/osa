@@ -167,6 +167,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --cov=src --cov-report=term-missing"
+# pytest-timeout: fail any single test that runs past five minutes instead of
+# letting it hang the job (on 2026-09-29 a test in test_litellm_chat.py hung
+# Test (3.11) until the 6-hour limit). The slowest passing test takes about 70 s
+# on CI (tests/test_api/test_sync.py's trigger tests), so 300 s is far clear of it.
+timeout = 300
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
@@ -195,4 +200,5 @@ disallow_untyped_defs = true
 [dependency-groups]
 dev = [
     "nbformat>=5.11.1",
+    "pytest-timeout>=2.4.0",
 ]

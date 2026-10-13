@@ -20,6 +20,7 @@ concurrency:
 jobs:
   notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Dispatch to documentation repo
         uses: peter-evans/repository-dispatch@v3

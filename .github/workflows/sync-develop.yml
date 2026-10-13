@@ -51,6 +51,7 @@ jobs:
   sync:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # Check out main, not develop: under the workflow_run trigger the
       # checkout action's wildcard fetch (+refs/heads/*) intermittently

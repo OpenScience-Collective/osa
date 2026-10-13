@@ -51,8 +51,9 @@ so the development host reads a community's staging data (NEMAR's `mcp-test.nema
 | `latest` | a STABLE release is published | production; the most recent released version, not the head of `main`. Pre-releases never move it |
 | `X.Y.Z` | any release is published | pinning and rollback; immutable once written |
 | `X.Y` | a stable release is published | following a minor line; `type=semver` skips prereleases |
-| `main`, `develop` | every push to that branch | following a branch head deliberately |
-| `dev` | every push to `develop` | the development host |
+| `main` | every push to `main` | following a branch head deliberately |
+| `develop` | once per push to `develop`, after its version bump | following a branch head deliberately |
+| `dev` | once per push to `develop`, after its version bump | the development host |
 | `sha-<commit>` | every build | tracing an image back to a commit |
 
 `latest` followed the head of `main` until issue #379. That was two problems at

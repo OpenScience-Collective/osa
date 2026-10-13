@@ -11,8 +11,8 @@
  *
  * Run with: bun frontend/test-citation-markers.js
  *
- * Wired into CI via the frontend-tests job in .github/workflows/test.yml and
- * tests.yml, which install Bun and run this file alongside
+ * Wired into CI via the frontend-tests job in .github/workflows/tests.yml,
+ * which installs Bun and runs this file alongside
  * frontend/test-streaming.js. The always-running guard for pull requests
  * that skip that job is in tests/test_frontend/test_widget_citations.py.
  */
