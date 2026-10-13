@@ -20,29 +20,119 @@ on:
         type: string
 
 jobs:
+  # How much of this workflow a change needs. Lint and the Test legs are required
+  # checks (rulesets protect-dev and protect-main), so they must report on every
+  # run, under their own names: a trigger-level path filter would leave them
+  # "expected" forever, and a matrix job skipped by a job-level `if:` reports as
+  # plain "Test", not "Test (3.12)". So nothing here stops the workflow; Lint and
+  # Test always run and skip their steps, and they conclude success.
+  #
+  # code=false docs=true: only documentation changed. Test runs the one test that
+  # reads documentation (test_embed_snippet_hygiene.py scans every tracked text
+  # file, docs/**/*.md included, for widget embed snippets); nothing else runs.
+  # Anything this job cannot classify, or fails on, runs everything.
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      docs: ${{ steps.classify.outputs.docs }}
+    steps:
+      # For a pull request this is the merge commit, whose first parent is the base
+      # it was merged onto, so HEAD^1..HEAD is exactly what the pull request changes.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Classify the changed files
+        id: classify
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -uo pipefail
+          everything() {
+            echo "Running everything: $1"
+            { echo "code=true"; echo "docs=false"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          case "$EVENT" in
+            pull_request)
+              files=$(git diff --name-only --no-renames HEAD^1 HEAD) \
+                || everything "could not diff the merge commit against its base"
+              ;;
+            push)
+              if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+                everything "a new branch has no previous head to compare with"
+              fi
+              git fetch --no-tags --depth=1 origin "$BEFORE" \
+                || everything "could not fetch the previous head $BEFORE"
+              files=$(git diff --name-only --no-renames "$BEFORE" HEAD) \
+                || everything "could not diff against the previous head $BEFORE"
+              ;;
+            *)
+              everything "a $EVENT run tests everything"
+              ;;
+          esac
+
+          if [ -z "$files" ]; then
+            everything "no changed files found"
+          fi
+          echo "Changed files:"
+          while IFS= read -r file; do echo "  $file"; done <<< "$files"
+
+          # Documentation: Markdown outside the code directories, docs/, .context/,
+          # .rules/ and LICENSE. Everything else, workflows included, is code.
+          while IFS= read -r file; do
+            case "$file" in
+              src/*|frontend/*|notebook/*|workers/*|dashboard/*|deploy/*|scripts/*|tests/*|.github/*)
+                everything "$file is code" ;;
+              docs/*|.context/*|.rules/*|*.md|LICENSE) ;;
+              *)
+                everything "$file is code" ;;
+            esac
+          done <<< "$files"
+
+          echo "Only documentation changed"
+          { echo "code=false"; echo "docs=true"; } >> "$GITHUB_OUTPUT"
+
   lint:
     name: Lint
+    needs: changes
+    # Always runs (it is a required check); its steps skip when nothing it checks
+    # changed. A failed `changes` job leaves `code` empty, which runs everything.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    env:
+      RUN_ALL: ${{ needs.changes.outputs.code != 'false' }}
     steps:
       - uses: actions/checkout@v4
+        if: env.RUN_ALL == 'true'
 
       - name: Set up Python
+        if: env.RUN_ALL == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install uv
+        if: env.RUN_ALL == 'true'
         uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
+        if: env.RUN_ALL == 'true'
         run: |
           uv sync --frozen --extra dev
 
       - name: Ruff check
+        if: env.RUN_ALL == 'true'
         run: |
           uv run ruff check .
 
       - name: Ruff format check
+        if: env.RUN_ALL == 'true'
         run: |
           uv run ruff format --check src tests
 
@@ -54,14 +144,22 @@ jobs:
       # would surface elsewhere is a separate change. Version pinned so a new
       # actionlint release cannot silently change what this step accepts.
       - name: Check the notebook site workflows with actionlint
+        if: env.RUN_ALL == 'true'
         run: |
           bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
           ./actionlint .github/workflows/deploy-notebook.yml .github/workflows/notebook-site-check.yml
 
   test:
     name: Test
-    needs: lint
+    needs: [changes, lint]
+    # Always runs after a passing Lint (it is a required check, and a skipped
+    # matrix job would report as "Test" rather than "Test (3.12)"); its steps
+    # decide what to do from `changes`.
+    if: ${{ !cancelled() && (needs.lint.result == 'success' || needs.lint.result == 'skipped') }}
     runs-on: ubuntu-latest
+    env:
+      RUN_ALL: ${{ needs.changes.outputs.code != 'false' }}
+      RUN_DOCS: ${{ needs.changes.outputs.code == 'false' && needs.changes.outputs.docs == 'true' }}
     strategy:
       matrix:
         # 3.11 and 3.12 everywhere; 3.13 as well where the old test.yml ran it, on
@@ -70,16 +168,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        if: env.RUN_ALL == 'true' || env.RUN_DOCS == 'true'
 
       - name: Set up Python ${{ matrix.python-version }}
+        if: env.RUN_ALL == 'true' || env.RUN_DOCS == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
+        if: env.RUN_ALL == 'true' || env.RUN_DOCS == 'true'
         uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
+        if: env.RUN_ALL == 'true' || env.RUN_DOCS == 'true'
         run: |
           uv sync --frozen --extra dev
 
@@ -88,6 +190,7 @@ jobs:
       # frontend/osa-workspace.js; it has no external package dependencies,
       # so `bun` on PATH is enough here, with no `bun install` needed.
       - name: Set up Bun
+        if: env.RUN_ALL == 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
@@ -97,10 +200,18 @@ jobs:
       # not integration, llm or network. Together that is every test that is not
       # network or llm, which is what this selects.
       - name: Run tests
+        if: env.RUN_ALL == 'true'
         env:
           READ_GITHUB_TOKEN: ${{ secrets.READ_GITHUB_TOKEN }}
         run: |
           uv run pytest tests/ -v --cov=src --cov-report=xml -m "not network and not llm"
+
+      # A documentation-only change can still break this one test: it checks every
+      # widget embed snippet in any tracked text file, docs/**/*.md included.
+      - name: Run the test that reads documentation
+        if: env.RUN_DOCS == 'true'
+        run: |
+          uv run pytest tests/test_frontend/test_embed_snippet_hygiene.py -v
 
       # The widget's light and dark appearance in real Chrome (#469). The bug is the
       # browser's own drawing of form controls on a dark host page, which the happy-dom
@@ -108,19 +219,19 @@ jobs:
       # default config, and the same with color_scheme: auto), so it needs this job's
       # Python environment as well as Bun; the runner ships Chrome.
       - name: Check the widget's light and dark appearance in headless Chrome
-        if: matrix.python-version == '3.12'
+        if: env.RUN_ALL == 'true' && matrix.python-version == '3.12'
         run: bun frontend/browser-harness/color-scheme-check.mjs --serve
 
       # Every frame in which the launcher is visible shows the community's look,
       # never the defaults first (#475); needs the same server as the check above.
       - name: Check the widget's first paint in headless Chrome
-        if: matrix.python-version == '3.12'
+        if: env.RUN_ALL == 'true' && matrix.python-version == '3.12'
         run: bun frontend/browser-harness/first-paint-check.mjs --serve
 
       # The launcher's position, size and offsets (#553), sampled on every frame of
       # opening and closing the panel. Serves the widget itself; needs no other server.
       - name: Check the widget's launcher geometry in headless Chrome
-        if: matrix.python-version == '3.12'
+        if: env.RUN_ALL == 'true' && matrix.python-version == '3.12'
         timeout-minutes: 8
         run: bun frontend/browser-harness/launcher-geometry-check.mjs
 
@@ -129,12 +240,12 @@ jobs:
       # notebook tabs, on the tab it came from, and carries the widget tag's
       # integrity, which the browser checks there. Needs the same server.
       - name: Check the widget's pop-out in headless Chrome
-        if: matrix.python-version == '3.12'
+        if: env.RUN_ALL == 'true' && matrix.python-version == '3.12'
         run: bun frontend/browser-harness/popout-check.mjs --serve
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
-        if: matrix.python-version == '3.12'
+        if: env.RUN_ALL == 'true' && matrix.python-version == '3.12'
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
@@ -143,6 +254,9 @@ jobs:
 
   frontend-tests:
     name: Frontend Tests
+    needs: changes
+    # Not a required check, so a job-level skip is fine here.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -407,7 +521,7 @@ jobs:
 
   all-tests:
     name: All Tests Passed
-    needs: [lint, test, frontend-tests]
+    needs: [changes, lint, test, frontend-tests]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -416,6 +530,10 @@ jobs:
       # Tests included (#437).
       - name: Check results
         run: |
+          if [ "${{ needs.changes.result }}" != "success" ]; then
+            echo "Classifying the changes failed, so everything ran; see the Classify changes job"
+            exit 1
+          fi
           if [ "${{ needs.lint.result }}" != "success" ] && [ "${{ needs.lint.result }}" != "skipped" ]; then
             echo "Lint failed"
             exit 1
