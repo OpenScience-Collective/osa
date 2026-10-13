@@ -113,8 +113,8 @@ Serve the three models from Bedrock through the Converse API, one transport for 
 - **A bearer-token client relies on botocore internals** (`auth_scheme_preference` and a replaced token-provider component).
   `langchain-aws` does the same, and is capped below 2.x for it; an upstream botocore change would show up in `tests/test_core/test_bedrock_llm.py`,
   which asserts the outgoing `Authorization` header and runs in continuous integration (CI).
-  The live tests (`pytest -m llm`) are run by hand: `tests.yml`, the workflow that gates merging, ignores `tests/test_integration`,
-  and `test.yml` runs `-m "integration or llm"` only on a push to `main` or a manual dispatch, when an Anthropic key is set, and passes no Bedrock key, so the Bedrock tests skip there.
+  The live tests (`pytest -m llm`) are run by hand: the Integration Tests job in `tests.yml`, which only a manual dispatch starts,
+  runs `-m "integration or llm"` when an Anthropic key is set, and passes no Bedrock key, so the Bedrock tests skip there.
 - **The Bedrock key is kept out of logs and errors.** botocore logs each request, `Authorization` header included, at DEBUG;
   the log formatter redacts Bedrock keys and any bearer credential, the botocore logger is held at WARNING,
   and `Settings` trims the key, treats a blank one as unset, and refuses one with whitespace inside without echoing it.

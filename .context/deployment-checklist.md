@@ -161,7 +161,8 @@ docker rm osa-dev
 # Find previous working image
 docker images | grep osa
 
-# Deploy previous version (replace SHA with actual)
+# Deploy previous version (replace SHA with actual). Only the final commit of each
+# merge has a sha- tag: the "Bump version to" commit that follows it, not the merge commit.
 docker run -d --name osa-dev \
   --env-file ~/osa/.env \
   -p 38529:38528 \
