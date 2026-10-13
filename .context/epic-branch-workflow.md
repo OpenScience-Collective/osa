@@ -109,7 +109,8 @@ uv run osa chat --community eeglab --standalone
 
 ### 5. Merge Epic to Develop (Final Step)
 
-Only when ALL phases are complete and tested:
+Only when ALL phases are complete and tested.
+The final epic PR gets one integration-scoped review (the phase PRs were already reviewed), and its fixes are commits on the epic branch (`.rules/code_review.md`):
 
 ```bash
 cd /Users/yahya/Documents/git/osa

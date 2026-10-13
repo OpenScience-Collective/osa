@@ -45,7 +45,7 @@ A precise, reliable AI assistant platform for researchers working with open scie
 2. **Create feature branch from develop**: `git checkout develop && git pull && git checkout -b feature/issue-N-short-description`
 3. **Implement** with atomic commits
 4. **Review** using `/pr-review-toolkit:review-pr` before creating PR: at most two rounds, per `.rules/code_review.md`
-5. **Give every finding an outcome** (fixed, rejected with a reason, or filed as an issue for untouched code); fix commits go on the feature branch, never a follow-up PR
+5. **Give every finding an outcome** (fixed, rejected with a reason, or filed as an issue for untouched code); fix commits go on the feature branch, never a follow-up PR (a large fix is the one exception, see `.rules/code_review.md`)
 6. **Create PR to develop**: `gh pr create --base develop`
 7. **Squash and merge**: `gh pr merge --squash --delete-branch` (always squash to keep history clean)
 
