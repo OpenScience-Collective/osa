@@ -32,6 +32,13 @@ on:
     - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC
   workflow_dispatch:
 
+# A newer push to a pull request cancels this workflow's run for the older one.
+# Every other run (push, schedule, dispatch) gets a group of its own, so pushes
+# to develop and main are never cancelled or queued behind each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
