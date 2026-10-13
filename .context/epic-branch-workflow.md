@@ -74,7 +74,7 @@ cd ../osa-phase1  # or phase2, phase3
 # Run review before PR
 /pr-review-toolkit:review-pr
 
-# Address all critical + important issues
+# Fix accepted findings as commits on this branch (max two review rounds, see .rules/code_review.md)
 
 # Create PR to EPIC BRANCH (not develop!)
 gh pr create --base epic/issue-97-eeglab \
