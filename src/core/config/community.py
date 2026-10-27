@@ -2064,8 +2064,10 @@ class CommunityConfig(BaseModel):
     """Allowed CORS origins for this community's widget embedding.
 
     Supports exact origins (e.g., 'https://hedtags.org') and wildcard
-    subdomains (e.g., 'https://*.pages.dev'). These are aggregated with
-    platform-level origins at API startup.
+    subdomains of a domain you control (e.g., 'https://*.hedtags.org';
+    never a shared host such as 'https://*.pages.dev', which would allow every
+    site on it). These are aggregated with platform-level origins at API
+    startup.
     """
 
     anthropic_api_key_env_var: str | None = None
@@ -2247,7 +2249,7 @@ class CommunityConfig(BaseModel):
             if not origin_pattern.match(origin):
                 raise ValueError(
                     f"Invalid CORS origin '{origin}'. Must be a valid origin "
-                    f"(e.g., 'https://example.org' or 'https://*.pages.dev')"
+                    f"(e.g., 'https://example.org' or 'https://*.example.org')"
                 )
             if origin not in validated:
                 validated.append(origin)
