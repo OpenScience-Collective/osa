@@ -15,9 +15,17 @@ on:
       - '.github/workflows/deploy-dashboard.yml'
   workflow_dispatch:
 
+# A newer push to a pull request cancels this workflow's run for the older one.
+# Every other run (push, schedule, dispatch) gets a group of its own, so pushes
+# to develop and main are never cancelled or queued behind each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       deployments: write
@@ -54,9 +62,17 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           # Deploy with branch name so Cloudflare Pages routes correctly:
-          # - main branch -> osa-dash.pages.dev (production), custom domain: status.osc.earth
-          # - develop branch -> develop.osa-dash.pages.dev (preview)
-          # - PR branches -> {branch}.osa-dash.pages.dev (preview)
+          # - main branch -> PAGES_DASH_HOST (production), custom domain: status.osc.earth
+          # - develop branch -> develop.PAGES_DASH_HOST (preview)
+          # - PR branches -> {branch}.PAGES_DASH_HOST (preview)
+          # PAGES_DASH_HOST is the project's account-scoped *.pages.dev name
+          # (osa-dash.pages.dev today); see the comment step below.
+          # Changing it also changes the dashboard's ORIGIN, which the backend
+          # CORS allows only as osa-dash.pages.dev and *.osa-dash.pages.dev.
+          # Add the new origin through CORS_ORIGINS (Settings.cors_origins) at
+          # move time; never widen the code to osa-dash-*.pages.dev, which any
+          # Cloudflare user can claim. Steps: "Moving to Another Cloudflare
+          # Account" in .context/deployment-checklist.md.
           # Dashboard is served at /osa/ path (e.g., status.osc.earth/osa/)
           command: pages deploy dashboard --project-name=osa-dash --branch=${{ steps.branch.outputs.name }}
 
@@ -66,7 +82,12 @@ jobs:
         with:
           script: |
             const branch = '${{ steps.branch.outputs.name }}';
-            const previewUrl = `https://${branch}.osa-dash.pages.dev`;
+            // Account-scoped *.pages.dev name of the osa-dash project; see the
+            // PAGES_DEMO_HOST note in deploy-pages.yml. Override with the
+            // PAGES_DASH_HOST repository variable (and see the CORS note on
+            // the deploy step above).
+            const pagesHost = '${{ vars.PAGES_DASH_HOST || 'osa-dash.pages.dev' }}';
+            const previewUrl = `https://${branch}.${pagesHost}`;
 
             // Find existing comment from this workflow
             const { data: comments } = await github.rest.issues.listComments({

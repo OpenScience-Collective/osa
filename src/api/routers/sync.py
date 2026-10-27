@@ -6,6 +6,7 @@ Provides endpoints for:
 - Health checks for monitoring
 """
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -370,7 +371,9 @@ async def trigger_sync(
         )
 
     try:
-        results = run_sync_now(request.sync_type)
+        # A sync can run for hours (the first sync of a large Discourse forum), so it runs
+        # in a worker thread rather than on the event loop that serves every request
+        results = await asyncio.to_thread(run_sync_now, request.sync_type)
         total = sum(results.values())
         return TriggerResponse(
             success=True,

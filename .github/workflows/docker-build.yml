@@ -2,9 +2,13 @@ name: Build and Push Docker Image
 
 on:
   push:
+    # Not develop. The dev image (`:dev`, `:develop`) is built only when
+    # auto-bump-dev.yml's deploy job dispatches this workflow on develop, once per
+    # push, after the dev-version bump. A push trigger here built every merge
+    # twice: the merge commit, then its bump commit seconds later, with the
+    # development host pulling whichever it saw first.
     branches:
       - main
-      - develop
     # Kept, but it has never fired for an automated release and never will.
     # `tag-release.yml` pushes the tag with `git push origin "$TAG"` after an
     # `actions/checkout@v4` that takes no `token:` override, so the push is
@@ -22,11 +26,25 @@ on:
   # Lets a maintainer rebuild a specific tag on demand:
   #   gh workflow run docker-build.yml --ref v0.8.9
   # Which is also how to republish images for a release that predates this fix.
+  # And how auto-bump-dev.yml builds the dev image: --ref develop.
   workflow_dispatch:
   pull_request:
     branches:
       - main
       - develop
+    # Only what the image is built from: deploy/Dockerfile COPYs src/, pyproject.toml,
+    # uv.lock and README.md (the hed-lsp stage clones a pinned commit), so a pull
+    # request touching none of these builds the same image. Safe as a trigger-level
+    # filter because no job here is a required check. Pushes and releases are not
+    # filtered: a push build bakes in GIT_COMMIT, and releases must always build.
+    paths:
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'README.md'
+      - 'deploy/Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/docker-build.yml'
 
 # Builds that can write a MOVING tag (`latest`, `main`, `dev`) must not
 # interleave. The v0.8.9 release pushed two commits to `main` ten seconds apart;
@@ -56,6 +74,7 @@ jobs:
   build-and-test:
     name: Build and Test Docker Image
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -166,7 +185,10 @@ jobs:
           docker stop osa-test || true
           docker rm osa-test || true
 
-  # Second job: Push to registry (on main, develop, and tags - not PRs)
+  # Second job: Push to registry (on main, develop, and tags - not PRs).
+  # develop arrives as a workflow_dispatch from auto-bump-dev.yml; the tags it
+  # writes are the same as a push would write, since docker/metadata-action reads
+  # the ref and the sha, not the event.
   build-and-push:
     name: Build and Push to GHCR
     needs: build-and-test
@@ -175,6 +197,7 @@ jobs:
     # patterns below read it the same way a tag push would.
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write

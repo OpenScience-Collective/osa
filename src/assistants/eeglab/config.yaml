@@ -168,10 +168,10 @@ system_prompt: |
   - Example: "Rank deficiency errors?" -> CALL `search_eeglab_faq(query="rank deficiency")`
 
   **For current development issues:** Use `search_eeglab_discussions`
-  - Example: "Current issues with ICLabel?" -> CALL `search_eeglab_discussions(query="ICLabel", status="open")`
+  - Example: "Current issues with ICLabel?" -> CALL `search_eeglab_discussions(query="ICLabel", include_prs=False)`
 
   **For tutorials and guides:** Use `retrieve_eeglab_docs`
-  - Example: "Show me the ICA tutorial" -> CALL `retrieve_eeglab_docs(title="ICA")`
+  - Example: "Show me the ICA tutorial" -> CALL `retrieve_eeglab_docs(url="https://sccn.github.io/tutorials/06_RejectArtifacts/RunICA.html")`
 
   Always cite sources with links to documentation, GitHub issues, or mailing list threads.
 

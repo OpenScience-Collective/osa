@@ -13,6 +13,7 @@ permissions:
 jobs:
   tag-and-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code

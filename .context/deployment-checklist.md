@@ -2,7 +2,7 @@
 
 ## Pre-Merge Verification
 
-- [x] All PR review issues addressed (critical + important)
+- [x] Every PR review finding has an outcome (fixed, rejected with a reason, or filed as an issue)
 - [x] All tests passing locally
 - [x] Database migration added for `branch` column
 - [x] No breaking changes to existing APIs
@@ -161,7 +161,8 @@ docker rm osa-dev
 # Find previous working image
 docker images | grep osa
 
-# Deploy previous version (replace SHA with actual)
+# Deploy previous version (replace SHA with actual). Only the final commit of each
+# merge has a sha- tag: the "Bump version to" commit that follows it, not the merge commit.
 docker run -d --name osa-dev \
   --env-file ~/osa/.env \
   -p 38529:38528 \
@@ -202,7 +203,9 @@ After any revert that touches `workers/osa-worker/**`, verify by hand:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' https://widget.osc.earth/osa/health
-curl -s -o /dev/null -w '%{http_code}\n' https://osa-worker.shirazi-10f.workers.dev/health
+# The account-scoped workers.dev name; the repository variable
+# LEGACY_WORKERS_DEV_HOST holds the current one (see widget-route-health.yml).
+curl -s -o /dev/null -w '%{http_code}\n' "https://${LEGACY_WORKERS_DEV_HOST}/health"
 ```
 
 **Check the consumer, not only the worker.** `/health` answers from the worker
@@ -211,6 +214,26 @@ else entirely. Load `demo.osc.earth` and send an actual chat message. The
 frontend and the worker deploy through two independent workflows with no
 ordering between them, so they can disagree, and only a real round trip shows
 it.
+
+## Moving to Another Cloudflare Account
+
+The code no longer pins the Cloudflare account (#619), but a move still has per-account steps.
+Do them before the first deploy into the new account.
+
+1. **Secrets**: set `CLOUDFLARE_ACCOUNT_ID` (org secret), `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ZONE_ID` to the new account's values.
+   The token needs Workers Scripts, Workers KV, Pages and, on the `osc.earth` zone, Workers Routes and DNS.
+2. **KV namespaces (code change)**: the `RATE_LIMITER_KV` namespace IDs in `workers/osa-worker/wrangler.toml` (production and `[env.dev]`) are account-scoped.
+   Create both namespaces in the new account and update the two `id` values.
+   The counters are short-lived rate-limit state, so nothing needs copying.
+3. **Worker secrets**: `BACKEND_API_KEY` on `osa-worker` and `osa-worker-dev` cannot be read back from Cloudflare.
+   Their source of truth is Infisical project `osc`, folder `/osa/edge` (`prod` and `dev`); push them with that folder's Secret Sync, or `wrangler secret put` from it.
+4. **Pages names**: set the repository variables `PAGES_DEMO_HOST`, `PAGES_NOTEBOOK_HOST` and `PAGES_DASH_HOST` to the new projects' `*.pages.dev` names (a taken name gets a suffix, e.g. `osa-dash-x7k.pages.dev`).
+5. **Dashboard CORS**: the dashboard calls the backend from its own origin, and the backend allows only `https://osa-dash.pages.dev` and `https://*.osa-dash.pages.dev`.
+   Add the new origin, e.g. `https://osa-dash-x7k.pages.dev`, through `CORS_ORIGINS` (`Settings.cors_origins`, in Infisical `osc` `/osa/server`), then redeploy the backend.
+   `CORS_ORIGINS` is a JSON list that replaces the defaults in `src/api/config.py`, so include those too.
+   Do not widen the code's wildcard to `https://osa-dash-*.pages.dev`: any Cloudflare user can create a project with that prefix.
+   Branch previews (`<branch>.osa-dash-x7k.pages.dev`) need the exact-suffix wildcard `https://*.osa-dash-x7k.pages.dev` in `src/api/main.py`, which only that project can serve.
+6. **Health probe**: set the repository variable `LEGACY_WORKERS_DEV_HOST` to the new `workers.dev` name, or to `none` once nemarOrg/website#343 has closed; otherwise `widget-route-health.yml` fails every 15 minutes after the move.
 
 ## Known Issues & Workarounds
 

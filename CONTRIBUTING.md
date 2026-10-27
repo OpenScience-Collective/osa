@@ -128,7 +128,7 @@ for the full guide, schema reference, and local testing instructions.
 2. Confirm tests and linters pass locally.
 3. Open the PR against `develop` with a clear description and reference the
    related issue (e.g. `Closes #123`).
-4. Address all review feedback before merging.
+4. Give every review comment an outcome (fixed, rejected with a reason, or filed as an issue) before merging; review stops after two rounds.
 
 ## Reporting Security Issues
 

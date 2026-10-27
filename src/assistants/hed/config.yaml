@@ -454,12 +454,6 @@ citations:
     - "10.1038/s41597-024-04282-0"        # HED-based annotation for BIDS datasets
     - "10.1038/s41597-025-05791-2"        # HED validation framework
 
-# Discourse forums (will be a standard tool available to all communities)
-discourse:
-  - url: https://neurostars.org
-    tags:
-      - hed
-
 # Extension points for specialized tools
 # These are Python tools that cannot be auto-generated from YAML
 extensions:

@@ -17,7 +17,7 @@ from src.tools.markdown_cleaner import clean_markdown
 logger = logging.getLogger(__name__)
 
 # Selectors for extracting main content from HTML pages, in priority order.
-# Covers Sphinx (PyData theme, RTD theme, Furo), MkDocs, and generic HTML.
+# Covers Sphinx (PyData theme, RTD theme, Furo), MkDocs, MoinMoin wikis, and generic HTML.
 _CONTENT_SELECTORS = [
     "article.bd-article",  # PyData Sphinx theme
     "div[role=main]",  # Read the Docs / classic Sphinx
@@ -25,6 +25,7 @@ _CONTENT_SELECTORS = [
     "main",  # Generic HTML5
     "div.document",  # Older Sphinx
     "div.md-content",  # MkDocs Material
+    "div#content",  # MoinMoin wikis (Brainstorm tutorials, FreeSurfer wiki)
 ]
 
 
@@ -87,12 +88,17 @@ def _html_to_markdown(html: str) -> str:
     Uses BeautifulSoup to find the main content area (skipping nav, sidebar,
     footer), then markdownify for HTML-to-markdown conversion.
 
-    Requires beautifulsoup4 and markdownify (server optional dependencies).
+    Parses with lxml, which closes an open ``<p>`` at the next block element as a
+    browser does. Python's ``html.parser`` nests everything after an unclosed
+    ``<p>`` inside it, and markdownify then drops most of the page (a MoinMoin
+    wiki page such as a Brainstorm tutorial lost three quarters of its text).
+
+    Requires beautifulsoup4, lxml and markdownify (server optional dependencies).
     """
     import markdownify
     from bs4 import BeautifulSoup
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
 
     # Try to find the main content area
     content_element = None

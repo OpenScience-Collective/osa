@@ -778,7 +778,8 @@ def create_search_discourse_tool(
             if r.snippet:
                 lines.append(f"  {r.snippet}")
             if r.accepted_answer_snippet:
-                lines.append(f"  Accepted answer: {r.accepted_answer_snippet}")
+                # Accepted by the asker, or else picked by likes or staff authorship
+                lines.append(f"  Best answer: {r.accepted_answer_snippet}")
             lines.append(f"  [View topic]({r.url})\n")
 
         return "\n".join(lines)

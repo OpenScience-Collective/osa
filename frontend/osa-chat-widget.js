@@ -18,10 +18,14 @@
   // frontend/index.html reuses it via OSAChatWidget.getConfig().apiEndpoint
   // instead of re-deriving it; do not duplicate this logic elsewhere (#437).
   const hostname = window.location.hostname;
-  const isProduction = hostname === 'demo.osc.earth' || hostname === 'osa-demo.pages.dev';
+  // The Pages project's own *.pages.dev name is account-scoped: in another
+  // Cloudflare account it becomes osa-demo-<suffix>.pages.dev, so match both.
+  // Group 1 is the branch of a preview deploy (<branch>.osa-demo.pages.dev).
+  const pagesDev = /^(?:([a-z0-9-]+)\.)?osa-demo(?:-[a-z0-9]+)?\.pages\.dev$/.exec(hostname);
+  const isProduction = hostname === 'demo.osc.earth' || (pagesDev !== null && !pagesDev[1]);
   const isDev = !isProduction && (
                 hostname.endsWith('-demo.osc.earth') ||
-                hostname.endsWith('.osa-demo.pages.dev') ||
+                pagesDev !== null ||
                 hostname.includes('localhost') ||
                 hostname.includes('127.0.0.1'));
 

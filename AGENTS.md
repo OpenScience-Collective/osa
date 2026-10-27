@@ -30,6 +30,7 @@ A precise, reliable AI assistant platform for researchers working with open scie
 - **On every push to `develop`** (`.github/workflows/auto-bump-dev.yml`):
   1. Increments `.devN` (e.g., `0.5.1.dev0` -> `0.5.1.dev1`)
   2. Skips on bot commits, `Bump version to ...` messages, `[skip ci]`, `[skip-bump]`
+  3. Then deploys develop once: dispatches `docker-build.yml` (the dev image, `:dev`) and `publish-testpypi.yml` (the new dev version on TestPyPI) for the bumped commit, or for the pushed commit when there was no bump. Neither workflow runs on a push to `develop` itself, and Tests skips the bump commit, so a merge is tested once and deployed once, at the version `develop` ends at
 - **When `src/version.py` changes on `main`**:
   1. `ensure-stable-version.yml` strips `.dev` suffix if present
   2. `tag-release.yml` creates git tag (e.g., `v0.5.1`)
@@ -43,8 +44,8 @@ A precise, reliable AI assistant platform for researchers working with open scie
 1. **Pick an issue** from GitHub Issues
 2. **Create feature branch from develop**: `git checkout develop && git pull && git checkout -b feature/issue-N-short-description`
 3. **Implement** with atomic commits
-4. **Review** using `/pr-review-toolkit:review-pr` before creating PR
-5. **Address ALL review findings** - fix critical AND important issues, not just critical
+4. **Review** using `/pr-review-toolkit:review-pr` before creating PR: at most two rounds, per `.rules/code_review.md`
+5. **Give every finding an outcome** (fixed, rejected with a reason, or filed as an issue for untouched code); fix commits go on the feature branch, never a follow-up PR (a large fix is the one exception, see `.rules/code_review.md`)
 6. **Create PR to develop**: `gh pr create --base develop`
 7. **Squash and merge**: `gh pr merge --squash --delete-branch` (always squash to keep history clean)
 
@@ -56,16 +57,19 @@ git checkout -b feature/issue-7-interfaces       # Create branch
 # ... implement ...
 git add -A && git commit -m "feat: add X"       # Atomic commits
 /pr-review-toolkit:review-pr                     # Review before PR
-# FIX ALL ISSUES from review (critical + important)
+# Fix accepted findings as commits on this branch (max two rounds), no follow-up PR
 gh pr create --base develop --title "feat: add X" --body "Closes #7"
 git push -u origin feature/issue-7-interfaces
 gh pr merge --squash --delete-branch             # SQUASH MERGE to keep history clean
 ```
 
-Releases (`develop` -> `main`) follow the same review discipline but use a
-regular merge (not squash) and require sign-off from a maintainer other than
-the PR author. See `docs/adr/` for the rationale behind the branch strategy
-and the review requirement.
+Releases (`develop` -> `main`) get one integration-scoped reviewer (the
+feature PRs were already reviewed), use a regular merge (not squash), and
+require sign-off from a maintainer other than the PR author. `develop` blocks
+direct pushes, so all fixes from a review round go in ONE fix PR into
+`develop`, never one PR per finding. Open the release PR only when it is
+ready, and merge it promptly. See `docs/adr/` for the rationale behind the
+branch strategy and the review requirement.
 
 ## GitHub Labels
 
@@ -212,17 +216,17 @@ src/
 - `main` is production only; merge `develop` -> `main` for releases
 - **ALWAYS squash merge** into `develop` - keep develop history clean with single commit per feature
 - Release PRs (`develop` -> `main`) use a regular merge, not squash - `main`'s branch ruleset only allows `merge`
-- Use PR review toolkit before creating PRs
-- **Address ALL review issues** (critical + important) before merging
-- **Documentation-only changes skip CI**: see below
+- Use PR review toolkit before creating PRs; at most two review rounds (`.rules/code_review.md`), fixes as commits on the PR branch (release PRs: one fix PR into `develop`)
+- **Every review finding gets an outcome** (fixed, rejected with a reason, or filed as an issue) before merging; never merge while a review is still running
+- **Documentation-only changes**: see below
 
-### Documentation-only changes skip CI
+### Documentation-only changes
 
-A change that touches only documentation (`CHANGELOG.md`, `README.md`, `docs/`, `.context/`, `AGENTS.md`, and other Markdown outside `src/` and `frontend/`) carries `[skip ci]` in the subject of its commit and in its pull request title, so that no workflow runs for it.
+A change that touches only documentation (`CHANGELOG.md`, `README.md`, `docs/`, `.context/`, `.rules/`, `AGENTS.md`, and other Markdown outside the code directories `src/`, `frontend/`, `notebook/`, `workers/`, `dashboard/`, `deploy/`, `scripts/` and `tests/`) needs no CI marker on its branch.
 
-- **Both places matter.** GitHub skips the push and pull-request workflows for a commit whose message contains the marker. The pull request's head commit decides for the pull request; the squash commit on `develop` is the pull request title plus the commit body, and decides for the push.
-- **Nothing else needs to run.** `auto-bump-dev.yml` honors the marker too, so a documentation merge does not bump the dev version, and the docs site is rebuilt from `main` by `notify-docs.yml`, which a release triggers.
-- **An admin merges it.** `develop` requires `Lint` and `Test (3.12)` (and `main` also `Test (3.11)`), which a skipped pull request never reports, so it stays "expected" until an admin merges it; the rulesets exempt the Admin role (see the branch protection notes above).
+- **Its pull request reports on its own.** The `changes` job in `tests.yml` sees that only documentation changed. `Lint` and `Test (3.12)` (and on `main`, `Test (3.11)`) still report, and pass after running only `tests/test_frontend/test_embed_snippet_hygiene.py`, the one test that reads documentation; Frontend Tests and the Docker build do not run. It merges like any other pull request, with no admin merge.
+- **Put `[skip-bump]` in the pull request title, not `[skip ci]`.** `auto-bump-dev.yml` then skips the version bump, and the squash commit does not carry the CI marker. GitHub reads that marker from a pull request's head commit, so a documentation merge that left it as the head of `develop` would make the next `develop` to `main` release pull request run no checks, and it could not backstop a code change that slipped in. The cost is one dev image build per documentation merge. The docs site is rebuilt from `main` by `notify-docs.yml`, which a release triggers.
+- **Not on the branch's own commits.** GitHub reads the marker from a pull request's head commit, and a pull request whose head commit carries it runs no workflow at all, so `Lint` and `Test (3.12)` stay "expected" until an admin merges it (the rulesets exempt the Admin role).
 - **Never** for a change that touches code, configuration, tests, workflows or anything under `src/` or `frontend/` (the widget deploys from there), and never for a release pull request. A release into `main` runs every check, so a change that skipped CI by mistake is caught there.
 
 ## Target Projects
@@ -268,6 +272,18 @@ docker exec osa-dev python -m src.cli.main sync github --full
 **Frontend:**
 - Dev: https://develop-demo.osc.earth
 - Prod: https://demo.osc.earth
+
+### Server configuration (Infisical)
+
+The server `~/osa/.env` (shared by the `osa` and `osa-dev` containers) is generated: never edit it by hand.
+Its source of truth is Infisical at `infisical.nemar.org`, project `osc`, `prod` `/osa/server`.
+`deploy/sync-env.sh` renders it (mode 0600) with the host's machine identity
+(`~/.config/infisical/hedtools-identity.env`) each time a deploy script is about to replace a container.
+If Infisical is unreachable, the existing `.env` is kept and the failure is logged;
+if there is no `.env` at all, the deploy scripts refuse to replace the running container.
+A changed value takes effect on the next deploy;
+to apply it immediately, run `deploy/auto-update.sh --force` (prod; `--force` does not override an active rollback lock, so use `deploy/deploy.sh` then) or `deploy/deploy.sh dev` (dev) on the server.
+A rollback also re-renders the current Infisical values, so undo a bad value in Infisical rather than by rolling back the image.
 
 ### Inspecting Knowledge Databases
 

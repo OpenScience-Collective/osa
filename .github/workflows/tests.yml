@@ -1,34 +1,172 @@
 name: Tests
 
+# The one test workflow. It owns the required checks, `Lint`, `Test (3.11)` and
+# `Test (3.12)` (rulesets `protect-dev` and `protect-main`), so those job names
+# must not change. It used to have a twin, `test.yml`, also named "Tests", that
+# ran the same jobs again on every pull request into and push to `main`; this
+# file now carries the union of the two: its triggers, the `ruff check .` lint,
+# Python 3.13 on main-bound runs, and the hand-started Integration Tests job.
+
 on:
   push:
     branches: [main, develop]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Live tests to run: all, or a part of a test or model name (haiku, sonnet, luna, openrouter)'
+        required: false
+        default: 'all'
+        type: string
+
+# A newer push to a pull request cancels this workflow's run for the older one.
+# Every other run (push, schedule, dispatch) gets a group of its own, so pushes
+# to develop and main are never cancelled or queued behind each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # How much of this workflow a change needs. Lint and the Test legs are required
+  # checks (rulesets protect-dev and protect-main), so they must report on every
+  # run, under their own names: a trigger-level path filter would leave them
+  # "expected" forever, and a matrix job skipped by a job-level `if:` reports as
+  # plain "Test", not "Test (3.12)". So nothing here stops the workflow; Lint and
+  # Test always run and skip their steps, and they conclude success.
+  #
+  # code=false docs=false: a push of a bot bookkeeping commit alone (below).
+  #
+  # code=false docs=true: only documentation changed. Test runs the one test that
+  # reads documentation (test_embed_snippet_hygiene.py scans every tracked text
+  # file, docs/**/*.md included, for widget embed snippets); nothing else runs.
+  # Anything this job cannot classify, or fails on, runs everything.
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      docs: ${{ steps.classify.outputs.docs }}
+    steps:
+      # For a pull request this is the merge commit, whose first parent is the base
+      # it was merged onto, so HEAD^1..HEAD is exactly what the pull request changes.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Classify the changed files
+        id: classify
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AUTHOR: ${{ github.event.head_commit.author.email }}
+          COMMITTER: ${{ github.event.head_commit.committer.email }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -uo pipefail
+          everything() {
+            echo "Running everything: $1"
+            { echo "code=true"; echo "docs=false"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          case "$EVENT" in
+            pull_request)
+              files=$(git diff --name-only --no-renames HEAD^1 HEAD) \
+                || everything "could not diff the merge commit against its base"
+              ;;
+            push)
+              if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+                everything "a new branch has no previous head to compare with"
+              fi
+              git fetch --no-tags --depth=1 origin "$BEFORE" \
+                || everything "could not fetch the previous head $BEFORE"
+              files=$(git diff --name-only --no-renames "$BEFORE" HEAD) \
+                || everything "could not diff against the previous head $BEFORE"
+              ;;
+            *)
+              everything "a $EVENT run tests everything"
+              ;;
+          esac
+
+          if [ -z "$files" ]; then
+            everything "no changed files found"
+          fi
+          echo "Changed files:"
+          while IFS= read -r file; do echo "  $file"; done <<< "$files"
+
+          # The bot's version commits: auto-bump-dev.yml's "Bump version to X.devN"
+          # on develop and ensure-stable-version.yml's dev-suffix strip on main. Both
+          # change src/version.py alone, after the merge they follow was tested, and
+          # both are pushed with CI_ADMIN_TOKEN, so github.actor is that token's owner,
+          # not the bot; the bot is the commit's author and committer. Skipped only
+          # when the whole push changed nothing but src/version.py, so a bookkeeping
+          # commit can never hide an untested commit pushed with it. Not on pull
+          # requests: sync-develop.yml's pull request ends in a bump commit, and its
+          # merge of main into develop must be tested.
+          bot="github-actions[bot]@users.noreply.github.com"
+          if [ "$EVENT" = "push" ] && [ "$AUTHOR" = "$bot" ] && [ "$COMMITTER" = "$bot" ] \
+            && [ "$files" = "src/version.py" ]; then
+            case "$MESSAGE" in
+              "Bump version to "*|"chore: strip dev suffix for stable release"*)
+                echo "A bot version commit pushed alone; its code was tested on the commit before it"
+                { echo "code=false"; echo "docs=false"; } >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+            esac
+          fi
+
+          # Documentation is an allow-list: Markdown under docs/, .context/ and
+          # .rules/, Markdown at the repository root, and LICENSE. Any other path,
+          # a new directory or file type included, counts as code.
+          while IFS= read -r file; do
+            case "$file" in
+              docs/*.md|.context/*.md|.rules/*.md|LICENSE) ;;
+              */*) everything "$file is not documentation" ;;
+              *.md) ;;
+              *) everything "$file is not documentation" ;;
+            esac
+          done <<< "$files"
+
+          echo "Only documentation changed"
+          { echo "code=false"; echo "docs=true"; } >> "$GITHUB_OUTPUT"
+
   lint:
     name: Lint
+    needs: changes
+    # Always runs (it is a required check); its steps skip when nothing it checks
+    # changed. A failed `changes` job leaves `code` empty, which runs everything.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RUN_ALL: ${{ needs.changes.outputs.code != 'false' }}
     steps:
       - uses: actions/checkout@v4
+        if: env.RUN_ALL == 'true'
 
       - name: Set up Python
+        if: env.RUN_ALL == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install uv
+        if: env.RUN_ALL == 'true'
         uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
+        if: env.RUN_ALL == 'true'
         run: |
           uv sync --frozen --extra dev
 
       - name: Ruff check
+        if: env.RUN_ALL == 'true'
         run: |
-          uv run ruff check src tests
+          uv run ruff check .
 
       - name: Ruff format check
+        if: env.RUN_ALL == 'true'
         run: |
           uv run ruff format --check src tests
 
@@ -40,30 +178,47 @@ jobs:
       # would surface elsewhere is a separate change. Version pinned so a new
       # actionlint release cannot silently change what this step accepts.
       - name: Check the notebook site workflows with actionlint
+        if: env.RUN_ALL == 'true'
         run: |
           bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
           ./actionlint .github/workflows/deploy-notebook.yml .github/workflows/notebook-site-check.yml
 
   test:
     name: Test
-    needs: lint
+    needs: [changes, lint]
+    # Always runs after a passing Lint (it is a required check, and a skipped
+    # matrix job would report as "Test" rather than "Test (3.12)"); its steps
+    # decide what to do from `changes`.
+    if: ${{ !cancelled() && (needs.lint.result == 'success' || needs.lint.result == 'skipped') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 21
+    env:
+      RUN_ALL: ${{ needs.changes.outputs.code != 'false' }}
+      RUN_DOCS: ${{ needs.changes.outputs.code == 'false' && needs.changes.outputs.docs == 'true' }}
     strategy:
+      # 3.13 is not a required check; its failure must not cancel the required legs.
+      fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12']
+        # 3.11 and 3.12 everywhere; 3.13 as well where the old test.yml ran it, on
+        # a pull request into main, a push to main and a manual run.
+        python-version: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') && '["3.11", "3.12", "3.13"]' || '["3.11", "3.12"]') }}
 
     steps:
       - uses: actions/checkout@v4
+        if: env.RUN_ALL == 'true' || env.RUN_DOCS == 'true'
 
       - name: Set up Python ${{ matrix.python-version }}
+        if: env.RUN_ALL == 'true' || env.RUN_DOCS == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
+        if: env.RUN_ALL == 'true' || env.RUN_DOCS == 'true'
         uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
+        if: env.RUN_ALL == 'true' || env.RUN_DOCS == 'true'
         run: |
           uv sync --frozen --extra dev
 
@@ -72,15 +227,28 @@ jobs:
       # frontend/osa-workspace.js; it has no external package dependencies,
       # so `bun` on PATH is enough here, with no `bun install` needed.
       - name: Set up Bun
+        if: env.RUN_ALL == 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
 
+      # The union of the two old selections: tests.yml ran everything outside
+      # tests/test_integration that is not network or llm, test.yml everything
+      # not integration, llm or network. Together that is every test that is not
+      # network or llm, which is what this selects.
       - name: Run tests
+        if: env.RUN_ALL == 'true'
         env:
           READ_GITHUB_TOKEN: ${{ secrets.READ_GITHUB_TOKEN }}
         run: |
-          uv run pytest --ignore=tests/test_integration -v --cov=src --cov-report=xml -m "not network and not llm"
+          uv run pytest tests/ -v --cov=src --cov-report=xml -m "not network and not llm"
+
+      # A documentation-only change can still break this one test: it checks every
+      # widget embed snippet in any tracked text file, docs/**/*.md included.
+      - name: Run the test that reads documentation
+        if: env.RUN_DOCS == 'true'
+        run: |
+          uv run pytest tests/test_frontend/test_embed_snippet_hygiene.py -v -m "not network and not llm"
 
       # The widget's light and dark appearance in real Chrome (#469). The bug is the
       # browser's own drawing of form controls on a dark host page, which the happy-dom
@@ -88,19 +256,19 @@ jobs:
       # default config, and the same with color_scheme: auto), so it needs this job's
       # Python environment as well as Bun; the runner ships Chrome.
       - name: Check the widget's light and dark appearance in headless Chrome
-        if: matrix.python-version == '3.12'
+        if: env.RUN_ALL == 'true' && matrix.python-version == '3.12'
         run: bun frontend/browser-harness/color-scheme-check.mjs --serve
 
       # Every frame in which the launcher is visible shows the community's look,
       # never the defaults first (#475); needs the same server as the check above.
       - name: Check the widget's first paint in headless Chrome
-        if: matrix.python-version == '3.12'
+        if: env.RUN_ALL == 'true' && matrix.python-version == '3.12'
         run: bun frontend/browser-harness/first-paint-check.mjs --serve
 
       # The launcher's position, size and offsets (#553), sampled on every frame of
       # opening and closing the panel. Serves the widget itself; needs no other server.
       - name: Check the widget's launcher geometry in headless Chrome
-        if: matrix.python-version == '3.12'
+        if: env.RUN_ALL == 'true' && matrix.python-version == '3.12'
         timeout-minutes: 8
         run: bun frontend/browser-harness/launcher-geometry-check.mjs
 
@@ -109,19 +277,25 @@ jobs:
       # notebook tabs, on the tab it came from, and carries the widget tag's
       # integrity, which the browser checks there. Needs the same server.
       - name: Check the widget's pop-out in headless Chrome
-        if: matrix.python-version == '3.12'
+        if: env.RUN_ALL == 'true' && matrix.python-version == '3.12'
         run: bun frontend/browser-harness/popout-check.mjs --serve
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
-        if: matrix.python-version == '3.12'
+        if: env.RUN_ALL == 'true' && matrix.python-version == '3.12'
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   frontend-tests:
     name: Frontend Tests
+    needs: changes
+    # Not a required check, so a job-level skip is fine here.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -308,14 +482,98 @@ jobs:
       - name: Check worker syntax
         run: node --check workers/osa-worker/index.js
 
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Manual only (Actions > Tests > Run workflow). These tests make paid calls to the Claude
+    # Platform, OpenRouter and Amazon Bedrock, so they never run on push or on pull requests.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen --extra dev
+
+      - name: Check the live credentials
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          OPENROUTER_API_KEY_FOR_TESTING: ${{ secrets.OPENROUTER_API_KEY_FOR_TESTING }}
+        run: |
+          # Presence only, never the values. A missing key makes its tests skip, which a
+          # green run hides, so each one is named here. A run with none of them set would
+          # skip every live test and still pass, so that fails the job now. A base URL
+          # without a workspace ID stops the whole run at startup, so that pair fails it too.
+          keys_set=0
+          for name in ANTHROPIC_API_KEY AWS_BEARER_TOKEN_BEDROCK OPENROUTER_API_KEY_FOR_TESTING; do
+            if [ -n "${!name}" ]; then
+              echo "$name is set"
+              keys_set=$((keys_set + 1))
+            else
+              echo "::warning::$name is not set; the tests that need it will skip"
+            fi
+          done
+          if [ "$keys_set" -eq 0 ]; then
+            echo "::error::None of the live credentials is set, so every live test would skip"
+            exit 1
+          fi
+          if [ -n "$ANTHROPIC_BASE_URL" ] && [ -z "$ANTHROPIC_WORKSPACE_ID" ]; then
+            echo "::error::ANTHROPIC_BASE_URL is set without ANTHROPIC_WORKSPACE_ID"
+            exit 1
+          fi
+
+      - name: Run live model tests
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          OPENROUTER_API_KEY_FOR_TESTING: ${{ secrets.OPENROUTER_API_KEY_FOR_TESTING }}
+          MODEL_FILTER: ${{ inputs.model }}
+        run: |
+          # Each module skips itself when its credential is missing, so a Bedrock-only run
+          # still runs the Bedrock cases. -k keeps only the cases whose ids name the model.
+          SELECT=()
+          if [ -n "$MODEL_FILTER" ] && [ "$MODEL_FILTER" != "all" ]; then
+            SELECT=(-k "$MODEL_FILTER")
+          fi
+          uv run pytest tests/ -v -m "integration or llm" --tb=short "${SELECT[@]}"
+
+      - name: Run network tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.READ_GITHUB_TOKEN }}  # read-only PAT for API rate limits
+        run: |
+          uv run pytest tests/ -v -m "network" --tb=short
+        continue-on-error: true
+
   all-tests:
     name: All Tests Passed
-    needs: [lint, test, frontend-tests]
+    needs: [changes, lint, test, frontend-tests]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: always()
     steps:
+      # Not a required check (the rulesets require Lint and the Test legs by name),
+      # but the one place a run says whether everything it ran passed, Frontend
+      # Tests included (#437).
       - name: Check results
         run: |
+          if [ "${{ needs.changes.result }}" != "success" ]; then
+            echo "Classifying the changes failed, so everything ran; see the Classify changes job"
+            exit 1
+          fi
           if [ "${{ needs.lint.result }}" != "success" ] && [ "${{ needs.lint.result }}" != "skipped" ]; then
             echo "Lint failed"
             exit 1

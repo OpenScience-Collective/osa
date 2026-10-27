@@ -11,6 +11,7 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from src.knowledge.db import (
@@ -164,6 +165,39 @@ class TestDiscourseSearch:
             assert "Epoch rejection" in results[0].title
             assert results[0].reply_count == 8
 
+    def test_forum_tool_labels_the_stored_answer_best_answer(self, temp_db: Path):
+        """The stored answer may be a liked or staff reply, so it is not called accepted."""
+        from src.tools.knowledge import create_search_discourse_tool
+
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db), get_connection() as conn:
+            upsert_discourse_topic(
+                conn,
+                forum_url="https://neuroimage.usc.edu/forums",
+                topic_id=7,
+                title="Head model fails with OpenMEEG",
+                first_post="OpenMEEG stops with an error.",
+                accepted_answer="Update OpenMEEG from the plugin manager.",
+                category_name="Bugs",
+                tags=[],
+                reply_count=1,
+                like_count=0,
+                views=10,
+                url="https://neuroimage.usc.edu/forums/t/head-model/7",
+                created_at="2026-10-01T00:00:00Z",
+                last_posted_at=None,
+            )
+            conn.commit()
+
+        tool = create_search_discourse_tool("test", "Test")
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_db),
+            patch("src.tools.knowledge.get_db_path", return_value=temp_db),
+        ):
+            result = tool.invoke({"query": "OpenMEEG"})
+
+        assert "Best answer: Update OpenMEEG" in result
+        assert "Accepted answer" not in result
+
     def test_search_empty_query_returns_empty(self, temp_db: Path):
         """Test that an empty or nonsensical query returns no results."""
         with patch("src.knowledge.db.get_db_path", return_value=temp_db):
@@ -256,6 +290,157 @@ class TestGetAcceptedAnswer:
         ]
         result = _get_accepted_answer(posts)
         assert result is None
+
+    def test_reads_likes_from_actions_summary(self):
+        """A topic's posts carry likes in actions_summary, not like_count."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>"},
+            {"post_number": 2, "cooked": "<p>Unliked</p>", "actions_summary": []},
+            {
+                "post_number": 3,
+                "cooked": "<p>Liked answer</p>",
+                "actions_summary": [{"id": 2, "count": 3}],
+            },
+        ]
+        assert "Liked answer" in _get_accepted_answer(posts)
+
+    def test_falls_back_to_staff_reply(self):
+        """With no accepted or liked reply, the first staff reply other than the asker's."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "asker"},
+            {"post_number": 2, "cooked": "<p>Me too</p>", "username": "user2", "staff": False},
+            {
+                "post_number": 3,
+                "cooked": "<p>Update to the latest version: this was fixed last week.</p>",
+                "username": "dev",
+                "staff": True,
+            },
+            {
+                "post_number": 4,
+                "cooked": "<p>Another note from the team, long enough to count.</p>",
+                "username": "dev",
+                "staff": True,
+            },
+        ]
+        assert "fixed last week" in _get_accepted_answer(posts)
+
+    def test_staff_ping_is_not_an_answer(self):
+        """A staff reply that only mentions someone is skipped for a later substantive one."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        ping = '<p>FYI <a class="mention" href="/forums/u/samuelmedina">@samuelmedina</a></p>'
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "asker"},
+            {"post_number": 2, "cooked": ping, "username": "dev", "staff": True},
+        ]
+        assert _get_accepted_answer(posts) is None
+
+        posts.append(
+            {
+                "post_number": 3,
+                "cooked": "<p>The plugin moved; reinstall it from the plugin manager.</p>",
+                "username": "dev2",
+                "staff": True,
+            }
+        )
+        assert "reinstall it" in _get_accepted_answer(posts)
+
+    def test_asker_thanks_does_not_beat_the_answer(self):
+        """A liked "thanks" from the asker loses to another member's reply."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        answer = "<p>Set the sampling rate in the import options, then reimport.</p>"
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "asker"},
+            {"post_number": 2, "cooked": answer, "username": "dev", "staff": True},
+            {"post_number": 3, "cooked": "<p>Thanks!</p>", "username": "asker", "like_count": 1},
+        ]
+        assert "sampling rate" in _get_accepted_answer(posts)
+
+    def test_asker_own_liked_solution_is_the_last_resort(self):
+        """With no other answer, the asker's own liked reply (their solution) is kept."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "asker"},
+            {"post_number": 2, "cooked": "<p>Me too</p>", "username": "other"},
+            {
+                "post_number": 3,
+                "cooked": "<p>Deleting the second surface fixed it.</p>",
+                "username": "asker",
+                "like_count": 1,
+            },
+        ]
+        assert "Deleting the second surface" in _get_accepted_answer(posts)
+
+    def test_staff_asker_follow_up_is_not_an_answer(self):
+        """A staff member's follow-up on their own question is not its answer."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "dev", "staff": True},
+            {"post_number": 2, "cooked": "<p>Follow-up</p>", "username": "dev", "staff": True},
+        ]
+        assert _get_accepted_answer(posts) is None
+
+    def test_skips_small_actions(self):
+        """A "closed this topic" small action (post_type 3) is not a reply."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "username": "asker"},
+            {"post_number": 2, "cooked": "", "post_type": 3, "username": "dev", "staff": True},
+        ]
+        assert _get_accepted_answer(posts) is None
+
+
+class TestListingUrls:
+    """Tests for the listings that the category and tag filters select."""
+
+    BASE = "https://neurostars.org"
+
+    def _cat(self, slug: str, cat_id: int):
+        from src.core.config.community import DiscourseCategoryConfig
+
+        return DiscourseCategoryConfig(slug=slug, id=cat_id)
+
+    def test_no_filters_uses_latest(self):
+        from src.knowledge.discourse_sync import _listing_urls
+
+        assert _listing_urls(self.BASE, None, None) == [f"{self.BASE}/latest.json"]
+
+    def test_tags_use_tag_listings(self):
+        from src.knowledge.discourse_sync import _listing_urls
+
+        assert _listing_urls(self.BASE, None, ["bids", "bids validator"]) == [
+            f"{self.BASE}/tag/bids.json",
+            f"{self.BASE}/tag/bids%20validator.json",
+        ]
+
+    def test_categories_use_category_listings(self):
+        from src.knowledge.discourse_sync import _listing_urls
+
+        assert _listing_urls(self.BASE, [self._cat("software-support", 234)], None) == [
+            f"{self.BASE}/c/software-support/234.json"
+        ]
+
+    def test_categories_and_tags_intersect(self):
+        from src.knowledge.discourse_sync import _listing_urls
+
+        assert _listing_urls(self.BASE, [self._cat("software-support", 234)], ["bids"]) == [
+            f"{self.BASE}/tags/c/software-support/234/bids.json"
+        ]
+
+    def test_forum_under_a_path(self):
+        """A forum served under a path (Brainstorm's /forums) keeps the path."""
+        from src.knowledge.discourse_sync import _listing_urls
+
+        base = "https://neuroimage.usc.edu/forums"
+        assert _listing_urls(base, [self._cat("bugs", 17)], None) == [f"{base}/c/bugs/17.json"]
 
 
 class TestMNEConfig:
@@ -369,3 +554,217 @@ class TestDiscourseApiLive:
             with get_connection("test_discourse") as conn:
                 rows = conn.execute("SELECT COUNT(*) FROM discourse_topics").fetchone()
                 assert rows[0] >= 1
+
+    @pytest.mark.network
+    def test_tag_listing_only_returns_tagged_topics(self):
+        """A tag listing on a shared forum holds only topics with that tag."""
+        from src.knowledge.discourse_sync import _fetch_json
+
+        data = _fetch_json("https://neurostars.org/tag/bids.json", delay=0.5)
+        assert data is not None
+        topics = data["topic_list"]["topics"]
+        assert topics
+        for topic in topics:
+            tag_names = [t["name"] if isinstance(t, dict) else t for t in topic.get("tags", [])]
+            assert "bids" in tag_names
+
+    @pytest.mark.network
+    def test_sync_brainstorm_category_stores_category_names(self, temp_db: Path):
+        """Syncing a category of a forum under a path stores each topic's category name."""
+        from src.core.config.community import CommunityConfig
+        from src.knowledge.discourse_sync import sync_discourse_topics
+
+        config = CommunityConfig.from_yaml("src/assistants/brainstorm/config.yaml")
+        forum = config.discourse[0]
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            count = sync_discourse_topics(
+                base_url=str(forum.url).rstrip("/"),
+                project="test_discourse",
+                categories=forum.categories[:1],
+                incremental=False,
+                max_topics=2,
+                request_delay=0.5,
+            )
+            assert count >= 1
+            with get_connection("test_discourse") as conn:
+                names = {
+                    row[0] for row in conn.execute("SELECT category_name FROM discourse_topics")
+                }
+            assert None not in names
+
+
+class TestSyncOverHttp:
+    """sync_discourse_topics end to end against a forum served at the HTTP boundary.
+
+    respx answers the forum's JSON API, as the other HTTP-level tests in this repo do; the
+    sync, the answer selection and the database are the real ones.
+    """
+
+    BASE = "https://forum.example.org/forums"
+
+    @staticmethod
+    def _listing(topic_ids: list[int], more: bool = False) -> dict:
+        topics = [
+            {"id": i, "title": f"Topic {i}", "last_posted_at": "2026-10-01T00:00:00.000Z"}
+            for i in topic_ids
+        ]
+        listing: dict = {"topic_list": {"topics": topics}}
+        if more:
+            listing["topic_list"]["more_topics_url"] = "/forums/latest?page=1"
+        return listing
+
+    @staticmethod
+    def _topic(topic_id: int, category_id: int = 18) -> dict:
+        return {
+            "id": topic_id,
+            "slug": f"topic-{topic_id}",
+            "title": f"Topic {topic_id}",
+            "category_id": category_id,
+            "post_stream": {
+                "posts": [
+                    {"post_number": 1, "cooked": "<p>How do I filter?</p>", "username": "a"},
+                    {
+                        "post_number": 2,
+                        "cooked": "<p>Use the band-pass process in the pipeline editor.</p>",
+                        "username": "dev",
+                        "staff": True,
+                    },
+                ]
+            },
+        }
+
+    def _serve_topics(self, router, ids: list[int]) -> None:
+        for i in ids:
+            router.get(f"{self.BASE}/t/{i}.json").respond(json=self._topic(i))
+
+    def _sync(self, temp_db: Path, **kwargs) -> int:
+        from src.knowledge.discourse_sync import sync_discourse_topics
+
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            return sync_discourse_topics(
+                base_url=self.BASE, project="test_discourse", request_delay=0, **kwargs
+            )
+
+    def _last_sync(self, temp_db: Path) -> str | None:
+        from src.knowledge.db import get_last_sync
+
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            return get_last_sync("discourse", self.BASE, "test_discourse")
+
+    def _rows(self, temp_db: Path) -> list[sqlite3.Row]:
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_db),
+            get_connection("test_discourse") as conn,
+        ):
+            return conn.execute(
+                "SELECT topic_id, category_name, accepted_answer FROM discourse_topics "
+                "ORDER BY topic_id"
+            ).fetchall()
+
+    def test_stores_category_names_and_records_the_start_time(self, temp_db: Path):
+        """Topics get their category's name from /site.json and the staff answer; the
+        last sync is when the sync started, not when it ended."""
+        from datetime import UTC, datetime
+
+        import respx
+
+        served_at: list[str] = []
+
+        def topic(request):
+            served_at.append(datetime.now(UTC).isoformat())
+            topic_id = int(request.url.path.rsplit("/", 1)[1].split(".")[0])
+            return httpx.Response(200, json=self._topic(topic_id))
+
+        before = datetime.now(UTC).isoformat()
+        with respx.mock(assert_all_called=False) as router:
+            router.get(f"{self.BASE}/latest.json").respond(json=self._listing([1, 2]))
+            router.get(url__regex=rf"{self.BASE}/t/\d+\.json").mock(side_effect=topic)
+            router.get(f"{self.BASE}/site.json").respond(
+                json={"categories": [{"id": 18, "name": "Discussions"}]}
+            )
+            assert self._sync(temp_db, incremental=False) == 2
+
+        rows = self._rows(temp_db)
+        assert [r["category_name"] for r in rows] == ["Discussions", "Discussions"]
+        assert all("band-pass" in r["accepted_answer"] for r in rows)
+        last_sync = self._last_sync(temp_db)
+        assert before <= last_sync <= served_at[0]
+
+    def test_unreadable_category_list_still_syncs_topics(self, temp_db: Path):
+        """A failed /site.json only costs the category names."""
+        import respx
+
+        with respx.mock(assert_all_called=False) as router:
+            router.get(f"{self.BASE}/latest.json").respond(json=self._listing([1]))
+            self._serve_topics(router, [1])
+            router.get(f"{self.BASE}/site.json").respond(404)
+            assert self._sync(temp_db, incremental=False) == 1
+
+        assert [r["category_name"] for r in self._rows(temp_db)] == [None]
+        assert self._last_sync(temp_db) is not None
+
+    def test_failed_listing_page_raises_and_keeps_the_last_sync(self, temp_db: Path):
+        """A listing page that cannot be read stores what was read, raises, and leaves the
+        last sync where it was, so the next sync looks for the missing topics again."""
+        import respx
+
+        from src.knowledge.db import update_sync_metadata
+        from src.knowledge.discourse_sync import DiscourseSyncError
+
+        earlier = "2020-01-01T00:00:00+00:00"
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            update_sync_metadata("discourse", self.BASE, 0, "test_discourse", synced_at=earlier)
+
+        with respx.mock(assert_all_called=False) as router:
+            router.get(f"{self.BASE}/latest.json", params={"page": "1"}).respond(500)
+            router.get(f"{self.BASE}/latest.json").respond(json=self._listing([1], more=True))
+            self._serve_topics(router, [1])
+            router.get(f"{self.BASE}/site.json").respond(json={"categories": []})
+            with pytest.raises(DiscourseSyncError, match="some may be missing"):
+                self._sync(temp_db)
+
+        assert [r["topic_id"] for r in self._rows(temp_db)] == [1]
+        assert self._last_sync(temp_db) == earlier
+
+    def test_unknown_tag_raises(self, temp_db: Path):
+        """A tag the forum does not have (a typo in the config) is an error, not 0 topics."""
+        import respx
+
+        from src.knowledge.discourse_sync import DiscourseSyncError
+
+        with respx.mock() as router:
+            router.get(f"{self.BASE}/tag/bidss.json").respond(404)
+            with pytest.raises(DiscourseSyncError, match="configured tags"):
+                self._sync(temp_db, tags=["bidss"], incremental=False)
+
+        assert self._last_sync(temp_db) is None
+
+    def test_topic_in_two_tag_listings_is_synced_once(self, temp_db: Path):
+        """A topic carrying two configured tags is fetched once."""
+        import respx
+
+        with respx.mock(assert_all_called=False) as router:
+            router.get(f"{self.BASE}/tag/bids.json").respond(json=self._listing([1]))
+            router.get(f"{self.BASE}/tag/validator.json").respond(json=self._listing([1, 2]))
+            topic_one = router.get(f"{self.BASE}/t/1.json").respond(json=self._topic(1))
+            router.get(f"{self.BASE}/t/2.json").respond(json=self._topic(2))
+            router.get(f"{self.BASE}/site.json").respond(json={"categories": []})
+            assert self._sync(temp_db, tags=["bids", "validator"], incremental=False) == 2
+
+        assert topic_one.call_count == 1
+
+    def test_max_topics_stops_early_and_keeps_the_last_sync(self, temp_db: Path):
+        """At max_topics the later listings are not read, and the last sync stays unset,
+        since the topics past the cap were not synced."""
+        import respx
+
+        with respx.mock(assert_all_called=False) as router:
+            router.get(f"{self.BASE}/tag/bids.json").respond(json=self._listing([1]))
+            later = router.get(f"{self.BASE}/tag/validator.json").respond(json=self._listing([2]))
+            self._serve_topics(router, [1, 2])
+            router.get(f"{self.BASE}/site.json").respond(json={"categories": []})
+            count = self._sync(temp_db, tags=["bids", "validator"], incremental=False, max_topics=1)
+
+        assert count == 1
+        assert later.call_count == 0
+        assert self._last_sync(temp_db) is None

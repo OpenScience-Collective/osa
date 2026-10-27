@@ -30,8 +30,9 @@ export const ROUTE_PATTERNS = {
 };
 
 // This worker is reachable two ways: its default *.workers.dev hostname
-// (unprefixed), and the product-owned widget.osc.earth/osa/* path mount
-// (#437). A Cloudflare route of the form "widget.osc.earth/osa/*" delivers
+// (unprefixed), and product-owned path mounts: widget.osc.earth/osa/* (#437)
+// and edge.osc.earth/osa/* (dev: /osa-dev/*, see mountPrefixFor). A
+// Cloudflare route of the form "widget.osc.earth/osa/*" delivers
 // the FULL path, prefix included, to the worker: it sees "/osa/nemar/chat",
 // not "/nemar/chat". Strip the prefix once, here, before any route is
 // matched, rather than baking "/osa" into each route's own regex; a
@@ -55,7 +56,32 @@ const MOUNT_PREFIX = '/osa';
 // Adding a mount host without adding it here fails loudly and immediately
 // (every route 404s, and the fall-through below logs both paths), which is
 // the failure direction to prefer.
-const MOUNTED_HOSTS = new Set(['widget.osc.earth', 'develop-widget.osc.earth']);
+const MOUNTED_HOSTS = new Set(['widget.osc.earth', 'develop-widget.osc.earth', 'edge.osc.earth']);
+
+// edge.osc.earth is the organization's host for browser-facing Workers, one
+// path per project (edge.<domain>/<project>). Unlike widget and
+// develop-widget, production and dev share it, and dev takes the project path
+// with a "-dev" suffix: the dev worker is mounted at "/osa-dev", the
+// production worker at MOUNT_PREFIX. Cloudflare sends "/osa-dev/..." to the
+// dev worker because its "/osa-dev*" route is more specific than production's
+// "/osa*"; if the dev routes were ever missing, production reads "/osa-dev..."
+// as outside its mount and answers 404 rather than serving it.
+const EDGE_HOST = 'edge.osc.earth';
+const DEV_EDGE_MOUNT_PREFIX = '/osa-dev';
+
+/**
+ * The prefix Cloudflare mounts this worker at on `hostname`, or null when the
+ * host is not a mount (the bare *.workers.dev name, `wrangler dev`).
+ */
+function mountPrefixFor(hostname, env) {
+  if (!MOUNTED_HOSTS.has(hostname)) {
+    return null;
+  }
+  if (hostname === EDGE_HOST && env?.ENVIRONMENT === 'development') {
+    return DEV_EDGE_MOUNT_PREFIX;
+  }
+  return MOUNT_PREFIX;
+}
 
 /**
  * Strip a leading mount-prefix segment so every route matcher can be
@@ -65,13 +91,14 @@ const MOUNTED_HOSTS = new Set(['widget.osc.earth', 'develop-widget.osc.earth']);
  * On any other host the path is returned unchanged, including the bare
  * *.workers.dev and `wrangler dev` cases.
  */
-function stripMountPrefix(pathname, hostname) {
-  if (!MOUNTED_HOSTS.has(hostname)) {
+function stripMountPrefix(pathname, hostname, env) {
+  const prefix = mountPrefixFor(hostname, env);
+  if (prefix === null) {
     return pathname;
   }
-  // The bare "/osa" never reaches here: fetch() redirects it to "/osa/" (#500).
-  if (pathname.startsWith(`${MOUNT_PREFIX}/`)) {
-    return pathname.slice(MOUNT_PREFIX.length);
+  // The bare prefix never reaches here: fetch() redirects it to "<prefix>/" (#500).
+  if (pathname.startsWith(`${prefix}/`)) {
+    return pathname.slice(prefix.length);
   }
   return pathname;
 }
@@ -323,6 +350,7 @@ function isAllowedOrigin(origin) {
     'https://nemar.org',
     'https://neuroconv--2064.org.readthedocs.build',
     'https://neuroconv.readthedocs.io',
+    'https://neuroimage.usc.edu',
     'https://nwb-overview--197.org.readthedocs.build',
     'https://nwb-overview.readthedocs.io',
     'https://nwb.org',
@@ -356,14 +384,11 @@ function isAllowedOrigin(origin) {
   if (origin.startsWith('https://') && origin.endsWith('.nwb.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.readthedocs.build')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.readthedocs.io')) return true;
+  if (origin.startsWith('https://') && origin.endsWith('.usc.edu')) return true;
 
   // Allow demo.osc.earth and single-level subdomains (develop-demo, PR previews)
   if (origin === 'https://demo.osc.earth') return true;
   if (origin.startsWith('https://') && origin.endsWith('-demo.osc.earth')) return true;
-
-  // Allow osa-demo.pages.dev and subdomains (backward compatibility)
-  if (origin === 'https://osa-demo.pages.dev') return true;
-  if (origin.startsWith('https://') && origin.endsWith('.osa-demo.pages.dev')) return true;
 
   // Allow localhost for development
   if (origin.startsWith('http://localhost:')) return true;
@@ -575,25 +600,26 @@ export default {
       // The bare mount path (#500) has one canonical form, with its slash, as
       // the notebook host's "/osa" already does: redirect rather than serve the
       // root at two addresses. Only on a mounted host, where "/osa" is the mount
-      // and not a path of its own (see MOUNTED_HOSTS).
-      if (MOUNTED_HOSTS.has(url.hostname)) {
-        if (url.pathname === MOUNT_PREFIX) {
+      // and not a path of its own (see MOUNTED_HOSTS and mountPrefixFor).
+      const mountPrefix = mountPrefixFor(url.hostname, env);
+      if (mountPrefix !== null) {
+        if (url.pathname === mountPrefix) {
           return new Response(null, {
             status: 308,
-            headers: { ...corsHeaders, Location: `${MOUNT_PREFIX}/${url.search}` },
+            headers: { ...corsHeaders, Location: `${mountPrefix}/${url.search}` },
           });
         }
         // The bare path's "/osa*" route also delivers "/osafoo/...", which is
         // outside the mount: not found, rather than read as community "osafoo".
-        if (url.pathname.startsWith(MOUNT_PREFIX) && !url.pathname.startsWith(`${MOUNT_PREFIX}/`)) {
+        if (url.pathname.startsWith(mountPrefix) && !url.pathname.startsWith(`${mountPrefix}/`)) {
           return new Response('Not Found', { status: 404, headers: corsHeaders });
         }
       }
-      // Strip the widget.osc.earth/osa mount prefix (#437) once, up front.
+      // Strip the host's mount prefix (#437) once, up front.
       // Every matcher below is written unprefixed and sees this pathname,
       // never url.pathname directly, so it works the same reached via the
       // path-mounted host or the bare *.workers.dev / wrangler dev host.
-      const pathname = stripMountPrefix(url.pathname, url.hostname);
+      const pathname = stripMountPrefix(url.pathname, url.hostname, env);
 
       // Route requests
       if (pathname === '/') {
@@ -780,7 +806,7 @@ export default {
         strippedPath: pathname,
         host: url.hostname,
         method: request.method,
-        mounted: MOUNTED_HOSTS.has(url.hostname),
+        mountPrefix,
       });
       return new Response('Not Found', { status: 404, headers: corsHeaders });
     } catch (error) {

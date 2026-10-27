@@ -28,6 +28,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -53,20 +54,25 @@ jobs:
       # osa/ subdirectory plus a root _redirects sending / to /osa/.
       - name: Pick the site URL for this branch
         id: site
+        env:
+          # Account-scoped *.pages.dev name of the osa-notebook project; see the
+          # PAGES_DEMO_HOST note in deploy-pages.yml. Override with the
+          # PAGES_NOTEBOOK_HOST repository variable.
+          PAGES_NOTEBOOK_HOST: ${{ vars.PAGES_NOTEBOOK_HOST || 'osa-notebook.pages.dev' }}
         run: |
           if [ "${{ github.ref_name }}" = "main" ]; then
             {
               echo "url=https://notebook.osc.earth/osa"
               echo "environment=production"
               echo "subdomain=notebook"
-              echo "pages_target=osa-notebook.pages.dev"
+              echo "pages_target=${PAGES_NOTEBOOK_HOST}"
             } >> "$GITHUB_OUTPUT"
           else
             {
               echo "url=https://develop-notebook.osc.earth/osa"
               echo "environment=develop"
               echo "subdomain=develop-notebook"
-              echo "pages_target=develop.osa-notebook.pages.dev"
+              echo "pages_target=develop.${PAGES_NOTEBOOK_HOST}"
             } >> "$GITHUB_OUTPUT"
           fi
 

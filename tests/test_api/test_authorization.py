@@ -131,15 +131,20 @@ class TestIsAuthorizedOrigin:
         """Platform default origins should be allowed for all communities."""
         for community_id in ["hed", "bids", "eeglab"]:
             assert _is_authorized_origin("https://demo.osc.earth", community_id) is True
-        # Legacy pages.dev
-        assert _is_authorized_origin("https://osa-demo.pages.dev", "hed") is True
 
     def test_platform_wildcard_origin_always_allowed(self):
         """Platform wildcard origins should be allowed for all communities."""
         assert _is_authorized_origin("https://develop-demo.osc.earth", "hed") is True
         assert _is_authorized_origin("https://preview-123-demo.osc.earth", "bids") is True
-        # Legacy pages.dev subdomains
-        assert _is_authorized_origin("https://feature-branch.osa-demo.pages.dev", "eeglab") is True
+
+    @pytest.mark.parametrize(
+        "origin",
+        ["https://osa-demo.pages.dev", "https://feature-branch.osa-demo.pages.dev"],
+    )
+    def test_demo_pages_dev_origin_not_authorized(self, origin):
+        """The demo's account-scoped *.pages.dev names are no longer platform origins."""
+        for community_id in ["hed", "bids", "eeglab"]:
+            assert _is_authorized_origin(origin, community_id) is False
 
     def test_exact_origin_match(self):
         """Should return True for exact origin match using real community CORS origins."""

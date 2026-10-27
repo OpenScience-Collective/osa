@@ -132,7 +132,9 @@ def _collect_cors_config() -> tuple[list[str], str | None]:
     Aggregates exact origins and wildcard patterns from:
     1. Platform-level settings (Settings.cors_origins)
     2. Per-community config (CommunityConfig.cors_origins)
-    3. Default platform wildcards (*-demo.osc.earth, *.osa-demo.pages.dev)
+    3. Default platform origins: the demo (demo.osc.earth, *-demo.osc.earth)
+       and the dashboard (status.osc.earth, *-status.osc.earth, and its
+       Cloudflare Pages previews on osa-dash.pages.dev, *.osa-dash.pages.dev)
 
     Returns:
         Tuple of (exact_origins, origin_regex_pattern).
@@ -143,12 +145,10 @@ def _collect_cors_config() -> tuple[list[str], str | None]:
     exact_origins: list[str] = list(settings.cors_origins)
     # Add default demo/dashboard page origins
     exact_origins.append("https://demo.osc.earth")
-    exact_origins.append("https://osa-demo.pages.dev")
     exact_origins.append("https://osa-dash.pages.dev")
     exact_origins.append("https://status.osc.earth")
     wildcard_patterns: list[str] = [
         "https://*-demo.osc.earth",  # Primary: develop-demo + PR preview deploys
-        "https://*.osa-demo.pages.dev",  # Backward compat: pages.dev deploys
         "https://*.osa-dash.pages.dev",  # Dashboard: preview/branch deploys
         "https://*-status.osc.earth",  # Dashboard: develop-status + PR previews
     ]

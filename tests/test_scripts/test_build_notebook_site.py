@@ -5,9 +5,9 @@ copy, starters, bootstrap files, sourcemap stripping) are tested here directly,
 each against real files under tmp_path, no mocks. The one piece that genuinely
 needs the network -- the real `jupyter lite build` and the real Pyodide lock
 fetch -- is a single end-to-end test, marked ``network`` the way this repo marks
-its other live tests (see .rules/testing.md and test.yml's separate "Run network
-tests" step): CI's ordinary Test job excludes it (``-m "not network"``), and it
-runs on push to main/workflow_dispatch instead.
+its other live tests (see .rules/testing.md and the "Run network tests" step of
+tests.yml's Integration Tests job): CI's ordinary Test job excludes it
+(``-m "not network"``), and it runs on workflow_dispatch instead.
 
 fetch_pyodide_lock's sha256-mismatch path is tested against a REAL local HTTP
 server (a real socket, real bytes) rather than a stubbed return value, matching
@@ -22,6 +22,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import subprocess
 import threading
 from pathlib import Path
@@ -491,29 +492,42 @@ class TestDeployWorkflowEnvironment:
     """
 
     @pytest.mark.parametrize(
-        ("branch", "url", "environment"),
+        ("branch", "url", "environment", "pages_target"),
         [
-            ("main", "https://notebook.osc.earth/osa", "production"),
-            ("develop", "https://develop-notebook.osc.earth/osa", "develop"),
+            ("main", "https://notebook.osc.earth/osa", "production", "osa-notebook.pages.dev"),
+            (
+                "develop",
+                "https://develop-notebook.osc.earth/osa",
+                "develop",
+                "develop.osa-notebook.pages.dev",
+            ),
         ],
     )
     def test_each_branch_builds_for_its_own_environment(
-        self, tmp_path: Path, branch: str, url: str, environment: str
+        self, tmp_path: Path, branch: str, url: str, environment: str, pages_target: str
     ) -> None:
-        script = _deploy_steps()["Pick the site URL for this branch"]["run"]
-        script = script.replace("${{ github.ref_name }}", branch)
+        step = _deploy_steps()["Pick the site URL for this branch"]
+        script = step["run"].replace("${{ github.ref_name }}", branch)
         assert "${{" not in script, "the step reads an expression this test does not fill in"
+        # The step's env holds `${{ vars.X || 'default' }}` expressions; with the
+        # repository variable unset, GitHub resolves each to its default.
+        step_env = {}
+        for name, value in (step.get("env") or {}).items():
+            match = re.fullmatch(r"\$\{\{\s*vars\.\w+\s*\|\|\s*'([^']*)'\s*\}\}", str(value))
+            assert match, f"{name} is set from an expression this test does not fill in"
+            step_env[name] = match.group(1)
         github_output = tmp_path / "github_output"
 
         subprocess.run(
             ["bash", "-euo", "pipefail", "-c", script],
-            env={**os.environ, "GITHUB_OUTPUT": str(github_output)},
+            env={**os.environ, **step_env, "GITHUB_OUTPUT": str(github_output)},
             check=True,
         )
 
         outputs = dict(line.split("=", 1) for line in github_output.read_text().splitlines())
         assert outputs["url"] == url
         assert outputs["environment"] == environment
+        assert outputs["pages_target"] == pages_target
 
     def test_the_build_step_passes_the_picked_url_and_environment(self) -> None:
         run = _deploy_steps()["Build the notebook site"]["run"]
@@ -647,12 +661,19 @@ class TestEmbedOrigins:
 
         assert origins == [
             "https://demo.osc.earth",
-            "https://osa-demo.pages.dev",
             "https://example.org",
         ]
 
     def test_every_build_environment_declares_its_platform_hosts(self) -> None:
         assert set(site.PLATFORM_EMBED_ORIGINS) == set(site.NOTEBOOK_ENVIRONMENTS)
+
+    @pytest.mark.parametrize("environment", ["production", "develop"])
+    def test_the_demo_pages_dev_names_are_not_embedders(self, environment: str) -> None:
+        # frontend/index.html redirects them to the osc.earth hosts before the
+        # widget loads, and the names are account-scoped.
+        origins = site.embed_origins({}, environment)
+
+        assert not any("osa-demo.pages.dev" in origin for origin in origins)
 
     def test_only_develop_admits_loopback_and_the_preview_hosts(self) -> None:
         production = site.embed_origins({}, "production")
@@ -882,8 +903,8 @@ class TestFullBuildEndToEnd:
     NEMAR overlay, into a temp directory. Needs the network (PyPI, for the
     JupyterLite build tools; jsDelivr, for Pyodide's own lock) and runs `uv tool
     run`, so it is slow (a couple of minutes) -- marked ``network``, excluded from
-    the ordinary `-m "not network"` runs in test.yml/tests.yml, and run in
-    test.yml's separate "Run network tests" step (push to main / workflow_dispatch,
+    the ordinary `-m "not network"` runs in tests.yml, and run in the "Run network
+    tests" step of tests.yml's Integration Tests job (workflow_dispatch,
     continue-on-error) the same way every other real-network test in this suite is.
     """
 

@@ -101,10 +101,6 @@ def update_worker_cors(origins):
   if (origin === 'https://demo.osc.earth') return true;
   if (origin.startsWith('https://') && origin.endsWith('-demo.osc.earth')) return true;
 
-  // Allow osa-demo.pages.dev and subdomains (backward compatibility)
-  if (origin === 'https://osa-demo.pages.dev') return true;
-  if (origin.startsWith('https://') && origin.endsWith('.osa-demo.pages.dev')) return true;
-
   // Allow localhost for development
   if (origin.startsWith('http://localhost:')) return true;
   if (origin.startsWith('http://127.0.0.1:')) return true;

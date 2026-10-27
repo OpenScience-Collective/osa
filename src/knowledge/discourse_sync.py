@@ -6,7 +6,10 @@ Designed to be generic and work with any Discourse instance.
 Features:
 - Public API (no auth needed for read access)
 - Incremental sync (only new/updated topics since last sync)
-- Category filtering
+- Category and tag filtering (a shared forum such as NeuroStars is limited to
+  the topics a community tags)
+- Best-answer selection that works on forums with and without the "solved"
+  plugin (see _get_accepted_answer for the order)
 - Patient rate limiting (1 request per second by default)
 - Stores topics in knowledge DB for FTS search
 """
@@ -14,8 +17,12 @@ Features:
 from __future__ import annotations
 
 import logging
+import re
+import sqlite3
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 import httpx
 import markdownify
@@ -34,6 +41,19 @@ from src.knowledge.db import (
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+# Most listing pages to read (30 topics each), as a guard against a listing that never
+# ends. Well above the largest forum synced (MNE's, about 6,000 topics in one listing).
+MAX_LISTING_PAGES = 1000
+
+
+class DiscourseSyncError(RuntimeError):
+    """A sync could not read every topic listing, so topics may be missing.
+
+    The topics that were read are stored, but the last-sync time is not moved
+    forward, so the next incremental sync looks for the missing ones again.
+    """
+
 
 # Default delay between API requests (seconds).
 # Discourse allows 200 req/min per IP, but we are generous and patient.
@@ -95,7 +115,15 @@ def _fetch_json(
                 continue
             response.raise_for_status()
             time.sleep(delay)
-            return response.json()
+            data = response.json()
+            if not isinstance(data, dict):
+                logger.error("Expected a JSON object from %s, got %s", url, type(data).__name__)
+                return None
+            return data
+        except ValueError as e:
+            # A 200 answer that is not JSON, such as a proxy's or a login page's HTML
+            logger.error("Response from %s is not JSON: %s", url, e)
+            return None
         except httpx.HTTPStatusError as e:
             logger.error("HTTP %d fetching %s: %s", e.response.status_code, url, e)
             return None
@@ -110,31 +138,119 @@ def _fetch_json(
     return None
 
 
-def _get_accepted_answer(posts: list[dict]) -> str | None:
-    """Extract the accepted answer from a list of posts.
+#: Discourse post_type for an ordinary post (others are moderator notes, small
+#: actions such as "closed this topic", and whispers).
+_REGULAR_POST_TYPE = 1
 
-    Discourse marks accepted answers with 'accepted_answer' field.
-    Falls back to the most-liked reply if no accepted answer.
+#: Discourse action type id for a like, as counted in a post's ``actions_summary``.
+_LIKE_ACTION_ID = 2
+
+#: Fewest characters of text, besides @mentions, that a staff reply needs to stand as a
+#: topic's answer. Shorter replies are pings such as "FYI @plugin_author".
+_MIN_STAFF_ANSWER_CHARS = 40
+
+#: An @mention, as markdown converted from Discourse HTML ("[@name](/u/name)") or as text.
+_MENTION = re.compile(r"\[@[^\]]*\]\([^)]*\)|@[\w.-]+")
+
+
+def _like_count(post: dict) -> int:
+    """Number of likes on a post.
+
+    A topic's posts (``/t/{id}.json``) carry their likes in ``actions_summary``,
+    not in a ``like_count`` field; ``like_count`` is read when present.
     """
-    # Look for the accepted answer
+    if post.get("like_count") is not None:
+        return int(post["like_count"])
+    for action in post.get("actions_summary") or []:
+        if action.get("id") == _LIKE_ACTION_ID:
+            return int(action.get("count") or 0)
+    return 0
+
+
+def _get_accepted_answer(posts: list[dict]) -> str | None:
+    """Pick the post that best answers a topic, as markdown.
+
+    In order of preference:
+
+    1. The answer the asker accepted (forums with the "solved" plugin).
+    2. The most-liked reply by someone other than the asker, when one has a like.
+    3. The first reply by a staff member (an admin or moderator) other than
+       the asker that says more than an @mention. Forums without the "solved"
+       plugin, such as Brainstorm's, are answered by their development team,
+       whose replies are seldom liked.
+    4. The asker's own most-liked reply, when it has a like: they found the
+       solution themselves. It comes last, since a liked reply from the asker
+       is more often a "thanks, that fixed it".
+
+    Only regular posts count as replies, not moderator notes or small actions
+    such as "closed this topic". The posts must start at post 1, the question,
+    whose author is the asker.
+    """
     for post in posts:
         if post.get("accepted_answer"):
             return _html_to_markdown(post.get("cooked", ""))
 
-    # Fall back to the reply with the most likes (skip OP which is post_number=1)
-    replies = [p for p in posts if p.get("post_number", 0) > 1]
-    if replies:
-        best = max(replies, key=lambda p: p.get("like_count", 0))
-        if best.get("like_count", 0) > 0:
+    replies = [
+        p
+        for p in posts
+        if p.get("post_number", 0) > 1
+        and p.get("post_type", _REGULAR_POST_TYPE) == _REGULAR_POST_TYPE
+    ]
+    if not replies:
+        return None
+
+    asker = posts[0].get("username") if posts[0].get("post_number") == 1 else None
+    others = [p for p in replies if p.get("username") != asker]
+    own = [p for p in replies if p.get("username") == asker]
+
+    # Equal likes go to a staff reply, then to the earliest (max() keeps the first)
+    if others:
+        best = max(others, key=lambda p: (_like_count(p), bool(p.get("staff"))))
+        if _like_count(best) > 0:
+            return _html_to_markdown(best.get("cooked", ""))
+
+    for reply in others:
+        if reply.get("staff"):
+            answer = _html_to_markdown(reply.get("cooked", ""))
+            if len(_MENTION.sub("", answer).strip()) >= _MIN_STAFF_ANSWER_CHARS:
+                return answer
+
+    if own:
+        best = max(own, key=_like_count)
+        if _like_count(best) > 0:
             return _html_to_markdown(best.get("cooked", ""))
 
     return None
+
+
+def _fetch_category_names(
+    base_url: str, *, request_delay: float = DEFAULT_REQUEST_DELAY
+) -> dict[int, str]:
+    """Map each category id of a forum to its name, from ``/site.json``.
+
+    A topic (``/t/{id}.json``) names only its ``category_id``. Returns an empty
+    map when the site cannot be read, so topics are stored without a category.
+    """
+    data = _fetch_json(f"{base_url}/site.json", delay=request_delay)
+    if not data:
+        logger.warning("Could not read categories from %s/site.json", base_url)
+        return {}
+    categories = data.get("categories")
+    if not isinstance(categories, list):
+        logger.warning("No category list in %s/site.json; topics stored without one", base_url)
+        return {}
+    return {
+        c["id"]: c["name"]
+        for c in categories
+        if isinstance(c, dict) and c.get("id") is not None and c.get("name")
+    }
 
 
 def sync_discourse_topics(
     base_url: str,
     project: str,
     categories: list[DiscourseCategoryConfig] | None = None,
+    tags: list[str] | None = None,
     incremental: bool = True,
     max_topics: int | None = None,
     request_delay: float = DEFAULT_REQUEST_DELAY,
@@ -149,16 +265,29 @@ def sync_discourse_topics(
         base_url: Base URL of the Discourse instance (e.g., 'https://mne.discourse.group')
         project: Community ID for database isolation
         categories: Optional list of category configs to limit sync to.
-                    If None, syncs from /latest.json (all categories).
+                    With neither categories nor tags, syncs from /latest.json.
+        tags: Optional list of tags to limit sync to (topics carrying any of
+              them). Combined with categories, only the topics with one of
+              the tags in one of the categories are synced.
         incremental: If True, only sync topics updated since last sync
         max_topics: Maximum number of topics to sync (for testing). None for all.
         request_delay: Seconds between API requests (default: 1.0s, patient)
 
     Returns:
         Number of topics synced
+
+    Raises:
+        DiscourseSyncError: A topic listing could not be read in full (the
+            forum was unreachable, or a configured tag or category does not
+            exist). The topics that were read are stored, but the last-sync
+            time is not moved forward.
+        sqlite3.Error: The database could not be written; the sync stops.
     """
     base_url = base_url.rstrip("/")
     console.print(f"Syncing Discourse topics from {base_url}...")
+    # Recorded as the last sync, so topics that change while this sync runs (a first
+    # sync of a large forum takes hours) are picked up by the next one
+    started_at = datetime.now(UTC).isoformat()
 
     # Get last sync time for incremental sync
     last_sync = None
@@ -170,24 +299,33 @@ def sync_discourse_topics(
             console.print("No previous sync found, doing full sync")
 
     # Collect topic IDs to sync
-    topic_ids = _collect_topic_ids(
+    topic_ids, listings_complete = _collect_topic_ids(
         base_url,
         categories=categories,
+        tags=tags,
         last_sync=last_sync,
         max_topics=max_topics,
         request_delay=request_delay,
     )
 
     if not topic_ids:
+        if not listings_complete:
+            raise DiscourseSyncError(
+                f"Could not read the topic listings of {base_url}; nothing was synced. "
+                "Check that the forum is reachable and that the configured tags and "
+                "categories exist."
+            )
         console.print("[yellow]No new topics to sync[/yellow]")
-        update_sync_metadata("discourse", base_url, 0, project)
+        update_sync_metadata("discourse", base_url, 0, project, synced_at=started_at)
         return 0
 
     console.print(f"Found {len(topic_ids)} topics to sync")
 
+    category_names = _fetch_category_names(base_url, request_delay=request_delay)
+
     # Fetch and store each topic
     total_synced = 0
-    failed = 0
+    failed: list[int] = []
     uncommitted = 0
 
     with Progress(
@@ -204,7 +342,7 @@ def sync_discourse_topics(
                     data = _fetch_json(topic_url, delay=request_delay)
 
                     if data is None:
-                        failed += 1
+                        failed.append(topic_id)
                         progress.update(task, advance=1)
                         continue
 
@@ -224,7 +362,9 @@ def sync_discourse_topics(
                         title=data.get("title", ""),
                         first_post=first_post,
                         accepted_answer=accepted_answer,
-                        category_name=data.get("category_name"),
+                        category_name=(
+                            data.get("category_name") or category_names.get(data.get("category_id"))
+                        ),
                         tags=data.get("tags"),
                         reply_count=data.get("reply_count", 0),
                         like_count=data.get("like_count", 0),
@@ -240,74 +380,116 @@ def sync_discourse_topics(
                     if uncommitted >= 50:
                         conn.commit()
                         uncommitted = 0
+                except sqlite3.Error:
+                    # A database fault (disk full, locked, read-only) would fail every topic
+                    logger.exception("Database error storing topic %d from %s", topic_id, base_url)
+                    raise
                 except Exception:
                     logger.exception("Failed to process topic %d from %s", topic_id, base_url)
-                    failed += 1
+                    failed.append(topic_id)
 
                 progress.update(task, advance=1)
 
             # Final commit
             conn.commit()
 
-    # Update sync metadata
-    update_sync_metadata("discourse", base_url, total_synced, project)
-
     console.print(f"[green]Synced {total_synced} topics[/green]")
     if failed:
-        console.print(f"[yellow]Failed to fetch {failed} topics[/yellow]")
+        # Logged rather than failing the sync: a topic that is never readable (made
+        # private, or broken on the forum's side) would otherwise block every later sync
+        logger.warning(
+            "Could not sync %d of %d topics from %s (first ids: %s); they are synced "
+            "again when they next change, or by a full sync",
+            len(failed),
+            len(topic_ids),
+            base_url,
+            failed[:10],
+        )
+        console.print(f"[yellow]Failed to fetch {len(failed)} topics[/yellow]")
+
+    if not listings_complete:
+        raise DiscourseSyncError(
+            f"Could not read every topic listing of {base_url}; synced {total_synced} "
+            "topics but some may be missing. The last-sync time was not moved forward, "
+            "so the next sync looks for them again."
+        )
+
+    capped = max_topics is not None and len(topic_ids) >= max_topics
+    if capped:
+        # The topics past the cap were not synced; leave the last sync where it was
+        logger.info("Sync of %s stopped at max_topics=%d", base_url, max_topics)
+    else:
+        update_sync_metadata("discourse", base_url, total_synced, project, synced_at=started_at)
 
     return total_synced
+
+
+def _listing_urls(
+    base_url: str,
+    categories: list[DiscourseCategoryConfig] | None,
+    tags: list[str] | None,
+) -> list[str]:
+    """The topic listings to page through for the given filters.
+
+    Discourse lists a category at ``/c/{slug}/{id}``, a tag at ``/tag/{tag}``
+    and a tag within a category at ``/tags/c/{slug}/{id}/{tag}``.
+    """
+    if categories and tags:
+        return [
+            f"{base_url}/tags/c/{cat.slug}/{cat.id}/{quote(tag, safe='')}.json"
+            for cat in categories
+            for tag in tags
+        ]
+    if categories:
+        return [f"{base_url}/c/{cat.slug}/{cat.id}.json" for cat in categories]
+    if tags:
+        return [f"{base_url}/tag/{quote(tag, safe='')}.json" for tag in tags]
+    return [f"{base_url}/latest.json"]
 
 
 def _collect_topic_ids(
     base_url: str,
     *,
     categories: list[DiscourseCategoryConfig] | None = None,
+    tags: list[str] | None = None,
     last_sync: str | None = None,
     max_topics: int | None = None,
     request_delay: float = DEFAULT_REQUEST_DELAY,
-) -> list[int]:
+) -> tuple[list[int], bool]:
     """Collect topic IDs to sync from topic listings.
 
-    Pages through /latest.json or category-specific listings to find
-    topics that need syncing.
+    Pages through /latest.json, or the category and tag listings the filters
+    name, to find topics that need syncing. A topic that appears in more than
+    one listing (two of its tags are configured) is collected once.
 
     Args:
         base_url: Discourse base URL
         categories: Optional category filters
+        tags: Optional tag filters
         last_sync: ISO timestamp of last sync (for incremental)
         max_topics: Maximum topics to collect
         request_delay: Delay between requests
 
     Returns:
-        List of topic IDs to fetch
+        The topic IDs to fetch, and whether every listing was read in full
     """
-    topic_ids: list[int] = []
+    topic_ids: dict[int, None] = {}
+    complete = True
 
-    if categories:
-        # Sync specific categories
-        for cat in categories:
-            slug = cat.slug
-            cat_id = cat.id
-            ids = _collect_from_listing(
-                f"{base_url}/c/{slug}/{cat_id}.json",
-                last_sync=last_sync,
-                max_topics=max_topics - len(topic_ids) if max_topics else None,
-                request_delay=request_delay,
-            )
-            topic_ids.extend(ids)
-            if max_topics and len(topic_ids) >= max_topics:
-                break
-    else:
-        # Sync all topics via latest
-        topic_ids = _collect_from_listing(
-            f"{base_url}/latest.json",
+    for url in _listing_urls(base_url, categories, tags):
+        ids, listing_complete = _collect_from_listing(
+            url,
             last_sync=last_sync,
-            max_topics=max_topics,
+            max_topics=max_topics - len(topic_ids) if max_topics else None,
             request_delay=request_delay,
         )
+        complete = complete and listing_complete
+        topic_ids.update(dict.fromkeys(ids))
+        if max_topics and len(topic_ids) >= max_topics:
+            break
 
-    return topic_ids[:max_topics] if max_topics else topic_ids
+    ids = list(topic_ids)
+    return (ids[:max_topics] if max_topics else ids), complete
 
 
 def _collect_from_listing(
@@ -316,7 +498,7 @@ def _collect_from_listing(
     last_sync: str | None = None,
     max_topics: int | None = None,
     request_delay: float = DEFAULT_REQUEST_DELAY,
-) -> list[int]:
+) -> tuple[list[int], bool]:
     """Page through a Discourse topic listing and collect topic IDs.
 
     Args:
@@ -326,13 +508,14 @@ def _collect_from_listing(
         request_delay: Delay between requests
 
     Returns:
-        List of topic IDs
+        The topic IDs, and whether the listing was read to its end (or to the
+        last sync, or to max_topics). False when a page could not be fetched
+        or MAX_LISTING_PAGES was reached.
     """
     topic_ids: list[int] = []
     page = 0
-    max_pages = 200  # Safety limit
 
-    while page < max_pages:
+    while page < MAX_LISTING_PAGES:
         page_url = f"{url}?page={page}" if page > 0 else url
         data = _fetch_json(page_url, delay=request_delay)
 
@@ -343,11 +526,11 @@ def _collect_from_listing(
                 url,
                 len(topic_ids),
             )
-            break
+            return topic_ids, False
 
         topics = data.get("topic_list", {}).get("topics", [])
         if not topics:
-            break
+            return topic_ids, True
 
         hit_old_topics = False
         for topic in topics:
@@ -369,16 +552,17 @@ def _collect_from_listing(
             topic_ids.append(topic_id)
 
             if max_topics and len(topic_ids) >= max_topics:
-                return topic_ids
+                return topic_ids, True
 
         if hit_old_topics:
-            break
+            return topic_ids, True
 
         # Check if there are more pages
         more_url = data.get("topic_list", {}).get("more_topics_url")
         if not more_url:
-            break
+            return topic_ids, True
 
         page += 1
 
-    return topic_ids
+    logger.warning("Stopped reading %s after %d pages", url, MAX_LISTING_PAGES)
+    return topic_ids, False

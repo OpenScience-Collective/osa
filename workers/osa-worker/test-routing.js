@@ -71,8 +71,10 @@ function stubEnv(overrides = {}) {
 // actually mounts the worker on at /osa. MOUNTED_HOST is the default here
 // because that is where the prefix behavior lives; UNMOUNTED_HOST is the
 // bare workers.dev name, which stays live and must keep seeing raw paths.
+// Its subdomain is account-scoped, so the test uses a placeholder rather than
+// any real account's name; only "not a mounted host" matters here.
 const MOUNTED_HOST = 'widget.osc.earth';
-const UNMOUNTED_HOST = 'osa-worker.shirazi-10f.workers.dev';
+const UNMOUNTED_HOST = 'osa-worker.example-account.workers.dev';
 
 async function call(pathname, { method = 'GET', body, host = MOUNTED_HOST, env } = {}) {
   const init = { method };
@@ -156,6 +158,45 @@ for (const host of [MOUNTED_HOST, 'develop-widget.osc.earth']) {
 }
 assertEqual(await statusOf('/osa/'), await statusOf('/'), '/osa/ (the redirect target) is the API root');
 await assertReachesHandler('/osa/feedback', { method: 'POST', body: {} }, 'POST /osa/feedback reaches the feedback handler');
+
+// edge.osc.earth is shared by both workers (edge.<domain>/<project>), with dev
+// at the project path plus "-dev". The prefix therefore depends on the
+// worker's environment, not the host alone.
+console.log('\nedge.osc.earth mounts production at /osa and dev at /osa-dev');
+const EDGE_HOST = 'edge.osc.earth';
+const PRODUCTION = { ENVIRONMENT: 'production' };
+assertEqual(
+  await statusOf('/osa/health', { host: EDGE_HOST, env: PRODUCTION }),
+  await statusOf('/health', { env: PRODUCTION }),
+  'production: edge /osa/health reaches the same handler as /health'
+);
+{
+  const bare = await call('/osa', { host: EDGE_HOST, env: PRODUCTION });
+  assertEqual(bare.status, 308, 'production: edge /osa (bare) answers 308');
+  assertEqual(bare.headers.get('Location'), '/osa/', 'production: edge /osa redirects to /osa/');
+}
+assertEqual(
+  await statusOf('/osa-dev/health', { host: EDGE_HOST, env: PRODUCTION }),
+  404,
+  'production: edge /osa-dev/health is outside its mount (404), never served as production'
+);
+assertEqual(
+  await statusOf('/osa-dev/health', { host: EDGE_HOST }),
+  await statusOf('/health'),
+  'dev: edge /osa-dev/health reaches the same handler as /health'
+);
+assert((await statusOf('/osa-dev/health', { host: EDGE_HOST })) !== 404, 'dev: edge /osa-dev/health does not fall through to 404');
+{
+  const bare = await call('/osa-dev?community=nemar', { host: EDGE_HOST });
+  assertEqual(bare.status, 308, 'dev: edge /osa-dev (bare) answers 308');
+  assertEqual(bare.headers.get('Location'), '/osa-dev/?community=nemar', 'dev: edge /osa-dev redirects to /osa-dev/, query kept');
+}
+assertEqual(await statusOf('/osa-devfoo', { host: EDGE_HOST }), 404, 'dev: edge /osa-devfoo is outside the mount (404)');
+await assertReachesHandler(
+  '/osa-dev/feedback',
+  { method: 'POST', body: {}, host: EDGE_HOST },
+  'dev: POST edge /osa-dev/feedback reaches the feedback handler'
+);
 
 // The resume route is where the epic branch and the widget branch collided:
 // phase 1 added it matching on the RAW path, which on a mounted host would have
@@ -334,6 +375,11 @@ try {
     'POST /hed/chat forwards the same path, so prefixed and unprefixed agree upstream'
   );
   assertEqual(
+    await forwardedPathFor('/osa-dev/hed/chat', { method: 'POST', body: {}, host: 'edge.osc.earth' }),
+    '/hed/chat',
+    'dev: POST edge.osc.earth/osa-dev/hed/chat forwards /hed/chat upstream'
+  );
+  assertEqual(
     await forwardedPathFor('/osa/communities', { host: MOUNTED_HOST }),
     '/communities',
     'GET /osa/communities forwards /communities upstream'
@@ -497,6 +543,28 @@ console.log('\nthe runtime route answers repeat requests from the edge cache, wi
     if (hadCaches) globalThis.caches = realCaches;
     else delete globalThis.caches;
     backend.stop(true);
+  }
+}
+
+// The CORS preflight answers with isAllowedOrigin's verdict: the asking origin
+// when it is allowed, the demo.osc.earth fallback when it is not. The demo's
+// own *.pages.dev names are not allowed: frontend/index.html redirects them to
+// the osc.earth hosts before the widget loads, and the names are account-scoped.
+console.log('\nthe CORS preflight allows the demo hosts but not the demo\'s *.pages.dev names');
+{
+  const allowOriginFor = async (origin) => {
+    const response = await worker.fetch(
+      new Request(`https://${MOUNTED_HOST}/osa/hed/chat`, { method: 'OPTIONS', headers: { Origin: origin } }),
+      stubEnv(),
+      {}
+    );
+    return response.headers.get('Access-Control-Allow-Origin');
+  };
+  for (const origin of ['https://demo.osc.earth', 'https://develop-demo.osc.earth']) {
+    assertEqual(await allowOriginFor(origin), origin, `${origin} is allowed`);
+  }
+  for (const origin of ['https://osa-demo.pages.dev', 'https://develop.osa-demo.pages.dev']) {
+    assertEqual(await allowOriginFor(origin), 'https://demo.osc.earth', `${origin} is not allowed`);
   }
 }
 

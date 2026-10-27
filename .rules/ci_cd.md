@@ -8,20 +8,21 @@
 ## Actual Workflows in This Repo (`.github/workflows/`)
 
 ### Required status checks (enforced by branch rulesets)
-- `Lint` - `ruff check` / `ruff format --check` (both `test.yml` and `tests.yml` have a job literally named `Lint`, so either satisfies this)
-- `Test (3.11)`, `Test (3.12)` - required on `main`; `develop` only requires `Test (3.12)`. **These check names are produced only by `tests.yml`'s `test:` job** (`name: Test`, matrix `['3.11', '3.12']` → checks `Test (3.11)`/`Test (3.12)`). `test.yml`'s equivalent job is named `Unit Tests (Python ${{ matrix.python-version }})`, which produces differently-named checks (`Unit Tests (Python 3.11)` etc.) that do **not** match what the ruleset requires - verify against the live ruleset with `gh api repos/OpenScience-Collective/osa/rulesets/12110625` / `.../12110632` (`required_status_checks[].context`) rather than trusting this file if the workflows change.
+- `Lint` - `ruff check .` / `ruff format --check src tests`, plus actionlint on the notebook site's workflows; the `lint` job of `tests.yml`
+- `Test (3.11)`, `Test (3.12)` - required on `main`; `develop` only requires `Test (3.12)`. Produced by `tests.yml`'s `test:` job (`name: Test`, so each matrix leg reports as `Test (<version>)`). Renaming that job, or adding a `name:` with its own matrix expression, changes the check names and blocks every merge - verify against the live ruleset with `gh api repos/OpenScience-Collective/osa/rulesets/12110625` / `.../12110632` (`required_status_checks[].context`) rather than trusting this file if the workflows change.
 
 ### Testing
-- **`tests.yml`** (name: "Tests") - **this is the workflow branch protection actually enforces.** `lint` -> `test` (job name `Test`, Python 3.11/3.12 matrix, coverage upload) -> `frontend-tests` (Bun: citation marker tests, streaming tests, widget syntax check) -> `all-tests` gate. Triggers on push to `[main, develop]` and on `pull_request` with no branch restriction, so it's the only one of the two that runs on a PR into `develop`.
-- **`test.yml`** (also named "Tests" - confusingly, both workflows share the display name "Tests") - triggers only on push/PR to `main`, not `develop`. Runs `lint` -> `unit-tests` (job name `Unit Tests (Python ...)`, Python 3.11/3.12/3.13 matrix, coverage to Codecov) -> `frontend-tests` -> `all-tests`. Its `integration-tests` job (live model calls, paid) is not part of that chain: it runs only when started by hand (`workflow_dispatch`, with an optional `model` filter such as `haiku`), and fails when none of the Claude Platform, Bedrock or OpenRouter test credentials is set. Broader (extra Python version, an `integration-tests` job `tests.yml` lacks) but its checks don't match what branch protection requires and it never runs on a `develop` PR at all.
-- Unreconciled duplication between the two - when editing test jobs, check both files, and consider consolidating them (see `self_improve.md`'s guidance on promoting recurring friction into a fix). If you only fix one, fix `tests.yml` first - it's the one that actually gates a merge.
+- **`tests.yml`** (name: "Tests") - the only test workflow, and the one branch protection enforces. Triggers on push to `[main, develop]`, on every `pull_request`, and by hand (`workflow_dispatch`). `lint` -> `test` (job name `Test`; Python 3.11/3.12, plus 3.13 on a pull request into `main`, a push to `main` and a manual run; coverage to Codecov from 3.12; the headless-Chrome widget checks on 3.12) and `frontend-tests` (every Bun suite, the runtime bundle staleness check, the browser harness) -> `all-tests` gate. Its `integration-tests` job (live model calls, paid) is not part of that chain: it runs only when started by hand, with an optional `model` filter such as `haiku`, and fails when none of the Claude Platform, Bedrock or OpenRouter test credentials is set.
+- **`changes` job** (in `tests.yml`) - classifies what the pull request or push changed. When only documentation changed (Markdown outside the code directories, `docs/`, `.context/`, `.rules/`, `LICENSE`), `Lint` and the `Test` legs still run and report success, but skip their steps, except that `Test` runs `tests/test_frontend/test_embed_snippet_hygiene.py`, the one test that reads documentation; `Frontend Tests` is skipped. Never add trigger-level `paths`/`paths-ignore` to `tests.yml`: a workflow that does not start leaves its required checks "expected" forever, and a matrix job skipped by a job-level `if:` reports as `Test`, not `Test (3.12)`. Skip work with step-level conditions in `Lint` and `Test`.
+- **Bot version commits** - a push to `develop` or `main` of the bot's version commit alone (`auto-bump-dev.yml`'s `Bump version to ...`, `ensure-stable-version.yml`'s `chore: strip dev suffix for stable release`) skips every step: the commit it follows was tested. It is identified by author and committer `github-actions[bot]`, the message, and a push that changed nothing but `src/version.py`; not by `github.actor`, which is the `CI_ADMIN_TOKEN` owner on those pushes. Pull requests are never skipped this way.
+- There used to be a second workflow, `test.yml`, also named "Tests", that re-ran the same jobs on every pull request into and push to `main`. It was merged into `tests.yml`; do not reintroduce a second workflow that runs the same tests.
 
 ### Docker / Release Images
-- **`docker-build.yml`** - builds and pushes to GHCR. Uses a `concurrency` group keyed on `${{ github.workflow }}-<ref>` with `cancel-in-progress` only for `pull_request` events, specifically to stop two builds racing to write the `:latest` tag (see `docs/adr/` for the incident this fixed). Never remove the concurrency group without understanding that history.
+- **`docker-build.yml`** - builds and pushes to GHCR: `:main` on a push to `main`, `:latest`/`X.Y.Z`/`X.Y` on a release or tag, and the dev image (`:dev`, `:develop`) only when `auto-bump-dev.yml` dispatches it, once per push to `develop`, after the version bump. It has no `push: develop` trigger: that built every merge twice (the merge, then its bump commit). Uses a `concurrency` group keyed on `${{ github.workflow }}-<ref>` with `cancel-in-progress` only for `pull_request` events, specifically to stop two builds racing to write the `:latest` tag (see `docs/adr/` for the incident this fixed). Never remove the concurrency group without understanding that history.
 - **`tests/test_latest_tag_policy.py`** - tests the semver/prerelease logic that decides whether a build is allowed to move `:latest`.
 
 ### Versioning & Release (see AGENTS.md "Version Management" for the full automated flow)
-- `auto-bump-dev.yml` - bumps `.devN` on every push to `develop`
+- `auto-bump-dev.yml` - bumps `.devN` on every push to `develop`, then its `deploy` job dispatches `docker-build.yml` and `publish-testpypi.yml` for the final commit (the bump, or the pushed commit when there was none). The bump commit carries no skip-ci marker: develop's head is a release pull request's head commit, and a marker there would skip its required checks
 - `ensure-stable-version.yml` - strips `.dev` suffix if `src/version.py` changes on `main`
 - `tag-release.yml` - tags `main` when the version is stable
 - `release.yml` - creates the GitHub release
@@ -31,14 +32,14 @@
 - `claude.yml` - Claude-based PR assistance, answering `@claude` mentions (there is no automated review bot; pull requests are reviewed locally)
 - `deploy-pages.yml`, `deploy-dashboard.yml` - docs/dashboard deployment
 - `community-admin-pr-merge.yml` - community-maintainer "LGTM/merge" comment command (see `.context/community-admin-merge.md`)
-- `publish.yml` / `publish-testpypi.yml` - package publishing
+- `publish.yml` / `publish-testpypi.yml` - package publishing; `publish-testpypi.yml` runs only by dispatch (from `auto-bump-dev.yml`, or by hand on `develop`)
 - `sync-worker-cors.yml`, `cleanup-preview-dns.yml`, `notify-docs.yml` - infra housekeeping
 
 ## Key Practices (Think About Pipeline Flow)
 - **Pin versions:** `actions/checkout@v4` (reproducibility)
 - **Cache deps:** `astral-sh/setup-uv` and `oven-sh/setup-bun` have built-in caching
 - **Fail fast:** Lint -> Test -> Build -> Deploy (catch cheap failures first)
-- **Matrix testing:** the gating workflow (`tests.yml`) tests Python 3.11 and 3.12; `test.yml` additionally covers 3.13 but isn't what branch protection checks against - see "Required status checks" above
+- **Matrix testing:** `tests.yml` tests Python 3.11 and 3.12 on every run, and 3.13 on runs bound for `main`; only `Test (3.11)` and `Test (3.12)` are required - see "Required status checks" above
 - **Secrets:** Never commit credentials; use GitHub Secrets
 - **Conditional:** Deploy only from protected branches (`main`, `develop`)
 - **Concurrency:** think about what races when a workflow can trigger twice in quick succession (see `docker-build.yml` above) before adding or removing a `concurrency` block
