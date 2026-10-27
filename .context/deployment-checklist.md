@@ -203,7 +203,9 @@ After any revert that touches `workers/osa-worker/**`, verify by hand:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' https://widget.osc.earth/osa/health
-curl -s -o /dev/null -w '%{http_code}\n' https://osa-worker.shirazi-10f.workers.dev/health
+# The account-scoped workers.dev name; the repository variable
+# LEGACY_WORKERS_DEV_HOST holds the current one (see widget-route-health.yml).
+curl -s -o /dev/null -w '%{http_code}\n' "https://${LEGACY_WORKERS_DEV_HOST}/health"
 ```
 
 **Check the consumer, not only the worker.** `/health` answers from the worker

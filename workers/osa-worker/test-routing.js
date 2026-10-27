@@ -71,8 +71,10 @@ function stubEnv(overrides = {}) {
 // actually mounts the worker on at /osa. MOUNTED_HOST is the default here
 // because that is where the prefix behavior lives; UNMOUNTED_HOST is the
 // bare workers.dev name, which stays live and must keep seeing raw paths.
+// Its subdomain is account-scoped, so the test uses a placeholder rather than
+// any real account's name; only "not a mounted host" matters here.
 const MOUNTED_HOST = 'widget.osc.earth';
-const UNMOUNTED_HOST = 'osa-worker.shirazi-10f.workers.dev';
+const UNMOUNTED_HOST = 'osa-worker.example-account.workers.dev';
 
 async function call(pathname, { method = 'GET', body, host = MOUNTED_HOST, env } = {}) {
   const init = { method };
