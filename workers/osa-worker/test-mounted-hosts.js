@@ -185,6 +185,20 @@ for (const environment of [...new Set(routes.map((r) => r.environment))]) {
   }
 }
 
+// The loop above only checks hosts an environment already routes, so deleting
+// one environment's edge routes outright would pass it: edge.osc.earth would
+// still be routed (by the other environment), and the deleted set is simply
+// never visited. The edge host is shared by design, so require it in BOTH
+// environments by name. Without the dev pair, production receives
+// "/osa-dev/..." and answers 404.
+console.log('');
+for (const environment of ['production', 'dev']) {
+  const patterns = routes.filter((r) => r.environment === environment).map((r) => r.pattern);
+  const prefix = expectedPrefix(edgeHost, environment);
+  assert(patterns.includes(`${edgeHost}${prefix}/*`), `${environment} routes ${edgeHost}${prefix}/*`);
+  assert(patterns.includes(`${edgeHost}${prefix}*`), `${environment} routes the bare ${edgeHost}${prefix}*`);
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 
