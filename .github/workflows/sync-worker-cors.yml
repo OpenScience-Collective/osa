@@ -116,6 +116,8 @@ jobs:
         if: steps.check_changes.outputs.changed == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # wrangler.toml carries no account_id, so the account is chosen here.
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           # Use the wrangler pinned exactly in workers/osa-worker/package.json,
           # not a floating global install. JS lockfiles are gitignored in this
@@ -134,6 +136,8 @@ jobs:
         if: steps.check_changes.outputs.changed == 'true' && github.ref == 'refs/heads/develop' && github.event_name == 'push'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # wrangler.toml carries no account_id, so the account is chosen here.
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           # Pinned for the same reason as the production step above (#437).
           cd workers/osa-worker
