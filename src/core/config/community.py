@@ -2066,8 +2066,9 @@ class CommunityConfig(BaseModel):
     Supports exact origins (e.g., 'https://hedtags.org') and wildcard
     subdomains of a domain you control (e.g., 'https://*.hedtags.org';
     never a shared host such as 'https://*.pages.dev', which would allow every
-    site on it). These are aggregated with platform-level origins at API
-    startup.
+    site on it). A wildcard matches one subdomain label and never the domain
+    itself, so list 'https://hedtags.org' too if it embeds the widget. These
+    are aggregated with platform-level origins at API startup.
     """
 
     anthropic_api_key_env_var: str | None = None
