@@ -22,8 +22,9 @@ And the widget's pop-out window reopens the notebook in a new frame, which only 
 ## Decision
 
 **The sites the widget runs on may embed the notebook, and nothing else may.**
-`scripts/build_notebook_site.py`'s `embed_origins` writes `frame-ancestors` per environment: `'self'`, the platform's own widget hosts (`https://demo.osc.earth`, `https://osa-demo.pages.dev`), then every notebook community's `cors_origins`, the same origins the application programming interface (API) already allows the widget on.
-The develop build adds `https://*.osc.earth`, `https://*.osa-demo.pages.dev` and loopback, for previews and local testing.
+`scripts/build_notebook_site.py`'s `embed_origins` writes `frame-ancestors` per environment: `'self'`, the platform's own widget host (`https://demo.osc.earth`), then every notebook community's `cors_origins`, the same origins the application programming interface (API) already allows the widget on.
+The develop build adds `https://*.osc.earth` and loopback, for previews and local testing.
+The `osa-demo.pages.dev` names were dropped in #625: `frontend/index.html` redirects them to the custom domains before the widget loads, so they never embed the notebook, and they are account-scoped Cloudflare names that change with the account.
 A frame-ancestors source cannot take a partial-label wildcard, so develop's `*-demo.osc.earth` previews are covered by `*.osc.earth`; a community origin written that way is refused by the config loader's own `cors_origins` rule, and again by the build, rather than producing a policy the browser ignores.
 The site also sends `X-Frame-Options: SAMEORIGIN`, for a browser too old to read frame-ancestors, which then refuses to embed it at all; a browser that reads frame-ancestors ignores `X-Frame-Options` when both are sent (measured in Chrome: the allowed embed still loads).
 The widget's pop-out is an `about:blank` window of the embedding page's own origin (`openPopout` writes the widget into it), so its frame's ancestor is the same site and the same list covers it.
