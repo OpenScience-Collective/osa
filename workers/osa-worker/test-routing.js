@@ -546,6 +546,28 @@ console.log('\nthe runtime route answers repeat requests from the edge cache, wi
   }
 }
 
+// The CORS preflight answers with isAllowedOrigin's verdict: the asking origin
+// when it is allowed, the demo.osc.earth fallback when it is not. The demo's
+// own *.pages.dev names are not allowed: frontend/index.html redirects them to
+// the osc.earth hosts before the widget loads, and the names are account-scoped.
+console.log('\nthe CORS preflight allows the demo hosts but not the demo\'s *.pages.dev names');
+{
+  const allowOriginFor = async (origin) => {
+    const response = await worker.fetch(
+      new Request(`https://${MOUNTED_HOST}/osa/hed/chat`, { method: 'OPTIONS', headers: { Origin: origin } }),
+      stubEnv(),
+      {}
+    );
+    return response.headers.get('Access-Control-Allow-Origin');
+  };
+  for (const origin of ['https://demo.osc.earth', 'https://develop-demo.osc.earth']) {
+    assertEqual(await allowOriginFor(origin), origin, `${origin} is allowed`);
+  }
+  for (const origin of ['https://osa-demo.pages.dev', 'https://develop.osa-demo.pages.dev']) {
+    assertEqual(await allowOriginFor(origin), 'https://demo.osc.earth', `${origin} is not allowed`);
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log('Test Summary');
 console.log('='.repeat(60));
