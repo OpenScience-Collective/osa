@@ -273,6 +273,17 @@ docker exec osa-dev python -m src.cli.main sync github --full
 - Dev: https://develop-demo.osc.earth
 - Prod: https://demo.osc.earth
 
+### Server configuration (Infisical)
+
+The server `~/osa/.env` (shared by the `osa` and `osa-dev` containers) is generated: never edit it by hand.
+Its source of truth is Infisical at `infisical.nemar.org`, project `osc`, `prod` `/osa/server`.
+`deploy/sync-env.sh` renders it (mode 0600) with the host's machine identity
+(`~/.config/infisical/hedtools-identity.env`) each time a deploy script is about to replace a container.
+If Infisical is unreachable, the existing `.env` is kept and the failure is logged;
+if there is no `.env` at all, the deploy scripts refuse to replace the running container.
+A changed value takes effect on the next deploy;
+to apply it immediately, run `deploy/auto-update.sh --force` (prod) or `deploy/deploy.sh dev` (dev) on the server.
+
 ### Inspecting Knowledge Databases
 
 Knowledge databases (SQLite) live **inside the Docker containers**, not locally.
