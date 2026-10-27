@@ -21,6 +21,7 @@ the version being released and start a new `[Unreleased]` section above it.
 ### Changed
 
 - **HED has no forum**: NeuroStars (tag `hed`, three topics) is removed from HED's sources, with its `search_hed_forum` tool. It had never been synced.
+- **No Cloudflare account is named in the code**: the worker takes its account from `CLOUDFLARE_ACCOUNT_ID`; the Pages CNAME targets and the dashboard preview link read the projects' `pages.dev` names from repository variables (`PAGES_DEMO_HOST`, `PAGES_NOTEBOOK_HOST`, `PAGES_DASH_HOST`); the demo redirect, the widget and the dashboard recognize a suffixed `pages.dev` name; and the route health check reads the legacy `workers.dev` host from `LEGACY_WORKERS_DEV_HOST`. Moving to another account changes secrets and variables only.
 
 ### Fixed
 
