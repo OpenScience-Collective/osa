@@ -22,6 +22,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import subprocess
 import threading
 from pathlib import Path
@@ -491,29 +492,42 @@ class TestDeployWorkflowEnvironment:
     """
 
     @pytest.mark.parametrize(
-        ("branch", "url", "environment"),
+        ("branch", "url", "environment", "pages_target"),
         [
-            ("main", "https://notebook.osc.earth/osa", "production"),
-            ("develop", "https://develop-notebook.osc.earth/osa", "develop"),
+            ("main", "https://notebook.osc.earth/osa", "production", "osa-notebook.pages.dev"),
+            (
+                "develop",
+                "https://develop-notebook.osc.earth/osa",
+                "develop",
+                "develop.osa-notebook.pages.dev",
+            ),
         ],
     )
     def test_each_branch_builds_for_its_own_environment(
-        self, tmp_path: Path, branch: str, url: str, environment: str
+        self, tmp_path: Path, branch: str, url: str, environment: str, pages_target: str
     ) -> None:
-        script = _deploy_steps()["Pick the site URL for this branch"]["run"]
-        script = script.replace("${{ github.ref_name }}", branch)
+        step = _deploy_steps()["Pick the site URL for this branch"]
+        script = step["run"].replace("${{ github.ref_name }}", branch)
         assert "${{" not in script, "the step reads an expression this test does not fill in"
+        # The step's env holds `${{ vars.X || 'default' }}` expressions; with the
+        # repository variable unset, GitHub resolves each to its default.
+        step_env = {}
+        for name, value in (step.get("env") or {}).items():
+            match = re.fullmatch(r"\$\{\{\s*vars\.\w+\s*\|\|\s*'([^']*)'\s*\}\}", str(value))
+            assert match, f"{name} is set from an expression this test does not fill in"
+            step_env[name] = match.group(1)
         github_output = tmp_path / "github_output"
 
         subprocess.run(
             ["bash", "-euo", "pipefail", "-c", script],
-            env={**os.environ, "GITHUB_OUTPUT": str(github_output)},
+            env={**os.environ, **step_env, "GITHUB_OUTPUT": str(github_output)},
             check=True,
         )
 
         outputs = dict(line.split("=", 1) for line in github_output.read_text().splitlines())
         assert outputs["url"] == url
         assert outputs["environment"] == environment
+        assert outputs["pages_target"] == pages_target
 
     def test_the_build_step_passes_the_picked_url_and_environment(self) -> None:
         run = _deploy_steps()["Build the notebook site"]["run"]
