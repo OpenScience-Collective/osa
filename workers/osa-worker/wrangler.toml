@@ -5,9 +5,11 @@ name = "osa-worker"
 main = "index.js"
 compatibility_date = "2024-01-01"
 # No account_id here on purpose: the account comes from CLOUDFLARE_ACCOUNT_ID
-# (CI passes the org secret; set it yourself for a manual deploy). Pinning
-# it in this file ties the worker to one Cloudflare account, so moving
-# accounts would need a code change instead of a secret change.
+# (CI passes the org secret; set it yourself for a manual deploy), so the
+# account is no longer pinned in code. A move still has per-account steps:
+# the RATE_LIMITER_KV namespace ids below are account-scoped, and the worker
+# secrets must be put again from Infisical (project osc, /osa/edge). See
+# "Moving to Another Cloudflare Account" in .context/deployment-checklist.md.
 
 # Explicit (#437): once a [[routes]] table is present, wrangler defaults
 # workers_dev to false on deploy unless this is set, which would silently

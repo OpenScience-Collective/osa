@@ -662,7 +662,9 @@
         const host = window.location.hostname;
         // The project's *.pages.dev name is account-scoped: in another
         // Cloudflare account it becomes osa-dash-<suffix>.pages.dev, so match
-        // both. Group 1 is the branch of a preview deploy.
+        // both. Group 1 is the branch of a preview deploy. The backend must
+        // also allow that origin in CORS (CORS_ORIGINS; see the move steps in
+        // .context/deployment-checklist.md), or these API calls are blocked.
         const pagesDev = /^(?:([a-z0-9-]+)\.)?osa-dash(?:-[a-z0-9]+)?\.pages\.dev$/.exec(host);
         const isProd = host === 'status.osc.earth' || (pagesDev !== null && !pagesDev[1]);
         const isDev = !isProd && (
