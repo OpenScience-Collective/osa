@@ -33,9 +33,14 @@ Web Frontend                    CLI / Programmatic
 └─────────────────────────────────────────────────┘
 ```
 
-This worker's public hostnames are `widget.osc.earth/osa` (production) and
-`develop-widget.osc.earth/osa` (dev); see `wrangler.toml`'s `[[routes]]` /
-`[[env.dev.routes]]` and issue #437. `widget.osc.earth` is a generic host
+This worker's public hostnames are `edge.osc.earth/osa` (production) and
+`edge.osc.earth/osa-dev` (dev), following the `<role>.<domain>/<project>`
+convention (`api.` is the backend for key-authenticated clients, `edge.` the
+browser-facing Workers, dev a `-dev` path suffix). `widget.osc.earth/osa` and
+`develop-widget.osc.earth/osa` remain as aliases, and stay the widget's
+default endpoint, because other sites embed the widget and allowlist that
+host. See `wrangler.toml`'s `[[routes]]` / `[[env.dev.routes]]` and issue #437.
+`widget.osc.earth` is a generic host
 reserved for widgets in general; `/osa` is this widget's own path under it,
 so a future widget can be added at its own path on the same host instead of
 consuming a subdomain each. These are ordinary zone routes (path-mounted,

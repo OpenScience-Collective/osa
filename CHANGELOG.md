@@ -17,6 +17,7 @@ the version being released and start a new `[Unreleased]` section above it.
 
 - **Brainstorm community**: an assistant for Brainstorm (MEG, EEG, fNIRS, ECoG, sEEG and electrophysiology), configured with the tutorials of its wiki (108 pages, two preloaded), its user forum, the issues and MATLAB function help of `brainstorm3`, `bst-users` (scripts shared by users) and `bst-duneuro`, and its four reference papers. Maintained by `tmedani`.
 - **Discourse sync is scheduled**: a community's `sync.discourse` cron now runs, and `POST /sync/trigger` with `discourse` syncs forums instead of failing. MNE had a weekly schedule that never ran, so its forum topics were last synced by hand on 2026-02-25. BIDS, whose NeuroStars tag was configured but never synced, now syncs daily, and a test fails when a community configures a forum with no schedule. Discourse is left out of the startup seed, since a first sync of a large forum takes hours. `POST /sync/trigger` with `all` now includes Discourse, so it can run for hours; the trigger runs in a worker thread, so the server keeps answering meanwhile.
+- **The worker answers on `edge.osc.earth`**: production at `edge.osc.earth/osa`, dev at `edge.osc.earth/osa-dev`, following the `<role>.<domain>/<project>` convention (`api.` for the backend, `edge.` for browser-facing Workers, a `-dev` path suffix for dev). `widget.osc.earth/osa` stays the widget's default endpoint and keeps working, since other sites allowlist it. The route health check probes the edge host.
 
 ### Changed
 

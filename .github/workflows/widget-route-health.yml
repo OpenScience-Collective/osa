@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   probe:
-    name: Probe the mounted widget hosts
+    name: Probe the mounted edge and widget hosts
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -56,6 +56,16 @@ jobs:
               echo "ok    $url  $got"
             fi
           }
+
+          # edge.<domain>/<project> is the org-wide host for browser-facing
+          # Workers; dev is the same path with a "-dev" suffix. This schedule
+          # runs from main, so these go live with the release that deploys the
+          # production edge routes.
+          check https://edge.osc.earth/osa/health 200
+          check https://edge.osc.earth/osa/communities 200
+          # Also the check that dev's more specific routes are attached: without
+          # them production receives /osa-dev/... and answers 404.
+          check https://edge.osc.earth/osa-dev/health 200
 
           check https://widget.osc.earth/osa/health 200
           check https://widget.osc.earth/osa/communities 200
@@ -110,13 +120,14 @@ jobs:
           failed: ${{ needs.probe.result == 'failure' || needs.probe.outputs.failed == 'true' }}
           recovery_message: 'all probes'
           report: |
-            The scheduled probe of the widget worker hosts is failing.
+            The scheduled probe of the worker's edge and widget hosts is failing.
 
             ${{ needs.probe.outputs.report || '- The probe job failed before it probed anything; see the run.' }}
 
             Likely causes, cheapest first:
 
             - The Cloudflare zone route was detached, so the hostname resolves but nothing serves it (522).
+            - Only `edge.osc.earth/osa-dev/health` fails, with 404: the dev worker's edge routes were detached, so production's `edge.osc.earth/osa*` route receives `/osa-dev/...` and answers 404 as outside its mount.
             - A deploy flipped `workers_dev` off, taking the `workers.dev` hostname down.
-            - `MOUNTED_HOSTS` and the `[[routes]]` patterns drifted, so the worker is never invoked.
+            - `MOUNTED_HOSTS` / `mountPrefixFor` and the `[[routes]]` patterns drifted, so the worker is never invoked or strips the wrong prefix.
             - The backend itself is down, which shows as `/osa/communities` failing while `/osa/health` still answers.
