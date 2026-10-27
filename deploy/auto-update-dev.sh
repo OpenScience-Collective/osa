@@ -29,9 +29,10 @@ NEW_ID=$(docker inspect "$REGISTRY_IMAGE" --format='{{.Id}}' 2>/dev/null)
 if [ "$RUNNING_ID" != "$NEW_ID" ]; then
     echo "[$(date '+%Y-%m-%d %H:%M')] Updating dev container..."
 
-    docker stop "$CONTAINER_NAME" 2>/dev/null || true
-    docker rm "$CONTAINER_NAME" 2>/dev/null || true
+    # Render .env from Infisical; on failure the existing .env is kept
+    bash "${SCRIPT_DIR}/sync-env.sh" || echo "[$(date '+%Y-%m-%d %H:%M')] WARNING: Infisical sync failed; deploying with the existing .env"
 
+    # Refuse before the running container is stopped, not after
     ENV_FILE="${SCRIPT_DIR}/../.env"
     if [ ! -f "$ENV_FILE" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M')] ERROR: No .env file found at ${ENV_FILE}. Refusing to deploy a misconfigured container."
@@ -39,6 +40,9 @@ if [ "$RUNNING_ID" != "$NEW_ID" ]; then
         exit 1
     fi
     ENV_ARGS="--env-file $ENV_FILE"
+
+    docker stop "$CONTAINER_NAME" 2>/dev/null || true
+    docker rm "$CONTAINER_NAME" 2>/dev/null || true
 
     # Create persistent data directory
     DATA_DIR="/var/lib/osa/${CONTAINER_NAME}/data"

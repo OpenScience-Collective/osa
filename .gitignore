@@ -64,6 +64,9 @@ logs/
 .env
 .env.local
 .env.*.local
+# Temporary renders from deploy/sync-env.sh and server backups
+.env.*
+!.env.example
 *.local.yaml
 *.local.json
 

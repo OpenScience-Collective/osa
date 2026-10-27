@@ -227,6 +227,9 @@ deploy_update() {
     # one happened before it reports success.
     DEPLOY_HEALTHY=false
 
+    # Render .env from Infisical; on failure the existing .env is kept
+    bash "${SCRIPT_DIR}/sync-env.sh" || log "Warning: Infisical sync failed; deploying with the existing .env"
+
     # Find .env file
     ENV_FILE="${SCRIPT_DIR}/../.env"
     if [ ! -f "$ENV_FILE" ]; then
