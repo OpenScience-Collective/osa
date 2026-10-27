@@ -4,14 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script>
-    // Redirect *.osa-demo.pages.dev to custom domains
+    // Redirect the Pages project's own *.pages.dev names to the custom domains.
+    // That name is account-scoped: in another Cloudflare account the project
+    // gets a suffixed name (osa-demo-<suffix>.pages.dev), so match both forms.
     (function() {
-      var h = location.hostname;
-      if (h === 'osa-demo.pages.dev') {
-        location.replace('https://demo.osc.earth' + location.pathname);
-      } else if (h.endsWith('.osa-demo.pages.dev')) {
-        var branch = h.replace('.osa-demo.pages.dev', '');
-        location.replace('https://' + branch + '-demo.osc.earth' + location.pathname);
+      var m = /^(?:([a-z0-9-]+)\.)?osa-demo(?:-[a-z0-9]+)?\.pages\.dev$/.exec(location.hostname);
+      if (m) {
+        var host = m[1] ? m[1] + '-demo.osc.earth' : 'demo.osc.earth';
+        location.replace('https://' + host + location.pathname);
       }
     })();
   </script>

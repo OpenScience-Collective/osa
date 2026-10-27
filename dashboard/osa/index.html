@@ -660,9 +660,13 @@
         if (params.get('api')) return params.get('api').replace(/\/+$/, '');
         if (window.OSA_API_BASE) return window.OSA_API_BASE.replace(/\/+$/, '');
         const host = window.location.hostname;
-        const isProd = host === 'osa-dash.pages.dev' || host === 'status.osc.earth';
+        // The project's *.pages.dev name is account-scoped: in another
+        // Cloudflare account it becomes osa-dash-<suffix>.pages.dev, so match
+        // both. Group 1 is the branch of a preview deploy.
+        const pagesDev = /^(?:([a-z0-9-]+)\.)?osa-dash(?:-[a-z0-9]+)?\.pages\.dev$/.exec(host);
+        const isProd = host === 'status.osc.earth' || (pagesDev !== null && !pagesDev[1]);
         const isDev = !isProd && (
-            host.endsWith('.osa-dash.pages.dev') ||
+            pagesDev !== null ||
             host.endsWith('-status.osc.earth') ||
             host.includes('localhost') ||
             host.includes('127.0.0.1'));

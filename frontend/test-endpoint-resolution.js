@@ -79,6 +79,12 @@ console.log('='.repeat(60));
 console.log('\nProduction hostnames resolve to the production mount');
 assertEqual(resolvedEndpoint('demo.osc.earth'), PROD_ENDPOINT, 'demo.osc.earth -> production endpoint');
 assertEqual(resolvedEndpoint('osa-demo.pages.dev'), PROD_ENDPOINT, 'osa-demo.pages.dev -> production endpoint');
+// In another Cloudflare account the project's pages.dev name gets a suffix.
+assertEqual(
+  resolvedEndpoint('osa-demo-x7k.pages.dev'),
+  PROD_ENDPOINT,
+  'osa-demo-x7k.pages.dev (suffixed, account-scoped project name) -> production endpoint'
+);
 
 console.log('\nDev hostnames resolve to the dev mount');
 assertEqual(resolvedEndpoint('develop-demo.osc.earth'), DEV_ENDPOINT, 'develop-demo.osc.earth -> dev endpoint');
@@ -91,6 +97,23 @@ assertEqual(
   resolvedEndpoint('feature-branch.osa-demo.pages.dev'),
   DEV_ENDPOINT,
   'feature-branch.osa-demo.pages.dev (a *.osa-demo.pages.dev preview) -> dev endpoint'
+);
+assertEqual(
+  resolvedEndpoint('develop.osa-demo-x7k.pages.dev'),
+  DEV_ENDPOINT,
+  'develop.osa-demo-x7k.pages.dev (a preview of the suffixed project) -> dev endpoint'
+);
+
+console.log('\nLook-alike hostnames are not mistaken for the Pages project');
+assertEqual(
+  resolvedEndpoint('osa-demo.pages.dev.example.com'),
+  PROD_ENDPOINT,
+  'osa-demo.pages.dev.example.com falls through to the unrecognized-host default'
+);
+assertEqual(
+  resolvedEndpoint('evil-osa-demo.pages.dev'),
+  PROD_ENDPOINT,
+  'evil-osa-demo.pages.dev (another project) is not treated as a preview'
 );
 assertEqual(resolvedEndpoint('localhost'), DEV_ENDPOINT, 'localhost -> dev endpoint');
 assertEqual(resolvedEndpoint('127.0.0.1'), DEV_ENDPOINT, '127.0.0.1 -> dev endpoint');
