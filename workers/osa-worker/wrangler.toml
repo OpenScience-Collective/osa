@@ -107,7 +107,7 @@ simple = { limit = 10, period = 60 }
 # Per-hour rate limiter (KV, global, 1 write per request)
 [[kv_namespaces]]
 binding = "RATE_LIMITER_KV"
-id = "8f8506b1a7fb400680a00014312c124d"
+id = "85833c14837a4c27ab6385bf4a4aaa88"
 
 # Development environment
 [env.dev]
@@ -165,7 +165,7 @@ simple = { limit = 60, period = 60 }
 # Per-hour rate limiter (KV)
 [[env.dev.kv_namespaces]]
 binding = "RATE_LIMITER_KV"
-id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
+id = "9d570237d481459ab60ce24c6afd7b41"
 
 # =============================================================================
 # Setup Instructions
