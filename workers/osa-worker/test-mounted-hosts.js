@@ -83,13 +83,54 @@ const routeHosts = [
   ),
 ].sort();
 
-// Prefix the worker actually strips, so the patterns can be checked for it.
-const prefixMatch = indexSource.match(/const MOUNT_PREFIX = ['"]([^'"]+)['"]/);
-const mountPrefix = prefixMatch ? prefixMatch[1] : null;
+// The prefixes the worker actually strips, so the patterns can be checked for
+// them. The shared edge host mounts the dev worker at its own "-dev" path, so
+// the expected prefix depends on which wrangler environment a route belongs
+// to; expectedPrefix mirrors mountPrefixFor in index.js.
+function constant(name) {
+  const m = indexSource.match(new RegExp(`const ${name} = ['"]([^'"]+)['"]`));
+  return m ? m[1] : null;
+}
+const mountPrefix = constant('MOUNT_PREFIX');
+const edgeHost = constant('EDGE_HOST');
+const devEdgeMountPrefix = constant('DEV_EDGE_MOUNT_PREFIX');
+assert(mountPrefix !== null, 'MOUNT_PREFIX is declared in index.js');
+assert(edgeHost !== null && devEdgeMountPrefix !== null, 'EDGE_HOST and DEV_EDGE_MOUNT_PREFIX are declared in index.js');
+
+function expectedPrefix(host, environment) {
+  return host === edgeHost && environment === 'dev' ? devEdgeMountPrefix : mountPrefix;
+}
+
+// Each pattern with the wrangler environment it belongs to: top-level
+// [[routes]] is production, [[env.<name>.routes]] is <name>. Walk the table
+// headers rather than matching patterns alone, since the same host can
+// appear in both environments at different prefixes.
+const routes = [];
+{
+  let environment = null;
+  for (const line of wranglerSource.split('\n')) {
+    const header = line.match(/^\s*\[\[?([^\]]+)\]\]?\s*$/);
+    if (header) {
+      const table = header[1].trim();
+      const envMatch = table.match(/^env\.([^.]+)\.routes$/);
+      environment = table === 'routes' ? 'production' : envMatch ? envMatch[1] : null;
+      continue;
+    }
+    const pattern = line.match(/^\s*pattern\s*=\s*["']([^"']+)["']/);
+    if (pattern && environment !== null) {
+      routes.push({ environment, pattern: pattern[1], host: pattern[1].split('/')[0] });
+    }
+  }
+}
+assertEqual(
+  routes.length,
+  [...wranglerSource.matchAll(/^\s*pattern\s*=\s*["']([^"']+)["']/gm)].length,
+  'every pattern in wrangler.toml sits under a [[routes]] or [[env.<name>.routes]] table'
+);
 
 console.log(`\nMOUNTED_HOSTS: ${JSON.stringify(mountedHosts)}`);
 console.log(`route hosts:   ${JSON.stringify(routeHosts)}`);
-console.log(`MOUNT_PREFIX:  ${mountPrefix}\n`);
+console.log(`MOUNT_PREFIX:  ${mountPrefix}  (${edgeHost} in dev: ${devEdgeMountPrefix})\n`);
 
 assert(routeHosts.length > 0, 'wrangler.toml declares at least one [[routes]] pattern');
 assert(mountedHosts.length > 0, 'MOUNTED_HOSTS is non-empty');
@@ -119,24 +160,29 @@ for (const host of mountedHosts) {
 // worker strips. A route on "widget.osc.earth/something-else/*" with
 // MOUNT_PREFIX "/osa" would pass the hostname check above and still be wrong.
 console.log('');
-const patterns = [...wranglerSource.matchAll(/^\s*pattern\s*=\s*["']([^"']+)["']/gm)].map((m) => m[1]);
-for (const pattern of patterns) {
+for (const { environment, pattern, host } of routes) {
+  const prefix = expectedPrefix(host, environment);
   const path = pattern.slice(pattern.indexOf('/'));
   assert(
-    path === `${mountPrefix}*` || path.startsWith(`${mountPrefix}/`),
-    `route pattern ${pattern} mounts at MOUNT_PREFIX ${mountPrefix}`
+    path === `${prefix}*` || path.startsWith(`${prefix}/`),
+    `route pattern ${pattern} (${environment}) mounts at ${prefix}`
   );
 }
 
-// Each mounted host needs BOTH routes (#500): "/osa/*" does not match the bare
-// "/osa", which otherwise reaches the placeholder origin and answers 522. The
-// bare route ends in "*" because a pattern without a trailing wildcard never
-// matches a URL with a query string, so "/osa?x=1" would still 522.
+// Each mounted host needs BOTH routes (#500), in every environment that
+// routes it: "/osa/*" does not match the bare "/osa", which otherwise reaches
+// the placeholder origin and answers 522. The bare route ends in "*" because
+// a pattern without a trailing wildcard never matches a URL with a query
+// string, so "/osa?x=1" would still 522.
 console.log('');
-for (const host of mountedHosts) {
-  assert(patterns.includes(`${host}${mountPrefix}/*`), `${host} routes ${mountPrefix}/*`);
-  assert(patterns.includes(`${host}${mountPrefix}*`), `${host} routes the bare ${mountPrefix}, query included (${mountPrefix}*)`);
-  assert(!patterns.includes(`${host}${mountPrefix}`), `${host} has no exact ${mountPrefix} route, which a query string would miss`);
+for (const environment of [...new Set(routes.map((r) => r.environment))]) {
+  const patterns = routes.filter((r) => r.environment === environment).map((r) => r.pattern);
+  for (const host of [...new Set(routes.filter((r) => r.environment === environment).map((r) => r.host))]) {
+    const prefix = expectedPrefix(host, environment);
+    assert(patterns.includes(`${host}${prefix}/*`), `${environment}: ${host} routes ${prefix}/*`);
+    assert(patterns.includes(`${host}${prefix}*`), `${environment}: ${host} routes the bare ${prefix}, query included (${prefix}*)`);
+    assert(!patterns.includes(`${host}${prefix}`), `${environment}: ${host} has no exact ${prefix} route, which a query string would miss`);
+  }
 }
 
 console.log('\n' + '='.repeat(60));

@@ -157,6 +157,45 @@ for (const host of [MOUNTED_HOST, 'develop-widget.osc.earth']) {
 assertEqual(await statusOf('/osa/'), await statusOf('/'), '/osa/ (the redirect target) is the API root');
 await assertReachesHandler('/osa/feedback', { method: 'POST', body: {} }, 'POST /osa/feedback reaches the feedback handler');
 
+// edge.osc.earth is shared by both workers (edge.<domain>/<project>), with dev
+// at the project path plus "-dev". The prefix therefore depends on the
+// worker's environment, not the host alone.
+console.log('\nedge.osc.earth mounts production at /osa and dev at /osa-dev');
+const EDGE_HOST = 'edge.osc.earth';
+const PRODUCTION = { ENVIRONMENT: 'production' };
+assertEqual(
+  await statusOf('/osa/health', { host: EDGE_HOST, env: PRODUCTION }),
+  await statusOf('/health', { env: PRODUCTION }),
+  'production: edge /osa/health reaches the same handler as /health'
+);
+{
+  const bare = await call('/osa', { host: EDGE_HOST, env: PRODUCTION });
+  assertEqual(bare.status, 308, 'production: edge /osa (bare) answers 308');
+  assertEqual(bare.headers.get('Location'), '/osa/', 'production: edge /osa redirects to /osa/');
+}
+assertEqual(
+  await statusOf('/osa-dev/health', { host: EDGE_HOST, env: PRODUCTION }),
+  404,
+  'production: edge /osa-dev/health is outside its mount (404), never served as production'
+);
+assertEqual(
+  await statusOf('/osa-dev/health', { host: EDGE_HOST }),
+  await statusOf('/health'),
+  'dev: edge /osa-dev/health reaches the same handler as /health'
+);
+assert((await statusOf('/osa-dev/health', { host: EDGE_HOST })) !== 404, 'dev: edge /osa-dev/health does not fall through to 404');
+{
+  const bare = await call('/osa-dev?community=nemar', { host: EDGE_HOST });
+  assertEqual(bare.status, 308, 'dev: edge /osa-dev (bare) answers 308');
+  assertEqual(bare.headers.get('Location'), '/osa-dev/?community=nemar', 'dev: edge /osa-dev redirects to /osa-dev/, query kept');
+}
+assertEqual(await statusOf('/osa-devfoo', { host: EDGE_HOST }), 404, 'dev: edge /osa-devfoo is outside the mount (404)');
+await assertReachesHandler(
+  '/osa-dev/feedback',
+  { method: 'POST', body: {}, host: EDGE_HOST },
+  'dev: POST edge /osa-dev/feedback reaches the feedback handler'
+);
+
 // The resume route is where the epic branch and the widget branch collided:
 // phase 1 added it matching on the RAW path, which on a mounted host would have
 // made every continuation 404 while ordinary chat worked. The two matchers also
@@ -332,6 +371,11 @@ try {
     await forwardedPathFor('/hed/chat', { method: 'POST', body: {}, host: MOUNTED_HOST }),
     '/hed/chat',
     'POST /hed/chat forwards the same path, so prefixed and unprefixed agree upstream'
+  );
+  assertEqual(
+    await forwardedPathFor('/osa-dev/hed/chat', { method: 'POST', body: {}, host: 'edge.osc.earth' }),
+    '/hed/chat',
+    'dev: POST edge.osc.earth/osa-dev/hed/chat forwards /hed/chat upstream'
   );
   assertEqual(
     await forwardedPathFor('/osa/communities', { host: MOUNTED_HOST }),

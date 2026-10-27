@@ -67,6 +67,28 @@ zone_name = "osc.earth"
 pattern = "widget.osc.earth/osa*"
 zone_name = "osc.earth"
 
+# URL convention (OSC and Annotation Garden): <role>.<domain>/<project>.
+#   api.osc.earth/osa    the FastAPI origin, for key-authenticated clients
+#                        (the CLI); never fronted by this worker
+#   edge.osc.earth/osa   browser-facing Workers: Turnstile, rate limits,
+#                        backend-key injection (this worker)
+#   docs.osc.earth/osa   documentation
+# Dev takes the same host with a "-dev" path suffix (edge.osc.earth/osa-dev,
+# api.osc.earth/osa-dev). widget.osc.earth/osa and develop-widget.osc.earth/osa
+# stay as aliases of this worker: other sites embed the widget and allowlist
+# widget.osc.earth in their CSP (nemarOrg/website ADR 0017), so the widget's
+# default endpoint does not move. Both edge routes follow the #500 pattern
+# above (the "/*" route plus the bare "*" route); index.js mounts
+# edge.osc.earth through mountPrefixFor. The DNS record exists:
+#   edge.osc.earth   AAAA  100::  proxied   (created 2026-10-26)
+[[routes]]
+pattern = "edge.osc.earth/osa/*"
+zone_name = "osc.earth"
+
+[[routes]]
+pattern = "edge.osc.earth/osa*"
+zone_name = "osc.earth"
+
 # Hybrid rate limiting approach:
 # - Per-minute (bot protection): Built-in API (fast, in-memory)
 # - Per-hour (human abuse): KV (global consistency)
@@ -115,6 +137,18 @@ zone_name = "osc.earth"
 # The bare mount path (#500); see the production routes above.
 [[env.dev.routes]]
 pattern = "develop-widget.osc.earth/osa*"
+zone_name = "osc.earth"
+
+# Dev on the shared edge host, at the project path with the "-dev" suffix
+# (see the URL convention above production's edge routes). "/osa-dev*" is
+# more specific than production's "edge.osc.earth/osa*", so Cloudflare sends
+# "/osa-dev..." here and not to production.
+[[env.dev.routes]]
+pattern = "edge.osc.earth/osa-dev/*"
+zone_name = "osc.earth"
+
+[[env.dev.routes]]
+pattern = "edge.osc.earth/osa-dev*"
 zone_name = "osc.earth"
 
 # Per-minute rate limiter (dev has higher limit: 60/min)
