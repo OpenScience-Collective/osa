@@ -45,14 +45,14 @@ class TestWildcardOriginToRegex:
         assert not pattern.match("https://evil.foo-demo.osc.earth")  # multi-level
 
     def test_pages_dev_wildcard(self) -> None:
-        """Should match subdomains of osa-demo.pages.dev."""
-        regex = _wildcard_origin_to_regex("https://*.osa-demo.pages.dev")
+        """Should match subdomains of a Cloudflare Pages project name."""
+        regex = _wildcard_origin_to_regex("https://*.example.pages.dev")
         pattern = re.compile(regex)
-        assert pattern.match("https://develop.osa-demo.pages.dev")
-        assert pattern.match("https://feature-branch.osa-demo.pages.dev")
-        assert pattern.match("https://abc123.osa-demo.pages.dev")
-        assert not pattern.match("https://osa-demo.pages.dev")
-        assert not pattern.match("https://.osa-demo.pages.dev")
+        assert pattern.match("https://develop.example.pages.dev")
+        assert pattern.match("https://feature-branch.example.pages.dev")
+        assert pattern.match("https://abc123.example.pages.dev")
+        assert not pattern.match("https://example.pages.dev")
+        assert not pattern.match("https://.example.pages.dev")
 
     def test_preserves_scheme(self) -> None:
         """Should only match the specified scheme."""
@@ -108,14 +108,31 @@ class TestCollectCorsConfig:
         pattern = re.compile(origin_regex)
         assert pattern.match("https://develop-demo.osc.earth")
         assert pattern.match("https://feature-branch-demo.osc.earth")
-        # Backward compat: also match legacy pages.dev
-        assert pattern.match("https://develop.osa-demo.pages.dev")
+
+    def test_includes_dashboard_pages_dev_origins(self) -> None:
+        """Should keep the dashboard's Pages origins: its PR previews call the API."""
+        exact_origins, origin_regex = _collect_cors_config()
+        assert "https://osa-dash.pages.dev" in exact_origins
+        assert origin_regex is not None
+        assert re.compile(origin_regex).match("https://feature-branch.osa-dash.pages.dev")
+
+    def test_excludes_demo_pages_dev_origins(self) -> None:
+        """Should not allow the demo's account-scoped *.pages.dev names.
+
+        frontend/index.html redirects every osa-demo.pages.dev visit to the
+        osc.earth custom domains before any script calls the API.
+        """
+        exact_origins, origin_regex = _collect_cors_config()
+        assert "https://osa-demo.pages.dev" not in exact_origins
+        assert origin_regex is not None
+        pattern = re.compile(origin_regex)
+        assert not pattern.match("https://osa-demo.pages.dev")
+        assert not pattern.match("https://develop.osa-demo.pages.dev")
 
     def test_includes_main_demo_origin(self) -> None:
         """Should include main demo page without subdomain."""
         exact_origins, _ = _collect_cors_config()
         assert "https://demo.osc.earth" in exact_origins
-        assert "https://osa-demo.pages.dev" in exact_origins
 
     def test_includes_community_exact_origins(self) -> None:
         """Should include exact origins from community configs (e.g., HED)."""
@@ -178,17 +195,22 @@ class TestCorsHeaders:
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") == "https://demo.osc.earth"
 
-    def test_cors_backward_compat_pages_dev(self, client: TestClient) -> None:
-        """Should return CORS headers for legacy osa-demo.pages.dev wildcard."""
-        response = client.get(
-            "/health",
-            headers={"Origin": "https://develop.osa-demo.pages.dev"},
-        )
+    @pytest.mark.parametrize(
+        "origin",
+        ["https://osa-demo.pages.dev", "https://develop.osa-demo.pages.dev"],
+    )
+    def test_cors_denied_for_demo_pages_dev(self, client: TestClient, origin: str) -> None:
+        """Should not return CORS headers for the retired osa-demo.pages.dev names."""
+        response = client.get("/health", headers={"Origin": origin})
         assert response.status_code == 200
-        assert (
-            response.headers.get("access-control-allow-origin")
-            == "https://develop.osa-demo.pages.dev"
-        )
+        assert "access-control-allow-origin" not in response.headers
+
+    def test_cors_allowed_for_dashboard_pages_dev_preview(self, client: TestClient) -> None:
+        """Should return CORS headers for a dashboard PR preview on osa-dash.pages.dev."""
+        origin = "https://feature-branch.osa-dash.pages.dev"
+        response = client.get("/health", headers={"Origin": origin})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == origin
 
     def test_cors_denied_for_unknown_origin(self, client: TestClient) -> None:
         """Should not return CORS headers for unconfigured origins."""
