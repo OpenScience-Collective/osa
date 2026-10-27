@@ -282,7 +282,8 @@ Its source of truth is Infisical at `infisical.nemar.org`, project `osc`, `prod`
 If Infisical is unreachable, the existing `.env` is kept and the failure is logged;
 if there is no `.env` at all, the deploy scripts refuse to replace the running container.
 A changed value takes effect on the next deploy;
-to apply it immediately, run `deploy/auto-update.sh --force` (prod) or `deploy/deploy.sh dev` (dev) on the server.
+to apply it immediately, run `deploy/auto-update.sh --force` (prod; `--force` does not override an active rollback lock, so use `deploy/deploy.sh` then) or `deploy/deploy.sh dev` (dev) on the server.
+A rollback also re-renders the current Infisical values, so undo a bad value in Infisical rather than by rolling back the image.
 
 ### Inspecting Knowledge Databases
 
