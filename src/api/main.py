@@ -109,8 +109,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 def _wildcard_origin_to_regex(pattern: str) -> str:
     """Convert a wildcard CORS origin pattern to a regex string.
 
-    Converts patterns like 'https://*.pages.dev' to a regex that matches
-    any valid subdomain label (e.g., 'https://my-app.pages.dev').
+    Converts patterns like 'https://*.example.org' to a regex that matches
+    any valid subdomain label (e.g., 'https://docs.example.org').
 
     Note: Matches a single subdomain label, not multiple levels.
     Example: '*.example.com' matches 'foo.example.com' but not 'foo.bar.example.com'.

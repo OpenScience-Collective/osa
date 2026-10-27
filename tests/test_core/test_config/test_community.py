@@ -1370,7 +1370,7 @@ class TestCommunityConfigCorsOrigins:
             name="Test",
             description="Test",
             cors_origins=[
-                "https://*.pages.dev",
+                "https://*.example.org",
                 "https://*.osa-demo.pages.dev",
                 "http://*.localhost:3000",
             ],

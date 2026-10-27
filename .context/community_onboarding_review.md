@@ -50,7 +50,7 @@ cors_origins:
 ```yaml
 cors_origins:
   - https://hedtags.org              # Production
-  - https://*.pages.dev               # Previews
+  - https://*.myproject.pages.dev     # Previews of this project only
 ```
 
 **Status:** ✓ Already supported via wildcard
