@@ -661,12 +661,19 @@ class TestEmbedOrigins:
 
         assert origins == [
             "https://demo.osc.earth",
-            "https://osa-demo.pages.dev",
             "https://example.org",
         ]
 
     def test_every_build_environment_declares_its_platform_hosts(self) -> None:
         assert set(site.PLATFORM_EMBED_ORIGINS) == set(site.NOTEBOOK_ENVIRONMENTS)
+
+    @pytest.mark.parametrize("environment", ["production", "develop"])
+    def test_the_demo_pages_dev_names_are_not_embedders(self, environment: str) -> None:
+        # frontend/index.html redirects them to the osc.earth hosts before the
+        # widget loads, and the names are account-scoped.
+        origins = site.embed_origins({}, environment)
+
+        assert not any("osa-demo.pages.dev" in origin for origin in origins)
 
     def test_only_develop_admits_loopback_and_the_preview_hosts(self) -> None:
         production = site.embed_origins({}, "production")

@@ -113,12 +113,10 @@ BRIDGE_SCRIPT_TAG = '<script src="../osa-bridge.js" defer></script>'
 #: wildcard, so develop's previews (``*-demo.osc.earth``) are covered by
 #: ``*.osc.earth``; loopback is for local testing, and develop only.
 PLATFORM_EMBED_ORIGINS = {
-    "production": ("https://demo.osc.earth", "https://osa-demo.pages.dev"),
+    "production": ("https://demo.osc.earth",),
     "develop": (
         "https://demo.osc.earth",
-        "https://osa-demo.pages.dev",
         "https://*.osc.earth",
-        "https://*.osa-demo.pages.dev",
         "http://localhost:*",
         "http://127.0.0.1:*",
     ),
