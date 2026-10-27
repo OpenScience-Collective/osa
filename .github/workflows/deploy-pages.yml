@@ -69,12 +69,17 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          # The project's *.pages.dev name is account-scoped: a project created
+          # in another account gets a suffixed name (osa-demo-<suffix>.pages.dev)
+          # when osa-demo.pages.dev is taken. Set the PAGES_DEMO_HOST repository
+          # variable to the project's real name instead of editing this file.
+          PAGES_DEMO_HOST: ${{ vars.PAGES_DEMO_HOST || 'osa-demo.pages.dev' }}
         run: |
           BRANCH="${{ steps.branch.outputs.name }}"
           SUBDOMAIN="${BRANCH}-demo"
           FQDN="${SUBDOMAIN}.osc.earth"
           # Point CNAME to branch-specific pages.dev URL so Pages serves the correct branch
-          TARGET="${BRANCH}.osa-demo.pages.dev"
+          TARGET="${BRANCH}.${PAGES_DEMO_HOST}"
           PROJECT="osa-demo"
 
           if [ -z "$CF_ZONE_ID" ] || [ -z "$CF_API_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then

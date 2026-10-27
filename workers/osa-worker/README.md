@@ -46,8 +46,12 @@ so a future widget can be added at its own path on the same host instead of
 consuming a subdomain each. These are ordinary zone routes (path-mounted,
 not a whole-hostname Custom Domain) rather than the account-scoped
 `*.workers.dev` default, so moving the worker to a different Cloudflare
-account is a route change, not a change every consumer (the widget,
-`nemarOrg/website`'s Content-Security-Policy) has to make too. The
+account does not change any consumer (the widget,
+`nemarOrg/website`'s Content-Security-Policy).
+The account is no longer pinned in code either (`CLOUDFLARE_ACCOUNT_ID`),
+but a move still has per-account steps: the `RATE_LIMITER_KV` namespace ids,
+the worker secrets (from Infisical project `osc`, `/osa/edge`) and the zone routes;
+see "Moving to Another Cloudflare Account" in `.context/deployment-checklist.md`. The
 `your-subdomain.workers.dev`
 examples below are generic placeholders for anyone deploying their own fork
 of this worker under their own account.

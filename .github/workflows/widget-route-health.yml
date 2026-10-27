@@ -36,6 +36,14 @@ jobs:
     steps:
       - name: Probe
         id: probe
+        env:
+          # The worker's account-scoped *.workers.dev name. No new client may
+          # depend on it, but cached, SRI-pinned widget builds still call it
+          # until nemarOrg/website#343 drops it from that site's CSP. It
+          # changes with the Cloudflare account, so it is a repository
+          # variable (LEGACY_WORKERS_DEV_HOST) that overrides this default.
+          # Set the variable to "none" to stop probing it once #343 closes.
+          LEGACY_WORKERS_DEV_HOST: ${{ vars.LEGACY_WORKERS_DEV_HOST || 'osa-worker.shirazi-10f.workers.dev' }}
         run: |
           set +e
           failures=""
@@ -71,14 +79,18 @@ jobs:
           check https://widget.osc.earth/osa/communities 200
           check https://develop-widget.osc.earth/osa/health 200
 
-          # The legacy hostnames must keep serving while cached, SRI-pinned
-          # widget builds still call them (nemarOrg/website#343).
-          check https://osa-worker.shirazi-10f.workers.dev/health 200
+          if [ "$LEGACY_WORKERS_DEV_HOST" != "none" ]; then
+            # The legacy hostname must keep serving while cached, SRI-pinned
+            # widget builds still call it (nemarOrg/website#343).
+            check "https://${LEGACY_WORKERS_DEV_HOST}/health" 200
 
-          # The host gate: /osa is a real path segment on an unmounted host and
-          # must NOT be stripped there. A 200 here means the strip went
-          # host-blind again, which silently swallows a community named "osa".
-          check https://osa-worker.shirazi-10f.workers.dev/osa/health 404
+            # The host gate: /osa is a real path segment on an unmounted host
+            # and must NOT be stripped there. A 200 here means the strip went
+            # host-blind again, which silently swallows a community named
+            # "osa". workers/osa-worker/test-routing.js covers the same rule
+            # offline, so dropping this probe does not drop the check.
+            check "https://${LEGACY_WORKERS_DEV_HOST}/osa/health" 404
+          fi
 
           if [ -n "$failures" ]; then
             {

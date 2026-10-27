@@ -4,7 +4,12 @@
 name = "osa-worker"
 main = "index.js"
 compatibility_date = "2024-01-01"
-account_id = "10f166f3ec8395ff4a219f581c5f359d"
+# No account_id here on purpose: the account comes from CLOUDFLARE_ACCOUNT_ID
+# (CI passes the org secret; set it yourself for a manual deploy), so the
+# account is no longer pinned in code. A move still has per-account steps:
+# the RATE_LIMITER_KV namespace ids below are account-scoped, and the worker
+# secrets must be put again from Infisical (project osc, /osa/edge). See
+# "Moving to Another Cloudflare Account" in .context/deployment-checklist.md.
 
 # Explicit (#437): once a [[routes]] table is present, wrangler defaults
 # workers_dev to false on deploy unless this is set, which would silently
@@ -180,12 +185,14 @@ id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
 #    wrangler secret put BACKEND_API_KEY --env dev
 #    wrangler secret put TURNSTILE_SECRET_KEY --env dev
 #
-# 5. Deploy:
+# 5. Deploy (no account_id in this file; name the account explicitly):
+#    export CLOUDFLARE_ACCOUNT_ID=<account id>
 #    wrangler deploy           # Production
 #    wrangler deploy --env dev # Development
 #
-# 6. Verify:
-#    curl https://osa-worker.<your-subdomain>.workers.dev/health
+# 6. Verify, on the product-owned host rather than the account-scoped
+#    workers.dev name:
+#    curl https://widget.osc.earth/osa/health
 #
 # =============================================================================
 # Route Provisioning (#437), DONE. Recorded because the next person to
