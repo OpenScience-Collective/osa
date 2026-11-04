@@ -920,9 +920,7 @@ class TestFullBuildEndToEnd:
         assert (site_root / "notebooks" / "index.html").exists()
         assert (site_root / "lab" / "index.html").exists()
         assert (site_root / "lock" / "pyodide-lock.json").exists()
-        assert (
-            site_root / "wheels" / "nemar" / "eegprep_lean-0.5.0-py3-none-any.whl"
-        ).exists()
+        assert (site_root / "wheels" / "nemar" / "eegprep_lean-0.5.0-py3-none-any.whl").exists()
         assert (site_root / "wheels" / "nemar" / "zarr-3.4.0-py3-none-any.whl").exists()
         assert (site_root / "starters" / "nemar.ipynb").exists()
         assert (site_root / "starters" / "index.json").exists()
