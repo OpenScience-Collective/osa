@@ -9,14 +9,18 @@
 # README beside this file says when to set it.
 
 [eegprep-lean]
-wheel = "eegprep_lean-0.1.0.dev3-py3-none-any.whl"
+wheel = "eegprep_lean-0.5.0-py3-none-any.whl"
 repository = "sccn/eegprep"
 branch = "develop"
 path = "packages/eegprep-lean"
-commit = "50c50879d28eae11a5e4c242dbb34e0ac1a6b6d8"
+commit = "13c7983775de1a3b6b4f4a55016436fcf965c507"
+# develop's newest commit touching this path. The release commit above is a
+# merge onto master and is not in that path history; this commit has the same
+# packages/eegprep-lean tree, so the wheel is current through it.
+reviewed_through = "e0b43f59475ea408d11870369dbe1815c06b9aeb"
 # The commit's own timestamp, so a rebuild produces identical bytes; see
 # src/assistants/nemar/runtime/README.md for the full procedure.
-build = "git archive 50c50879d28eae11a5e4c242dbb34e0ac1a6b6d8 packages/eegprep-lean | tar -x -C <dir> && cd <dir>/packages/eegprep-lean && SOURCE_DATE_EPOCH=1790299289 uv build --wheel"
+build = "git archive 13c7983775de1a3b6b4f4a55016436fcf965c507 packages/eegprep-lean | tar -x -C <dir> && cd <dir>/packages/eegprep-lean && SOURCE_DATE_EPOCH=1793754997 uv build --wheel"
 
 [zarr]
 wheel = "zarr-3.4.0-py3-none-any.whl"
