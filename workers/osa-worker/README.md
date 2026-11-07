@@ -67,7 +67,7 @@ wrangler login
 
 ### 2. KV namespaces
 
-KV namespaces are already configured in `wrangler.toml` for per-hour rate limiting. No additional setup needed.
+KV namespaces are already configured in `wrangler.toml` for per-hour rate limiting, in the sccn account. No additional setup needed there; another account needs its own (see `.context/deployment-checklist.md`, "Moving to Another Cloudflare Account").
 
 ### 3. Set up Turnstile
 

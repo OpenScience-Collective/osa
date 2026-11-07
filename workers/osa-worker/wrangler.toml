@@ -177,7 +177,7 @@ id = "9d570237d481459ab60ce24c6afd7b41"
 # 2. Login to Cloudflare:
 #    wrangler login
 #
-# 3. KV namespaces already exist (IDs in this file)
+# 3. KV namespaces already exist in the sccn account (IDs in this file)
 #
 # 4. Set secrets:
 #    wrangler secret put BACKEND_API_KEY
