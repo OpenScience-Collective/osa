@@ -235,6 +235,13 @@ Do them before the first deploy into the new account.
    Do not widen the code's wildcard to `https://osa-dash-*.pages.dev`: any Cloudflare user can create a project with that prefix.
    Branch previews (`<branch>.osa-dash-x7k.pages.dev`) need the exact-suffix wildcard `https://*.osa-dash-x7k.pages.dev` in `src/api/main.py`, which only that project can serve.
 6. **Health probe**: set the repository variable `LEGACY_WORKERS_DEV_HOST` to the new `workers.dev` name, or to `none` once nemarOrg/website#343 has closed; otherwise `widget-route-health.yml` fails every 15 minutes after the move.
+7. **Zone rules**: redirect, cache and transform rules belong to the zone and do not move with a domain, and the old zone's rules cannot be read once it is "moved".
+   Before switching nameservers, read each zone's Rules pages (or `GET /zones/<id>/rulesets`) in the old account and recreate what is there.
+   Both zones carry a `www` redirect (#642), one dynamic redirect rule per zone with the status code 301 and the query string preserved:
+   expression `(http.host eq "www.<apex>")`, target `concat("https://<apex>", http.request.uri.path)`.
+   Create it with `PUT /zones/<zone-id>/rulesets/phases/http_request_dynamic_redirect/entrypoint`.
+   It needs the `www` DNS record to stay proxied.
+   Check with `curl -sI https://www.<apex>/some/path?x=1`: a 301 whose `location` is the apex with the same path and query.
 
 ## Known Issues & Workarounds
 
