@@ -1188,7 +1188,7 @@ console.log('\nthe usage in a saved conversation is read back, and only as the w
   console.warn = (...args) => warns.push(args.join(' '));
   try {
     const usage = { input_tokens: 5, output_tokens: 1, cache_read_tokens: 0, cache_creation_tokens: 0, estimated_cost: 0.0001, partial: false };
-    const history = (message) => JSON.stringify({ version: 99, messages: [{ role: 'assistant', content: 'Hi.', ...message }], sessionId: null });
+    const history = (message) => JSON.stringify({ version: 2, messages: [{ role: 'assistant', content: 'Hi.', ...message }], sessionId: null });
     const lineOf = (loaded) => [...loaded.window.document.querySelectorAll('.osa-message-usage')].map((el) => el.textContent);
 
     const good = loadWidget({ saved: history({ usage }) });
@@ -1530,7 +1530,7 @@ console.log('\na cut-off mark is kept in the saved conversation and shown again 
   assert(lastReplyText(reloaded).startsWith(REPLY.slice(0, 40)) && INCOMPLETE.test(lastReplyText(reloaded)),
     'the reloaded reply shows its text and the note');
   assert(again.api.getMessages().some((m) => m.cutOff === true), 'and the message still carries the mark');
-  const forged = JSON.stringify({ version: 99, messages: [{ role: 'assistant', content: 'Hi.', cutOff: 'yes' }], sessionId: null });
+  const forged = JSON.stringify({ version: 2, messages: [{ role: 'assistant', content: 'Hi.', cutOff: 'yes' }], sessionId: null });
   assertEqual(loadWidget({ saved: forged }).api.getMessages().map((m) => m.cutOff === true), [false],
     'a stored value that is not true marks nothing');
 }

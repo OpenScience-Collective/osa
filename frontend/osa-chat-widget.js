@@ -347,6 +347,12 @@
   let communityDefaultModel = null; // Community's default model from API
   let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
+  // The active conversation's identity, {id, context, createdAt}; `messages` and
+  // `sessionId` above are its working copy (see the conversation store).
+  let activeConversation = null;
+  // Conversations to take out of storage with the next save (a discarded chat, a
+  // deleted one); kept until a save succeeds.
+  const droppedConversationIds = new Set();
   let communityConfigReady = null; // Promise for the community config fetch, once started
   // A first visit, with no remembered look: the launcher waits, hidden, for the
   // community config (#475). See revealLauncher.
@@ -428,7 +434,238 @@
     frame: null, datasetId: null, state: 'idle', setup: null, failure: null,
     loadTimer: null, readyTimer: null, sentScheme: null
   };
-  const CHAT_HISTORY_VERSION = 2;
+  // --- Conversation store ---
+  // The saved chats (#654): one record per community and origin, under
+  // CONFIG.storageKey, {version: 3, activeId, conversations: [{id, context, title,
+  // sessionId, createdAt, updatedAt, messages}]}, the last MAX_CONVERSATIONS by
+  // updatedAt. `context` is null, {type: 'dataset', id} or {type: 'search'}: an
+  // object, because a bare string could not tell a dataset whose id is "search"
+  // from the search context.
+  //
+  // Everything in this block is a pure function: parsed storage in, envelope out,
+  // with no DOM and no widget state, so loadHistory, saveHistory and the
+  // conversation functions further down are thin callers. The widget is one
+  // classic script pinned by SRI, so the store cannot be a module of its own.
+  const CHAT_HISTORY_VERSION = 3;
+  const MAX_CONVERSATIONS = 30;
+  const CONVERSATION_TITLE_LIMIT = 60;
+  // Records below this version stored citation markers at the stream delta
+  // boundary; they get the one-time repair (migrateLegacyCitationMarkers).
+  const CITATION_REPAIR_BEFORE_VERSION = 2;
+
+  function newConversationId(cryptoSource = typeof crypto !== 'undefined' ? crypto : null) {
+    try {
+      if (cryptoSource && typeof cryptoSource.randomUUID === 'function') return cryptoSource.randomUUID();
+    } catch {
+      // Fall through: randomUUID needs a secure context in some browsers.
+    }
+    return `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function isValidConversationId(id) {
+    return typeof id === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(id);
+  }
+
+  // The first user message, whitespace collapsed, cut to CONVERSATION_TITLE_LIMIT
+  // characters; '' for a conversation with none.
+  function conversationTitle(list) {
+    const first = list.find((m) => m && m.role === 'user' && typeof m.content === 'string');
+    if (!first) return '';
+    return Array.from(first.content.replace(/\s+/g, ' ').trim()).slice(0, CONVERSATION_TITLE_LIMIT).join('');
+  }
+
+  // A context as stored: null, {type: 'search'} or {type: 'dataset', id}; anything
+  // else is null.
+  function normalizeConversationContext(context) {
+    if (!context || typeof context !== 'object' || Array.isArray(context)) return null;
+    if (context.type === 'search') return { type: 'search' };
+    if (context.type === 'dataset' && isValidDatasetId(context.id)) return { type: 'dataset', id: context.id };
+    return null;
+  }
+
+  // The dataset the latest user message that names one was sent from, as a context.
+  function contextFromMessages(list) {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const message = list[index];
+      if (message && message.role === 'user' && isValidDatasetId(message.dataset)) {
+        return { type: 'dataset', id: message.dataset };
+      }
+    }
+    return null;
+  }
+
+  function validTimestamp(value, fallback) {
+    return Number.isFinite(value) && value >= 0 ? value : fallback;
+  }
+
+  function validSessionId(value) {
+    return typeof value === 'string' && value && value.length <= 200 ? value : null;
+  }
+
+  // One stored conversation, or null when it is unusable. `repaired` says
+  // whether messages were dropped, so the caller can write the clean copy back.
+  function normalizeStoredConversation(raw, now) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    if (!isValidConversationId(raw.id) || !Array.isArray(raw.messages)) return null;
+    const list = raw.messages.map(normalizePersistedMessage).filter(Boolean);
+    const title = typeof raw.title === 'string'
+      ? Array.from(raw.title).slice(0, CONVERSATION_TITLE_LIMIT).join('')
+      : conversationTitle(list);
+    return {
+      repaired: list.length !== raw.messages.length,
+      conversation: {
+        id: raw.id,
+        context: normalizeConversationContext(raw.context),
+        title,
+        sessionId: validSessionId(raw.sessionId),
+        createdAt: validTimestamp(raw.createdAt, now),
+        updatedAt: validTimestamp(raw.updatedAt, now),
+        messages: list,
+      },
+    };
+  }
+
+  // The newest MAX_CONVERSATIONS by updatedAt, newest first, and never the
+  // active one: it stays even when it is older than all the others.
+  function trimConversations(conversations, activeId, max = MAX_CONVERSATIONS) {
+    const byNewest = (a, b) => b.updatedAt - a.updatedAt;
+    const sorted = [...conversations].sort(byNewest);
+    if (sorted.length <= max) return sorted;
+    const active = sorted.find((conversation) => conversation.id === activeId);
+    const others = sorted.filter((conversation) => conversation !== active);
+    const kept = others.slice(0, max - (active ? 1 : 0));
+    return (active ? [...kept, active] : kept).sort(byNewest);
+  }
+
+  // The envelope without its oldest conversation other than the active one, or
+  // null when there is none to give up (the retry after a full storage).
+  function evictOldestInactive(envelope) {
+    let oldest = null;
+    for (const conversation of envelope.conversations) {
+      if (conversation.id === envelope.activeId) continue;
+      if (!oldest || conversation.updatedAt <= oldest.updatedAt) oldest = conversation;
+    }
+    if (!oldest) return null;
+    return { ...envelope, conversations: envelope.conversations.filter((conversation) => conversation !== oldest) };
+  }
+
+  // Parsed storage, as any widget version wrote it, to a v3 envelope.
+  //   kind 'v3'          the current format
+  //   kind 'legacy'      a v2 or v1 record ({version, messages, sessionId}) or the
+  //                      bare messages array, each now one conversation
+  //   kind 'empty'       nothing the widget recognizes
+  //   kind 'unreadable'  written by a newer widget (version above 3): never to be
+  //                      read as if current, nor overwritten; envelope is null
+  // `needsSave` says the stored record is not yet what the widget would write.
+  // `dropped` counts messages and conversations that were invalid and left out.
+  function readConversationStore(parsed, now) {
+    const empty = { version: CHAT_HISTORY_VERSION, activeId: null, conversations: [] };
+    const isObject = parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+    if (isObject && Number.isInteger(parsed.version) && parsed.version > CHAT_HISTORY_VERSION) {
+      return { kind: 'unreadable', envelope: null, needsSave: false, dropped: 0 };
+    }
+
+    if (isObject && parsed.version === CHAT_HISTORY_VERSION && Array.isArray(parsed.conversations)) {
+      let dropped = 0;
+      const seen = new Set();
+      const conversations = [];
+      for (const raw of parsed.conversations) {
+        const result = normalizeStoredConversation(raw, now);
+        if (!result || seen.has(result.conversation.id)) {
+          dropped += 1;
+          continue;
+        }
+        if (result.repaired) dropped += 1;
+        seen.add(result.conversation.id);
+        conversations.push(result.conversation);
+      }
+      const kept = trimConversations(conversations, parsed.activeId);
+      const active = kept.find((conversation) => conversation.id === parsed.activeId) || kept[0] || null;
+      return {
+        kind: 'v3',
+        envelope: { version: CHAT_HISTORY_VERSION, activeId: active ? active.id : null, conversations: kept },
+        needsSave: dropped > 0 || kept.length !== conversations.length || (active ? active.id : null) !== parsed.activeId,
+        dropped,
+      };
+    }
+
+    let rawMessages = null;
+    let sessionId = null;
+    let version = 0;
+    if (isObject && Array.isArray(parsed.messages)) {
+      rawMessages = parsed.messages;
+      sessionId = validSessionId(parsed.sessionId);
+      version = Number.isInteger(parsed.version) ? parsed.version : 0;
+    } else if (Array.isArray(parsed)) {
+      rawMessages = parsed;
+    }
+    if (!rawMessages) return { kind: 'empty', envelope: empty, needsSave: false, dropped: 0 };
+
+    let list = rawMessages.map(normalizePersistedMessage).filter(Boolean);
+    if (version < CITATION_REPAIR_BEFORE_VERSION) {
+      list = list.map((message) => {
+        if (message.role !== 'assistant' || !message.citations.length) return message;
+        const content = migrateLegacyCitationMarkers(message.content, message.citations);
+        return content === message.content ? message : { ...message, content };
+      });
+    }
+    const dropped = rawMessages.length - list.length;
+    if (!list.length) return { kind: 'legacy', envelope: empty, needsSave: true, dropped };
+    const id = newConversationId();
+    return {
+      kind: 'legacy',
+      envelope: {
+        version: CHAT_HISTORY_VERSION,
+        activeId: id,
+        conversations: [{
+          id,
+          context: contextFromMessages(list),
+          title: conversationTitle(list),
+          sessionId,
+          createdAt: now,
+          updatedAt: now,
+          messages: list,
+        }],
+      },
+      needsSave: true,
+      dropped,
+    };
+  }
+
+  // The envelope to write: what is stored now, with only the working copy's
+  // conversation replaced, so a second tab or the pop-out, which share this
+  // storage, never loses the others. `working` is {id, context, createdAt,
+  // sessionId, messages}; `dropIds` are conversations to remove (a discarded or
+  // deleted one). A stored record in a legacy shape is already what the working
+  // copy was read from, so it is not merged. Returns null when the stored record
+  // is from a newer widget and must not be overwritten.
+  function mergeActiveConversation(stored, working, now, dropIds = []) {
+    const existing = readConversationStore(stored, now);
+    if (existing.kind === 'unreadable') return null;
+    const previous = existing.kind === 'v3' ? existing.envelope.conversations : [];
+    const prior = previous.find((conversation) => conversation.id === working.id);
+    // A save that changes nothing (a vote, a repair) must not make the
+    // conversation look newer than its last message.
+    const unchanged = prior
+      && prior.sessionId === working.sessionId
+      && JSON.stringify(prior.messages) === JSON.stringify(working.messages.map(normalizePersistedMessage).filter(Boolean));
+    const dropped = new Set(dropIds);
+    const conversation = {
+      id: working.id,
+      context: working.context,
+      title: conversationTitle(working.messages),
+      sessionId: working.sessionId,
+      createdAt: working.createdAt,
+      updatedAt: unchanged ? prior.updatedAt : now,
+      messages: working.messages,
+    };
+    const others = previous.filter((entry) => entry.id !== working.id && !dropped.has(entry.id));
+    return {
+      version: CHAT_HISTORY_VERSION,
+      activeId: working.id,
+      conversations: trimConversations([conversation, ...others], working.id),
+    };
+  }
   let responseSequence = 0;
 
   function createResponseId() {
@@ -4515,44 +4752,32 @@
     return cleaned;
   }
 
-  // Load chat history from localStorage
+  // Load chat history from localStorage: the active conversation becomes the
+  // working copy (`messages`, `sessionId`). Returns whether the stored record
+  // should be written back now (a migration or a repair).
   function loadHistory() {
     let historyLoadFailed = false;
     let historyNeedsSave = false;
     try {
       const saved = localStorage.getItem(CONFIG.storageKey);
       if (saved) {
-        const parsed = JSON.parse(saved);
-        // Validate structure to prevent injection attacks
-        let rawMessages;
-        let historyVersion = 0;
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.messages)) {
-          // Stored format: { version, messages, sessionId }
-          rawMessages = parsed.messages;
-          sessionId = parsed.sessionId || null;
-          historyVersion = Number.isInteger(parsed.version) ? parsed.version : 0;
-        } else if (Array.isArray(parsed)) {
-          // Legacy format: just messages array (backward compatible)
-          rawMessages = parsed;
-          sessionId = null;
-        }
-        if (rawMessages) {
-          messages = rawMessages.map(normalizePersistedMessage).filter(Boolean);
-          if (messages.length !== rawMessages.length || historyVersion < CHAT_HISTORY_VERSION) {
-            historyNeedsSave = true;
+        const result = readConversationStore(JSON.parse(saved), Date.now());
+        if (result.kind === 'unreadable') {
+          // Written by a newer widget: leave it exactly as it is.
+          historyLoadFailed = true;
+          queuePendingNotice('Saved chat history was written by a newer version of this widget, so it was left untouched and this chat will not be saved.');
+        } else {
+          historyNeedsSave = result.needsSave;
+          const active = result.envelope.conversations.find((c) => c.id === result.envelope.activeId);
+          if (active) {
+            messages = active.messages;
+            sessionId = active.sessionId;
+            activeConversation = { id: active.id, context: active.context, createdAt: active.createdAt };
+          } else if (result.kind !== 'empty') {
+            messages = [];
+            sessionId = null;
           }
-          if (historyVersion < CHAT_HISTORY_VERSION) {
-            messages = messages.map((message) => {
-              if (message.role !== 'assistant' || !message.citations.length) return message;
-              const content = migrateLegacyCitationMarkers(message.content, message.citations);
-              if (content === message.content) return message;
-              historyNeedsSave = true;
-              return { ...message, content };
-            });
-          }
-          if (messages.length !== rawMessages.length) {
-            console.warn('Some chat messages were invalid and filtered out');
-          }
+          if (result.dropped > 0) console.warn('Some chat messages were invalid and filtered out');
         }
       }
     } catch (e) {
@@ -4563,9 +4788,36 @@
     if (messages.length === 0) {
       messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     }
+    if (!activeConversation) beginConversation(null);
     // A read/parse failure must never trigger a write: preserving the
     // existing storage value is safer than replacing it with the greeting.
     return !historyLoadFailed && historyNeedsSave;
+  }
+
+  // The identity of a new, empty working copy.
+  function beginConversation(context) {
+    activeConversation = {
+      id: newConversationId(),
+      context: normalizeConversationContext(context),
+      createdAt: Date.now(),
+    };
+  }
+
+  // The stored record as parsed JSON; null when there is none or it cannot be
+  // parsed (nothing in it to keep, so it is written over, as it always was).
+  // A storage that cannot be read at all throws.
+  function readStoredHistoryRecord() {
+    const saved = localStorage.getItem(CONFIG.storageKey);
+    if (!saved) return null;
+    try {
+      return JSON.parse(saved);
+    } catch {
+      return null;
+    }
+  }
+
+  function isStorageFullError(error) {
+    return !!error && (error.name === 'QuotaExceededError' || error.code === 22 || error.code === 1014);
   }
 
   // Save chat history to localStorage
@@ -4598,8 +4850,32 @@
         }
         return rest;
       });
-      const data = JSON.stringify({ version: CHAT_HISTORY_VERSION, messages: persistable, sessionId });
-      localStorage.setItem(CONFIG.storageKey, data);
+      if (!activeConversation) beginConversation(null);
+      let envelope = mergeActiveConversation(readStoredHistoryRecord(), {
+        id: activeConversation.id,
+        context: activeConversation.context,
+        createdAt: activeConversation.createdAt,
+        sessionId,
+        messages: persistable,
+      }, Date.now(), [...droppedConversationIds]);
+      if (!envelope) {
+        const newer = new Error('Saved chat history was written by a newer version of this widget');
+        newer.name = 'HistoryVersionError';
+        throw newer;
+      }
+      // A full storage gives up the oldest other conversation and tries again,
+      // until the active one is all there is.
+      for (;;) {
+        try {
+          localStorage.setItem(CONFIG.storageKey, JSON.stringify(envelope));
+          break;
+        } catch (writeError) {
+          const smaller = isStorageFullError(writeError) ? evictOldestInactive(envelope) : null;
+          if (!smaller) throw writeError;
+          envelope = smaller;
+        }
+      }
+      droppedConversationIds.clear();
       saveErrorShown = false;
     } catch (e) {
       console.error('[OSA] localStorage save failed:', {
@@ -4614,7 +4890,9 @@
       const isQuotaError = e.name === 'QuotaExceededError';
       const isSecurityError = e.name === 'SecurityError';
 
-      if (isQuotaError) {
+      if (e.name === 'HistoryVersionError') {
+        errorMsg = 'Saved chat history is from a newer widget version, so this chat is not being saved.';
+      } else if (isQuotaError) {
         errorMsg = 'Storage full - conversation NOT saved. Clear browser data or export chat.';
       } else if (isSecurityError) {
         errorMsg = 'Browser privacy settings prevent saving. Enable local storage.';
@@ -4632,6 +4910,118 @@
       // Re-throw so callers know save failed
       throw e;
     }
+  }
+
+  // The saved conversations as the store has them now (a second tab or the pop-out
+  // may have added or dropped some), newest first; [] when there is no usable
+  // record.
+  function readStoredConversations() {
+    try {
+      const result = readConversationStore(readStoredHistoryRecord(), Date.now());
+      return result.kind === 'v3' ? result.envelope.conversations : [];
+    } catch (e) {
+      console.error('[OSA] Failed to read saved conversations:', e);
+      return [];
+    }
+  }
+
+  function saveHistoryQuietly(what) {
+    try {
+      saveHistory();
+    } catch (saveError) {
+      // saveHistory has already shown the reason on screen.
+      console.error(`[OSA] Failed to save history on ${what}:`, saveError);
+    }
+  }
+
+  // Take the active conversation out of the way before another becomes active:
+  // kept, as it stands, when the reader said something in it, and gone when it is
+  // only the greeting.
+  function retireActiveConversation() {
+    if (!activeConversation) return;
+    if (messages.some((m) => m.role === 'user')) {
+      saveHistoryQuietly('leaving a conversation');
+    } else {
+      droppedConversationIds.add(activeConversation.id);
+    }
+  }
+
+  function greetingMessages() {
+    return [{ role: 'assistant', content: CONFIG.initialMessage }];
+  }
+
+  // The conversations the widget can offer, newest first: {id, context, title,
+  // sessionId, createdAt, updatedAt, messages, active}. This is the whole store
+  // API the History panel (E1.4) and the context switch (E1.3) build on, along
+  // with startConversation, activateConversation and deleteConversation: none of
+  // them draws anything, and the caller re-renders after them.
+  function listConversations() {
+    const stored = readStoredConversations();
+    const list = stored.slice();
+    if (activeConversation && !list.some((c) => c.id === activeConversation.id)) {
+      list.push({
+        id: activeConversation.id,
+        context: activeConversation.context,
+        title: conversationTitle(messages),
+        sessionId,
+        createdAt: activeConversation.createdAt,
+        updatedAt: Date.now(),
+        messages: messages.slice(),
+      });
+    }
+    return list
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((c) => ({ ...c, active: !!activeConversation && c.id === activeConversation.id }));
+  }
+
+  // Start a new, empty conversation in the given context (null, {type:'dataset',
+  // id} or {type:'search'}) and make it the active one; the previous one stays
+  // unless it was empty. Returns the new id, or null while a reply is on its way.
+  function startConversation({ context = null } = {}) {
+    if (isLoading) return null;
+    retireActiveConversation();
+    messages = greetingMessages();
+    sessionId = null;
+    beginConversation(context);
+    saveHistoryQuietly('starting a conversation');
+    return activeConversation.id;
+  }
+
+  // Make a saved conversation the active one, its messages and session the
+  // working copy. False when there is no such conversation or a reply is on its
+  // way.
+  function activateConversation(id) {
+    if (isLoading || !isValidConversationId(id)) return false;
+    if (activeConversation && activeConversation.id === id) return true;
+    const target = readStoredConversations().find((c) => c.id === id);
+    if (!target) return false;
+    retireActiveConversation();
+    messages = target.messages.length ? target.messages : greetingMessages();
+    sessionId = target.sessionId;
+    activeConversation = { id: target.id, context: target.context, createdAt: target.createdAt };
+    droppedConversationIds.delete(target.id);
+    saveHistoryQuietly('opening a conversation');
+    return true;
+  }
+
+  // Delete a saved conversation. Deleting the active one starts an empty one in
+  // its place, as resetChat does. False when there is no such conversation, or the
+  // active one is mid-reply.
+  function deleteConversation(id) {
+    if (!isValidConversationId(id)) return false;
+    if (activeConversation && activeConversation.id === id) {
+      if (isLoading) return false;
+      droppedConversationIds.add(id);
+      messages = greetingMessages();
+      sessionId = null;
+      beginConversation(null);
+    } else if (readStoredConversations().some((c) => c.id === id)) {
+      droppedConversationIds.add(id);
+    } else {
+      return false;
+    }
+    saveHistoryQuietly('deleting a conversation');
+    return true;
   }
 
   // Get page context (URL, title, and widget instructions) for contextual answers
@@ -9420,8 +9810,11 @@
     if (messages.length <= 1 || isLoading) return;
     // Commit any open thumbs-down comment before the history is cleared.
     flushPendingResponseFeedback(container);
+    // The active conversation is discarded for good; the others stay.
+    if (activeConversation) droppedConversationIds.add(activeConversation.id);
     messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     sessionId = null; // Clear session to start fresh on next message
+    beginConversation(null);
     try {
       saveHistory();
     } catch (saveError) {
@@ -10032,6 +10425,24 @@
       renderMessages,
       saveHistory,
       loadHistory,
+      // The conversation store (#654): the four functions E1.3 and E1.4 build on,
+      // the pure store functions the format tests drive, and the active
+      // conversation's identity.
+      startConversation,
+      listConversations,
+      activateConversation,
+      deleteConversation,
+      getActiveConversation: () => (activeConversation ? { ...activeConversation } : null),
+      conversationStore: {
+        MAX_CONVERSATIONS,
+        CONVERSATION_TITLE_LIMIT,
+        newConversationId,
+        conversationTitle,
+        readConversationStore,
+        mergeActiveConversation,
+        trimConversations,
+        evictOldestInactive,
+      },
       getSessionId: () => sessionId,
       setSessionId: (value) => { sessionId = value; },
     };
