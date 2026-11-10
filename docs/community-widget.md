@@ -533,6 +533,23 @@ the two disclosures and their markup for hostile code, Copy through happy-dom's 
 and each figure's Download, its label and numbering, and its file's bytes and name.
 `frontend/test-widget-popout.js` checks the code block, Copy and Download in the pop-out.
 
+## Saved conversations
+
+The widget keeps up to 30 conversations in the reader's browser, in one `localStorage` record per community and origin (`osa-chat-history-<community>` unless `storageKey` says otherwise).
+The record is `{version: 3, activeId, conversations: [...]}`.
+Each conversation has an id, a title (its first question, cut to 60 characters), a context (none, a dataset, or the search page), the server's session id, its two timestamps and its messages.
+When a 31st is saved, the one with the oldest last message is dropped; the active conversation is never dropped.
+
+- **Nothing changes on screen yet.** The widget shows the active conversation, as it always showed its one chat. The History panel, a fresh chat on return and a reset when the dataset changes are built on this store.
+- **Older records are migrated on load.** A record any earlier widget wrote (version 2, version 1, or a bare list of messages) becomes one conversation, with its messages and session kept.
+- **A second tab, or the pop-out, does not drop the first's conversations.** Each save re-reads the record and replaces only its own conversation.
+- **A record from a newer widget is left alone.** If the stored version is above 3, the widget says so, does not save, and does not overwrite it.
+  A corrupted record is reported the same way when it is loaded.
+- **A full browser storage drops the oldest other conversation** and tries again, before it reports that the chat could not be saved.
+- **Clearing the chat** (the header's reset button) discards the active conversation and starts an empty one; the others stay.
+
+Testing: `frontend/test-widget-history-store.js` runs the real widget source in happy-dom windows: the migrations, the 30-conversation limit, the save and load round trip, the records it must not overwrite, a full storage, and two widgets on one storage.
+
 ## The first paint: remembering the community's look
 
 The `widget:` block reaches the page with the community config request, some
