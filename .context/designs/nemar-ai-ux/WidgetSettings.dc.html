@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Widget settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0e5a70}a:hover{color:#083b4a}
+</style>
+</helmet>
+<div style="width: 400px; height: 820px; box-sizing: border-box; font-family: Inter, system-ui, sans-serif; color: #1f2937; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 14px; overflow: hidden; display: flex; flex-direction: column">
+  <header style="padding: 14px 16px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; gap: 10px">
+    <button type="button" aria-label="Back to chat" style="width: 32px; height: 32px; border: 0; background: transparent; display: flex; align-items: center; justify-content: center">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2" aria-hidden="true"><path d="M15 6l-6 6 6 6"></path></svg>
+    </button>
+    <h2 style="flex: 1 1 auto; margin: 0; font-size: 16px; font-weight: 600; color: #0b1a3a">Settings</h2>
+  </header>
+
+  <div style="flex: 1 1 auto; overflow: hidden; padding: 6px 16px 12px; display: flex; flex-direction: column; gap: 4px">
+    <section style="padding: 12px 0; border-bottom: 1px solid #f1f5f9; display: flex; flex-direction: column; gap: 10px">
+      <h3 style="margin: 0; font-size: 12px; letter-spacing: 0.6px; color: #64748b; font-weight: 600">RUNNING ANALYSES</h3>
+      <fieldset style="border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px">
+        <legend style="font-size: 13.5px; font-weight: 500; margin-bottom: 6px">When a plan step finishes</legend>
+        <label style="display: flex; gap: 8px; align-items: flex-start; font-size: 13px"><input type="radio" name="after" checked style="margin-top: 2px"><span>Pause so I can look at the result <span style="color: #64748b">(default)</span></span></label>
+        <label style="display: flex; gap: 8px; align-items: flex-start; font-size: 13px"><input type="radio" name="after" style="margin-top: 2px"><span>Run every step, and stop only on an error</span></label>
+      </fieldset>
+      <label style="display: flex; gap: 8px; align-items: flex-start; font-size: 13px"><input type="checkbox" checked style="margin-top: 2px"><span>Ask before running code that is not part of an approved plan</span></label>
+    </section>
+
+    <section style="padding: 12px 0; border-bottom: 1px solid #f1f5f9; display: flex; flex-direction: column; gap: 10px">
+      <h3 style="margin: 0; font-size: 12px; letter-spacing: 0.6px; color: #64748b; font-weight: 600">BROWSER MEMORY</h3>
+      <fieldset style="border: 0; margin: 0; padding: 0">
+        <legend style="font-size: 13.5px; font-weight: 500; margin-bottom: 8px">Memory budget per step</legend>
+        <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px">
+          <label style="border: 1px solid #cbd5e1; border-radius: 8px; padding: 9px 0; text-align: center; font-size: 13px"><input type="radio" name="mem" style="position: absolute; left: -9999px">256 MB</label>
+          <label style="border: 1.5px solid #0e7490; background: #f5fbfd; color: #0e5a70; font-weight: 600; border-radius: 8px; padding: 9px 0; text-align: center; font-size: 13px"><input type="radio" name="mem" checked style="position: absolute; left: -9999px">512 MB</label>
+          <label style="border: 1px solid #cbd5e1; border-radius: 8px; padding: 9px 0; text-align: center; font-size: 13px"><input type="radio" name="mem" style="position: absolute; left: -9999px">1 GB</label>
+          <label style="border: 1px solid #cbd5e1; border-radius: 8px; padding: 9px 0; text-align: center; font-size: 13px"><input type="radio" name="mem" style="position: absolute; left: -9999px">2 GB</label>
+        </div>
+      </fieldset>
+      <div style="display: flex; flex-direction: column; gap: 4px">
+        <div style="display: flex; justify-content: space-between; font-size: 12px; color: #475569"><span>Last step used</span><span>312 MB of 512 MB</span></div>
+        <div aria-hidden="true" style="height: 6px; border-radius: 3px; background: #e2e8f0; overflow: hidden"><div style="width: 61%; height: 6px; background: #0e7490"></div></div>
+      </div>
+      <p style="margin: 0; font-size: 12px; line-height: 1.5; color: #475569">The assistant sizes each step to fit this budget, reading long recordings in pieces. A larger budget reads more at once but can slow or crash the tab on a laptop with little memory. One array cannot exceed 2 GB in the browser.</p>
+    </section>
+
+    <section style="padding: 12px 0; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 10px">
+      <div style="flex: 1 1 auto">
+        <div style="font-size: 13.5px; font-weight: 500">Python in this tab</div>
+        <div style="font-size: 12px; color: #475569">Ready · uses 410 MB now</div>
+      </div>
+      <button type="button" style="background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 8px; min-height: 36px; padding: 0 12px; font: 500 12.5px Inter, sans-serif">Restart Python</button>
+    </section>
+
+    <section style="padding: 12px 0; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 10px">
+      <div style="flex: 1 1 auto">
+        <div style="font-size: 13.5px; font-weight: 500">Saved chats and figures</div>
+        <div style="font-size: 12px; color: #475569">14 MB in this browser</div>
+      </div>
+      <button type="button" style="background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 8px; min-height: 36px; padding: 0 10px; font: 500 12.5px Inter, sans-serif">Download .zip</button>
+      <button type="button" style="background: #ffffff; color: #b91c1c; border: 1px solid #fca5a5; border-radius: 8px; min-height: 36px; padding: 0 10px; font: 500 12.5px Inter, sans-serif">Delete</button>
+    </section>
+
+    <button type="button" aria-expanded="false" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; border: 0; padding: 12px 0; font: 500 13.5px Inter, sans-serif; color: #1f2937">
+      <span style="flex: 1 1 auto">Model and API key</span>
+      <span style="font-size: 12px; color: #64748b; font-weight: 400">Default · Claude Haiku 5.5</span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+    </button>
+
+    <a href="#" style="font-size: 13px; margin-top: 4px">How in-browser analysis works, with its limits</a>
+  </div>
+
+  <div style="border-top: 1px solid #e5e7eb; padding: 12px 16px; display: flex; gap: 8px; justify-content: flex-end">
+    <button type="button" style="background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 8px; min-height: 40px; padding: 0 14px; font: 500 13px Inter, sans-serif">Cancel</button>
+    <button type="button" style="background: #0e7490; color: #ffffff; border: 0; border-radius: 8px; min-height: 40px; padding: 0 16px; font: 600 13px Inter, sans-serif">Save</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":400,"height":820}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

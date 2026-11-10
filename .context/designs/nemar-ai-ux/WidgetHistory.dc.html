@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fresh chat on return and history</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0e5a70}a:hover{color:#083b4a}
+</style>
+</helmet>
+<div style="width: 400px; height: 760px; box-sizing: border-box; font-family: Inter, system-ui, sans-serif; color: #1f2937; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; position: relative">
+  <header style="background: #5bbad5; color: #06112a; padding: 12px 14px; display: flex; align-items: center; gap: 10px">
+    <div style="width: 34px; height: 34px; border-radius: 999px; background: #ffffff; display: flex; align-items: center; justify-content: center; flex: none">
+      <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" fill="#0e7490"></path></svg>
+    </div>
+    <div style="flex: 1 1 auto; font-weight: 600; font-size: 15px">NEMAR Assistant</div>
+    <button type="button" aria-label="History" aria-pressed="true" style="width: 32px; height: 32px; border: 0; border-radius: 8px; background: #ffffff; display: flex; align-items: center; justify-content: center">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0e5a70" stroke-width="2" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l3 2"></path></svg>
+    </button>
+    <button type="button" aria-label="Close" style="width: 32px; height: 32px; border: 0; background: transparent; display: flex; align-items: center; justify-content: center">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#06112a" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+    </button>
+  </header>
+
+  <div style="padding: 14px; display: flex; flex-direction: column; gap: 10px">
+    <div style="background: #f3f4f6; border-radius: 12px; padding: 12px 14px; font-size: 14px; line-height: 1.5">Welcome back. This is a new chat about <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px">on002718</span>.</div>
+    <button type="button" style="display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: #f5fbfd; border: 1px solid #b9e0eb; border-radius: 10px; padding: 10px 12px; font: 13px Inter, sans-serif; color: #0f3d4c">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0e7490" stroke-width="2" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5"></path></svg>
+      <span style="flex: 1 1 auto">Pick up where you left off: <strong style="font-weight: 600">Compare ERPs for famous vs scrambled faces</strong></span>
+    </button>
+  </div>
+
+  <div aria-hidden="true" style="position: absolute; left: 0; right: 0; top: 58px; bottom: 0; background: rgba(15, 23, 42, 0.28)"></div>
+
+  <section aria-label="History" style="position: absolute; left: 0; right: 0; bottom: 0; height: 560px; background: #ffffff; border-top-left-radius: 16px; border-top-right-radius: 16px; display: flex; flex-direction: column">
+    <div style="width: 40px; height: 4px; border-radius: 2px; background: #cbd5e1; margin: 8px auto 0"></div>
+    <div style="display: flex; align-items: center; padding: 10px 16px 6px">
+      <h2 style="flex: 1 1 auto; margin: 0; font-size: 16px; font-weight: 600; color: #0b1a3a">History</h2>
+      <button type="button" style="background: #0e7490; color: #ffffff; border: 0; border-radius: 8px; min-height: 34px; padding: 0 12px; font: 600 12.5px Inter, sans-serif">+ New chat</button>
+    </div>
+
+    <div style="flex: 1 1 auto; overflow: hidden; padding: 0 10px">
+      <div style="font-size: 11px; letter-spacing: 0.6px; color: #64748b; font-weight: 600; padding: 10px 6px 4px">TODAY</div>
+      <div style="display: flex; gap: 10px; align-items: center; padding: 8px 6px; border-radius: 10px; background: #f5fbfd">
+        <div style="width: 56px; height: 40px; flex: none; border: 1px solid #e2e8f0; border-radius: 6px; background: #ffffff; overflow: hidden">
+          <svg width="56" height="40" viewBox="0 0 56 40" aria-hidden="true"><path d="M2 20 L18 20 C22 19 24 14 26 15 C28 17 29 30 32 31 C35 32 36 24 40 22 C46 19 50 20 54 20" fill="none" stroke="#2563eb" stroke-width="1.5"></path><path d="M2 21 L18 21 C22 20 24 17 26 18 C28 20 29 25 32 26 C35 26 36 22 40 21 C46 20 50 21 54 21" fill="none" stroke="#ea580c" stroke-width="1.5"></path></svg>
+        </div>
+        <div style="flex: 1 1 auto; min-width: 0">
+          <div style="font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Compare ERPs for famous vs scrambled faces</div>
+          <div style="font-size: 11.5px; color: #64748b; display: flex; gap: 6px; flex-wrap: wrap"><span style="font-family: 'JetBrains Mono', monospace">on002718</span><span>· 5 steps · 2 figures · 2:14 PM</span></div>
+        </div>
+        <button type="button" aria-label="More actions" style="width: 32px; height: 32px; border: 0; background: transparent">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="#64748b" aria-hidden="true"><circle cx="12" cy="5" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="12" cy="19" r="1.8"></circle></svg>
+        </button>
+      </div>
+      <div style="margin: 4px 6px 6px 72px; border: 1px solid #e2e8f0; border-radius: 10px; background: #ffffff; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12); padding: 4px; display: flex; flex-direction: column">
+        <button type="button" style="text-align: left; background: transparent; border: 0; border-radius: 6px; padding: 8px 10px; font: 13px Inter, sans-serif; color: #1f2937">Open</button>
+        <button type="button" style="text-align: left; background: transparent; border: 0; border-radius: 6px; padding: 8px 10px; font: 13px Inter, sans-serif; color: #1f2937">Continue in notebook</button>
+        <button type="button" style="text-align: left; background: transparent; border: 0; border-radius: 6px; padding: 8px 10px; font: 13px Inter, sans-serif; color: #1f2937">Download code (.py or .ipynb)</button>
+        <button type="button" style="text-align: left; background: transparent; border: 0; border-radius: 6px; padding: 8px 10px; font: 13px Inter, sans-serif; color: #b91c1c">Delete</button>
+      </div>
+
+      <div style="font-size: 11px; letter-spacing: 0.6px; color: #64748b; font-weight: 600; padding: 10px 6px 4px">EARLIER</div>
+      <div style="display: flex; gap: 10px; align-items: center; padding: 8px 6px">
+        <div style="width: 56px; height: 40px; flex: none; border: 1px solid #e2e8f0; border-radius: 6px; background: #ffffff; overflow: hidden">
+          <svg width="56" height="40" viewBox="0 0 56 40" aria-hidden="true"><path d="M2 6 C8 14 12 22 18 23 C22 24 24 16 27 17 C31 19 34 28 40 30 C46 32 50 33 54 34" fill="none" stroke="#0f172a" stroke-width="1.5"></path></svg>
+        </div>
+        <div style="flex: 1 1 auto; min-width: 0">
+          <div style="font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Power spectrum of sub-002</div>
+          <div style="font-size: 11.5px; color: #64748b"><span style="font-family: 'JetBrains Mono', monospace">on002718</span> · 1 figure · Nov 8</div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 10px; align-items: center; padding: 8px 6px">
+        <div style="width: 56px; height: 40px; flex: none; border: 1px solid #e2e8f0; border-radius: 6px; background: #f7f8fb; display: flex; align-items: center; justify-content: center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg>
+        </div>
+        <div style="flex: 1 1 auto; min-width: 0">
+          <div style="font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Datasets for bilingual performance studies</div>
+          <div style="font-size: 11.5px; color: #64748b">Discover · Nov 3</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="border-top: 1px solid #e5e7eb; padding: 10px 16px 14px; font-size: 11.5px; line-height: 1.5; color: #475569">
+      Saved in this browser only, the last 30 chats with their figures. <a href="#">Sign in with NEMAR</a> to keep them across devices (planned).
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":400,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
