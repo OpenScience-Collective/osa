@@ -189,6 +189,7 @@ src/
 ### Architecture & Planning
 - **[Architecture](https://docs.osc.earth/osa/architecture/)** - High-level system diagrams
 - **.context/plan.md** - Implementation roadmap and current tasks
+- **.context/nemar-ai-ux-plan.md** - NEMAR AI experience epics (E1 to E8) and the delivery loop; design references in `.context/designs/nemar-ai-ux/`
 - **.context/research.md** - Technical notes, target project resources
 - **docs/adr/** - Architecture Decision Records for significant, hard-to-reverse decisions
 
