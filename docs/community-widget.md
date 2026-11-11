@@ -524,13 +524,14 @@ A run that raised an error, timed out or ran out of memory opens its card by def
 - **All code · N lines**, **Full traceback** and **Copy error**.
   The traceback is the one the browser kept for `get_full_output`; it is stored on the run (`traceback`, cut to 4,000 characters like the other output) and the button is not drawn for a run that has none.
   Copy error puts the error as written, `Type: message` and the failing line, on the clipboard and says "Copied".
+  Where the browser refuses the clipboard, a block holding exactly that text is shown and selected, and the card names the keys that copy it.
 - **A retry line** on the last run of a reply that is still waiting on the assistant after the failure: "The assistant is looking at this error and may run the code again (K of 20 runs used)", where 20 is the most runs one reply may make. It says "may" because the assistant can also answer in prose, and the line goes when its text starts.
   It is gone once the reply has finished, and is never shown for a run the reader started, which the assistant does not see.
 
 A run that worked and warned shows **N warnings**, collapsed, counting the lines of its stderr that hold `Warning:`; stderr with no warning in it shows nothing, as before.
 
 Output that was cut says so: "Output was cut: N characters not shown."
-The runtime cuts a stream from its middle (`... N characters omitted ...`, at 16,384 characters of stdout and 8,192 of stderr), and the widget keeps at most 4,000 characters of each of stdout, stderr and the traceback.
+The runtime cuts a stream from its middle (`... N characters omitted ...`, by default at 16,384 characters of stdout and 8,192 of stderr; a community's `stdout_chars` and `stderr_chars` can change them), and the widget keeps at most 4,000 characters of each of stdout, stderr and the traceback.
 It cuts those from the middle too, keeping both ends, because a run's error is written at the end of its stderr; its own marker adds the runtime's count to what it dropped, so the number is of everything the run wrote that is not in the card.
 
 ### Copy and Download

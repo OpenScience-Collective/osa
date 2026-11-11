@@ -2858,6 +2858,9 @@
       background: rgba(0,0,0,0.04);
     }
 
+    .osa-run-card .osa-run-card-error-text:focus-visible,
+    .osa-run-card .osa-run-card-excerpt:focus-visible,
+    .osa-run-card .osa-run-card-error-fallback:focus-visible,
     .osa-run-card button.osa-run-card-button:focus-visible {
       outline: 2px solid var(--osa-accent);
       outline-offset: 2px;
@@ -4246,6 +4249,24 @@
   // browser allows neither way to copy, the text is selected in place and the status
   // names the keys that copy it, since nothing the page can do will: for a run's
   // code, the code is opened first; `selectable` is what to select instead.
+  // Where a refused "Copy error" selects: a block holding exactly the text the button
+  // promised (the type, the message and the failing line), since the error as drawn
+  // splits those across two places. Shown only then, and kept until the card redraws.
+  function errorFallbackFor(card, text) {
+    let pre = card.querySelector('.osa-run-card-error-fallback');
+    if (!pre) {
+      pre = document.createElement('pre');
+      pre.className = 'osa-execution-output osa-run-card-error-fallback';
+      pre.tabIndex = 0;
+      pre.setAttribute('aria-label', 'The error, to copy');
+      const actions = card.querySelector('.osa-run-card-actions');
+      if (actions) actions.insertAdjacentElement('afterend', pre);
+      else card.appendChild(pre);
+    }
+    pre.textContent = text;
+    return pre;
+  }
+
   async function copyCodeFromButton(button, code, selectable = null) {
     const block = button.closest('.osa-code-block');
     const status = block && block.querySelector('.osa-code-status');
@@ -6311,6 +6332,7 @@
   const ANY_TYPE_LINE = /^([A-Za-z_][\w.]*)(?::[ \t]?(.*))?$/;
   // "  line 4: erp[name] = ..." (the offending line, which _error_text adds when
   // the exception came from a line of the run's own code).
+  const MAX_SHOWN_LINE_NUMBER = 1000000;
   const ERROR_LINE_MARK = /^ {2}line (\d+)(?:: (.*))?$/;
 
   // The type the exception itself has, read from the full traceback the browser kept:
@@ -6387,7 +6409,8 @@
       type: typeName,
       // "(<cell>, line 1)" is a SyntaxError's own suffix; the line is said below it.
       message: messageLines.join('\n').trim().replace(/ \(<cell>, line \d+\)$/, ''),
-      line: markMatch ? Number(markMatch[1]) : 0,
+      // A line number no code has (a run's code is bounded far below this) is not drawn.
+      line: markMatch && Number(markMatch[1]) <= MAX_SHOWN_LINE_NUMBER ? Number(markMatch[1]) : 0,
       lineCode: markMatch && markMatch[2] ? markMatch[2] : '',
       before: lines.slice(0, typeAt).join('\n').trim(),
       text: lines.slice(typeAt, anchor >= 0 ? anchor + 1 : typeAt + 1).join('\n'),
@@ -6420,7 +6443,7 @@
         `<span class="osa-run-card-lineno">${escapeHtml(String(number))}</span>` +
         `<span class="osa-run-card-linetext">${marked ? '<span class="osa-sr-only">Failing line: </span>' : ''}${escapeHtml(text)}</span></div>`;
     }).join('');
-    return `<div class="osa-run-card-excerpt" role="group" aria-label="${escapeHtml(`Code around line ${error.line}`)}">${lines}</div>`;
+    return `<div class="osa-run-card-excerpt" tabindex="0" role="group" aria-label="${escapeHtml(`Code around line ${error.line}`)}">${lines}</div>`;
   }
 
   // The failure in words, then the failing line in its place.
@@ -6428,7 +6451,7 @@
     const type = error.type ? `<span class="osa-run-card-error-type">${escapeHtml(error.type)}</span>` : '';
     const text = `${type}${error.type && error.message ? ': ' : ''}${escapeHtml(error.message)}`;
     if (text === '') return '';
-    return `<div class="osa-run-card-error"><div class="osa-run-card-error-text">${text}</div>` +
+    return `<div class="osa-run-card-error"><div class="osa-run-card-error-text" tabindex="0">${text}</div>` +
       `${error.line ? runExcerptHtml(run, error) : ''}</div>`;
   }
 
@@ -6456,6 +6479,9 @@
   // aria-controls names the panel, and the click handler (see the run listeners in
   // renderMessages) flips both in place and remembers the choice on the record.
   // `openLabel`, when given, is what the button says while its panel is open.
+  // The label swap (Show code, Hide code) is a deliberate choice for a reader who can see
+  // it, and aria-expanded carries the state for one who cannot; the accessible name is the
+  // visible text (WCAG 2.5.3, label in name), so it is not held apart in an aria-label.
   function runToggleHtml({ panel, id, where, label, openLabel = '', open, className = '', icon = '' }) {
     const labels = openLabel
       ? ` data-label-closed="${escapeHtml(label)}" data-label-open="${escapeHtml(openLabel)}"`
@@ -6574,6 +6600,9 @@
     const workspaceNote = run.workspaceNote
       ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
       : '';
+    const noMessage = run.status === 'error' && !error
+      ? '<div class="osa-run-card-note osa-run-card-no-message">No error message was recorded.</div>'
+      : '';
     const cutNote = cut > 0
       ? `<div class="osa-run-card-note osa-run-card-cut">Output was cut: ${escapeHtml(String(cut))} characters not shown.</div>`
       : '';
@@ -6592,7 +6621,7 @@
           </div>
           ${run.description ? `<div class="osa-run-card-description">${escapeHtml(run.description)}</div>` : ''}
           ${localNote}
-          ${error ? runErrorHtml(run, error) : ''}
+          ${error ? runErrorHtml(run, error) : noMessage}
           ${runFiguresHtml(run, located)}
           ${workspaceNote}
           ${cutNote}
@@ -8410,9 +8439,8 @@
       });
     });
 
-    // A run's code (#491): Copy and Download read the code from the run's record,
-    // and whether the reader opened it is kept on the record, so a re-render (a
-    // streamed chunk, runtime progress) does not close it again.
+    // A run's code (#491): Copy and Download read the code from the run's record, not
+    // from the page. Whether the reader opened it is kept by the toggle handler below.
     messagesEl.querySelectorAll('.osa-code-copy[data-msg-index]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -8464,7 +8492,11 @@
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const run = runAt(btn);
-        const panel = btn.ownerDocument.getElementById(btn.getAttribute('aria-controls') || '');
+        // The panel is looked for in this card, not the page, so a second widget (or a
+        // host element) that happens to share an id cannot answer for it.
+        const card = btn.closest('.osa-run-card');
+        const panelId = btn.getAttribute('aria-controls') || '';
+        const panel = card ? [...card.querySelectorAll('[id]')].find((el) => el.id === panelId) : null;
         if (!run || !panel) return;
         const open = btn.getAttribute('aria-expanded') !== 'true';
         btn.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -8489,7 +8521,7 @@
         const error = run && runErrorInfo(run);
         if (!error) return;
         const card = btn.closest('.osa-run-card');
-        copyCodeFromButton(btn, error.text, card && card.querySelector('.osa-run-card-error-text'));
+        copyCodeFromButton(btn, error.text, card && errorFallbackFor(card, error.text));
       });
     });
 

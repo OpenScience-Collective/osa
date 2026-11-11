@@ -296,7 +296,10 @@ console.log('\neach status says what happened, by its own label and its own stat
   const labels = api.EXECUTION_LABELS;
   assertEqual(Object.keys(labels).sort(), ['cancelled', 'denied', 'error', 'ok', 'oom', 'timeout'], 'the six statuses the runtime reports');
   const states = { ok: 'ok', error: 'failed', timeout: 'failed', oom: 'failed', denied: 'stopped', cancelled: 'stopped' };
-  for (const [status, label] of Object.entries(labels)) {
+  // Spelled out here, not read from the widget's own table, so a changed or mangled label fails.
+  const expectedTitles = { ok: 'Ran Python', error: 'Python raised an error', denied: 'Not run', timeout: 'Stopped: took too long', cancelled: 'Stopped', oom: 'Stopped: out of memory' };
+  assertEqual(labels, expectedTitles, 'the table holds exactly these labels');
+  for (const [status, label] of Object.entries(expectedTitles)) {
     const card = holderOf(window, api.executionsHtml([run({ status, stderr: status === 'ok' ? '' : '[runtime] it stopped' })], 0)).querySelector('.osa-run-card');
     assertEqual(textOf(card.querySelector('.osa-run-card-title')), label, `${status}: the title is "${label}"`);
     assert(card.classList.contains(`osa-run-card-${states[status]}`), `${status}: a ${states[status]} card`);
@@ -542,6 +545,25 @@ console.log('\na custom exception name that does not end in Error');
   assert(!bare.querySelector('.osa-run-card-error-type'), 'with no type claimed, since nothing says it is one');
 }
 
+console.log('\na failed run with no stderr says so, and a line number no code has is not drawn');
+{
+  const { window, api } = loadWidget();
+  const silent = holderOf(window, api.executionsHtml([run({ status: 'error', stderr: '' })], 0)).querySelector('.osa-run-card');
+  assertEqual(textOf(silent.querySelector('.osa-run-card-no-message')), 'No error message was recorded.', 'a muted line instead of a bare title');
+  assert(!silent.querySelector('.osa-run-card-error'), 'and no error block claiming something');
+  const huge = holderOf(window, api.executionsHtml([run({ status: 'error', stderr: 'ValueError: x\n  line 99999999999999999999999: y' })], 0)).querySelector('.osa-run-card');
+  assert(!huge.querySelector('.osa-run-card-excerpt') && !/e\+/.test(huge.textContent), 'a huge line number is not drawn (no 1e+23)');
+  assertEqual(textOf(huge.querySelector('.osa-run-card-error-text')), 'ValueError: x', 'the message still is');
+}
+
+console.log('\nwhat scrolls can be reached by keyboard');
+{
+  const { window, api } = loadWidget();
+  const card = failedCard(window, api, 'keyErrorWithLine');
+  assertEqual(card.querySelector('.osa-run-card-excerpt').getAttribute('tabindex'), '0', 'the code excerpt takes focus, so a long line can be scrolled');
+  assertEqual(card.querySelector('.osa-run-card-error-text').getAttribute('tabindex'), '0', 'and so does the error text');
+}
+
 console.log('\nstderr that does not parse is shown whole rather than hidden');
 {
   const { window, api } = loadWidget();
@@ -691,6 +713,45 @@ console.log('\nCopy error copies the error as written, and says Copied');
   click(window, traceback);
   assert(!container.querySelector('.osa-run-card-traceback').closest('[hidden]'), 'Full traceback opens its panel');
   assertEqual(api.getMessages()[1].executions[0]._panelsOpen, { traceback: true }, 'and the card remembers');
+}
+
+console.log('\nwhere the browser refuses the clipboard, Copy error selects exactly the text it promised');
+{
+  const { window, api } = loadWidget();
+  (await window.navigator.permissions.query({ name: 'clipboard-write' })).state = 'denied';
+  api.setMessages([{ role: 'assistant', content: 'Hi' }, { role: 'assistant', content: '', executions: [recorded(api, 'keyErrorWithLine')] }]);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  const button = container.querySelector('.osa-run-card-copy-error');
+  const status = container.querySelector('.osa-code-status');
+  const realWarn = console.warn;
+  console.warn = () => {};
+  try {
+    click(window, button);
+    await waitUntil(() => status.textContent !== '', 'the copy gives up');
+  } finally {
+    console.warn = realWarn;
+  }
+  assert(/^This page cannot copy for you: the text is selected, so press (Cmd|Ctrl)\+C$/.test(status.textContent), `the bar names the keys (${JSON.stringify(status.textContent)})`);
+  assertEqual(window.getSelection().toString(), RUN_CARD_FIXTURES.keyErrorWithLine.stderr, 'what is selected is the type, message and failing line, as the button promised');
+  assert(!button.classList.contains('copied') && button.textContent === 'Copy error', 'the button does not claim it copied');
+}
+
+console.log('\na card opens its own panel, even when the page holds another element with the same id');
+{
+  const { window, api } = loadWidget();
+  api.setMessages([{ role: 'assistant', content: 'Hi' }, { role: 'assistant', content: '', executions: [recorded(api, 'keyErrorWithLine')] }]);
+  const container = mountedContainer(window);
+  const stray = window.document.createElement('div');
+  stray.id = 'osa-run-1-0-code';
+  window.document.body.insertBefore(stray, window.document.body.firstChild);
+  api.renderMessages(container);
+  const toggle = container.querySelector('.osa-run-card-code-toggle');
+  click(window, toggle);
+  assertEqual(toggle.getAttribute('aria-expanded'), 'true', 'the button opens');
+  const panel = container.querySelector('.osa-run-card .osa-code-panel');
+  assert(!panel.hidden, 'the card\'s own panel is shown, not the other element');
+  assertEqual(api.getMessages()[1].executions[0]._codeOpen, true, 'and the record remembers');
 }
 
 console.log('\n' + '='.repeat(60));
