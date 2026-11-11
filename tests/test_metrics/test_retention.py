@@ -167,6 +167,24 @@ class TestWhereItRuns:
         assert _ids(db_path, "request_log", "request_id") == {"fresh"}
         assert _ids(db_path, "feedback_log", "feedback_id") == set()
 
+    async def test_startup_with_a_broken_database_skips_the_purge_and_starts(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        """A metrics file that is not SQLite: initialization fails and is logged, the purge
+        is skipped rather than failing a second time, and the app still starts."""
+        monkeypatch.setattr(get_settings(), "sync_enabled", False)
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "metrics.db").write_bytes(b"this is not a sqlite database" * 100)
+        caplog.set_level(logging.ERROR)
+
+        async with lifespan(create_app()):
+            started = True
+
+        assert started
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("Failed to initialize metrics database" in m for m in messages), messages
+        assert not any("expired usage metrics" in m for m in messages), messages
+
     def test_the_daily_job_purges_the_configured_database(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         db_path = tmp_path / "metrics.db"

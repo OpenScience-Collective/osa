@@ -17,10 +17,11 @@ the version being released and start a new `[Unreleased]` section above it.
 
 - **Usage metrics and feedback are deleted after five years (#725)**: `purge_expired_metrics` (`src/metrics/db.py`) deletes the `request_log` rows and `feedback_log` entries whose timestamp is more than `METRICS_RETENTION_YEARS` (5) calendar years old, comparing UTC ISO strings, with 29 February falling back to 28 February.
   It runs at every start, after the metrics database is initialized, because the scheduler only starts with sync enabled; and daily at 03:15 from the scheduler when it runs.
-  A failure is logged with its traceback and does not stop the app or the scheduler.
+  The rows are erased, not only unlinked, since a feedback comment can hold personal data: the purge sets `secure_delete`, and a purge that deleted rows truncates the write-ahead log with a checkpoint (a checkpoint a reader blocks is logged as a warning).
+  A failure is logged with its traceback and does not stop the app or the scheduler; the daily job escalates to CRITICAL after three failures in a row, like the budget and mirror jobs, and startup skips the purge when the metrics database could not be initialized.
   `PRIVACY.md` now says both are kept for five years, then deleted automatically, where it said there was no automatic deletion.
   Server logs are not covered.
-  Tests: `tests/test_metrics/test_retention.py` (real SQLite files and writers, the boundary, mixed timestamp forms, startup with sync off, the daily job and a broken database).
+  Tests: `tests/test_metrics/test_retention.py` (real SQLite files and writers, the boundary, mixed timestamp forms, the erased comment in neither the database nor its log, startup with sync off and with a broken database, the daily job, its escalation and its registration at 03:15).
 - **NEMAR procedures for a band power topography, an ERP topography and a time-frequency map (#721, on #719)**: three more documents in `src/assistants/nemar/procedures/`, so NEMAR declares seven.
   A scalp map of band power used to match none of the four, and the model planned it three different ways.
   `band-power-topography` has two steps (compute the band power, with the band power document's Welch and integration blocks byte for byte; plot the scalp map), `erp-topography` five (the ERP document's titles and filter block, all EEG channels kept, averaged per condition over a time window, one map per condition and their difference when there are two on one symmetric color range, with a running sum per condition when the all-channel epochs would pass the memory budget), and `time-frequency-by-condition` four (read, epoch, compute, plot; filtering is decided there once not to be a step, since the wavelet is already band-selective).

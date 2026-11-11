@@ -307,7 +307,8 @@ def purge_expired_metrics(db_path: Path | None = None, now: datetime | None = No
     A feedback comment can hold personal data, so the rows are erased, not only unlinked:
     ``secure_delete`` makes SQLite overwrite the freed content with zeros, and a checkpoint
     that truncates the write-ahead log removes the older copies of those pages from it.
-    A checkpoint that a concurrent reader blocks is logged and left to SQLite's next one.
+    A checkpoint that a concurrent reader blocks is logged: the older copies then stay in
+    the log until SQLite reuses those frames, which is not bounded in time.
 
     Args:
         db_path: Optional path override (for testing).
@@ -325,7 +326,8 @@ def purge_expired_metrics(db_path: Path | None = None, now: datetime | None = No
             if busy:
                 logger.warning(
                     "Deleted expired metrics, but a reader blocked the checkpoint, so older "
-                    "copies of those rows stay in the write-ahead log until the next one"
+                    "copies of those rows stay in the write-ahead log until SQLite reuses "
+                    "those frames"
                 )
     finally:
         conn.close()
