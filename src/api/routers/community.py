@@ -4,6 +4,7 @@ Creates parameterized routers for any registered community.
 Each community gets endpoints like /{community_id}/ask, /{community_id}/chat, etc.
 """
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -11,6 +12,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 import time
 import uuid
 from collections.abc import AsyncGenerator, Iterator, Sequence
@@ -762,6 +764,10 @@ class ChatSession:
         # a first message that asks for analysis flips its own, so a session never changes
         # model with quick-model thinking blocks in its history (issue #522).
         self.mode: Tier = "quick"
+        # Groups the usage-metrics rows of one conversation. It is this session's id until
+        # a handover opens the analysis session, which inherits the old session's value,
+        # so a conversation that changed sessions is still one conversation in the report.
+        self.conversation_id = session_id
 
     def add_user_message(self, content: str) -> None:
         """Add a user message to history.
@@ -2616,8 +2622,14 @@ def _set_metrics_on_request(
     http_request: Request,
     awm: AssistantWithMetrics,
     agent_result: AgentResult,
+    *,
+    conversation_id: str | None = None,
 ) -> None:
     """Store agent metrics on request.state for the metrics middleware to log.
+
+    ``conversation_id`` groups the row with the rest of its conversation in
+    ``osa metrics cost-report`` (``/chat``; ``/ask`` has none). A request that is not
+    streamed is never routed between the quick and the analysis model, so it has no tier.
 
     A request whose runs reported no usage is NULL in the row, not zero tokens at no cost,
     as for a streamed one (``_log_streaming_metrics``): a zero would read as a free
@@ -2647,6 +2659,8 @@ def _set_metrics_on_request(
         "tool_call_count": len(agent_result.tools_called),
         "langfuse_trace_id": awm.langfuse_trace_id,
         "stream": False,
+        "tier": None,
+        "conversation_id": conversation_id,
     }
 
 
@@ -2897,6 +2911,7 @@ def create_community_router(community_id: str) -> APIRouter:
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
         if body.stream:
+            _claim_metrics_row(http_request)
             return StreamingResponse(
                 _stream_ask_response(
                     community_id,
@@ -3025,6 +3040,7 @@ def create_community_router(community_id: str) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
         if body.stream:
+            _claim_metrics_row(http_request)
             return StreamingResponse(
                 _stream_chat_response(
                     community_id,
@@ -3059,7 +3075,7 @@ def create_community_router(community_id: str) -> APIRouter:
             result = await awm.assistant.ainvoke(session.messages, config=awm.langfuse_config)
 
             ar = _extract_agent_result(result)
-            _set_metrics_on_request(http_request, awm, ar)
+            _set_metrics_on_request(http_request, awm, ar, conversation_id=session.conversation_id)
             warnings = _check_unstreamed_reply(
                 http_request, community_id, f"/{community_id}/chat", awm, ar
             )
@@ -3263,6 +3279,7 @@ def create_community_router(community_id: str) -> APIRouter:
             )
             raise
 
+        _claim_metrics_row(http_request)
         return StreamingResponse(
             _stream_chat_response(
                 community_id,
@@ -3912,6 +3929,89 @@ def _extract_token_usage(event_data: dict) -> tuple[int, int, int, int]:
         return 0, 0, 0, 0
 
 
+def _claim_metrics_row(http_request: Request | None) -> None:
+    """Tell the metrics middleware that a streamed request logs its own row.
+
+    The middleware decides whether to write its stub row (no model, no tokens) as soon as
+    the response starts, which for a stream is before the generator has run, so a route
+    that streams calls this before it returns the ``StreamingResponse`` (issue #687). The
+    generator then owes the request exactly one row: it writes it where the stream ends,
+    and ``_log_unfinished_stream``, in the generator's outermost ``finally``, writes one
+    when the stream ended without reaching that call (the reader disconnected, or
+    something raised first). ``_log_streaming_metrics`` records that the row was written
+    in ``request.state.stream_row_written``, which is separate from ``metrics_logged`` so
+    the middleware stays quiet either way.
+    """
+    if http_request:
+        http_request.state.metrics_logged = True
+
+
+#: Status recorded for a stream whose reader went away before the reply finished (the
+#: non-standard 499 "client closed request" that nginx also uses).
+CLIENT_DISCONNECTED_STATUS = 499
+
+
+def _log_unfinished_stream(
+    http_request: Request | None,
+    community_id: str,
+    endpoint: str,
+    awm: AssistantWithMetrics | None,
+    tools_called: list[str],
+    start_time: float,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    longest_prompt_tokens: int | None = None,
+    tier: Tier | None = None,
+    conversation_id: str | None = None,
+) -> None:
+    """Write the request's row when a stream ended without writing one.
+
+    Called from a streaming generator's outermost ``finally``. Every normal ending logs
+    its row just after yielding its last event, so a generator closed at (or before) that
+    yield, by the reader disconnecting or by the server cancelling the task, never gets to
+    it, and the middleware has been told to stay quiet (``_claim_metrics_row``). Without
+    this the request would leave no row at all. The call is synchronous, so it runs to the
+    end inside a closing or cancelled generator.
+
+    A closed generator or a cancelled task is recorded as status 499 ("client
+    disconnected"); an exception that escaped is recorded as 500 with its type; a
+    generator that simply returned without a row is a 500 too, since that is a path that
+    should have logged. The tokens are those counted so far, so a reply cut short is still
+    priced for what was spent. Does nothing once the request's row exists.
+    """
+    if http_request is None or getattr(http_request.state, "stream_row_written", False):
+        return
+    escaped = sys.exc_info()[1]
+    if escaped is None:
+        status_code = 500
+        error_message = "stream ended without logging a row"
+    elif isinstance(escaped, GeneratorExit | asyncio.CancelledError):
+        status_code = CLIENT_DISCONNECTED_STATUS
+        error_message = "client disconnected"
+    else:
+        status_code = 500
+        error_message = type(escaped).__name__
+    _log_streaming_metrics(
+        http_request=http_request,
+        community_id=community_id,
+        endpoint=endpoint,
+        awm=awm,
+        tools_called=tools_called,
+        start_time=start_time,
+        status_code=status_code,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        error_message=error_message,
+        longest_prompt_tokens=longest_prompt_tokens,
+        tier=tier,
+        conversation_id=conversation_id,
+    )
+
+
 def _log_streaming_metrics(
     http_request: Request | None,
     community_id: str,
@@ -3927,6 +4027,8 @@ def _log_streaming_metrics(
     error_message: str | None = None,
     longest_prompt_tokens: int | None = None,
     request_id_suffix: str = "",
+    tier: Tier | None = None,
+    conversation_id: str | None = None,
 ) -> None:
     """Log metrics at the end of a streaming response.
 
@@ -3939,6 +4041,10 @@ def _log_streaming_metrics(
     quick model's work (its run and the summary) under ``<request id>:quick``, so the
     request id the widget's feedback joins on (``done.request_id``) names one row, the
     analysis run's, and the quick row is found next to it by its prefix.
+
+    ``tier`` is the model tier the row ran on (None for a community that does not route),
+    and ``conversation_id`` groups the rows of one conversation across a handover; both
+    are what ``osa metrics cost-report`` prices quick against analysis with.
     """
     try:
         duration_ms = (time.monotonic() - start_time) * 1000
@@ -3984,8 +4090,12 @@ def _log_streaming_metrics(
             total_tokens=total_tokens if has_tokens else None,
             estimated_cost=cost,
             error_message=error_message,
+            tier=tier,
+            conversation_id=conversation_id,
         )
         log_request(entry)
+        if not request_id_suffix and http_request:
+            http_request.state.stream_row_written = True
     except Exception:
         logger.exception(
             "Failed to log streaming metrics for %s (community=%s, status=%d)",
@@ -4590,6 +4700,21 @@ async def _stream_ask_response(
             error_message=failure.detail,
         )
 
+    finally:
+        _log_unfinished_stream(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/ask",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
+        )
+
 
 def _finish_with_tool_request(
     session: ChatSession,
@@ -4754,6 +4879,11 @@ async def _stream_chat_response(
     longest_prompt_tokens = 0
     model_runs = ModelRuns()
     retry = RetryState()
+    # The tier of the model whose work this request's metrics row records, set once the
+    # turn is routed (see `row_tier` below). None for a community that does not route.
+    row_tier: Tier | None = None
+    # Set once the turn is routed; read by the `finally` that logs an unfinished stream.
+    handing_over = False
 
     # The metrics middleware assigns a per-request UUID. The widget attaches the one on the
     # final `done` event to a reply for feedback, which joins it back to request_log, so it
@@ -4796,6 +4926,17 @@ async def _stream_chat_response(
             )
             + "\n\n"
         )
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=metrics_endpoint,
+            awm=None,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=409,
+            error_message="a reply is already in progress on this session",
+            conversation_id=session.conversation_id,
+        )
         return
 
     try:
@@ -4831,6 +4972,10 @@ async def _stream_chat_response(
             # Nothing to summarize on a first message: this session simply runs analysis.
             session.mode = "analysis"
             handing_over = False
+        # What this request's own row says it ran on: a handover's request row is the
+        # analysis run's, but until the analysis session starts the assistant in hand is
+        # the quick model, and an error before that is the quick model's.
+        row_tier = "quick" if handing_over else tier
 
         def run_on(target: ChatSession) -> AsyncGenerator[str, None]:
             """The analysis turn on `target`, through this same path."""
@@ -4890,6 +5035,8 @@ async def _stream_chat_response(
                 endpoint=metrics_endpoint,
                 awm=awm,
                 tools_called=tools_called,
+                tier=row_tier,
+                conversation_id=session.conversation_id,
                 start_time=start_time,
                 status_code=200,
                 input_tokens=input_tokens,
@@ -4899,6 +5046,12 @@ async def _stream_chat_response(
                 longest_prompt_tokens=longest,
                 request_id_suffix=":quick",
             )
+
+        def open_analysis_session() -> ChatSession:
+            """The new session a handover runs the analysis on, in the same conversation."""
+            analysis_session = get_or_create_session(community_id, None)
+            analysis_session.conversation_id = session.conversation_id
+            return analysis_session
 
         async def hand_over() -> AsyncGenerator[str, None]:
             """Summarize this session on the quick model; run the analysis on a new one."""
@@ -4913,7 +5066,7 @@ async def _stream_chat_response(
                     summarizer=awm.assistant.model,
                     history=earlier_messages,
                     reader_message=reader_message,
-                    open_session=lambda: get_or_create_session(community_id, None),
+                    open_session=open_analysis_session,
                     analysis_model=analysis_route.model,
                     run_analysis=run_on,
                     summarizer_config=awm.langfuse_config,
@@ -5160,6 +5313,8 @@ async def _stream_chat_response(
                 endpoint=metrics_endpoint,
                 awm=awm,
                 tools_called=tools_called,
+                tier=row_tier,
+                conversation_id=session.conversation_id,
                 start_time=start_time,
                 status_code=200,
                 input_tokens=total_input_tokens,
@@ -5205,6 +5360,8 @@ async def _stream_chat_response(
                 endpoint=metrics_endpoint,
                 awm=awm,
                 tools_called=tools_called,
+                tier=row_tier,
+                conversation_id=session.conversation_id,
                 start_time=start_time,
                 status_code=502,
                 input_tokens=total_input_tokens,
@@ -5235,6 +5392,8 @@ async def _stream_chat_response(
                     endpoint=metrics_endpoint,
                     awm=awm,
                     tools_called=tools_called,
+                    tier=row_tier,
+                    conversation_id=session.conversation_id,
                     start_time=start_time,
                     status_code=500,
                     input_tokens=total_input_tokens,
@@ -5298,6 +5457,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=200,
             input_tokens=total_input_tokens,
@@ -5325,6 +5486,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=e.status_code,
             input_tokens=total_input_tokens,
@@ -5365,6 +5528,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=status_code,
             input_tokens=total_input_tokens,
@@ -5393,6 +5558,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=500,
             input_tokens=total_input_tokens,
@@ -5415,4 +5582,21 @@ async def _stream_chat_response(
         # Anthropic (langchain-anthropic's own `_merge_messages`). The OpenRouter path merges
         # nothing: LiteLLM sends two consecutive user messages, which the OpenAI-style chat
         # format allows.
+        # What the request spent is the quick row's when it handed over (the analysis run,
+        # on the new session, writes this request's row itself), so none is counted here.
+        _log_unfinished_stream(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=metrics_endpoint,
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            input_tokens=0 if handing_over else total_input_tokens,
+            output_tokens=0 if handing_over else total_output_tokens,
+            cache_read_tokens=0 if handing_over else total_cache_read_tokens,
+            cache_creation_tokens=0 if handing_over else total_cache_creation_tokens,
+            longest_prompt_tokens=None if handing_over else longest_prompt_tokens,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
+        )
         session.end_turn()

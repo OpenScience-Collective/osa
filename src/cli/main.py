@@ -37,6 +37,7 @@ from src.cli.config import (
     save_config,
     save_credentials,
 )
+from src.cli.metrics import metrics_app
 from src.cli.mirror import mirror_app
 from src.version import __version__
 
@@ -56,6 +57,9 @@ cli = typer.Typer(
 
 # Mirror management subcommands
 cli.add_typer(mirror_app, name="mirror")
+
+# Usage metrics reports
+cli.add_typer(metrics_app, name="metrics")
 
 
 # ---------------------------------------------------------------------------
