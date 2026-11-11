@@ -16,7 +16,7 @@ Features:
 import importlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from langchain_core.tools import BaseTool, StructuredTool, tool
 
@@ -43,6 +43,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# The browser memory budgets a reader may choose, in MB. The API model
+# (src/api/routers/community.py PageContext) types the field with the same four sizes;
+# a test holds the two to each other.
+MemoryBudgetMb = Literal[256, 512, 1024, 2048]
+MEMORY_BUDGETS_MB: tuple[int, ...] = get_args(MemoryBudgetMb)
+
+
 @dataclass
 class PageContext:
     """Context about the page where the assistant widget is embedded."""
@@ -56,8 +63,16 @@ class PageContext:
     # choosing to continue this conversation in the page's context.
     moved_from: dict[str, str] | None = None
     # How much of the reader's browser memory one step of an analysis may use, in MB
-    # (256, 512, 1024 or 2048; validated at the API boundary).
-    memory_budget_mb: int | None = None
+    # (one of MEMORY_BUDGETS_MB). Checked here as well as at the API boundary, because the
+    # value is written into the system prompt and any caller can build this directly.
+    memory_budget_mb: MemoryBudgetMb | None = None
+
+    def __post_init__(self) -> None:
+        if self.memory_budget_mb is not None and self.memory_budget_mb not in MEMORY_BUDGETS_MB:
+            raise ValueError(
+                f"memory_budget_mb must be one of {list(MEMORY_BUDGETS_MB)} or None, "
+                f"got {self.memory_budget_mb!r}"
+            )
 
 
 # Default system prompt template for generic communities

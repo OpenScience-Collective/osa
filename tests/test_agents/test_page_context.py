@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 import respx
+from langchain_core.messages import AIMessage
 
 from src.assistants import discover_assistants, registry
 from src.assistants.community import PageContext
@@ -15,6 +16,7 @@ from src.utils.page_fetcher import (
     fetch_page_content,
     is_safe_url,
 )
+from tests.helpers.chat_models import ScriptedChatModel
 
 # Discover assistants at module load
 discover_assistants()
@@ -843,8 +845,7 @@ class TestMemoryBudgetInSystemPrompt:
 
     @staticmethod
     def _nemar_prompt(page_context: PageContext) -> str:
-        model = MagicMock()
-        model.bind_tools = MagicMock(return_value=model)
+        model = ScriptedChatModel(responses=[AIMessage(content="ok")])
         assistant = registry.create_assistant(
             "nemar", model=model, preload_docs=False, page_context=page_context
         )
@@ -880,8 +881,7 @@ class TestMemoryBudgetInSystemPrompt:
         assert prompt.index("## Reader Context") < prompt.index("## Browser memory budget")
 
     def test_a_community_that_turns_page_context_off_states_no_budget(self):
-        model = MagicMock()
-        model.bind_tools = MagicMock(return_value=model)
+        model = ScriptedChatModel(responses=[AIMessage(content="ok")])
         assistant = registry.create_assistant(
             "nemar",
             model=model,
@@ -891,3 +891,40 @@ class TestMemoryBudgetInSystemPrompt:
         assert "Each step must fit in 512 MB" in assistant.get_system_prompt()
         assistant.config = assistant.config.model_copy(update={"enable_page_context": False})
         assert "Browser memory budget" not in assistant.get_system_prompt()
+
+
+class TestMemoryBudgetIsValidatedOnTheDataclass:
+    """The dataclass accepts the same four sizes as the API model (E5.1, #668)."""
+
+    @pytest.mark.parametrize("budget", [None, 256, 512, 1024, 2048])
+    def test_offered_sizes_and_none_are_accepted(self, budget):
+        assert PageContext(memory_budget_mb=budget).memory_budget_mb == budget
+
+    @pytest.mark.parametrize("budget", [0, 300, 4096, -512, "512"])
+    def test_any_other_value_is_refused(self, budget):
+        with pytest.raises(ValueError, match="memory_budget_mb"):
+            PageContext(memory_budget_mb=budget)
+
+    def test_a_refused_budget_never_reaches_a_prompt(self):
+        with pytest.raises(ValueError):
+            registry.create_assistant(
+                "nemar",
+                model=ScriptedChatModel(responses=[AIMessage(content="ok")]),
+                preload_docs=False,
+                page_context=PageContext(memory_budget_mb=300),
+            )
+
+    def test_the_sizes_are_the_api_models(self):
+        """One list of sizes: the router's Literal and the dataclass's tuple."""
+        from typing import get_args
+
+        from src.api.routers.community import PageContext as ApiPageContext
+        from src.assistants.community import MEMORY_BUDGETS_MB
+
+        annotation = ApiPageContext.model_fields["memory_budget_mb"].annotation
+        offered = {arg for arg in get_args(annotation) if arg is not type(None)}
+        # The annotation is Literal[...] | None: unwrap the Literal's own arguments.
+        sizes = set()
+        for arg in offered:
+            sizes.update(get_args(arg) or (arg,))
+        assert sizes == set(MEMORY_BUDGETS_MB)
