@@ -374,6 +374,11 @@
   let communityDefaultModel = null; // Community's default model from API
   let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
+  // When the server last confirmed it holds `sessionId` (a `session` or `done` event, in
+  // this page load), or null when it has not: then the next request carries the
+  // conversation so far, so a server that forgot the session can start it again (E1.6).
+  // Never stored: a reload cannot know whether the server still has the session.
+  let serverConfirmedAt = null;
   // The active conversation's identity, {id, context, createdAt}, never its
   // content: `messages` and `sessionId` above are its working copy (see the
   // conversation store).
@@ -7992,6 +7997,7 @@
     // Whatever the outcome, no active conversation means an empty working copy.
     messages = [];
     sessionId = null;
+    serverConfirmedAt = null;
     activeConversation = null;
     try {
       const { read: result } = readStoredHistoryRecord();
@@ -8293,6 +8299,7 @@
     retireActiveConversation();
     messages = greetingMessages();
     sessionId = null;
+    serverConfirmedAt = null;
     beginConversation(context);
     saveHistoryQuietly('starting a conversation');
     return activeConversation.id;
@@ -8309,6 +8316,9 @@
     retireActiveConversation();
     messages = target.messages.length ? target.messages : greetingMessages();
     sessionId = target.sessionId;
+    // A conversation opened from History or the resume card is the one most likely to
+    // have outlived its server session: the next request carries it (E1.6).
+    serverConfirmedAt = null;
     activeConversation = { id: target.id, context: target.context, createdAt: target.createdAt };
     droppedConversationIds.delete(target.id);
     saveHistoryQuietly('opening a conversation');
@@ -8327,6 +8337,7 @@
       droppedConversationIds.add(id);
       messages = greetingMessages();
       sessionId = null;
+      serverConfirmedAt = null;
       beginConversation(null);
     } else if (readStoredConversations().some((c) => c.id === id)) {
       droppedConversationIds.add(id);
@@ -8346,6 +8357,7 @@
     if (activeConversation) droppedConversationIds.add(activeConversation.id);
     messages = greetingMessages();
     sessionId = null;
+    serverConfirmedAt = null;
     beginConversation(null);
     welcomeBack = null;
     pendingSwitch = null;
@@ -9419,6 +9431,88 @@
     if (!hasUserMessage) return false;
     return !sessionMarkerPresent || now - updatedAt > SESSION_TTL_MS;
   }
+
+  // --- Reseed a conversation the server forgot (E1.6) ---
+  // The server keeps a session for SESSION_TTL_HOURS after its last request, and loses
+  // it on a restart or when it is the least recently used. The widget cannot tell, so
+  // until the server has confirmed the session in this page load, a request carries the
+  // conversation so far (`prior_turns`, with the tier as `mode`); the server uses it only
+  // when it just made the session, and ignores it for one it holds. The server builds
+  // the framing and the fence from this untrusted text; the widget only bounds it.
+  //
+  // BEGIN reseed. Pure, and evaluated on its own by frontend/test-widget-reseed.js:
+  // nothing between here and END may use the rest of the widget.
+  const RESEED_MAX_TURNS = 12;
+  const RESEED_TURN_MAX_CHARS = 2000;
+  // What the server keeps of a transcript (its SUMMARY_INPUT_MAX_CHARS). Whole oldest
+  // turns are left out to stay within it, so nothing is sent that it would cut, and
+  // each turn is counted with the speaker label and separator the server adds to it.
+  const RESEED_TOTAL_CHARS = 12000;
+  const RESEED_TURN_OVERHEAD = 14;
+
+  // `text` cut from the middle to at most `limit` characters, an ellipsis where the
+  // cut is, so the start (what was asked) and the end (what was concluded) both stay.
+  // Never cuts a surrogate pair in two.
+  function clipTurnMiddle(text, limit = RESEED_TURN_MAX_CHARS) {
+    if (text.length <= limit) return text;
+    const keep = limit - 1;
+    let head = text.slice(0, Math.ceil(keep / 2));
+    let tail = text.slice(text.length - Math.floor(keep / 2));
+    if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
+    if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1);
+    return `${head}\u2026${tail}`;
+  }
+
+  // The turns to carry: the user's and the assistant's text, nothing else (a reply's
+  // code runs, tool results and figures are other fields of the message, never read
+  // here), each bounded, and the newest RESEED_MAX_TURNS that fit RESEED_TOTAL_CHARS. The assistant's greeting,
+  // which comes before the reader has said anything, is not a turn.
+  function selectReseedTurns(list) {
+    const turns = [];
+    let started = false;
+    for (const message of Array.isArray(list) ? list : []) {
+      if (!message || (message.role !== 'user' && message.role !== 'assistant')) continue;
+      if (typeof message.content !== 'string') continue;
+      if (message.role === 'user') started = true;
+      if (!started) continue;
+      // A bubble that is only an error (`failed`) is not a reply the server could build on.
+      if (message.failed) continue;
+      const text = message.content.trim();
+      if (text) turns.push({ role: message.role, text: clipTurnMiddle(text) });
+    }
+    const newest = turns.slice(-RESEED_MAX_TURNS);
+    let total = newest.reduce((sum, turn) => sum + turn.text.length + RESEED_TURN_OVERHEAD, 0);
+    while (newest.length > 1 && total > RESEED_TOTAL_CHARS) {
+      total -= newest.shift().text.length + RESEED_TURN_OVERHEAD;
+    }
+    return newest;
+  }
+
+  // The tier the conversation was last on: the newest assistant message that says one.
+  function lastReplyMode(list) {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const message = list[index];
+      if (message && message.role === 'assistant' && !message.failed && (message.mode === 'quick' || message.mode === 'analysis')) {
+        return message.mode;
+      }
+    }
+    return null;
+  }
+
+  // What to add to a chat request: {prior_turns, mode?} or null. `list` is the
+  // conversation before the message being sent. Nothing is added while the server has
+  // confirmed the session within `ttlMs` (it holds it), nor when there is no assistant
+  // reply to carry (an empty chat, or a first message that never got an answer).
+  function reseedFields({ list, confirmedAt, now, ttlMs }) {
+    if (confirmedAt !== null && now - confirmedAt <= ttlMs) return null;
+    const turns = selectReseedTurns(list);
+    if (!turns.some((turn) => turn.role === 'assistant')) return null;
+    const fields = { prior_turns: turns };
+    const mode = lastReplyMode(list);
+    if (mode) fields.mode = mode;
+    return fields;
+  }
+  // END reseed
 
   // The conversation just left, while the empty state offers it back: {conversationId
   // (the new one), previousId, previousTitle}. Not stored: a reload shows nothing.
@@ -15656,6 +15750,7 @@
             // only attaches to a reply that completed successfully.
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
+              serverConfirmedAt = Date.now();
             }
           } else if (event.event === 'handover') {
             // The chat is moving to the analysis model on a new session (E8.3): the card
@@ -15673,6 +15768,7 @@
             clearActivity();
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
+              serverConfirmedAt = Date.now();
             }
             // Let the reveal finish what the reader is still reading before the
             // backend's canonical text (below) replaces it. A redraw that failed
@@ -15751,6 +15847,8 @@
               messages[messageIndex].content = shown + `\n\n_[Error: ${errorMsg}]_`;
             } else {
               messages[messageIndex].content = `_[Error: ${errorMsg}]_`;
+              // Only the error, no reply: not a turn to carry into a reseeded session.
+              messages[messageIndex].failed = true;
             }
             renderMessages(container);
             try {
@@ -15838,6 +15936,7 @@
         }
 
         messages[messageIndex].content = (shown ? `${shown}\n\n` : '') + `_[${userMessage}]_`;
+        if (!shown) messages[messageIndex].failed = true;
         renderMessages(container);
         try {
           saveHistory();
@@ -15903,6 +16002,8 @@
 
     // Track message indices to avoid corruption on error
     const userMessageIndex = messages.length;
+    // The conversation before this message, which a server that lost the session is told.
+    const conversationBefore = messages.slice();
     // The dataset on screen when it was sent (#477): what datasetInConversation reads.
     const userMessage = { role: 'user', content: question };
     if (currentDataset) userMessage.dataset = currentDataset.id;
@@ -15942,6 +16043,16 @@
       if (sessionId) {
         body.session_id = sessionId;
       }
+
+      // Until the server has confirmed this session in this page load (or after it has
+      // been idle longer than the server keeps one), carry the conversation so far: a
+      // server that forgot the session starts it from this, and one that has it ignores it.
+      Object.assign(body, reseedFields({
+        list: conversationBefore,
+        confirmedAt: serverConfirmedAt,
+        now: Date.now(),
+        ttlMs: SESSION_TTL_MS,
+      }));
 
       // Add Turnstile token if available
       if (turnstileToken) {
@@ -16057,6 +16168,7 @@
         }
         if (data && typeof data.session_id === 'string') {
           sessionId = data.session_id;
+          serverConfirmedAt = Date.now();
         }
         const answer = (data && data.message && typeof data.message.content === 'string') ? data.message.content : null;
         if (!answer) {
@@ -16219,6 +16331,7 @@
     if (activeConversation) droppedConversationIds.add(activeConversation.id);
     messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     sessionId = null; // Clear session to start fresh on next message
+    serverConfirmedAt = null;
     beginConversation(null);
     try {
       saveHistory();
@@ -17455,6 +17568,9 @@
         sync: (container) => syncHistoryAvailability(container),
       },
       getSessionId: () => sessionId,
+      // Whether the server has confirmed the session in this page load (E1.6).
+      getServerConfirmedAt: () => serverConfirmedAt,
+      setServerConfirmedAt: (value) => { serverConfirmedAt = value; },
       setSessionId: (value) => { sessionId = value; },
       // The context switch (E1.3): the pure helpers.
       contextForPage,

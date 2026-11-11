@@ -154,9 +154,20 @@ async def get_community_config():
   "message": "Can you validate this HED string?",
   "session_id": "abc123",  // Optional, creates new if omitted
   "stream": true,
-  "model": "qwen/qwen3-235b-a22b-2507"  // Optional, requires BYOK if custom
+  "model": "qwen/qwen3-235b-a22b-2507",  // Optional, requires BYOK if custom
+  "prior_turns": [                       // Optional: the chat so far, to reseed a session the server lost
+    {"role": "user", "text": "find datasets with face stimuli"},
+    {"role": "assistant", "text": "The closest match is on002718."}
+  ],
+  "mode": "quick"                        // Optional: "quick" or "analysis", used with prior_turns
 }
 ```
+
+`prior_turns` (at most 24 turns of at most 4,000 characters; anything else is a 422) and `mode`
+are used only when the request creates the session; a session that already has messages ignores
+both. The server keeps the newest whole turns that fit 12,000 characters, marked
+`[earlier turns omitted]` when it dropped any. `mode` applies only to a request routed between a
+quick and an analysis model. See `docs/community-widget.md` ("A conversation the server forgot").
 
 **Response:**
 ```json

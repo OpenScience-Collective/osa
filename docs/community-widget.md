@@ -952,10 +952,41 @@ A browser that refuses `sessionStorage` reads as "the marker is there", so such 
 The [pop-out](#the-pop-out-window) never does this: it has a `sessionStorage` of its own and must show the same chat as its opener.
 
 The new chat takes the page's context (see [a context change](#a-context-change-starts-a-new-chat)) and its empty state says so: "Welcome back. This is a new chat about `<dataset id>`." and, under it, a card, "Pick up where you left off: `<title>`".
-Clicking the card makes the conversation just left the active one again, with its messages and server session (a session the server has already forgotten starts a new one on the next message, as a resumed old chat always did); the card is hidden after the first message.
+Clicking the card makes the conversation just left the active one again, with its messages and server session (a session the server has already forgotten is started again from the chat itself, see [a conversation the server forgot](#a-conversation-the-server-forgot)); the card is hidden after the first message.
 The card is not stored: it is shown only on the load that started the new chat.
 
 Testing: `frontend/test-widget-fresh-return.js`.
+
+### A conversation the server forgot
+
+The server holds a chat's session for 24 hours after its last request, and loses it on a restart or when it is the least recently used of a community's 1000.
+The widget cannot tell, and a server that is sent a session id it does not know makes an empty session under that id, so a resumed chat used to be answered with no context.
+Now a request carries the chat so far when the widget cannot know the server has it, and the server uses it only when the request just created the session.
+One case is not covered: once the server has confirmed the session in a page load, the widget sends nothing for up to 24 hours, so a server restart or an eviction while the page stays open still starts an empty session under the old id (tracked in issue #698).
+
+- **When the widget sends it.**
+  Until the server has confirmed the session in this page load (a `session` or `done` event, or a non-streaming reply, with the id), every `/chat` request carries `prior_turns`, and `mode` when a reply said one.
+  So the first request after a page load, after a chat is opened from History or the resume card, and after a request the server never answered, carries it; a conversation that has had no server answer for longer than `SESSION_TTL_HOURS` carries it again.
+  Nothing is sent for a new, empty chat or for one with no assistant reply, and nothing once the server has confirmed the session; a restart or eviction after that, with the page still open, is not detected.
+  The confirmation is not stored.
+  The pop-out is a page load of its own, so its first request carries the chat too.
+- **What it carries.**
+  `prior_turns` is `[{role: "user" | "assistant", text}]`, oldest first, the conversation before the message being sent: the text of the reader's messages and the assistant's replies, never a code run, tool result, image or figure, and never the greeting.
+  The newest 12 turns that fit 12,000 characters in all (the most the server keeps), whole oldest turns left out first, each turn cut from the middle to 2,000 characters with an ellipsis.
+  `tests/test_frontend/test_reseed_limits.py` keeps these limits within the server's.
+  `mode` is `quick` or `analysis`, taken from the newest reply that carries one (stored by the [handover](#quick-answers-and-analysis-the-handover-events) work), so the tier survives.
+- **What the server does.**
+  `POST /{community}/chat` accepts `prior_turns` (at most 24 turns of at most 4,000 characters, a role of `user` or `assistant`, no blank text, no other field; anything else is a 422) and `mode`.
+  When the session this request names is new (it has no messages) the server builds one message from the transcript, whole oldest turns dropped to fit 12,000 characters (it then opens with `[earlier turns omitted]`), and the reader's message: the transcript is framed as background and fenced in `<earlier_conversation>`, the message in `<researcher_message>`, and a fence written into a turn is removed so it cannot close its section.
+  A session that already has messages ignores both fields.
+  On a request that is routed between a quick and an analysis model, `mode` sets the new session's tier before the turn, so an analysis chat continues on the analysis model with no handover and no summary; elsewhere `mode` is ignored.
+  A keyword in the transcript is not a request for analysis; only the reader's own message is read for one.
+  If the reader later asks for analysis, the summary for the handover is written from the turns and the reader's message, not from the framing the server added.
+- **What it does not do.**
+  It does not store history on the server, summarize the transcript with a model, carry figures, or reseed `/chat/resume`, which still answers 404 for a session the server no longer holds.
+  A request sent to a live session carries the transcript for nothing; the bytes are bounded (at most about 12,000 characters of text, before JSON escaping) and are the price of not asking the server first.
+
+Testing: `frontend/test-widget-reseed.js`, `tests/test_api/test_reseed.py` and `tests/test_integration/test_reseed_llm.py`.
 
 ### A context change starts a new chat
 
