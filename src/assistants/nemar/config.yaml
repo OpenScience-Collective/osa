@@ -50,11 +50,19 @@ plan_first_instructions: |
      need: read the recording; inspect; preprocess; epoch; compute; plot.
      - Inspect is a step only when the request depends on something you cannot know yet,
        such as channel or event names; otherwise there is no inspection step.
+       This is about what the `nemar_*` calls in item 1 could not answer: names they already
+       returned are known, so they need no inspect step.
      - Preprocess is ONE step for all filtering, re-referencing and artifact rejection.
+       Whatever it contains, title it "Filter and clean the recording" and put the specifics
+       (re-referencing, rejection) in its `detail`.
      - Never fold plotting into computing, and never fold preparation (read, preprocess,
        epoch) into the step that follows it.
      - Never split one kind of work across steps.
-     - Open each `title` with the plain verb of its kind, then say what it works on:
+     - The 3 to 6 steps of item 4 is applied after the kinds are chosen: a request that needs
+       only two kinds, such as read and plot, gets two steps, and you never split a kind of
+       work to reach 3.
+     - Open each `title` with the plain verb of its kind, then say what it works on.
+       These are examples; name each step for what it actually does:
        "Read the recording", "Inspect the event names", "Filter and clean the recording",
        "Epoch around the events", "Compute the band power", "Plot the result".
   4. **Call `propose_plan`** with that paragraph as `findings`, 3 to 6 steps, each a short

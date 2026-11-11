@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import plan_consistency as pc
 from src.agents.plan_first import plan_first_section
 from src.core.config.community import (
     EXECUTE_CODE_TOOL_NAME,
@@ -25,6 +26,16 @@ from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
 TEXT = "Propose a plan with propose_plan, then run one step per execute_code."
 DECLARED = {EXECUTE_CODE_TOOL_NAME, PROPOSE_PLAN_TOOL_NAME}
 NEMAR_YAML = Path(__file__).parents[2] / "src" / "assistants" / "nemar" / "config.yaml"
+# The example step titles in NEMAR's text and the operation each must normalize to in
+# scripts/plan_consistency.py, the check that measures whether plans agree (#714).
+EXAMPLE_TITLE_OPERATIONS = {
+    "Read the recording": "load",
+    "Inspect the event names": "load",
+    "Filter and clean the recording": "filter",
+    "Epoch around the events": "epoch",
+    "Compute the band power": "spectrum",
+    "Plot the result": "plot",
+}
 
 
 def _config(plan_first_instructions: str | None = TEXT) -> CommunityConfig:
@@ -137,20 +148,51 @@ class TestNemarPlanFirstText:
         )
         assert "Never split one kind of work across steps." in flat
 
-    def test_the_example_titles_open_with_the_verb_of_their_kind(self) -> None:
+    def test_the_text_quotes_exactly_the_example_titles(self) -> None:
+        """The titles quoted in the cutting block are the ones the normalizer test covers."""
         text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
 
         assert text is not None
         flat = " ".join(text.split())
-        for title in (
-            "Read the recording",
-            "Inspect the event names",
-            "Filter and clean the recording",
-            "Epoch around the events",
-            "Compute the band power",
-            "Plot the result",
-        ):
-            assert f'"{title}"' in flat
+        block = flat[flat.index("name each step for what it actually does:") :]
+        block = block[: block.index("4. **Call")]
+        assert re.findall(r'"([^"]+)"', block) == list(EXAMPLE_TITLE_OPERATIONS)
+
+    @pytest.mark.parametrize(("title", "operation"), EXAMPLE_TITLE_OPERATIONS.items())
+    def test_each_example_title_normalizes_to_its_operation(self, title, operation) -> None:
+        assert pc.normalize_step({"title": title, "detail": ""}) == operation
+
+    def test_the_preprocess_title_is_pinned(self) -> None:
+        """'Filter and re-reference...' would normalize to rereference, so the text pins the title."""
+        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
+
+        assert text is not None
+        flat = " ".join(text.split())
+        assert (
+            'Whatever it contains, title it "Filter and clean the recording" and put the '
+            "specifics (re-referencing, rejection) in its `detail`." in flat
+        )
+
+    def test_a_short_request_keeps_its_own_kinds_and_is_not_padded_to_three(self) -> None:
+        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
+
+        assert text is not None
+        flat = " ".join(text.split())
+        assert (
+            "The 3 to 6 steps of item 4 is applied after the kinds are chosen: a request that "
+            "needs only two kinds, such as read and plot, gets two steps, and you never split "
+            "a kind of work to reach 3." in flat
+        )
+
+    def test_inspect_means_what_the_nemar_calls_could_not_answer(self) -> None:
+        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
+
+        assert text is not None
+        flat = " ".join(text.split())
+        assert (
+            "This is about what the `nemar_*` calls in item 1 could not answer: names they "
+            "already returned are known, so they need no inspect step." in flat
+        )
 
     def test_the_three_to_six_steps_rule_is_kept(self) -> None:
         text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
@@ -158,3 +200,12 @@ class TestNemarPlanFirstText:
         assert text is not None
         flat = " ".join(text.split())
         assert "as `findings`, 3 to 6 steps, each a short `title` and a `detail`" in flat
+
+    def test_the_earlier_rules_survive_the_renumbering(self) -> None:
+        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
+
+        assert text is not None
+        flat = " ".join(text.split())
+        assert "you may fix it once and run it again" in flat
+        assert "Never run code that is not a step of the approved plan." in flat
+        assert "Calling it ends your turn; write nothing after the call." in flat
