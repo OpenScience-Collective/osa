@@ -354,6 +354,16 @@ function codeSpan(text) {
   return `${fence}${pad}${text}${pad}${fence}`;
 }
 
+/**
+ * Text from the chat (a run's description or step title, the chat's title) made
+ * safe to put in a markdown heading or list item: markdown and HTML
+ * metacharacters are backslash-escaped, so it shows as written and cannot make
+ * a link, emphasis or a tag. A notebook's markdown cells render HTML and links.
+ */
+function escapeMarkdown(text) {
+  return text.replace(/[\\`*_[\]<>|#&~]/g, '\\$&').replace(/:\/\//g, '\\://');
+}
+
 function setupSource({ datasetId, zarrBase, imports }) {
   const lines = ['%pip install eegprep-lean scipy', '%matplotlib inline'];
   for (const item of imports) lines.push(...neutralizeMarkers(item.text.split('\n')));
@@ -417,14 +427,14 @@ function planCells({ datasetId, title, createdAt, communityName, zarrBase, execu
   const notebookTitle = oneLine(title) || `Notebook for ${datasetId}`;
   const community = oneLine(communityName) || 'OSA';
   const date = formatUtcDate(createdAt);
-  const origin = `From a ${community} chat${date ? ` on ${date}` : ''}. Data: NEMAR's streaming copy, quantized and lossy.`;
+  const origin = `From a chat with ${community}${date ? ` on ${date}` : ''}. Data: NEMAR's streaming copy, quantized and lossy.`;
 
   const cells = [
-    { type: 'markdown', id: 'title', source: `# ${notebookTitle}\n\n${origin}` },
+    { type: 'markdown', id: 'title', source: `# ${escapeMarkdown(notebookTitle)}\n\n${escapeMarkdown(origin)}` },
     { type: 'code', id: 'setup', source: setupSource({ datasetId, zarrBase, imports: hoisted }) },
   ];
   for (const step of included) {
-    const heading = step.named ? `## Step ${step.step} · ${step.title}` : `## Step ${step.step}`;
+    const heading = step.named ? `## Step ${step.step} · ${escapeMarkdown(step.title)}` : `## Step ${step.step}`;
     cells.push({
       type: 'markdown',
       id: `step-${step.step}-title`,
@@ -436,7 +446,7 @@ function planCells({ datasetId, title, createdAt, communityName, zarrBase, execu
   if (leftOut.length > 0) {
     const items = leftOut.map((entry) => {
       const reason = entry.error ? `: ${codeSpan(entry.error)}` : '';
-      return `- Run ${entry.position} · ${entry.title} (${entry.status})${reason}`;
+      return `- Run ${entry.position} · ${escapeMarkdown(entry.title)} (${entry.status})${reason}`;
     });
     cells.push({
       type: 'markdown',

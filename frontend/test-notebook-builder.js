@@ -72,7 +72,7 @@ console.log('\nThe title cell');
   const { notebook } = build(NOTEBOOK_CONVERSATIONS.erp());
   assertEqual(
     notebook.cells[0].source,
-    "# Famous vs scrambled ERPs in on002718\n\nFrom a NEMAR Assistant chat on Nov 10, 2026. Data: NEMAR's streaming copy, quantized and lossy.",
+    "# Famous vs scrambled ERPs in on002718\n\nFrom a chat with NEMAR Assistant on Nov 10, 2026. Data: NEMAR's streaming copy, quantized and lossy.",
     'a heading and the origin line'
   );
   const lateEvening = build({ ...NOTEBOOK_CONVERSATIONS.erp(), createdAt: '2026-11-10T23:59:59-08:00' });
@@ -83,7 +83,7 @@ console.log('\nThe title cell');
   assert(!undated.notebook.cells[0].source.includes(' on '), 'an unusable date is left out rather than printed as Invalid Date');
   const untitled = build({ ...NOTEBOOK_CONVERSATIONS.erp(), title: '  ', communityName: '' });
   assert(untitled.notebook.cells[0].source.startsWith('# Notebook for on002718'), 'a blank title falls back to the dataset');
-  assert(untitled.notebook.cells[0].source.includes('From a OSA chat'), 'a blank community name falls back to OSA');
+  assert(untitled.notebook.cells[0].source.includes('From a chat with OSA'), 'a blank community name falls back to OSA, with no article to get wrong');
 }
 
 console.log('\nThe setup cell');
@@ -292,6 +292,20 @@ console.log('\nStep numbers and headings');
   assertEqual(notebook.cells[4].source, '## Step 2 · Assistant', 'an assistant run carries no marker');
 }
 
+console.log('\nText from the chat in markdown');
+{
+  const nasty = 'a|b *x* [l](http://e.com) <b>bold</b> `code` #1 snake_case';
+  const { notebook } = build(
+    conversation([run({ code: 'a = 1', description: nasty }), run({ code: 'b', status: 'error', description: nasty, stderr: 'boom' })], { title: nasty })
+  );
+  const escaped = 'a\\|b \\*x\\* \\[l\\](http\\://e.com) \\<b\\>bold\\</b\\> \\`code\\` \\#1 snake\\_case';
+  assertEqual(notebook.cells[2].source, `## Step 1 · ${escaped}`, 'a step title with emphasis, a link and a tag is escaped so none of them renders');
+  assert(notebook.cells[0].source.startsWith(`# ${escaped}\n`), 'so is the notebook title');
+  assert(notebook.cells.at(-1).source.includes(`- Run 2 · ${escaped} (error)`), 'and a title in the closing note');
+  const plain = build(conversation([run({ code: 'a = 1', description: 'Plain words, 30 Hz low-pass (zero-phase).' })]));
+  assertEqual(plain.notebook.cells[2].source, '## Step 1 · Plain words, 30 Hz low-pass (zero-phase).', 'ordinary words come through unchanged');
+}
+
 console.log('\nThe closing note');
 {
   const input = conversation([
@@ -398,7 +412,7 @@ console.log('\nThe script');
     'in the same order and of the same kinds'
   );
   assert(script.includes('# %%\n# %pip install eegprep-lean scipy\n# %matplotlib inline\n'), 'magics are written as Jupytext does');
-  assert(script.includes('# %% [markdown]\n# # Famous vs scrambled ERPs in on002718\n#\n# From a NEMAR Assistant chat'), 'markdown lines are prefixed with "# " and blank ones with "#"');
+  assert(script.includes('# %% [markdown]\n# # Famous vs scrambled ERPs in on002718\n#\n# From a chat with NEMAR Assistant'), 'markdown lines are prefixed with "# " and blank ones with "#"');
   assert(script.includes('# # %% this comment would split a cell'), 'a code line that begins "# %%" is neutralized so it cannot split a cell');
   assert(!scriptLines.some((l) => /^\s*#\s*%%/.test(l) && !/^# %%( \[markdown\])?$/.test(l)), 'no line other than a real marker looks like one');
   assert(script.includes('# # peak?'), 'a comment Jupytext would read as a help magic is escaped, as it does');
