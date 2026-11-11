@@ -882,6 +882,26 @@ The rail is inserted before the thread and removed again on docking; the thread'
 
 Testing: `frontend/test-plan-rail.js` (the rail's logic) and `frontend/test-widget-plan-rail.js` (the rail and the header's Continue in notebook, on a real DOM) cover the rail; `frontend/test-widget-plan-card.js` runs the real widget and the runtime bundle as built in happy-dom, with `fetch` answering recorded-shape SSE; `tests/test_frontend/test_plan_resume_payload.py` feeds the payload the widget really posts to the server's `ResumeRequest`, `PlanDecision` and `build_plan_tool_message`.
 
+### Known procedures
+
+A community can keep its known analysis procedures as documents the model fetches on demand (issue #719), so their text and code cost context only on the turns that use them.
+The config declares them under `procedures`, each with an `id` (a slug), a one-line `title`, a one-line `when` naming the requests it covers, and a `file`: a Markdown path relative to the community's folder (`procedures/power-spectrum.md`).
+At most 20 are allowed, ids are unique, and a document is at most 32,000 characters of non-blank UTF-8.
+`CommunityConfig.from_yaml` reads each file once at load and holds the text in memory; a missing file, an absolute path, a `..` segment, a symlink that resolves outside the folder, a file that is not `.md`, a blank or oversize document and a blank or multi-line `when` each fail the load with a plain message.
+Nothing is fetched over the network, and the documents are versioned with the deployment.
+
+The server binds a `get_procedure` tool and adds a `## Known procedures` section to the prompt only when the community declares procedures and the turn can run code, which is when `execute_code` is bound: a quick turn and a widget that does not declare `execute_code` get neither.
+The section lists each procedure's `id`, title and `when`.
+When a request matches one, the model calls `get_procedure` before `propose_plan` (or "before running code" where `propose_plan` is not bound), then proposes the document's steps as written, filling in only the dataset, recording, channel, conditions and bands.
+A request that matches none uses the plan-first step rules.
+`get_procedure` is a server tool: it returns the document, or a plain error naming the known ids, runs nothing in the browser and spends no browser run, and nothing in the plan-first gate refuses it before `propose_plan`.
+
+Each document opens with its fixed plan, a `## Plan` section listing the step titles, what each step's one code run does and its memory behavior, and then gives the rules and code for each step.
+Runs share one Python namespace, so later steps use the variables earlier ones made.
+Choose the step titles so that `scripts/plan_consistency.normalize_step` maps them to the operations of the plan, which is how the consistency check tells whether two plans agree.
+NEMAR's four (`src/assistants/nemar/procedures/`) are the power spectrum, band power, ERP by condition and ERP image by condition; the short rules every analysis needs (which channels, how to ask for events by condition) stay in its system prompt.
+The `procedures` key is also listed in `/{community}/metrics/public` as the tool `get_procedure` in `available_tools_list`.
+
 ## Browser memory: the budget and the heap report
 
 A browser tab has a fixed amount of memory to give the Python runtime, and a laptop may have little to spare.
