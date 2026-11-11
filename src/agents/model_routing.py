@@ -47,29 +47,35 @@ A conversation can run to hundreds of messages; a summary of 150 words needs the
 turns and the dataset the reader settled on, not the whole record.
 """
 
-# Whole words only, so "plot" does not match "plotted" by accident and "run" does not match
-# "trunk". The inflections a request actually takes ("plots", "running", "analyzing") are
-# written out rather than matched by a prefix, which would catch "fitness" and "runner".
-_ANALYSIS_WORDS = (
-    r"runs?|ran|running|"
-    r"plots?|plotted|plotting|"
-    r"analy[sz]e[sd]?|analy[sz]ing|"
-    r"compute[sd]?|computing|"
-    r"execute[sd]?|executing|"
-    r"spectrum|spectra|"
+# Phrasing that is unambiguously a request to run code, plot or analyze. A match hands the
+# reader to the analysis model for the rest of the conversation (a session's tier is
+# sticky), so this favours precision: words that are also ordinary NEMAR and BIDS
+# vocabulary are left out. "run" is a BIDS entity ("run-01", "how many runs"), "spectrum"
+# appears in condition names ("autism spectrum disorder"), "filter" is a search verb
+# ("filter datasets by modality") and "fit" is a noun ("the fits"). A request this misses
+# is caught by the quick model, which has `start_analysis` for exactly that. Whole words
+# only, so "plot" does not match "plotter" and "execute" does not match "executive".
+_ANALYSIS_PHRASES = (
+    r"(?:run|running)\s+(?:this|it|that|the\s+code)|"
+    r"plot|plotting|"
+    r"analy[sz]e|"
+    r"compute|"
+    r"execute|"
+    r"power\s+spectrum|spectra|"
     r"erp\s+images?|"
-    r"filter(?:s|ed|ing)?|"
-    r"fit|fits|fitted|fitting"
+    r"filter\s+(?:the|my)\s+(?:data|signal|recording)"
 )
-_ANALYSIS_PATTERN = re.compile(rf"\b(?:{_ANALYSIS_WORDS})\b", re.IGNORECASE)
+_ANALYSIS_PATTERN = re.compile(rf"\b(?:{_ANALYSIS_PHRASES})\b", re.IGNORECASE)
 
 
 def wants_analysis(message: str) -> bool:
     """Whether a message asks to run code, plot or analyze, judged by its words alone.
 
-    A keyword check, deliberately cheap and deliberately generous: a false positive costs
-    one handover to the larger model, and a false negative is caught by the quick model,
-    which has `start_analysis` for exactly the request this misses.
+    A keyword check, deliberately cheap and deliberately narrow. A false positive is not
+    cheap: it hands the reader to the larger model, and because the new session is
+    analysis from then on, every later turn of the conversation runs there too. A false
+    negative costs little, since the quick model has `start_analysis` for exactly the
+    request this misses.
     """
     return _ANALYSIS_PATTERN.search(message) is not None
 

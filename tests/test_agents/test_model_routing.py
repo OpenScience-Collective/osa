@@ -67,7 +67,8 @@ class TestWantsAnalysis:
             "analyse sub-001",
             "show me an ERP image",
             "filter the data at 1 Hz",
-            "fit an ICA",
+            "plot the power spectra of sub-001",
+            "run it again",
             "can you execute that?",
             "I am running it now",
         ],
@@ -83,6 +84,15 @@ class TestWantsAnalysis:
             "which datasets have 70 channels",
             "tell me about the trunk of the study",
             "is this a fitness study",
+            # Ordinary BIDS and NEMAR vocabulary: "run" is an entity, "spectrum" is part of
+            # a condition name, "filter" and "fit" are everyday words. Each of these used
+            # to hand a reader to the analysis model for the rest of the conversation.
+            "how many runs does each subject have",
+            "which datasets have run-01 events",
+            "find datasets of children with autism spectrum disorder",
+            "filter datasets by modality",
+            "show me the fits",
+            "which datasets ran a visual oddball task",
         ],
     )
     def test_false_for_a_question_or_a_search(self, message: str) -> None:

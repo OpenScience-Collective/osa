@@ -574,8 +574,9 @@ A reader's own model choice always wins, and a request that declares no `execute
 Every other community, and every non-streamed request, behaves as before.
 
 **Which model a turn uses.**
-A turn is analysis when its session is already in analysis (a session never goes back), or when the message names code, a plot or an analysis (`run`, `plot`, `analyze`, `compute`, `execute`, `spectrum`, `ERP image`, `filter` or `fit`, as whole words, in any case), or when the quick model calls its `start_analysis` tool.
+A turn is analysis when its session is already in analysis (a session never goes back), or when the message asks for one in so many words (`run this`, `run it`, `run that`, `run the code`, `plot`, `analyze`, `compute`, `execute`, `power spectrum`, `spectra`, `ERP image` or `filter the data`, as whole words, in any case), or when the quick model calls its `start_analysis` tool.
 Otherwise it is quick.
+The words are narrow on purpose: a session never goes back to quick, so a false match would move a reader to the analysis model for the rest of the conversation. Everyday NEMAR and BIDS words (`runs`, `run-01`, `spectrum`, `filter`, `fit`) do not match, and a request the words miss is caught by `start_analysis`.
 The quick model has no `execute_code` and no `get_full_output`; it has `start_analysis`, and its prompt says to call that for a request to run, plot or analyze instead of writing a recipe.
 `/chat/resume` always runs on its session's tier.
 
