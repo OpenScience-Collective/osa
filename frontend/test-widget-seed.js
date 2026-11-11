@@ -642,5 +642,23 @@ console.log('\nopening and docking change the state at once, and the cosmetic cl
     'closing the dialog gives no fading scrim: the window goes with it');
 }
 
+console.log('\nMove to corner points to the bottom right');
+{
+  const ctx = await start();
+  const icon = /ICONS\.dock = '([^']*)';/.exec(SOURCE)[1];
+  assert(icon.includes('viewBox="0 0 24 24"'), 'a 24 by 24 view box');
+  const paths = [...icon.matchAll(/<path d="([^"]*)"/g)].map((m) => m[1]);
+  assertEqual(paths, ['M7 7l10 10', 'M17 7v10H7'], 'the shaft from the top left to the bottom right, and the head at its end');
+  assert(icon.includes('fill="none"') && icon.includes('stroke="currentColor"') && icon.includes('stroke-width="2"'), 'a stroke icon like the others');
+  const button = ctx.q('.osa-center-dock-btn');
+  const drawn = button.querySelector('svg');
+  assert(drawn && drawn.getAttribute('viewBox') === '0 0 24 24', 'it is what the button draws');
+  assertEqual([...drawn.querySelectorAll('path')].map((p) => p.getAttribute('d')), paths, 'with those paths');
+  const css = [...ctx.document.querySelectorAll('style')].map((el) => el.textContent).join('\n');
+  assert(/\.osa-header-btn svg\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;/.test(css), 'at the header icons\' 18 px');
+  assertEqual(button.getAttribute('aria-label'), 'Move to corner', 'the button is still named Move to corner');
+  assertEqual(button.getAttribute('title'), 'Move to corner', 'with the same title');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
