@@ -439,8 +439,15 @@ def build_messages(request: OverviewRequest) -> list[BaseMessage]:
 _MARKER_OR_ID = re.compile(r"\[\[\s*(?P<marked>[^\[\]]*?)\s*\]\]|(?P<bare>\b[a-z]{2}\d{6}\b)", re.I)
 """A ``[[marker]]``, or a bare id-shaped token (two letters, six digits)."""
 
-_URL_LIKE = re.compile(r"https?://|\bwww\.", re.I)
-"""A link in text: nothing a result says may put one in front of a reader."""
+_URL_LIKE = re.compile(
+    r"https?://|\bwww\.|\b(?:javascript|data|vbscript|mailto):"
+    r"|\b[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|io|edu|gov|dev|app|info|xyz)\b",
+    re.I,
+)
+"""A link in text: a scheme-prefixed one, a ``www.`` host, a ``javascript:``-style scheme,
+or a bare host on a common domain suffix. Nothing a result says may put one in front of a
+reader. This is a filter, not a guarantee (an unusual suffix passes), so the website must
+still render text segments as plain text and never autolink them."""
 
 _SENTENCE_BREAK = re.compile(r"(?<!e\.g\.)(?<!i\.e\.)(?<!vs\.)(?<=[.!?])\s+")
 _BRACKETS = re.compile(r"[\[\]]")

@@ -328,6 +328,12 @@ class TestBuildSummary:
         planted = "Visit https://evil.example for the real data."
         assert build_summary(planted, ALLOWED) == []
         assert build_summary("See www.evil.example now.", ALLOWED) == []
+        for link in (
+            "Open evil.com/x for [[xx099901]].",
+            "Try link(javascript:alert(1)) [[xx099901]].",
+            "Mail mailto:a@b.c [[xx099901]].",
+        ):
+            assert build_summary(link, ALLOWED) == [], link
         kept = build_summary(f"{planted} Best is [[xx099901]].", ALLOWED)
         assert _text(kept) == "Best is <xx099901>."
 
