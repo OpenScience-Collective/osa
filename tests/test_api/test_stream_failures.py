@@ -1017,7 +1017,7 @@ def _flaky_tool(error: Exception):
 
 
 def _calls_the_tool() -> StreamingScriptedChatModel:
-    from tests.test_api.test_tool_call_streaming import _anthropic_call
+    from tests.helpers.tool_call_streaming import _anthropic_call
 
     return StreamingScriptedChatModel(
         chunk_script=[_anthropic_call("flaky_lookup", "toolu_01flaky", {"query": "x"})]
@@ -1038,7 +1038,7 @@ class TestARunThatUsesAllItsSteps:
 
     @staticmethod
     def _looping_model() -> StreamingScriptedChatModel:
-        from tests.test_api.test_tool_call_streaming import _anthropic_call
+        from tests.helpers.tool_call_streaming import _anthropic_call
 
         return StreamingScriptedChatModel(
             chunk_script=[_anthropic_call("lookup", "toolu_01lookup", {"query": "x"})]
@@ -1219,7 +1219,8 @@ def client(monkeypatch):
     from src.api.config import get_settings
     from src.assistants.registry import registry
 
-    # What is under test is the failure, not the API key check (see test_tool_call_streaming).
+    # What is under test is the failure, not the API key check (the same reasoning as
+    # `resume_client` in tests/helpers/tool_call_streaming.py).
     monkeypatch.setenv("REQUIRE_API_AUTH", "false")
     get_settings.cache_clear()
     registry.register_from_config(community_config())
@@ -1321,7 +1322,7 @@ class TestNoRetryOnceAToolHasRun:
     async def test_a_failure_after_a_tool_ran_is_not_retried(
         self, path: str, caplog: pytest.LogCaptureFixture
     ) -> None:
-        from tests.test_api.test_tool_call_streaming import _anthropic_call
+        from tests.helpers.tool_call_streaming import _anthropic_call
 
         caplog.set_level(logging.WARNING)
         runs: list[str] = []
@@ -2100,7 +2101,7 @@ class TestWhatTheHelperReports:
     ) -> None:
         """The first call failed fast and the retry worked: a tool ran, and then the next
         model call failed. That call was never tried twice, and the log must not say so."""
-        from tests.test_api.test_tool_call_streaming import _anthropic_call
+        from tests.helpers.tool_call_streaming import _anthropic_call
 
         caplog.set_level(logging.WARNING)
         runs: list[str] = []
