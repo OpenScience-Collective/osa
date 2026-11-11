@@ -81,7 +81,7 @@ function start({ shared, allowPageContext = true }) {
   api.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'nemar', storageKey: 'osa-test-feedback', allowPageContext });
   api.init();
   const container = window.document.querySelector('.osa-chat-widget');
-  return { container, posted };
+  return { window, container, posted };
 }
 
 async function sendGeneralFeedback(ctx, text) {
@@ -89,7 +89,9 @@ async function sendGeneralFeedback(ctx, text) {
   ctx.container.querySelector('#osa-feedback-text').value = text;
   ctx.container.querySelector('.osa-feedback-send-btn').click();
   await waitUntil(() => ctx.posted.length > 0, 'the feedback is posted');
-  return ctx.posted[0];
+  const body = ctx.posted[0];
+  await ctx.window.happyDOM?.close();
+  return body;
 }
 
 console.log('\nGeneral feedback and the page-context choice');
@@ -111,6 +113,17 @@ console.log('\nGeneral feedback and the page-context choice');
 {
   const body = await sendGeneralFeedback(start({ allowPageContext: false, shared: true }), 'No toggle');
   assert(body.page_url === null, 'a page that turns page context off sends no page address, whatever was saved');
+}
+
+{
+  // The choice changed in this page, not only a saved one: unticking the footer box.
+  const ctx = start({ shared: true });
+  const box = ctx.container.querySelector('#osa-page-context-checkbox');
+  assert(box && box.checked, 'the footer box starts ticked when sharing was saved on');
+  box.checked = false;
+  box.dispatchEvent(new ctx.window.Event('change', { bubbles: true }));
+  const body = await sendGeneralFeedback(ctx, 'Unticked now');
+  assert(body.page_url === null, 'unticking the box in this page stops the page address going with feedback');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
