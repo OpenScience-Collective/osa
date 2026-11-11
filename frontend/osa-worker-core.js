@@ -340,6 +340,19 @@ export function createWorkerRuntime(config, env) {
     }
   }
 
+  // The size of the interpreter's WebAssembly memory, in bytes, or 0 when it cannot be read.
+  // That memory only grows, so after a run it is the most the tab has had to give the
+  // runtime, which is what the reader's memory budget (E5.1) is about. Read from the
+  // instance's current heap view, which Emscripten replaces when the memory grows.
+  function heapBytes() {
+    try {
+      const size = pyodide._module.HEAPU8.byteLength;
+      return Number.isFinite(size) && size > 0 ? size : 0;
+    } catch {
+      return 0;
+    }
+  }
+
   async function execute(data) {
     const callId = data.call_id;
     const started = Date.now();
@@ -358,7 +371,10 @@ export function createWorkerRuntime(config, env) {
             artifacts: [],
           },
           fields,
-          { elapsed_ms: Date.now() - started }
+          // `heap_bytes` rides beside the result, never in it: it is not a ClientToolResult
+          // field, so the host (osa-runtime.js) keeps it for the widget and the server
+          // never sees it.
+          { elapsed_ms: Date.now() - started, heap_bytes: heapBytes() }
         )
       );
     };

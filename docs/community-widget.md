@@ -72,9 +72,11 @@ widget:
 A question that runs code should stay within what the community's browser runtime preloads
 ([`docs/community-browser-runtime.md`](community-browser-runtime.md)).
 NEMAR's preloads numpy, SciPy, matplotlib, zarr and eegprep-lean,
-so its power-spectrum question is answered with `scipy.signal.welch`,
-one channel at a time and on at most `2**28 // nperseg` samples,
-since past either it raises "array is too big" in 32-bit WebAssembly
+so its power-spectrum question is answered by reading the recording in pieces sized by the reader's memory budget and by welch's limit of `2**28 // nperseg` samples,
+calling `scipy.signal.welch` on one channel of a piece at a time,
+and averaging the estimates over the pieces by segment count,
+which is the spectrum of the whole recording,
+since past either limit it raises "array is too big" in 32-bit WebAssembly
 (see "SciPy in 32-bit WebAssembly" in `docs/community-browser-runtime.md`),
 and its ERP question low-passes with `scipy.signal.butter` and `sosfiltfilt`.
 A package outside that list belongs in the notebook, which can `%pip install` it.
@@ -542,6 +544,7 @@ It cuts those from the middle too, keeping both ends, because a run's error is w
   where that fails too, it opens the code, selects it, and says which keys copy it.
   It never opens a browser dialog.
   The permission gate's Copy, an icon over the code it asks about, and a failed run's, in the code's panel, work the same way, and copying neither runs nor denies anything.
+  They are not a second copy of the logic: every copy in the widget, the reply's own buttons below included, goes through the same function.
 - **Download** in the code's panel saves the code as a `.py` file built in the page, named for the dataset the question was about and the run's place in the conversation, counted from 1: `nm000132-run-3.py`.
   The dataset is the one the page named with `setDataset` when the reader sent the question; a question sent from a page that named none takes the community's id instead (`nemar-run-3.py`).
   The count is of every run the conversation shows, one that was declined, stopped, timed out or ran out of memory included.
@@ -563,6 +566,48 @@ Testing:
 `frontend/test-widget-color-scheme.js`, the card's dark colors;
 `frontend/test-widget-popout.js`, the card in the pop-out.
 `frontend/browser-harness/run-card-check.mjs [screenshot-dir]` draws every state at 400 px in headless Chrome, light and dark, checks the layout (inside the panel, nothing scrolls sideways, every button 36 px tall) and writes a screenshot of each.
+
+### Copying from a reply
+
+A reply's code blocks and the whole reply have a copy button too (issue #665), and they copy the way the run card does:
+the Clipboard API, then the browser's older copy command, then the text selected in place with the keys that copy it named.
+A copy that worked turns the button into a check with "Copied" beside it for two seconds, and the widget's status announcer (one polite live region, kept outside the conversation) says "Copied" for a screen reader.
+A block's button copies the block's code as written; the reply's button copies the reply's markdown source.
+Where the browser refuses both ways, a code block's code is selected where it stands, and the reply's source is shown in a block under the reply and selected there, since the page as drawn is not what the button promised;
+a line says "This page cannot copy for you: the text is selected, so press Ctrl+C" (Cmd on an Apple platform), and the announcer says it too.
+The reference on a failed request's banner copies the same way.
+`frontend/test-widget-copy.js` runs the real widget through all three paths for each button.
+
+### Image references and links in bold
+
+A reply is rendered from markdown by the widget itself, never as raw HTML (issue #666).
+The widget never loads an image a reply names, since the address is the model's and the server behind it is somebody else's.
+`![Welch PSD](https://example.org/psd.png)` therefore renders as its alt text, "Welch PSD", in a span (`osa-image-reference`), with no `img`, no link and no address;
+and when the reply's message has a figure from a run, as "Welch PSD (see the figure above)", pointing to the run card's own figure.
+The pointer is shown only for a figure drawn by the same message's run, so a model-invented image never claims a figure that is not there; a figure from an earlier message gets none.
+An image with no alt text renders as the pointer alone, or as nothing when there is no figure to point to.
+A linked image, `[![badge](https://example.org/b.svg)](https://example.org)`, renders as a link whose text is the alt text (no pointer inside a link), and an image address may hold one level of balanced parentheses (`y_(1).png`).
+Bold and italic render their content as markdown again, so `**[text](https://example.org)**` is a link inside bold, and code and image references inside them render too.
+Every address still goes through the same check (`http:` and `https:` only), so `**[x](javascript:alert(1))**` renders its text and no link.
+`frontend/test-markdown.js` runs the shipped functions over these cases, and `frontend/test-widget-run-card.js` checks the figure pointer on the real widget.
+Highlighting a reply's code blocks (#598) and the host page's CSS reaching a reply (#597) are separate work.
+
+## What a pending reply says it is doing
+
+While a reply is pending the widget names what it is doing, from the tool's name alone (issues #538 and #494):
+"Thinking..." while the model reasons, "Writing code..." from the moment the model starts composing a call to run code until the browser is asked to run it,
+a readable label for a server tool from the moment its call is written ("Searching datasets...", "Looking up events...", "Looking up documentation..."),
+"Running Python in your browser..." in the run card while the code runs,
+and "Analyzing results..." while the model reads a tool's or a run's result, including while the result is on its way back on `/chat/resume`.
+A tool whose name the widget cannot read is "Working...", and a plan being written is "Proposing plan...".
+Before the reply has any text the status is the loading bubble's label; once it has text, a later activity is a line under that text, with the accent-colored dot and 12.5 px text of board A3 (the run card's retry line is drawn the same way).
+It clears when the next text streams, when the reply ends, on an error, and once a run is stopped and the reply is over; no event is left to outlive the stream.
+The label is announced once through the status announcer, and the elapsed time (after 5 seconds) never is.
+
+The server half is the `tool_call` event, `{"event": "tool_call", "name": "..."}`, sent once per client-tool or server-tool call from each streaming loop as the model begins writing it.
+There is no second event for it (the `tool_composing` proposed in issue #494 would only have duplicated `tool_call`):
+a widget that predates it labels from `tool_start` and `tool_end`, and a server that predates it simply shows no "Writing code...".
+`tests/test_api/test_tool_call_streaming.py` drives the real streaming functions with chunked calls, and `frontend/test-widget-activity-status.js` and `frontend/browser-harness/activity-status-check.mjs` hold the widget side.
 
 ### Taking a chat's code out: the notebook card and Download code
 
@@ -638,6 +683,13 @@ A first message has no earlier turns, so there is nothing to summarize: its own 
 **Metrics.**
 A handover logs two rows in `request_log`: the analysis run's under the request id `done.request_id` carries (what feedback joins on), and the quick model's work under `<request id>:quick`, which is the quick run that called `start_analysis` (if any) and the summary, priced at the quick model.
 The summary's tokens are counted, and it is traced with the request in LangFuse.
+Every row a chat request writes also carries `tier` (`quick` or `analysis` for a routed request, empty otherwise, and always empty for a request that is not streamed, which is never routed) and `conversation_id` (a non-streamed `/chat` carries its session's too; `/ask` has none).
+A conversation's id is its first session's id, and the analysis session a handover opens inherits it, so both models' rows, and every later turn on the new session (including `/chat/resume`), group as one conversation.
+An analysis session that expired, or was lost when the server restarted, is recreated by the next request with its own id as the conversation id, so the report shows it as a new conversation.
+A streamed request writes one row, its generator's, under the request id: the metrics middleware no longer adds a stub row (no model, no tokens) beside it (#687), and when the reader disconnects before the reply ends, the generator still writes the row, with status 499 and the error message `client disconnected` (and the tokens counted so far; `500` and the exception's type when something raised past the stream's own handlers).
+A request that is refused because the session is already working on a reply is a row with status 409.
+Rows written before this change may also have a stub, which the cost report ignores, and rows written before the two columns existed have them empty.
+`osa metrics cost-report` prices them, as below.
 
 **`done.mode`.**
 On a routed request, `done` carries `mode` (`"quick"` or `"analysis"`) beside `model`.
@@ -665,6 +717,42 @@ It is tested on a real DOM by `frontend/test-widget-handover-card.js`.
 - **Stored chats.**
   The handover (`stage`, `messages`, `words`, `summary`, `degraded`, `model`) and the mode are stored on the reply, normalized and bounded on the way back in (`normalizePersistedMessage`), so a reload, or a chat opened from History, draws the same card (details closed), divider and label.
   Starting a new chat clears the label and the footnote, since they follow the latest reply of the open chat.
+
+## Cost per conversation: `osa metrics cost-report`
+
+```text
+osa metrics cost-report --community nemar --since 7d [--db PATH] [--json]
+```
+
+Prices each conversation of a community, the quick model against the analysis model (issue #678, plan E8.4), from the `request_log` the server already writes.
+`--since` is an age (`7d`, `12h`, `2w`) or a date, optionally with a UTC offset (`2026-11-01T00:00-08:00`; it is converted to UTC, and a date with no offset is UTC).
+`--db` defaults to this machine's own metrics database (the command never creates its directory), and a copy pulled from a server works.
+The database is opened read-only (SQLite `mode=ro`), and one from before `tier` and `conversation_id` existed is read without being migrated.
+
+**Getting a copy of a server's database.**
+The server's database is in WAL mode, and rows that are not yet checkpointed live in `metrics.db-wal`, so copying `metrics.db` alone can leave recent rows out.
+Take a consistent snapshot on the server instead (the container has no `sqlite3` command, so use Python; `VACUUM INTO` works on a read-only connection and writes a file that is not in WAL mode):
+
+```bash
+ssh -o "RequestTTY=no" -J hallu hedtools "docker exec osa-dev python3 -c 'import sqlite3; sqlite3.connect(\"file:/app/data/metrics.db?mode=ro\", uri=True).execute(\"VACUUM INTO ?\", (\"/tmp/metrics-copy.db\",))'"
+ssh -o "RequestTTY=no" -J hallu hedtools "docker cp osa-dev:/tmp/metrics-copy.db /tmp/metrics-copy.db"
+scp -J hallu hedtools:/tmp/metrics-copy.db ./metrics-copy.db
+osa metrics cost-report --community nemar --since 7d --db ./metrics-copy.db
+```
+
+(`VACUUM INTO` fails if the target file exists; remove `/tmp/metrics-copy.db` in the container before a second snapshot.)
+Alternatively, copy `metrics.db` together with `metrics.db-wal` and `metrics.db-shm` into one directory.
+When the file it is given is in WAL mode with no `-wal` beside it, the command opens it as an immutable snapshot (which creates no `-wal` or `-shm` file beside the copy, so the warning repeats on every run) and prints a note to stderr, and adds a `note` field to `--json`, saying that rows still in a `-wal` file that was not copied are not included; a `VACUUM INTO` snapshot never triggers it.
+A symlinked database is judged by the `-wal` beside the real file.
+If SQLite cannot open a file read-only although its `-wal` is there (for example a read-only directory, where no `-shm` can be created), the command falls back to an immutable snapshot too and says, in a second note, that the rows in the `-wal` file are not included.
+Only an "unable to open" failure makes it fall back; a locked database is an error.
+
+The table has one row per conversation: its short id, start, turns by tier (`quick/analysis`), the quick cost, the analysis cost and the total, followed by totals by tier.
+A turn here is one model's work on one request, so a handover counts once on each side.
+A request that failed (an error status or an error message, which includes a reader's disconnect, status 499) is not a turn: it is counted under `errors` (a "Failed" column in the totals when there are any), so retries after a failure do not inflate the turns or the quick/analysis ratio; any cost it did log is still added.
+Cost is each row's own estimate (`estimate_cost`, at the rates of the time it was logged).
+Requests that belong to no conversation (everything logged before this change, and `/ask`) are listed apart, by model, and the middleware's stub rows (no model) are left out.
+`--json` prints the same report as JSON.
 
 ## Plan first: `plan_first_instructions` and `propose_plan`
 
@@ -730,7 +818,7 @@ Two radios choose what happens when a step finishes: **Pause so I can look** (th
 Approve, Ask for changes, the Edit and Remove buttons and the bar's buttons are at least 44 px tall.
 Limits count code points, as the server's do, so a title with emoji is cut at a character, never in the middle of one.
 While a step is being edited the decision waits, so an unsaved edit is never sent or lost.
-The body is exactly `{session_id, result: {call_id, decision, steps, run_mode, feedback?}, client_tools}` (and `page_context` when the reader shares the page); `feedback` is left out when it is empty.
+The body is exactly `{session_id, result: {call_id, decision, steps, run_mode, feedback?}, client_tools}` (and `page_context` when there is anything to send: the shared page, the dataset, the memory budget); `feedback` is left out when it is empty.
 The model's findings, titles and details, and the reader's text, are escaped.
 While the card waits, the input is off and the conversation says it is waiting for the decision; a plan the reader never answers leaves the parked call to the server's 15-minute limit.
 
@@ -773,6 +861,51 @@ A plan is the newest plan in the conversation, so a paused plan continues in the
 The restored card is read-only and says `Approved` (or `Changes requested`, `Stopped`, or `Not answered` for a plan nobody answered); the strip and the bar come back once the runtime bundle has loaded.
 
 Testing: `frontend/test-widget-plan-card.js` runs the real widget and the runtime bundle as built in happy-dom, with `fetch` answering recorded-shape SSE; `tests/test_frontend/test_plan_resume_payload.py` feeds the payload the widget really posts to the server's `ResumeRequest`, `PlanDecision` and `build_plan_tool_message`.
+
+## Browser memory: the budget and the heap report
+
+A browser tab has a fixed amount of memory to give the Python runtime, and a laptop may have little to spare.
+A community with a browser runtime therefore lets the reader say how much one step of an analysis may use (E5.1, board A5), and tells them how much each step did use.
+
+**The setting.**
+Settings has a **Browser memory** field with four 44 px choices: 256 MB, 512 MB (the default), 1 GB and 2 GB.
+It appears only on a page that can run code in the browser, after the model and key fields.
+Choosing is part of the dialog like the model: **Save** stores it, **Cancel** leaves what was saved.
+The choice is stored with the other user settings (`memoryBudgetMb` in `osa-settings-<community>`).
+A stored value that is not one of the four, such as a hand-edited `300`, reads as 512 and is never sent.
+Below the choices, **Runtime memory after the last step** shows the heap of the latest run in the chat against the chosen budget, in MB, with a bar in the caution color when it is over (and "over budget" in the text for a screen reader, since the bar is decorative).
+
+**The request.**
+The widget sends `page_context.memory_budget_mb` on `/chat` and `/chat/resume`, whether or not the reader shares the page URL, and only from a page whose browser runtime has loaded and that declares its tools on the request (a first request sent with streaming off declares none, so it states none).
+A page that cannot run code sends nothing, and `page_context` stays absent when nothing else is set, as before.
+The rest of the first request's page context (the URL, the dataset, a carried move) is read when the question is sent, not after the wait for the runtime, so a reader who navigates during that wait still asked about the page they were on.
+The server accepts exactly 256, 512, 1024 or 2048 and refuses any other value with a 422 (`PageContext` in `src/api/routers/community.py`); the agent's own `PageContext` dataclass raises `ValueError` for any other value too, since it is what the prompt is written from.
+The system prompt then carries its own paragraph, `## Browser memory budget`: "Each step must fit in B MB of the reader's browser memory; read long recordings in pieces."
+A community that sets `enable_page_context: false` states none.
+NEMAR's `plan_first_instructions` also require the plan's `est_peak_mb` not to exceed it.
+The budget is advice to the model, not a limit: nothing enforces it, on the server or in the tab.
+
+**The heap report.**
+After each run the worker reads the size of Pyodide's WebAssembly memory (`pyodide._module.HEAPU8.byteLength`) and sends it beside the result as `heap_bytes`.
+It is not a `ClientToolResult` field and never reaches the server: `PyodideRuntime#heapBytes(callId)` hands it to the widget, which stores it on the run record as `heapMb`, with `budgetMb`, the budget the run was under.
+WebAssembly memory only grows, so the figure is the most the tab has had to give the runtime so far, the interpreter and its packages included (about 20 MB before any package loads), not what the one step held.
+The run card says `Heap N MB of B MB` under the figures, with the same MB wording in every line (Settings' four choices alone read "1 GB" and "2 GB").
+Because the figure only grows, only the run that took it past the budget is blamed.
+That run's line takes a warning style and a second line names the step: "Step 2, Epoch the EEG, used more than the 512 MB budget. Ask for smaller pieces, or raise the budget in Settings." (a run no plan covers is "This run"), and so does a later run that grows an over-budget heap further.
+A run that reports the same figure as the run before it, `print(1)` after a large read included, says "The runtime is still holding N MB from earlier steps; its memory does not shrink between runs." as a plain note, not in the amber box, and keeps the plain heap line.
+The widget decides this from the heap the runtime reported before the run, in whichever chat that was (the runtime is shared by every chat on the page, so a new chat or a conversation opened from History starts on what an earlier one left), which the run record keeps as `heapBeforeMb`; a smaller figure than that one belongs to a runtime started since (a reload, a restart after an out-of-memory crash), so its first over-budget run is blamed.
+A reload and the History sheet restore the line, against the budget the run had, whatever the setting is now.
+A run with no figure (one refused before it started, a timeout) has no line.
+
+**The plan card** keeps "Largest step needs about N MB" and, while the plan is a draft, adds a warning when N is more than the budget.
+
+The pure logic is `frontend/osa-memory.js`, exported as `OSARuntime.memory`.
+The widget holds its own copy of the four sizes and the heap limit, because a saved setting is read before the runtime bundle has loaded, and the heap line itself waits for the bundle (a chat restored before it loads is drawn again when it does).
+`frontend/test-widget-memory-budget.js` holds the copies to each other and to the server's list.
+
+The caution color is one token, `--osa-warn` (`#b45309` on the light panel, 4.9:1; `#fbbf24` on the dark one), which the Settings bar, the run card and the plan card read.
+
+Testing: `frontend/test-widget-memory-budget.js` runs the real widget and the runtime bundle as built in happy-dom, with a test worker that reports a heap when the code says `HEAP_MB=<n>`; `frontend/test-worker-core.js` holds the real worker's figure against real Pyodide; `tests/test_api/test_page_context.py` and `tests/test_agents/test_page_context.py` hold the server's side.
 
 ## Saved conversations
 
@@ -880,9 +1013,10 @@ What the request carries (`page_context`, beside `url`, `title` and `widget_inst
 |---|---|
 | `dataset_id` | The dataset `setDataset` named, matching `[A-Za-z0-9._-]{1,64}`. **Sent whether or not the reader shares the page URL** (the "Share page URL" toggle): like `widget_instructions`, it is about the chat, not about the reader's browsing, so a reader who keeps the URL private still gets answers about the dataset on screen. |
 | `moved_from` | `{type: 'dataset', id}` or `{type: 'search'}`: where the reader was before choosing to continue. Present only on the first request after "Continue". A `dataset` needs an `id`; `search` takes none, and the API refuses one. |
+| `memory_budget_mb` | The reader's browser memory budget per step, one of 256, 512, 1024 or 2048 ("Browser memory" in Settings). **Sent whether or not the reader shares the page URL**, but only by a page whose browser runtime has loaded and that declares its client tools on the request; a page with no runtime sends none. |
 
-The backend renders them in the system prompt's page context section, "Reader Context": the dataset the reader is on and, when `moved_from` is present, that the reader moved from one to the other in this conversation (a `moved_from` equal to where the reader is now is left out).
-A community with `enable_page_context: false` gets neither.
+The backend renders the dataset and the move in the system prompt's page context section, "Reader Context": the dataset the reader is on and, when `moved_from` is present, that the reader moved from one to the other in this conversation (a `moved_from` equal to where the reader is now is left out), and the budget as its own "Browser memory budget" paragraph.
+A community with `enable_page_context: false` gets none of the three.
 
 Testing: `frontend/test-widget-context-switch.js` (the widget), `tests/test_api/test_page_context.py` (the validated fields), `tests/test_agents/test_page_context.py` (the prompt), and the `search_paths` cases in `tests/test_core/test_config/test_community.py` and `tests/test_api/test_communities_endpoint.py`.
 

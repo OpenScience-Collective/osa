@@ -127,7 +127,8 @@ for the full guide, schema reference, and local testing instructions.
 1. Ensure your branch is based on the latest `develop`.
 2. Confirm tests and linters pass locally.
 3. Open the PR against `develop` with a clear description and reference the
-   related issue (e.g. `Closes #123`).
+   related issue (e.g. `Closes #123`). The issue closes when the PR merges into
+   `develop`; write one keyword per issue (`Closes #1` and `Closes #2`).
 4. Give every review comment an outcome (fixed, rejected with a reason, or filed as an issue) before merging; review stops after two rounds.
 
 ## Reporting Security Issues

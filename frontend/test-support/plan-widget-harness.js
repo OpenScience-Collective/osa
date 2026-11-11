@@ -84,7 +84,9 @@ let pages = 0;
  * built before this feature), or 'none' (the script does not load). With 'full' or 'old'
  * the runtime runs over the test worker (test-workers/executing.js).
  */
-export async function start({ bundle = 'full', storage = null, storageKey = `osa-test-plan-${++pages}`, allowPageContext = false } = {}) {
+export async function start({
+  bundle = 'full', storage = null, storageKey = `osa-test-plan-${++pages}`, allowPageContext = false, settings = null,
+} = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: {
@@ -96,6 +98,11 @@ export async function start({ bundle = 'full', storage = null, storageKey = `osa
   window.__OSA_TEST__ = true;
   window.sessionStorage.setItem(`${storageKey}-session`, '1');
   if (storage) window.localStorage.setItem(storageKey, storage);
+  // What the reader saved in Settings, as stored: a string is written as it is (a corrupt or
+  // hand-edited value), anything else as JSON.
+  if (settings !== null) {
+    window.localStorage.setItem('osa-settings-test', typeof settings === 'string' ? settings : JSON.stringify(settings));
+  }
   if (bundle !== 'none') {
     const { plan: withPlan, ...withoutPlan } = REAL_RUNTIME;
     const base = bundle === 'old' ? withoutPlan : { ...withoutPlan, plan: withPlan };
@@ -154,6 +161,7 @@ export async function start({ bundle = 'full', storage = null, storageKey = `osa
       return stream;
     },
     stored: () => JSON.parse(window.localStorage.getItem(storageKey)),
+    storedSettings: () => JSON.parse(window.localStorage.getItem('osa-settings-test')),
   };
   return page;
 }

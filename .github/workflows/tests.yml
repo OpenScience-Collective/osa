@@ -502,6 +502,12 @@ jobs:
       - name: Run the run card tests on a real DOM
         run: bun frontend/test-widget-run-card.js
 
+      # The one copy path (#665): the Clipboard API, then the copy command, then the
+      # text selected with the keys named, for a reply's code block, the whole-reply
+      # copy and the run card, each with a visible "Copied".
+      - name: Run the copy tests on a real DOM
+        run: bun frontend/test-widget-copy.js
+
       # A fresh chat on return: a new browser session or a chat over a day old starts a
       # new conversation, never in a pop-out or over an empty chat, and the empty state
       # offers the chat just left.
@@ -534,6 +540,13 @@ jobs:
       # tests/test_frontend/test_plan_resume_payload.py.
       - name: Run the plan card tests on a real DOM
         run: bun frontend/test-widget-plan-card.js
+
+      # The browser memory budget (E5.1): the Settings field and its stored value, the
+      # budget on /chat and /chat/resume only from a page with the runtime, the run card's
+      # "Heap N MB of B MB" and its warning by step, the plan card's warning, and a reload
+      # and History restoring the line. The real widget and the runtime bundle as built.
+      - name: Run the memory budget tests on a real DOM
+        run: bun frontend/test-widget-memory-budget.js
 
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a

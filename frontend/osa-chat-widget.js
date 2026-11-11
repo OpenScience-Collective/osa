@@ -346,7 +346,26 @@
   let backendCommitSha = null; // Backend git commit SHA from health check
   let pageContextEnabled = true; // Runtime state for page context toggle
   let chatPopup = null; // Reference to pop-out window (prevents duplicates)
-  let userSettings = { apiKey: null, model: null, keyProvider: null }; // User settings (BYOK and model selection)
+  // The browser memory budgets Settings offers per step, in MB, and the one a reader who
+  // never chose gets. The server accepts exactly these (PageContext.memory_budget_mb), and
+  // frontend/osa-memory.js holds the same list for the runtime bundle; this copy is here
+  // because a saved setting is read before that bundle has loaded. test-widget-memory-budget.js
+  // holds the copies to each other.
+  const MEMORY_BUDGETS_MB = Object.freeze([256, 512, 1024, 2048]);
+  const DEFAULT_MEMORY_BUDGET_MB = 512;
+  // A budget as a Settings choice reads it: 256 MB, 1 GB (osa-memory.js sizeLabel).
+  function memorySizeLabel(mb) {
+    return mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024} GB` : `${mb} MB`;
+  }
+  // A stored budget: an offered size, else the default.
+  function normalizeMemoryBudget(value) {
+    return Number.isInteger(value) && MEMORY_BUDGETS_MB.includes(value) ? value : DEFAULT_MEMORY_BUDGET_MB;
+  }
+  // A reader with nothing saved: no key, the community's model, the default memory budget.
+  function defaultUserSettings() {
+    return { apiKey: null, model: null, keyProvider: null, memoryBudgetMb: DEFAULT_MEMORY_BUDGET_MB };
+  }
+  let userSettings = defaultUserSettings(); // User settings (BYOK, model selection, memory budget)
   let communityDefaultModel = null; // Community's default model from API
   let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
@@ -392,6 +411,10 @@
   let browserToolsReady = null; // Promise resolving to the controller, or null
   let browserTools = null; // OSARuntime.ClientToolController
   let browserRuntime = null; // The OSARuntime.PyodideRuntime it drives
+  // The heap the runtime last reported, in MB. Kept here, not read back from the chat on
+  // screen: the runtime is shared by every chat on the page, so a new chat or a History
+  // conversation starts on the heap an earlier one left.
+  let lastReportedHeapMb = null;
   let runtimeApi = null; // The OSARuntime global itself, captured when it loaded
   let browserToolsSetup = null; // {tools, python} from the config, kept for a retry
   let browserToolsUnavailable = null; // {reason, detail} while code execution is off
@@ -788,7 +811,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-oQAeK/wuVT0Ivb60H786tNN0Kx0ZEwVzQClRNzP2yWtMKQCex/deV1TNMTnWgytK';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-CmnMFZjJfOAdo5XJkHd0RsjwIScuK5C9zF9chl/sKT5RjblkrSbeAV8XRSrowKTX';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -831,6 +854,10 @@
          outrank the dark rule below, which has to replace it (a color chosen to read
          on white is often too dark to read on the dark panel). */
       --osa-accent: var(--osa-accent-on-light, var(--osa-primary));
+      /* The caution color (a run over its memory budget, a plan expected to): 4.9:1 on the
+         light panel, and lightened below for the dark one. The run card and the plan card
+         read it through their own tokens. */
+      --osa-warn: #b45309;
       --osa-bg: #ffffff;
       --osa-text: #1f2937;
       --osa-text-light: #6b7280;
@@ -2534,6 +2561,7 @@
       color: var(--osa-text-light);
       display: flex;
       align-items: center;
+      gap: 4px;
       transition: color 0.2s, background 0.2s;
       margin-left: auto;
     }
@@ -2550,6 +2578,47 @@
 
     .osa-message-copy-btn.copied {
       color: #22c55e;
+    }
+
+    /* "Copied" beside the check, on the copy buttons that are only an icon. */
+    .osa-copy-btn .osa-copied-text,
+    .osa-message-copy-btn .osa-copied-text {
+      font-size: 11px;
+      line-height: 1;
+    }
+
+    /* The word is body text on the bubble, so it takes the bubble's text color (the green
+       #22c55e is about 2.3:1 on white); the check beside it keeps the green. */
+    .osa-message-copy-btn .osa-copied-text {
+      color: var(--osa-text);
+    }
+
+    /* The line that names the keys when a copy is refused (the widget's status announcer
+       says it aloud; "Copied" is on the button). */
+    .osa-copy-status {
+      margin: 2px 0 4px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-copy-status:empty {
+      display: none;
+    }
+
+    /* An image reference in a reply: the alt text, with a pointer to the run's figure. */
+    .osa-image-reference {
+      font-style: italic;
+    }
+
+    .osa-image-hint {
+      color: var(--osa-text-light);
+    }
+
+    .osa-message-copy-fallback {
+      margin: 4px 0 8px;
+      max-height: 240px;
+      overflow: auto;
+      white-space: pre-wrap;
     }
 
     .osa-message-header {
@@ -3510,9 +3579,9 @@
     .osa-activity-status {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       margin-top: 6px;
-      font-size: 12px;
+      font-size: 12.5px;
       color: var(--osa-text-light);
     }
 
@@ -3524,6 +3593,11 @@
       border-radius: 50%;
       background: var(--osa-text-light);
       animation: osa-activity-pulse 1.4s infinite ease-in-out;
+    }
+
+    /* Board A3's status line: the accent-colored dot, as the run card's retry line has it. */
+    .osa-activity-status .osa-activity-pulse {
+      background: var(--osa-accent);
     }
 
     /* Not osa-pulse: keyframes of one name replace each other, and that one is the header
@@ -3581,6 +3655,38 @@
     .osa-error-copy {
       margin-left: 4px;
       vertical-align: middle;
+    }
+
+    .osa-error-copy.copied {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      line-height: 1;
+    }
+
+    .osa-error-copy .osa-copied-text {
+      font-size: 12px;
+    }
+
+    /* Success, not the banner's failure red: a dark green on the light banner (about 4.9:1
+       on #fef2f2), a light green on the dark one. */
+    .osa-error-copy.copied {
+      color: #15803d;
+    }
+
+    .osa-chat-widget.osa-dark .osa-error-copy.copied {
+      color: #86efac;
+    }
+
+    .osa-error-reference .osa-copy-status {
+      display: inline;
+      margin: 0 0 0 4px;
+      font-size: inherit;
+      color: inherit;
+    }
+
+    .osa-error-reference .osa-copy-status:empty {
+      display: none;
     }
 
     .osa-error-dismiss {
@@ -3945,6 +4051,94 @@
       background: var(--osa-primary-dark);
     }
 
+    /* Browser memory (E5.1): four choices in a row, each a 44 px target. The radio itself is
+       kept for the keyboard and screen readers and drawn as the choice's own border. */
+    .osa-memory-fieldset {
+      border: 0;
+      margin: 0;
+      padding: 0;
+      min-width: 0;
+    }
+
+    .osa-memory-fieldset legend.osa-settings-label {
+      padding: 0;
+    }
+
+    .osa-memory-choices {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .osa-memory-choice {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      box-sizing: border-box;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--osa-text);
+      cursor: pointer;
+      text-align: center;
+    }
+
+    .osa-memory-choice-on {
+      border: 1.5px solid var(--osa-accent);
+      background: var(--osa-notice-bg);
+      font-weight: 600;
+    }
+
+    .osa-memory-choice:focus-within {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-memory-radio {
+      position: absolute;
+      opacity: 0;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      cursor: pointer;
+    }
+
+    .osa-memory-last {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-memory-last[hidden] {
+      display: none;
+    }
+
+    .osa-memory-last-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .osa-memory-bar {
+      height: 6px;
+      border-radius: 3px;
+      background: var(--osa-border);
+      overflow: hidden;
+    }
+
+    .osa-memory-bar-fill {
+      height: 6px;
+      background: var(--osa-accent);
+    }
+
+    .osa-memory-bar-over .osa-memory-bar-fill {
+      background: var(--osa-warn);
+    }
+
     .osa-workspace-actions {
       display: flex;
       flex-wrap: wrap;
@@ -4003,6 +4197,8 @@
       --osa-run-ok: #15803d;
       --osa-run-danger: #b91c1c;
       --osa-run-danger-bg: #fef2f2;
+      --osa-run-warn: var(--osa-warn);
+      --osa-run-warn-bg: #fffbeb;
       position: relative;
       border: 1px solid var(--osa-border);
       border-radius: 12px;
@@ -4139,6 +4335,28 @@
 
     .osa-run-card-retry .osa-activity-pulse {
       background: var(--osa-accent);
+    }
+
+    /* The WebAssembly heap after the run, against the reader's memory budget (E5.1), and
+       the caution under it when the run passed the budget. A caution, not a failure: the
+       run finished. */
+    .osa-run-card-heap {
+      color: var(--osa-text-light);
+      font-size: 12px;
+    }
+
+    .osa-run-card-heap-over {
+      color: var(--osa-run-warn);
+      font-weight: 600;
+    }
+
+    .osa-run-card-memory-warning {
+      background: var(--osa-run-warn-bg);
+      color: var(--osa-run-warn);
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12.5px;
+      overflow-wrap: anywhere;
     }
 
     .osa-run-card-actions {
@@ -4430,6 +4648,7 @@
     .osa-plan-strip,
     .osa-plan-bar {
       --osa-plan-danger: #b91c1c;
+      --osa-plan-warn: var(--osa-warn);
       --osa-plan-editing-bg: #fffbeb;
     }
 
@@ -4491,6 +4710,12 @@
       font-size: 12px;
       color: var(--osa-text-light);
       overflow-wrap: anywhere;
+    }
+
+    /* The largest step is expected to pass the reader's memory budget (E5.1). */
+    .osa-plan-card .osa-plan-meta-warn {
+      color: var(--osa-plan-warn);
+      font-weight: 600;
     }
 
     .osa-plan-card .osa-plan-mode-line {
@@ -5066,6 +5291,7 @@
       --osa-notice-border: #2c5a69;
       --osa-notice-text: #d3eef6;
       --osa-danger-text: #fca5a5;
+      --osa-warn: #fbbf24;
       /* A shadow alone vanishes against a dark host page, so every raised surface
          (the panel, the launcher, the tooltips) also gets a hairline edge. */
       --osa-shadow: 0 0 0 1px #374151, 0 10px 25px rgba(0, 0, 0, 0.5);
@@ -5200,6 +5426,7 @@
       --osa-run-ok: #4ade80;
       --osa-run-danger: #fca5a5;
       --osa-run-danger-bg: rgba(220, 38, 38, 0.15);
+      --osa-run-warn-bg: rgba(245, 158, 11, 0.15);
     }
 
     .osa-chat-widget.osa-dark .osa-run-card-excerpt {
@@ -6573,29 +6800,16 @@
     }
   }
 
-  // Copy text to clipboard
-  async function copyToClipboard(text, button) {
-    try {
-      await navigator.clipboard.writeText(text);
-      // Show success feedback
-      const originalHtml = button.innerHTML;
-      button.innerHTML = ICONS.check;
-      button.classList.add('copied');
-      setTimeout(() => {
-        button.innerHTML = originalHtml;
-        button.classList.remove('copied');
-      }, 2000);
-    } catch (e) {
-      console.error('Failed to copy:', e);
-    }
-  }
-
-  // Put text on the clipboard for the Copy button of a run's code (#491): the
-  // Clipboard API first, then, where the page may not use it (an insecure page, a
-  // frame without clipboard-write, a browser that refuses), the older copy
-  // command on a hidden textarea. Resolves true or false; never throws and never
-  // opens a dialog. copyToClipboard above, the chat's own code blocks' and
-  // messages', is left exactly as it was.
+  // BEGIN copy-text. The one way the widget copies text (#491, #665): reply code
+  // blocks, the whole-reply copy, the run card, the run gate and the error reference
+  // all go through copyCodeFromButton. It is a block of its own, between these markers,
+  // so a test can read it out of the shipped source; it uses ICONS, the document and
+  // the navigator, and nothing else of the widget.
+  //
+  // Put text on the clipboard: the Clipboard API first, then, where the page may not
+  // use it (an insecure page, a frame without clipboard-write, a browser that
+  // refuses), the older copy command on a hidden textarea. Resolves true or false;
+  // never throws and never opens a dialog.
   async function writeClipboard(text) {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       try {
@@ -6654,6 +6868,7 @@
       pre = document.createElement('pre');
       pre.className = 'osa-execution-output osa-run-card-error-fallback';
       pre.tabIndex = 0;
+      pre.setAttribute('role', 'group');
       pre.setAttribute('aria-label', 'The error, to copy');
       const actions = card.querySelector('.osa-run-card-actions');
       if (actions) actions.insertAdjacentElement('afterend', pre);
@@ -6663,53 +6878,137 @@
     return pre;
   }
 
-  // A code block's Copy (#491): the exact code, never the highlighted page text,
-  // onto the clipboard, and "Copied" beside the button for a moment. A run card's
-  // buttons are worded ("Copy code", "Copy error": data-copy-label) and say "Copied"
-  // themselves; the icon buttons of the gate and of a failed run's code swap to a
-  // check. Either way the block's status line (a live region) says it too. Where the
-  // browser allows neither way to copy, the text is selected in place and the status
-  // names the keys that copy it, since nothing the page can do will: for a run's
-  // code, the code is opened first; `selectable` is what to select instead (an element,
-  // or a function that makes one, called only when the copy is refused).
+  // A reply message's source, to select when the copy is refused: the reply the
+  // button promised ("Copy as markdown"), not the page text as drawn. Built only then,
+  // and kept until the message redraws.
+  function replyFallbackFor(messageEl, text) {
+    let pre = messageEl.querySelector('.osa-message-copy-fallback');
+    if (!pre) {
+      pre = document.createElement('pre');
+      pre.className = 'osa-execution-output osa-message-copy-fallback';
+      pre.tabIndex = 0;
+      pre.setAttribute('role', 'group');
+      pre.setAttribute('aria-label', 'The reply as markdown, to copy');
+      const content = messageEl.querySelector('.osa-message-content');
+      if (content) content.insertAdjacentElement('afterend', pre);
+      else messageEl.appendChild(pre);
+    }
+    pre.textContent = text;
+    return pre;
+  }
+
+  // Where a refused copy says so when the button is not in a run card's code block
+  // (which has a status line of its own): a plain line made when first needed, next to
+  // what was selected: right after the reply's code block for that block's button, after
+  // the message header for the whole reply, inside the error reference for its button.
+  // It is not a live region (a redraw would make the conversation say it again): the
+  // widget's one status announcer says it.
+  function copyNoteFor(home, button) {
+    const pre = button.closest('pre');
+    if (pre && home.contains(pre)) {
+      const next = pre.nextElementSibling;
+      if (next && next.classList.contains('osa-copy-status')) return next;
+      const note = document.createElement('div');
+      note.className = 'osa-copy-status';
+      pre.insertAdjacentElement('afterend', note);
+      return note;
+    }
+    let note = Array.from(home.children).find((child) => child.classList.contains('osa-copy-status'));
+    if (!note) {
+      note = document.createElement(home.classList.contains('osa-error-reference') ? 'span' : 'div');
+      note.className = 'osa-copy-status';
+      const header = home.querySelector('.osa-message-header');
+      if (header) header.insertAdjacentElement('afterend', note);
+      else home.appendChild(note);
+    }
+    return note;
+  }
+
+  // The "Copied" timer of each button, so a second copy inside the wait restarts it
+  // instead of being cut short by the first one's.
+  const copiedTimers = new WeakMap();
+
+  // Copy (#491, #665): the exact text, never the highlighted page text, onto the
+  // clipboard, and "Copied" said twice: on the button, and to a screen reader. A run
+  // card's buttons are worded ("Copy code", "Copy error": data-copy-label) and say
+  // "Copied" in place of their words, and the icon buttons of the gate and of a failed
+  // run's code swap to a check; in a code block both say it in the block's status line
+  // (a live region). Any other icon button (a reply's code block, the whole reply, the
+  // error reference) swaps to a check with "Copied" beside it, and the widget's status
+  // announcer says it. Where the browser allows neither way to copy, the text is
+  // selected in place and a line names the keys that copy it, since nothing the page
+  // can do will: for a run's code, the code is opened first; `selectable` is what to
+  // select instead (an element, or a function that makes one, called only when the copy
+  // is refused).
   async function copyCodeFromButton(button, code, selectable = null) {
     const block = button.closest('.osa-code-block');
-    const status = block && block.querySelector('.osa-code-status');
+    const blockStatus = block && block.querySelector('.osa-code-status');
+    const widgetEl = button.closest('.osa-chat-widget');
+    const announcer = widgetEl && widgetEl.querySelector('.osa-status-announcer');
+    const home = button.closest('.osa-message, .osa-error-reference');
     const label = button.getAttribute('data-copy-label');
+    const say = (text) => {
+      const live = blockStatus || announcer;
+      if (!live) return;
+      if (live.textContent !== text) {
+        live.textContent = text;
+        return;
+      }
+      // The same words again (a second copy inside the wait): a live region only speaks a
+      // change, so clear it and set it on the next turn.
+      live.textContent = '';
+      setTimeout(() => { live.textContent = text; }, 0);
+    };
+    const unsay = (text) => {
+      const live = blockStatus || announcer;
+      if (live && live.textContent === text) live.textContent = '';
+    };
+    // A new copy takes away every refusal line this message (or reference) is showing.
+    if (!blockStatus && home) home.querySelectorAll('.osa-copy-status').forEach((note) => { note.textContent = ''; });
     if (await writeClipboard(code)) {
       button.classList.add('copied');
       if (label) {
         button.classList.add('osa-run-card-copied');
         button.textContent = 'Copied';
       } else {
-        button.innerHTML = ICONS.check;
+        button.innerHTML = ICONS.check + (block ? '' : '<span class="osa-copied-text">Copied</span>');
       }
-      if (status) status.textContent = 'Copied';
-      setTimeout(() => {
+      say('Copied');
+      clearTimeout(copiedTimers.get(button));
+      copiedTimers.set(button, setTimeout(() => {
+        copiedTimers.delete(button);
         button.classList.remove('copied', 'osa-run-card-copied');
         if (label) button.textContent = label;
         else button.innerHTML = ICONS.copy;
-        if (status && status.textContent === 'Copied') status.textContent = '';
-      }, CODE_COPIED_MS);
+        unsay('Copied');
+      }, CODE_COPIED_MS));
       return true;
     }
     const toggle = block && block.querySelector('.osa-run-card-code-toggle');
     if (!selectable && toggle && toggle.getAttribute('aria-expanded') !== 'true') toggle.click();
+    const enclosingPre = button.closest('pre');
     const codeElement = (typeof selectable === 'function' ? selectable() : selectable) ||
-      (block && block.querySelector('pre code'));
+      (block && block.querySelector('pre code')) ||
+      (enclosingPre && enclosingPre.querySelector('code'));
+    let selected = false;
     if (codeElement && typeof window.getSelection === 'function') {
       const selection = window.getSelection();
       const range = document.createRange();
       range.selectNodeContents(codeElement);
       selection.removeAllRanges();
       selection.addRange(range);
+      selected = true;
     }
-    if (status) {
-      status.classList.remove('osa-code-status-quiet');
-      status.textContent = `This page cannot copy for you: the ${selectable ? 'text' : 'code'} is selected, so press ${isApplePlatform() ? 'Cmd' : 'Ctrl'}+C`;
-    }
+    const keys = `${isApplePlatform() ? 'Cmd' : 'Ctrl'}+C`;
+    const prompt = selected
+      ? `This page cannot copy for you: the ${selectable || !block ? 'text' : 'code'} is selected, so press ${keys}`
+      : `This page cannot copy for you: select the ${selectable || !block ? 'text' : 'code'} yourself, then press ${keys}`;
+    if (blockStatus) blockStatus.classList.remove('osa-code-status-quiet');
+    else if (home) copyNoteFor(home, button).textContent = prompt;
+    say(prompt);
     return false;
   }
+  // END copy-text
 
   // Hand the reader a file built in the page (#491), as the workspace export
   // does: a Blob's address on a link with `download`, clicked, and the address
@@ -6735,13 +7034,23 @@
     return 'osa-code-' + (++codeBlockId);
   }
 
-  // Render inline markdown (code, bold, italic, links, plain URLs, citation markers)
+  // Render inline markdown (code, bold, italic, links, image references, plain URLs,
+  // citation markers)
   // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
   // When provided, a bare "[1]" (not followed by "(", so it never collides
   // with a real markdown link) whose number is a known marker renders as a
   // superscript link to its source; any other "[n]" is left as plain text.
-  function renderInlineMarkdown(text, citationsByMarker) {
+  // options.figureAbove (#666): true when the reply's message has a run figure, so an
+  // image reference can point to it ("figure above"); otherwise it shows its alt text only.
+  function renderInlineMarkdown(text, citationsByMarker, options) {
     if (!text) return '';
+    const figureAbove = Boolean(options && options.figureAbove);
+
+    // An image reference, "![alt](address)": the address may hold one level of balanced
+    // parentheses ("y_(1).png"). A link whose text holds image references is the linked
+    // badge "[![alt](img)](link)"; its text may hold plain characters and those references.
+    const IMAGE_REFERENCE = /!\[([^\]]*)\]\(((?:[^()]|\([^()]*\))+)\)/;
+    const LINK_WITH_IMAGES = /\[((?:[^\[\]]|!\[[^\]]*\]\((?:[^()]|\([^()]*\))+\))+)\]\(([^)]+)\)/;
 
     // Code spans are lifted out before anything else is matched, so what is inside
     // one is never read as markup and an italic, bold or link match that starts
@@ -6756,7 +7065,7 @@
     const spanOpen = String.fromCharCode(0xE000);
     const spanClose = String.fromCharCode(0xE001);
     const placeholder = new RegExp(spanOpen + '(\\d+)' + spanClose, 'g');
-    let remaining = String(text)
+    const lifted = String(text)
       .split(spanOpen).join(String.fromCharCode(0xFFFD))
       .split(spanClose).join(String.fromCharCode(0xFFFD))
       .replace(/`([^`]+)`/g, (match, code) => {
@@ -6766,88 +7075,143 @@
     const withRawCode = (raw) => raw.replace(placeholder, (match, index) => '`' + codeSpans[index] + '`');
     const escapeRun = (raw) => escapeHtml(raw).replace(placeholder, (match, index) => '<code>' + escapeHtml(codeSpans[index]) + '</code>');
 
-    let result = '';
+    // One run of text, rendered. Bold and italic render their content through this
+    // again (#666), so a link, a code span or an image reference inside them renders
+    // too; the code spans are the ones lifted above, and every href goes through
+    // isSafeUrl wherever it is written.
+    // An image reference: a span, escaped, never an img and never the address. The pointer to
+    // the run's figure is added only where `withHint` (not inside a link, where it would
+    // read as part of the link).
+    const imageReference = (rawAlt, withHint) => {
+      const alt = escapeRun(rawAlt.trim());
+      const hint = withHint && figureAbove
+        ? '<span class="osa-image-hint">' + (alt ? ' (see the figure above)' : '(see the figure above)') + '</span>'
+        : '';
+      return alt || hint ? '<span class="osa-image-reference">' + alt + hint + '</span>' : '';
+    };
 
-    while (remaining.length > 0) {
-      const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
-      const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
-      const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
-      const urlMatch = remaining.match(/(?<!\]\()(https?:\/\/[^\s\)]+)/);
-      let citationMatch = null;
-      if (citationsByMarker) {
-        // Scan every bracketed number, not just the first: prose of its own
-        // like "see item [42]" must not hide a real marker later in the same
-        // run. Matching only the first would leave that marker unlinked, and
-        // if nothing else matched either, the rest of the run would be
-        // emitted as plain text and the loop would exit.
-        for (const candidate of remaining.matchAll(/\[(\d+)\](?!\()/g)) {
-          if (citationsByMarker[candidate[1]]) {
-            citationMatch = candidate;
-            break;
+    // A link's text, which may hold image references (a badge that is a link):
+    // "[![badge](https://img/b.svg)](https://link)". Each reference becomes its alt text;
+    // the rest is escaped as it always was.
+    const renderLinkText = (linkText) => {
+      let html = '';
+      let last = 0;
+      for (const image of linkText.matchAll(new RegExp(IMAGE_REFERENCE.source, 'g'))) {
+        html += escapeRun(linkText.substring(last, image.index)) + imageReference(image[1], false);
+        last = image.index + image[0].length;
+      }
+      return html + escapeRun(linkText.substring(last));
+    };
+
+    const renderRun = (run) => {
+      let remaining = run;
+      let result = '';
+
+      while (remaining.length > 0) {
+        const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
+        const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
+        const imageMatch = remaining.match(IMAGE_REFERENCE);
+        const linkMatch = remaining.match(LINK_WITH_IMAGES);
+        const urlMatch = remaining.match(/(?<!\]\()(https?:\/\/[^\s\)]+)/);
+        let citationMatch = null;
+        if (citationsByMarker) {
+          // Scan every bracketed number, not just the first: prose of its own
+          // like "see item [42]" must not hide a real marker later in the same
+          // run. Matching only the first would leave that marker unlinked, and
+          // if nothing else matched either, the rest of the run would be
+          // emitted as plain text and the loop would exit.
+          for (const candidate of remaining.matchAll(/\[(\d+)\](?!\()/g)) {
+            if (citationsByMarker[candidate[1]]) {
+              citationMatch = candidate;
+              break;
+            }
           }
         }
-      }
 
-      const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
-      const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
-      const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
-      const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
-      const citationIndex = citationMatch ? citationMatch.index : -1;
+        const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
+        const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
+        const imageIndex = imageMatch ? remaining.indexOf(imageMatch[0]) : -1;
+        const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
+        const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
+        const citationIndex = citationMatch ? citationMatch.index : -1;
 
-      const indices = [boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
-      if (indices.length === 0) {
-        result += escapeRun(remaining);
-        break;
-      }
-      const minIndex = Math.min(...indices);
-
-      if (minIndex === boldIndex && boldMatch) {
-        if (boldIndex > 0) result += escapeRun(remaining.substring(0, boldIndex));
-        result += '<strong>' + escapeRun(boldMatch[1]) + '</strong>';
-        remaining = remaining.substring(boldIndex + boldMatch[0].length);
-      } else if (minIndex === italicIndex && italicMatch) {
-        if (italicIndex > 0) result += escapeRun(remaining.substring(0, italicIndex));
-        result += '<em>' + escapeRun(italicMatch[1]) + '</em>';
-        remaining = remaining.substring(italicIndex + italicMatch[0].length);
-      } else if (minIndex === linkIndex && linkMatch) {
-        if (linkIndex > 0) result += escapeRun(remaining.substring(0, linkIndex));
-        // Validate URL to prevent javascript: XSS
-        const linkUrl = withRawCode(linkMatch[2]);
-        if (isSafeUrl(linkUrl)) {
-          result += '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeRun(linkMatch[1]) + '</a>';
-        } else {
-          result += escapeRun(linkMatch[1]); // Just show text, no link
+        const indices = [boldIndex, italicIndex, imageIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
+        if (indices.length === 0) {
+          result += escapeRun(remaining);
+          break;
         }
-        remaining = remaining.substring(linkIndex + linkMatch[0].length);
-      } else if (minIndex === urlIndex && urlMatch) {
-        if (urlIndex > 0) result += escapeRun(remaining.substring(0, urlIndex));
-        // Plain URLs are already validated by regex to start with https?://
-        const plainUrl = withRawCode(urlMatch[0]);
-        result += '<a href="' + escapeHtml(plainUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(plainUrl) + '</a>';
-        remaining = remaining.substring(urlIndex + urlMatch[0].length);
-      } else if (minIndex === citationIndex && citationMatch) {
-        if (citationIndex > 0) result += escapeRun(remaining.substring(0, citationIndex));
-        const citation = citationsByMarker[citationMatch[1]];
-        const label = escapeHtml(citationMatch[1]);
-        if (isSafeUrl(citation.source)) {
-          // Every attribute value here is escaped inline rather than via a
-          // pre-escaped local, so the "attribute values go through escapeHtml"
-          // check in tests/test_frontend/test_widget_drift.py can stay literal.
-          result += '<sup class="osa-citation"><a href="' + escapeHtml(citation.source) +
-            '" target="_blank" rel="noopener noreferrer" title="' +
-            escapeHtml(citation.cited_text || citation.title || '') + '">[' + label + ']</a></sup>';
-        } else {
-          result += '<sup class="osa-citation">[' + label + ']</sup>';
-        }
-        remaining = remaining.substring(citationIndex + citationMatch[0].length);
-      }
-    }
+        const minIndex = Math.min(...indices);
 
-    return result;
+        if (minIndex === boldIndex && boldMatch) {
+          if (boldIndex > 0) result += escapeRun(remaining.substring(0, boldIndex));
+          result += '<strong>' + renderRun(boldMatch[1]) + '</strong>';
+          remaining = remaining.substring(boldIndex + boldMatch[0].length);
+        } else if (minIndex === italicIndex && italicMatch) {
+          if (italicIndex > 0) result += escapeRun(remaining.substring(0, italicIndex));
+          result += '<em>' + renderRun(italicMatch[1]) + '</em>';
+          remaining = remaining.substring(italicIndex + italicMatch[0].length);
+        } else if (minIndex === imageIndex && imageMatch) {
+          if (imageIndex > 0) result += escapeRun(remaining.substring(0, imageIndex));
+          // The widget never loads an image a reply names: a model-written address is
+          // somebody else's server. The alt text stands in, with a pointer to the run's own
+          // figure when the message has one.
+          result += imageReference(imageMatch[1], true);
+          remaining = remaining.substring(imageIndex + imageMatch[0].length);
+        } else if (minIndex === linkIndex && linkMatch && linkIndex > 0 && remaining[linkIndex - 1] === '!') {
+          // An image reference IMAGE_REFERENCE could not parse (an address nested deeper than
+          // one level of parentheses): still never a link and never a "!". Drop the "!", show
+          // the alt text, and skip the whole address by balancing its parentheses.
+          result += escapeRun(remaining.substring(0, linkIndex - 1));
+          result += imageReference(linkMatch[1], true);
+          let end = linkIndex + linkMatch[0].length;
+          let depth = 1;
+          for (let i = linkIndex + linkMatch[1].length + 3; i < remaining.length; i++) {
+            if (remaining[i] === '(') depth++;
+            else if (remaining[i] === ')' && --depth === 0) { end = i + 1; break; }
+          }
+          remaining = remaining.substring(end);
+        } else if (minIndex === linkIndex && linkMatch) {
+          if (linkIndex > 0) result += escapeRun(remaining.substring(0, linkIndex));
+          // Validate URL to prevent javascript: XSS
+          const linkUrl = withRawCode(linkMatch[2]);
+          if (isSafeUrl(linkUrl)) {
+            result += '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer">' + renderLinkText(linkMatch[1]) + '</a>';
+          } else {
+            result += renderLinkText(linkMatch[1]); // Just show text, no link
+          }
+          remaining = remaining.substring(linkIndex + linkMatch[0].length);
+        } else if (minIndex === urlIndex && urlMatch) {
+          if (urlIndex > 0) result += escapeRun(remaining.substring(0, urlIndex));
+          // Plain URLs are already validated by regex to start with https?://
+          const plainUrl = withRawCode(urlMatch[0]);
+          result += '<a href="' + escapeHtml(plainUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(plainUrl) + '</a>';
+          remaining = remaining.substring(urlIndex + urlMatch[0].length);
+        } else if (minIndex === citationIndex && citationMatch) {
+          if (citationIndex > 0) result += escapeRun(remaining.substring(0, citationIndex));
+          const citation = citationsByMarker[citationMatch[1]];
+          const label = escapeHtml(citationMatch[1]);
+          if (isSafeUrl(citation.source)) {
+            // Every attribute value here is escaped inline rather than via a
+            // pre-escaped local, so the "attribute values go through escapeHtml"
+            // check in tests/test_frontend/test_widget_drift.py can stay literal.
+            result += '<sup class="osa-citation"><a href="' + escapeHtml(citation.source) +
+              '" target="_blank" rel="noopener noreferrer" title="' +
+              escapeHtml(citation.cited_text || citation.title || '') + '">[' + label + ']</a></sup>';
+          } else {
+            result += '<sup class="osa-citation">[' + label + ']</sup>';
+          }
+          remaining = remaining.substring(citationIndex + citationMatch[0].length);
+        }
+      }
+
+      return result;
+    };
+
+    return renderRun(lifted);
   }
 
   // Full markdown to HTML converter
-  function markdownToHtml(text, citationsByMarker) {
+  function markdownToHtml(text, citationsByMarker, options) {
     if (!text) return '';
 
     const lines = text.split('\n');
@@ -6877,7 +7241,7 @@
           const tag = idx === 0 ? 'th' : 'td';
           tableHtml += '<tr>';
           cells.forEach(cell => {
-            tableHtml += '<' + tag + '>' + renderInlineMarkdown(cell.trim(), citationsByMarker) + '</' + tag + '>';
+            tableHtml += '<' + tag + '>' + renderInlineMarkdown(cell.trim(), citationsByMarker, options) + '</' + tag + '>';
           });
           tableHtml += '</tr>';
         });
@@ -6896,7 +7260,7 @@
         if (inCodeBlock) {
           const codeContent = codeBlockContent.join('\n');
           const blockId = getCodeBlockId();
-          result += '<pre data-code-id="' + blockId + '"><button class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
+          result += '<pre data-code-id="' + blockId + '"><button type="button" class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code" aria-label="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
           codeBlockContent = [];
           inCodeBlock = false;
         } else {
@@ -6935,7 +7299,7 @@
       if (headerMatch) {
         flushList();
         const level = headerMatch[1].length;
-        result += '<h' + level + '>' + renderInlineMarkdown(headerMatch[2], citationsByMarker) + '</h' + level + '>';
+        result += '<h' + level + '>' + renderInlineMarkdown(headerMatch[2], citationsByMarker, options) + '</h' + level + '>';
         continue;
       }
 
@@ -6946,7 +7310,7 @@
       if (bulletMatch) {
         if (currentListType !== 'ul') flushList();
         currentListType = 'ul';
-        currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1], citationsByMarker) + '</li>');
+        currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1], citationsByMarker, options) + '</li>');
         continue;
       }
 
@@ -6955,14 +7319,14 @@
       if (numberedMatch) {
         if (currentListType !== 'ol') flushList();
         currentListType = 'ol';
-        currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1], citationsByMarker) + '</li>');
+        currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1], citationsByMarker, options) + '</li>');
         continue;
       }
 
       flushList();
 
       if (line.trim()) {
-        result += '<p>' + renderInlineMarkdown(line, citationsByMarker) + '</p>';
+        result += '<p>' + renderInlineMarkdown(line, citationsByMarker, options) + '</p>';
       }
     }
 
@@ -6972,7 +7336,7 @@
     if (inCodeBlock && codeBlockContent.length > 0) {
       const codeContent = codeBlockContent.join('\n');
       const blockId = getCodeBlockId();
-      result += '<pre data-code-id="' + blockId + '"><button class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
+      result += '<pre data-code-id="' + blockId + '"><button type="button" class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code" aria-label="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
     }
 
     // Nothing rendered (a reply that is only an opening fence): the text still goes into
@@ -7038,6 +7402,7 @@
       .slice(0, MAX_BROWSER_RUNS_PER_REPLY)
       .map((run) => {
         const figureCount = normalizeFigureCount(run.figureCount);
+        const heapMb = normalizeHeapMb(run.heapMb);
         return {
           callId: clipField(run.callId, 'callId'),
           tool: clipField(run.tool, 'tool'),
@@ -7054,6 +7419,8 @@
           // read back from storage renders identically to one just produced.
           local: run.local === true,
           workspaceNote: clipField(run.workspaceNote, 'workspaceNote'),
+          ...(heapMb ? { heapMb, budgetMb: normalizeMemoryBudget(run.budgetMb) } : {}),
+          ...(heapMb && normalizeHeapMb(run.heapBeforeMb) ? { heapBeforeMb: normalizeHeapMb(run.heapBeforeMb) } : {}),
           ...normalizePlanRunFields(run),
         };
       });
@@ -7062,6 +7429,14 @@
   // The most figures a run keeps: the server's own cap on a result's images
   // (MAX_IMAGES in osa-output.js, which the widget cannot import).
   const MAX_FIGURES_PER_RUN = 3;
+
+  // A stored heap size in MB (E5.1): a whole number from 1 to MAX_HEAP_MB, else null. The
+  // limit is osa-memory.js's MAX_HEAP_MB, which a restored chat needs before the bundle
+  // has loaded; test-widget-memory-budget.js holds the two to each other.
+  const MAX_HEAP_MB = 4096;
+  function normalizeHeapMb(value) {
+    return Number.isInteger(value) && value >= 1 ? Math.min(value, MAX_HEAP_MB) : null;
+  }
 
   // A stored figure count: a whole number from 0 to MAX_FIGURES_PER_RUN, else 0.
   function normalizeFigureCount(value) {
@@ -9201,8 +9576,10 @@
     if (move) move.told = true;
   }
 
-  // Get page context (URL, title, widget instructions, the dataset and a move) for contextual answers
-  function getPageContext() {
+  // Get page context (URL, title, widget instructions, the dataset and a move) for contextual
+  // answers. `withBudget` adds the reader's memory budget, for a request that declares the
+  // client tools (see withMemoryBudget for the one that is sent before they are known).
+  function getPageContext(withBudget = false) {
     // Widget instructions are always sent if configured, even if page context is off
     const hasWidgetInstructions = typeof CONFIG.widgetInstructions === 'string'
       && CONFIG.widgetInstructions.trim() !== '';
@@ -9212,8 +9589,14 @@
     // page's URL.
     const datasetId = currentDataset ? currentDataset.id : null;
     const movedFrom = pendingMovedFrom();
+    // The reader's memory budget goes with a request that declares the client tools
+    // (`withBudget`) on a page that can run code in the browser (the controller exists),
+    // and with none of a page that cannot: there is nothing to size there. Like the
+    // dataset, it is about the chat, so it is sent whether or not the reader shares the
+    // page's URL.
+    const memoryBudget = withBudget && browserTools ? normalizeMemoryBudget(userSettings.memoryBudgetMb) : null;
 
-    if (!hasPageContext && !hasWidgetInstructions && !datasetId && !movedFrom) {
+    if (!hasPageContext && !hasWidgetInstructions && !datasetId && !movedFrom && !memoryBudget) {
       return null;
     }
 
@@ -9227,7 +9610,16 @@
     }
     if (datasetId) context.dataset_id = datasetId;
     if (movedFrom) context.moved_from = movedFrom;
+    if (memoryBudget) context.memory_budget_mb = memoryBudget;
     return context;
+  }
+
+  // `context` (getPageContext's, or null) with the reader's memory budget added. For the
+  // first request, whose page context is captured when the question is sent, before the
+  // wait for the runtime: only the budget is decided after it, and only for a request that
+  // declares tools to run code with (one sent with streaming off declares none).
+  function withMemoryBudget(context) {
+    return { ...(context || {}), memory_budget_mb: normalizeMemoryBudget(userSettings.memoryBudgetMb) };
   }
 
   // Load page context preference from localStorage
@@ -9263,7 +9655,7 @@
     try {
       const saved = localStorage.getItem(storageKey);
       if (!saved) {
-        userSettings = { apiKey: null, model: null, keyProvider: null };
+        userSettings = defaultUserSettings();
         return;
       }
 
@@ -9273,7 +9665,7 @@
       } catch (jsonErr) {
         console.error('[OSA] Saved settings contain invalid JSON:', jsonErr.message);
         queuePendingNotice('Saved settings are corrupted. Using defaults.');
-        userSettings = { apiKey: null, model: null, keyProvider: null };
+        userSettings = defaultUserSettings();
         // Clear corrupted data
         try { localStorage.removeItem(storageKey); } catch {}
         return;
@@ -9284,7 +9676,7 @@
       if (!parsed || typeof parsed !== 'object') {
         console.error('[OSA] Saved settings are not an object, ignoring');
         queuePendingNotice('Saved settings are corrupted. Using defaults.');
-        userSettings = { apiKey: null, model: null, keyProvider: null };
+        userSettings = defaultUserSettings();
         try { localStorage.removeItem(storageKey); } catch {}
         return;
       }
@@ -9323,13 +9715,17 @@
       userSettings = {
         apiKey: parsed.apiKey || null,
         model: parsed.model || null,
-        keyProvider: inferKeyProvider(parsed.apiKey || '')
+        keyProvider: inferKeyProvider(parsed.apiKey || ''),
+        // Settings saved before the budget existed have none, which is the default and
+        // no cause for a notice. One that is there but not an offered size reads as the
+        // default too: the server refuses any other, so it must not be sent.
+        memoryBudgetMb: normalizeMemoryBudget(parsed.memoryBudgetMb)
       };
     } catch (e) {
       // localStorage access error
       console.error('[OSA] Cannot access localStorage for settings:', e.message);
       queuePendingNotice('Cannot access browser storage. Settings will not persist.');
-      userSettings = { apiKey: null, model: null, keyProvider: null };
+      userSettings = defaultUserSettings();
     }
   }
 
@@ -10277,6 +10673,29 @@
       // so a plain property read is the only way to see it; it never rode
       // along in what was sent to the server.
       workspaceNote: clipField(result && result.workspaceFailureNote, 'workspaceNote'),
+      ...heapFields(request && request.call_id),
+    };
+  }
+
+  // The heap after the run `callId` and the budget it ran under, as the run's record keeps
+  // them (E5.1); nothing when the runtime reported no heap (a run refused before it
+  // started, a timeout) or has not loaded. Read from the runtime beside the result, which
+  // does not carry it (see PyodideRuntime#heapBytes).
+  function heapFields(callId) {
+    if (!browserRuntime || typeof browserRuntime.heapBytes !== 'function'
+      || !runtimeApi || !runtimeApi.memory || typeof callId !== 'string' || !callId) return {};
+    const heapMb = runtimeApi.memory.heapMbFromBytes(browserRuntime.heapBytes(callId));
+    if (!heapMb) return {};
+    // The heap the runtime reported before this run, whichever chat that run was in, so the
+    // card can tell the run that took the heap past the budget from the ones that only report
+    // what it left (heapReport). A restarted runtime reports a smaller figure than this one,
+    // which heapReport reads as a run that grew it.
+    const heapBeforeMb = lastReportedHeapMb;
+    lastReportedHeapMb = heapMb;
+    return {
+      heapMb,
+      budgetMb: normalizeMemoryBudget(userSettings.memoryBudgetMb),
+      ...(heapBeforeMb ? { heapBeforeMb } : {}),
     };
   }
 
@@ -10299,6 +10718,7 @@
       // The reader's own run never reaches the server at all, so this note
       // is the ONLY place a save failure on it is ever visible to anyone.
       workspaceNote: clipField(result && result.workspaceFailureNote, 'workspaceNote'),
+      ...heapFields(result && result.call_id),
     };
   }
 
@@ -10544,7 +10964,7 @@
       client_tools: browserTools ? withPlanTool(browserTools.declared) : [],
     };
     const carried = carriedMove();
-    const pageContext = getPageContext();
+    const pageContext = getPageContext(true);
     if (pageContext) body.page_context = pageContext;
     const model = modelOverride || userSettings.model;
     if (model) body.model = model;
@@ -10957,6 +11377,13 @@
       `${error.line ? runExcerptHtml(run, error) : ''}</div>`;
   }
 
+  // Whether a reply's runs drew a figure the card shows, so a reply's image reference can
+  // point to "the figure above" (#666).
+  function messageHasFigure(msg) {
+    return Array.isArray(msg && msg.executions) && msg.executions.some((run) =>
+      run && Array.isArray(run.images) && run.images.some((image) => isShowableImage(image)));
+  }
+
   // The figures a run drew, each with its Download once the reply it belongs to is
   // known (`located`, {msgIndex, runIndex}). Numbered among the ones shown, from 1,
   // as the workspace numbers a run's figure-K.png; data-image-index is the figure's
@@ -11109,6 +11536,22 @@
     const workspaceNote = run.workspaceNote
       ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
       : '';
+    // The runtime's memory after the run against the budget it ran under (E5.1), and, when it
+    // passed, which step took it there. The runs after that one only report what it left, in
+    // the plain style: the amber box is for the run that grew the heap. Needs the runtime
+    // bundle's logic, so a restored chat gets it when the bundle has loaded (which draws the
+    // chat again).
+    const heap = runtimeApi && runtimeApi.memory ? runtimeApi.memory.heapReport(run.heapMb, run.budgetMb, run.heapBeforeMb) : null;
+    const heapLine = heap
+      ? `<div class="osa-run-card-heap${heap.grew ? ' osa-run-card-heap-over' : ''}">${escapeHtml(heap.text)}</div>`
+      : '';
+    const heapNoteText = heap && heap.exceeded
+      ? escapeHtml(runtimeApi.memory.overBudgetWarning(heap, { step: run.step, title: run.stepTitle }))
+      : '';
+    const heapWarning = !heapNoteText ? ''
+      : (heap.grew
+        ? `<div class="osa-run-card-memory-warning">${heapNoteText}</div>`
+        : `<div class="osa-run-card-note osa-run-card-heap-held">${heapNoteText}</div>`);
     const noMessage = run.status === 'error' && !error
       ? '<div class="osa-run-card-note osa-run-card-no-message">No error message was recorded.</div>'
       : '';
@@ -11133,6 +11576,8 @@
           ${localNote}
           ${error ? runErrorHtml(run, error) : noMessage}
           ${runFiguresHtml(run, located)}
+          ${heapLine}
+          ${heapWarning}
           ${workspaceNote}
           ${cutNote}
           ${retryLine}
@@ -11487,8 +11932,14 @@
     const findings = plan.findings
       ? `<div class="osa-plan-findings"><strong>What I found.</strong> ${escapeHtml(plan.findings)}</div>`
       : '';
+    // Beside it, while the reader can still act on it (edit the steps, or raise the budget),
+    // the warning that the estimate passes their memory budget.
+    const overBudget = live && plan.estPeakMb > 0 && runtimeApi && runtimeApi.memory
+      ? runtimeApi.memory.planBudgetWarning(plan.estPeakMb, userSettings.memoryBudgetMb)
+      : '';
     const peak = plan.estPeakMb > 0
       ? `<div class="osa-plan-meta">Largest step needs about ${escapeHtml(String(plan.estPeakMb))} MB</div>`
+        + (overBudget ? `<div class="osa-plan-meta osa-plan-meta-warn">${escapeHtml(overBudget)}</div>` : '')
       : '';
     const steps = plan.steps.map((_, index) => planStepHtml(plan, ui, index, id)).join('');
     let tail;
@@ -12437,6 +12888,55 @@
     }
   }
 
+  // The heap of the latest run in the chat on screen that reported one, in MB, or null.
+  function lastRunHeapMb() {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const runs = messages[i] && messages[i].executions;
+      if (!Array.isArray(runs)) continue;
+      for (let j = runs.length - 1; j >= 0; j -= 1) {
+        if (Number.isInteger(runs[j].heapMb) && runs[j].heapMb > 0) return runs[j].heapMb;
+      }
+    }
+    return null;
+  }
+
+  // The memory budget chosen in the dialog, as an offered size, else the saved one.
+  function memoryChoiceIn(container) {
+    const checked = container.querySelector('.osa-memory-radio:checked');
+    return checked ? normalizeMemoryBudget(Number(checked.value)) : normalizeMemoryBudget(userSettings.memoryBudgetMb);
+  }
+
+  // The Browser memory field: shown only on a page that can run code in the browser, with
+  // the saved budget chosen when the dialog opens (`reset`), the chosen choice marked, and
+  // how much the last step used against it. The choice is the dialog's until Save, like the
+  // model's; Cancel leaves what was saved.
+  function syncMemoryField(container, { reset = false } = {}) {
+    const field = container.querySelector('.osa-memory-field');
+    if (!field) return;
+    field.style.display = browserTools ? '' : 'none';
+    if (reset) {
+      const saved = normalizeMemoryBudget(userSettings.memoryBudgetMb);
+      field.querySelectorAll('.osa-memory-radio').forEach((radio) => { radio.checked = Number(radio.value) === saved; });
+    }
+    const chosen = memoryChoiceIn(container);
+    field.querySelectorAll('.osa-memory-choice').forEach((label) => {
+      const radio = label.querySelector('.osa-memory-radio');
+      label.classList.toggle('osa-memory-choice-on', !!radio && radio.checked);
+    });
+    const last = field.querySelector('.osa-memory-last');
+    if (!last) return;
+    const heapMb = lastRunHeapMb();
+    if (heapMb === null) {
+      last.hidden = true;
+      last.textContent = '';
+      return;
+    }
+    const percent = Math.max(0, Math.min(100, Math.round((heapMb / chosen) * 100)));
+    last.hidden = false;
+    last.innerHTML = `<div class="osa-memory-last-row"><span>Runtime memory after the last step</span><span>${escapeHtml(String(heapMb))} MB of ${escapeHtml(String(chosen))} MB${heapMb > chosen ? '<span class="osa-sr-only"> (over budget)</span>' : ''}</span></div>`
+      + `<div class="osa-memory-bar${heapMb > chosen ? ' osa-memory-bar-over' : ''}" aria-hidden="true"><div class="osa-memory-bar-fill" style="width: ${percent}%"></div></div>`;
+  }
+
   function openSettings(container) {
     // Don't open settings if chat window is closed
     if (!isOpen) return;
@@ -12497,6 +12997,7 @@
       }
     }
     syncCustomFields(container);
+    syncMemoryField(container, { reset: true });
 
     // Update hint with current default model
     if (modelHint) {
@@ -12580,6 +13081,8 @@
     userSettings.apiKey = apiKey || null;
     userSettings.model = model;
     userSettings.keyProvider = inferKeyProvider(apiKey);
+    // The budget is the saved one when the field is not showing (a page with no runtime).
+    userSettings.memoryBudgetMb = memoryChoiceIn(container);
 
     // Save to localStorage
     try {
@@ -13058,6 +13561,21 @@
                 An Anthropic or OpenRouter key. Required for a custom model. Stored in this browser and sent with your requests.
               </span>
             </div>
+            <div class="osa-settings-field osa-memory-field" style="display: none;">
+              <fieldset class="osa-memory-fieldset">
+                <legend class="osa-settings-label">Browser memory</legend>
+                <div class="osa-memory-choices">
+                  ${MEMORY_BUDGETS_MB.map((mb) => `<label class="osa-memory-choice">
+                    <input type="radio" name="osa-settings-memory" class="osa-memory-radio" value="${escapeHtml(String(mb))}">
+                    <span>${escapeHtml(memorySizeLabel(mb))}</span>
+                  </label>`).join('')}
+                </div>
+              </fieldset>
+              <div class="osa-memory-last" hidden></div>
+              <span class="osa-settings-hint">
+                The assistant sizes each step to fit this budget, reading long recordings in pieces. A larger budget reads more at once but can slow or crash the tab on a laptop with little memory. One array cannot exceed 2 GB in the browser.
+              </span>
+            </div>
             <div class="osa-settings-field osa-workspace-field" style="display: none;">
               <label class="osa-settings-label">Workspace</label>
               <span class="osa-settings-hint osa-workspace-usage">Checking workspace size...</span>
@@ -13171,6 +13689,7 @@
     validate: ['work', 'Validating'],
     check: ['work', 'Checking'],
     suggest: ['work', 'Suggesting'],
+    propose: ['work', 'Proposing'],
     render: ['render', 'Rendering'],
     // Running something is running code only if the name says it is code:
     // nemar_run_query and execute_sql run a query, and read "Working...".
@@ -13462,7 +13981,7 @@
       });
 
       const content = msg.role === 'assistant'
-        ? markdownToHtml(replyMarkdown(msg, msgIndex), citationsByMarker)
+        ? markdownToHtml(replyMarkdown(msg, msgIndex), citationsByMarker, { figureAbove: messageHasFigure(msg) })
         : escapeHtml(msg.content);
 
       // Compact numbered source list under the answer, when anything was cited. While
@@ -13492,7 +14011,7 @@
 
       // Add copy button for assistant messages
       const copyBtn = msg.role === 'assistant'
-        ? `<button class="osa-message-copy-btn" data-msg-index="${msgIndex}" title="Copy as markdown">${ICONS.copy}</button>`
+        ? `<button type="button" class="osa-message-copy-btn" data-msg-index="${msgIndex}" title="Copy as markdown" aria-label="Copy this reply as markdown">${ICONS.copy}</button>`
         : '';
 
       // Per-response feedback (thumbs up/down) for assistant replies, but not
@@ -13554,7 +14073,7 @@
         if (pre) {
           const code = pre.querySelector('code');
           if (code) {
-            copyToClipboard(code.textContent, btn);
+            copyCodeFromButton(btn, code.textContent, code);
           }
         }
       });
@@ -13566,7 +14085,9 @@
         e.stopPropagation();
         const msgIndex = parseInt(btn.getAttribute('data-msg-index'), 10);
         if (messages[msgIndex] && messages[msgIndex].content) {
-          copyToClipboard(messages[msgIndex].content, btn);
+          const messageEl = btn.closest('.osa-message');
+          const source = messages[msgIndex].content;
+          copyCodeFromButton(btn, source, messageEl && (() => replyFallbackFor(messageEl, source)));
         }
       });
     });
@@ -14028,24 +14549,10 @@
       copy.title = 'Copy the reference';
       copy.setAttribute('aria-label', 'Copy the error reference');
       copy.innerHTML = ICONS.copy;
-      copy.addEventListener('click', async (event) => {
+      copy.addEventListener('click', (event) => {
         event.stopPropagation();
-        if (await writeClipboard(reference)) {
-          copy.classList.add('copied');
-          copy.innerHTML = ICONS.check;
-          setTimeout(() => {
-            copy.classList.remove('copied');
-            copy.innerHTML = ICONS.copy;
-          }, CODE_COPIED_MS);
-        } else if (typeof window.getSelection === 'function') {
-          // A page that cannot copy for the reader: the reference is selected, so the
-          // keyboard's copy does it.
-          const selection = window.getSelection();
-          const range = document.createRange();
-          range.selectNodeContents(id);
-          selection.removeAllRanges();
-          selection.addRange(range);
-        }
+        // The one copy path: a refused copy selects the reference for the keyboard's copy.
+        copyCodeFromButton(copy, reference, id);
       });
       line.appendChild(copy);
       errorEl.appendChild(line);
@@ -15051,6 +15558,12 @@
     try {
       const body = { message: question.trim() };
 
+      // What the page and the reader say about themselves is captured now, as the question
+      // is sent: the wait for the runtime below can be long, and a reader who navigates
+      // during it still asked about the page they were on.
+      const carried = carriedMove();
+      const pageContext = getPageContext();
+
       // Include session ID for conversation continuity
       if (sessionId) {
         body.session_id = sessionId;
@@ -15065,13 +15578,6 @@
         now: Date.now(),
         ttlMs: SESSION_TTL_MS,
       }));
-
-      // Add page context if enabled
-      const carried = carriedMove();
-      const pageContext = getPageContext();
-      if (pageContext) {
-        body.page_context = pageContext;
-      }
 
       // Add Turnstile token if available
       if (turnstileToken) {
@@ -15100,6 +15606,14 @@
         if (declared.length > 0) {
           body.client_tools = declared;
         }
+      }
+
+      // Add page context if enabled. The reader's memory budget goes only with a request
+      // that declares tools to run code with, which is known once the runtime has loaded.
+      if (body.client_tools) {
+        body.page_context = withMemoryBudget(pageContext);
+      } else if (pageContext) {
+        body.page_context = pageContext;
       }
 
       // A streamed request is bounded by its silence (60 s after the last data from the
@@ -15682,6 +16196,9 @@
     settingsCancelBtn?.addEventListener('click', () => closeSettings(container));
     settingsSaveBtn?.addEventListener('click', () => saveSettings(container));
 
+    // Browser memory (E5.1): the marked choice and the usage bar follow the radios.
+    container.querySelector('.osa-memory-field')?.addEventListener('change', () => syncMemoryField(container));
+
     // Workspace panel (#433), inside Settings.
     const workspaceDownloadBtn = container.querySelector('.osa-workspace-download-btn');
     const workspaceDeleteBtn = container.querySelector('.osa-workspace-delete-btn');
@@ -15925,6 +16442,8 @@
       declaredClientToolsWithin,
       executionRecord,
       executionsHtml,
+      fillPersistentError,
+      injectStyles,
       handleStreamingResponse,
       loadRuntimeBundle,
       normalizePersistedExecutions,

@@ -1,6 +1,7 @@
 """Tests for metrics database storage layer."""
 
 import json
+import sqlite3
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
@@ -82,6 +83,110 @@ class TestInitMetricsDb:
             assert "idx_request_log_community" in index_names
             assert "idx_request_log_timestamp" in index_names
             assert "idx_request_log_community_timestamp" in index_names
+        finally:
+            conn.close()
+
+
+_OLD_REQUEST_LOG = """
+CREATE TABLE request_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    community_id TEXT,
+    endpoint TEXT NOT NULL,
+    method TEXT NOT NULL,
+    duration_ms REAL,
+    status_code INTEGER,
+    model TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    total_tokens INTEGER,
+    estimated_cost REAL,
+    tools_called TEXT,
+    key_source TEXT,
+    stream INTEGER DEFAULT 0,
+    tool_call_count INTEGER DEFAULT 0,
+    error_message TEXT,
+    langfuse_trace_id TEXT
+)
+"""
+
+
+class TestTierAndConversationMigration:
+    """A database written before `tier` and `conversation_id` existed keeps its rows."""
+
+    def _old_database(self, tmp_path):
+        db_path = tmp_path / "old.db"
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute(_OLD_REQUEST_LOG)
+            conn.execute(
+                "INSERT INTO request_log (request_id, timestamp, community_id, endpoint, method,"
+                " model, input_tokens, output_tokens, total_tokens, estimated_cost)"
+                " VALUES ('old-1', '2026-11-01T00:00:00+00:00', 'nemar', '/nemar/chat', 'POST',"
+                " 'claude-haiku-5-5', 10, 5, 15, 0.001)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return db_path
+
+    def test_adds_both_columns_and_keeps_old_rows(self, tmp_path):
+        db_path = self._old_database(tmp_path)
+        init_metrics_db(db_path)
+
+        conn = get_metrics_connection(db_path)
+        try:
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(request_log)")}
+            assert {"tier", "conversation_id"} <= columns
+            row = conn.execute(
+                "SELECT model, tier, conversation_id FROM request_log WHERE request_id='old-1'"
+            ).fetchone()
+            assert row["model"] == "claude-haiku-5-5"
+            assert row["tier"] is None
+            assert row["conversation_id"] is None
+        finally:
+            conn.close()
+
+    def test_index_on_conversation_id_exists_after_migration(self, tmp_path):
+        db_path = self._old_database(tmp_path)
+        init_metrics_db(db_path)
+
+        conn = get_metrics_connection(db_path)
+        try:
+            indexed = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='request_log'"
+                )
+            }
+            assert "idx_request_log_conversation" in indexed
+        finally:
+            conn.close()
+
+    def test_migration_is_idempotent_and_new_rows_carry_the_fields(self, tmp_path):
+        db_path = self._old_database(tmp_path)
+        init_metrics_db(db_path)
+        init_metrics_db(db_path)
+        log_request(
+            RequestLogEntry(
+                request_id="new-1",
+                timestamp=now_iso(),
+                endpoint="/nemar/chat",
+                method="POST",
+                model="claude-sonnet-5-5",
+                tier="analysis",
+                conversation_id="conv-1",
+            ),
+            db_path,
+        )
+
+        conn = get_metrics_connection(db_path)
+        try:
+            row = conn.execute(
+                "SELECT tier, conversation_id FROM request_log WHERE request_id='new-1'"
+            ).fetchone()
+            assert (row["tier"], row["conversation_id"]) == ("analysis", "conv-1")
         finally:
             conn.close()
 

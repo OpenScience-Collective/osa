@@ -14,6 +14,7 @@ which runs the same turns against the real models.
 """
 
 import asyncio
+import gc
 import json
 from dataclasses import dataclass, field
 
@@ -23,6 +24,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from starlette.requests import Request
 
 import src.agents.model_routing as model_routing
 import src.api.routers.community as community_module
@@ -435,13 +437,7 @@ def _request_rows() -> list[dict]:
         conn.row_factory = lambda cursor, row: dict(
             zip([c[0] for c in cursor.description], row, strict=True)
         )
-        # The metrics middleware writes a stub row (no model, no tokens) under the same
-        # request id when a streamed response starts, before the handler's own row (a
-        # pre-existing behavior of every streamed request, tracked in its own issue). Only
-        # the rows the chat path writes are counted here.
-        return conn.execute(
-            "SELECT * FROM request_log WHERE model IS NOT NULL ORDER BY id"
-        ).fetchall()
+        return conn.execute("SELECT * FROM request_log ORDER BY id").fetchall()
 
 
 @pytest.fixture
@@ -453,6 +449,213 @@ def metered_client(tmp_path, monkeypatch) -> TestClient:
     app.add_middleware(MetricsMiddleware)
     app.include_router(create_community_router(COMMUNITY))
     return TestClient(app)
+
+
+def _post_and_disconnect(app, path: str, payload: dict, *, stop_after: str) -> list[str]:
+    """POST through the real ASGI app; the reader goes away once a chunk has `stop_after`.
+
+    A raw ASGI call, because the test client always reads a stream to its end. The `receive`
+    answers the request body, then reports `http.disconnect` after the first chunk that
+    holds `stop_after`; `send` yields to the loop, as a real server's write to a socket
+    does, so the disconnect can interrupt the response. Returns the body chunks sent.
+    """
+    chunks: list[str] = []
+
+    async def run() -> None:
+        disconnected = asyncio.Event()
+        request_sent = False
+
+        async def receive() -> dict:
+            nonlocal request_sent
+            if not request_sent:
+                request_sent = True
+                return {
+                    "type": "http.request",
+                    "body": json.dumps(payload).encode(),
+                    "more_body": False,
+                }
+            await disconnected.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict) -> None:
+            if message["type"] == "http.response.body":
+                text = message.get("body", b"").decode()
+                chunks.append(text)
+                if stop_after in text:
+                    disconnected.set()
+                    # The server is still writing this chunk when the reader's
+                    # disconnect is noticed, so it cancels the response here.
+                    await asyncio.sleep(0.05)
+            await asyncio.sleep(0)
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"origin", ORIGIN.encode()),
+                (b"x-anthropic-api-key", BYOK["X-Anthropic-API-Key"].encode()),
+            ],
+            "server": ("testserver", 80),
+            "client": ("127.0.0.1", 1234),
+        }
+        await app(scope, receive, send)
+        # The abandoned generator is closed by the loop's async-generator finalizer.
+        gc.collect()
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    asyncio.run(run())
+    return chunks
+
+
+class TestAStreamTheReaderLeaves:
+    """Exactly one row per request id, whenever the stream ends (issue #687)."""
+
+    PAYLOAD = {"message": "find datasets with face stimuli", "client_tools": [EXECUTE_CODE]}
+
+    def test_a_full_stream_is_the_baseline_one_row(self, metered_client, monkeypatch) -> None:
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        chunks = _post_and_disconnect(
+            metered_client.app, f"/{COMMUNITY}/chat", self.PAYLOAD, stop_after="never appears"
+        )
+
+        assert any('"event": "done"' in c for c in chunks)
+        (row,) = _request_rows()
+        assert row["status_code"] == 200
+        assert row["error_message"] is None
+
+    def test_a_reader_who_leaves_after_the_session_event_leaves_a_499_row(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        chunks = _post_and_disconnect(
+            metered_client.app, f"/{COMMUNITY}/chat", self.PAYLOAD, stop_after='"event": "session"'
+        )
+
+        assert not any('"event": "done"' in c for c in chunks)
+        (row,) = _request_rows()
+        assert row["status_code"] == 499
+        assert row["error_message"] == "client disconnected"
+        assert row["endpoint"] == f"/{COMMUNITY}/chat"
+        assert row["tier"] == "quick"
+        assert row["conversation_id"]
+
+    def test_a_reader_who_leaves_during_a_handover_summary_leaves_one_row_each(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+
+        _post_and_disconnect(
+            metered_client.app,
+            f"/{COMMUNITY}/chat",
+            {**self.PAYLOAD, "message": "plot the ERP", "session_id": "sess-quick"},
+            stop_after='"stage": "summarizing"',
+        )
+
+        rows = {r["request_id"]: r for r in _request_rows()}
+        main = next(r for r in rows.values() if not r["request_id"].endswith(":quick"))
+        assert len([r for r in rows.values() if not r["request_id"].endswith(":quick")]) == 1
+        assert main["status_code"] == 499
+        assert main["conversation_id"] == "sess-quick"
+        # Whatever the quick model spent is on the quick row alone, never counted twice.
+        assert not main["total_tokens"]
+
+    def test_a_streamed_ask_that_is_cut_off_leaves_a_499_row(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        _post_and_disconnect(
+            metered_client.app,
+            f"/{COMMUNITY}/ask",
+            {"question": "what is HED?", "stream": True},
+            stop_after='"event": "content"',
+        )
+
+        (row,) = _request_rows()
+        assert row["endpoint"] == f"/{COMMUNITY}/ask"
+        assert row["status_code"] == 499
+        assert row["error_message"] == "client disconnected"
+
+    def test_a_second_message_while_a_reply_is_running_is_logged_as_refused(
+        self, metered_client, monkeypatch
+    ) -> None:
+        session = _earlier_conversation()
+        assert session.begin_turn()
+        _rig(monkeypatch, quick=[say("unused")])
+
+        events = _chat(metered_client, "and another thing", session_id="sess-quick")
+
+        assert events[-1]["event"] == "error"
+        (row,) = _request_rows()
+        assert row["status_code"] == 409
+        assert row["error_message"]
+        assert row["conversation_id"] == "sess-quick"
+
+    @pytest.mark.usefixtures("metered_client")
+    def test_an_exception_that_escapes_is_recorded_with_its_type(self) -> None:
+        """What a stream that raised past its own handlers leaves, on the real database."""
+        request = Request({"type": "http", "headers": [], "state": {}})
+        request.state.metrics_logged = True
+        started = community_module.time.monotonic()
+
+        with pytest.raises(RuntimeError):
+            try:
+                raise RuntimeError("past every handler")
+            finally:
+                community_module._log_unfinished_stream(
+                    request,
+                    COMMUNITY,
+                    f"/{COMMUNITY}/chat",
+                    None,
+                    [],
+                    started,
+                    input_tokens=50,
+                    output_tokens=5,
+                    tier="quick",
+                )
+        # A second call is a no-op: the row exists.
+        community_module._log_unfinished_stream(
+            request, COMMUNITY, f"/{COMMUNITY}/chat", None, [], started
+        )
+
+        (row,) = _request_rows()
+        assert (row["status_code"], row["error_message"]) == (500, "RuntimeError")
+        assert row["tier"] == "quick"
+        # The tokens counted so far are kept, so what was spent is still priced.
+        assert (row["input_tokens"], row["output_tokens"]) == (50, 5)
+
+    @pytest.mark.usefixtures("metered_client")
+    def test_a_generator_that_returned_without_a_row_is_recorded_as_an_error(self) -> None:
+        request = Request({"type": "http", "headers": [], "state": {}})
+
+        community_module._log_unfinished_stream(
+            request,
+            COMMUNITY,
+            f"/{COMMUNITY}/chat",
+            None,
+            [],
+            community_module.time.monotonic(),
+        )
+
+        (row,) = _request_rows()
+        assert row["status_code"] == 500
+        assert "without logging" in row["error_message"]
 
 
 class TestHandoverMetrics:
@@ -520,6 +723,56 @@ class TestHandoverMetrics:
         assert by_id[f"{done['request_id']}:quick"]["model"] == HAIKU
         assert by_id[done["request_id"]]["model"] == SONNET
 
+    def test_a_streamed_chat_leaves_one_row_per_request_id(
+        self, metered_client, monkeypatch
+    ) -> None:
+        """The middleware's stub row (no model, no tokens) is not written for a stream (#687)."""
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        _done(_chat(metered_client, "find datasets with face stimuli"))
+        _done(_chat(metered_client, "and with house stimuli", session_id="s-second"))
+
+        rows = _request_rows()
+        assert len(rows) == 2
+        assert len({r["request_id"] for r in rows}) == 2
+        assert all(r["model"] == HAIKU and r["total_tokens"] for r in rows)
+
+    def test_a_streamed_resume_leaves_one_row(self, metered_client, monkeypatch) -> None:
+        _parked_analysis_session("analysis")
+        _rig(monkeypatch, quick=[say("unused")], analysis=[say_with_usage("Peak at 10 Hz.", 80, 8)])
+        response = metered_client.post(
+            f"/{COMMUNITY}/chat/resume",
+            json={
+                "session_id": "sess-parked",
+                "result": {"call_id": EXECUTE_CALL_ID, "status": "ok", "summary": "peak 10 Hz"},
+                "client_tools": [EXECUTE_CODE],
+            },
+            headers={"Origin": ORIGIN, **BYOK},
+        )
+        assert response.status_code == 200, response.text
+
+        (row,) = _request_rows()
+        assert row["model"] == SONNET
+
+    def test_a_chat_that_is_not_streamed_carries_its_conversation_id(
+        self, metered_client, monkeypatch
+    ) -> None:
+        """The middleware writes this row; it gets the conversation, and no tier (not routed)."""
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+        response = metered_client.post(
+            f"/{COMMUNITY}/chat",
+            json={"message": "find datasets with face stimuli", "stream": False},
+            headers={"Origin": ORIGIN, **BYOK},
+        )
+        assert response.status_code == 200, response.text
+
+        (row,) = _request_rows()
+        assert row["request_id"] == response.json()["request_id"]
+        assert row["conversation_id"] == response.json()["session_id"]
+        assert row["tier"] is None
+        assert row["model"] == HAIKU
+        assert (row["input_tokens"], row["output_tokens"]) == (50, 5)
+
     def test_a_plain_quick_turn_logs_one_row(self, metered_client, monkeypatch) -> None:
         _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
 
@@ -552,6 +805,139 @@ class TestHandoverMetrics:
         by_id = {r["request_id"]: r for r in _request_rows()}
         assert by_id[done["request_id"]]["input_tokens"] == 1000
         assert f"{done['request_id']}:quick" not in by_id
+
+
+class TestConversationAndTierColumns:
+    """Every row says which tier ran it and which conversation it belongs to."""
+
+    def test_a_handover_writes_a_quick_row_and_an_analysis_row_in_one_conversation(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+
+        done = _done(_chat(metered_client, "plot the ERP", session_id="sess-quick"))
+
+        by_id = {r["request_id"]: r for r in _request_rows()}
+        analysis = by_id[done["request_id"]]
+        quick = by_id[f"{done['request_id']}:quick"]
+        assert (quick["tier"], quick["model"]) == ("quick", HAIKU)
+        assert (analysis["tier"], analysis["model"]) == ("analysis", SONNET)
+        assert quick["conversation_id"] == analysis["conversation_id"] == "sess-quick"
+        # The analysis ran on a new session, so the shared id is the old session's, not it.
+        assert done["session_id"] != "sess-quick"
+
+    def test_a_follow_up_on_the_new_session_stays_in_the_conversation(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200), say_with_usage("More.", 50, 5)],
+        )
+        first = _done(_chat(metered_client, "plot the ERP", session_id="sess-quick"))
+
+        second = _done(_chat(metered_client, "and the spectrum?", session_id=first["session_id"]))
+
+        by_id = {r["request_id"]: r for r in _request_rows()}
+        assert by_id[second["request_id"]]["tier"] == "analysis"
+        assert by_id[second["request_id"]]["conversation_id"] == "sess-quick"
+
+    def test_a_start_analysis_handover_shares_the_conversation_too(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[call_start_analysis_with_usage(100, 10), say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+
+        done = _done(
+            _chat(metered_client, "could you look at the alpha band?", session_id="sess-quick")
+        )
+
+        by_id = {r["request_id"]: r for r in _request_rows()}
+        assert by_id[f"{done['request_id']}:quick"]["tier"] == "quick"
+        assert by_id[done["request_id"]]["tier"] == "analysis"
+        assert {r["conversation_id"] for r in by_id.values()} == {"sess-quick"}
+
+    def test_a_plain_quick_turn_writes_one_quick_row(self, metered_client, monkeypatch) -> None:
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        done = _done(_chat(metered_client, "find datasets with face stimuli"))
+
+        (row,) = _request_rows()
+        assert (row["tier"], row["model"]) == ("quick", HAIKU)
+        assert row["conversation_id"] == done["session_id"]
+
+    def test_a_first_message_flip_is_an_analysis_row(self, metered_client, monkeypatch) -> None:
+        _rig(monkeypatch, quick=[say("unused")], analysis=[say_with_usage("Plotting.", 90, 9)])
+
+        done = _done(_chat(metered_client, "plot the ERP", session_id="s-flip"))
+
+        (row,) = _request_rows()
+        assert (row["tier"], row["conversation_id"]) == ("analysis", "s-flip")
+        assert done["session_id"] == "s-flip"
+
+    def test_a_resume_keeps_the_analysis_sessions_conversation_and_tier(
+        self, metered_client, monkeypatch
+    ) -> None:
+        session = _parked_analysis_session("analysis")
+        session.conversation_id = "conv-from-quick"
+        _rig(monkeypatch, quick=[say("unused")], analysis=[say_with_usage("Peak at 10 Hz.", 80, 8)])
+        response = metered_client.post(
+            f"/{COMMUNITY}/chat/resume",
+            json={
+                "session_id": "sess-parked",
+                "result": {"call_id": EXECUTE_CALL_ID, "status": "ok", "summary": "peak 10 Hz"},
+                "client_tools": [EXECUTE_CODE],
+            },
+            headers={"Origin": ORIGIN, **BYOK},
+        )
+        assert response.status_code == 200, response.text
+
+        (row,) = _request_rows()
+        assert (row["tier"], row["model"]) == ("analysis", SONNET)
+        assert row["conversation_id"] == "conv-from-quick"
+        assert row["endpoint"].endswith("/chat/resume")
+
+    def test_a_community_that_does_not_route_has_no_tier_but_a_conversation(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        init_metrics_db()
+        app = FastAPI()
+        app.add_middleware(MetricsMiddleware)
+        app.include_router(create_community_router(PLAIN))
+        plain_client = TestClient(app)
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        done = _done(_chat(plain_client, "hello there", community=PLAIN))
+
+        (row,) = _request_rows()
+        assert row["tier"] is None
+        assert row["conversation_id"] == done["session_id"]
+
+    def test_no_row_with_tokens_lacks_a_model(self, metered_client, monkeypatch) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[call_start_analysis_with_usage(100, 10), say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+        _chat(metered_client, "could you look at the alpha band?", session_id="sess-quick")
+
+        with metrics_connection() as conn:
+            unnamed = conn.execute(
+                "SELECT COUNT(*) FROM request_log WHERE total_tokens > 0 AND model IS NULL"
+            ).fetchone()[0]
+        assert unnamed == 0
 
 
 class TestAFirstMessage:

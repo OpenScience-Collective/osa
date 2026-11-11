@@ -96,9 +96,19 @@ class TestNemarPlanFirstText:
             assert outcome in text
 
     def test_it_names_no_memory_number(self) -> None:
-        """The budget is a separate decision (E5.1); a number here would be a second one."""
+        """The reader's budget is the one figure (E5.1), stated by the request's own section."""
         text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
 
         assert text is not None
         assert "MB" not in text
         assert "GB" not in text
+
+    def test_the_estimate_must_fit_the_readers_budget(self) -> None:
+        """est_peak_mb is held to the budget the prompt states, and to nothing else."""
+        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
+
+        assert text is not None
+        flat = " ".join(text.split())
+        assert "`est_peak_mb` must not exceed the reader's browser memory budget" in flat
+        # The heading it points at is the one the prompt renders for a request with a budget.
+        assert "Browser memory budget" in flat
