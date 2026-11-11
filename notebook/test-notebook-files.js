@@ -26,6 +26,7 @@ import {
   sourceSignature,
   stripAutorun,
   tabContext,
+  tabRequestId,
   TAB_REQUESTS,
   titleFromPath,
   validateImport,
@@ -354,6 +355,23 @@ console.log('\nvalidateTabMessage: not ours, or not known');
   for (const requestId of [undefined, '', 7, null, 'x'.repeat(65), 'has space', 'a/b', '../x']) {
     const checked = check({ ...message('new-notebook'), requestId });
     assert(!checked.ok && checked.ignored === true, `${JSON.stringify(requestId)} is no request id, so there is nothing to reply to`);
+    assertEqual(tabRequestId({ ...message('new-notebook'), requestId }), null, `tabRequestId gives no id for ${JSON.stringify(requestId)}`);
+  }
+}
+
+console.log('\ntabRequestId: the messages a page that cannot validate may still answer');
+{
+  for (const type of TAB_REQUESTS) assertEqual(tabRequestId(message(type)), 'req-1', `a ${type} request is answered under its id`);
+  for (const [data, what] of [
+    [null, 'null'],
+    ['osa-notebook', 'a string'],
+    [{ type: 'new-notebook', requestId: 'r' }, 'a message with no target'],
+    [{ target: 'someone-else', type: 'new-notebook', requestId: 'r' }, 'a foreign target'],
+    [message('theme'), 'a theme message'],
+    [message('delete-everything'), 'an unknown type'],
+    [message('__proto__'), 'a type named after a prototype'],
+  ]) {
+    assertEqual(tabRequestId(data), null, `${what} is not answered`);
   }
 }
 

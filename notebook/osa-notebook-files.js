@@ -323,6 +323,23 @@ export function validateImport(input, { community, datasetPattern }) {
 }
 
 /**
+ * The request id a reply to this message goes under, or null when the message
+ * is not a request this page answers: another target, a type it does not know,
+ * or no usable id. It is the check validateTabMessage starts with, for a caller
+ * that must answer without the rest of the validation (the page's tabs failed
+ * to start, or the check itself threw), and still leave unknown messages alone.
+ *
+ * @param {unknown} data The message's data.
+ * @returns {string | null}
+ */
+export function tabRequestId(data) {
+  if (!isPlainObject(data) || data.target !== 'osa-notebook') return null;
+  if (!TAB_REQUESTS.includes(data.type)) return null;
+  const requestId = data.requestId;
+  return typeof requestId === 'string' && REQUEST_ID_PATTERN.test(requestId) ? requestId : null;
+}
+
+/**
  * Whether the page acts on a message from the widget, and what it asks for.
  *
  * `ignored` marks a message that is not a request at all (another target, a
@@ -338,10 +355,8 @@ export function validateImport(input, { community, datasetPattern }) {
 export function validateTabMessage(data, { community, datasetPattern, items }) {
   if (!isPlainObject(data) || data.target !== 'osa-notebook') return { ok: false, ignored: true };
   if (!TAB_REQUESTS.includes(data.type)) return { ok: false, ignored: true, error: `unknown message type ${JSON.stringify(data.type)}` };
-  const requestId = data.requestId;
-  if (typeof requestId !== 'string' || !REQUEST_ID_PATTERN.test(requestId)) {
-    return { ok: false, ignored: true, error: 'a request needs a requestId' };
-  }
+  const requestId = tabRequestId(data);
+  if (requestId === null) return { ok: false, ignored: true, error: 'a request needs a requestId' };
   const refuse = (error) => ({ ok: false, requestId, error });
   const type = data.type;
   if (type === 'new-notebook') return { ok: true, request: { type, requestId } };

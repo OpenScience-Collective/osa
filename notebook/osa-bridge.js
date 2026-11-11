@@ -566,7 +566,17 @@
     };
 
     async function handle(data) {
-      const checked = files.validateTabMessage(data, { community, datasetPattern, items: await listNotebooks() });
+      let checked;
+      try {
+        checked = files.validateTabMessage(data, { community, datasetPattern, items: await listNotebooks() });
+      } catch (err) {
+        // The listing the check needs (the contents, or a read of a file's
+        // edits) failed: a request that is one gets an answer, not a wait.
+        warn('a request from the widget could not be checked', err);
+        const requestId = files.tabRequestId(data);
+        if (requestId !== null) post(resultMessage(requestId, { ok: false, error: err.message || String(err) }));
+        return;
+      }
       if (!checked.ok) {
         if (checked.ignored) warn('a message from the widget was ignored', checked.error || data?.type);
         else post(resultMessage(checked.requestId, checked));
@@ -611,6 +621,17 @@
     releaseTabs = resolve;
   });
 
+  // The id a reply goes under, or null for a message that gets none: the same
+  // rule as validateTabMessage (osa-notebook-files.js). If that module did not
+  // load there is no list of types to check, so any message of this target
+  // with a well-formed id is answered, so the widget does not wait on it.
+  async function answerableId(data) {
+    const files = await filesModule;
+    if (files) return files.tabRequestId(data);
+    const id = data.requestId;
+    return typeof id === 'string' && /^[A-Za-z0-9._:-]{1,64}$/.test(id) ? id : null;
+  }
+
   function queueTabRequest(data) {
     tabQueue = tabQueue.then(async () => {
       if (tabs) {
@@ -619,9 +640,10 @@
         } catch (err) {
           warn('a request from the widget failed', err);
         }
-      } else if (typeof data.requestId === 'string') {
-        post({ type: 'result', requestId: data.requestId, ok: false, error: 'the notebook tabs are not available' });
+        return;
       }
+      const requestId = await answerableId(data);
+      if (requestId !== null) post({ type: 'result', requestId, ok: false, error: 'the notebook tabs are not available' });
     });
   }
 
