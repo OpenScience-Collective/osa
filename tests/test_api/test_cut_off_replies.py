@@ -79,7 +79,7 @@ from tests.helpers.provider_replies import (
     scripted_reply,
     text_chunk,
 )
-from tests.test_api.test_tool_call_streaming import _anthropic_call
+from tests.helpers.tool_call_streaming import _anthropic_call
 
 provider_param = pytest.mark.parametrize("provider", PROVIDERS, ids=lambda p: p.name)
 

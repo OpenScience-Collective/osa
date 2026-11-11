@@ -30,7 +30,7 @@ from src.api.routers.community import AssistantWithMetrics, ChatSession, _stream
 from src.assistants.community import CommunityAssistant
 from src.core.services.anthropic_llm import create_anthropic_llm
 from src.core.services.anthropic_models import HAIKU
-from tests.test_api.test_tool_call_streaming import (
+from tests.helpers.tool_call_streaming import (
     COMMUNITY,
     SEARCH_ARGS,
     SECRET_QUERY,

@@ -26,6 +26,7 @@ from src.core.config.community import BudgetConfig
 from src.metrics.budget import check_budget
 from src.metrics.db import init_metrics_db, metrics_connection
 from src.metrics.middleware import MetricsMiddleware
+from tests.helpers import tool_call_streaming as resume_fixtures
 from tests.helpers.provider_replies import (
     ANSWER,
     COMMUNITY,
@@ -37,8 +38,7 @@ from tests.helpers.provider_replies import (
     community_config,
     scripted_reply,
 )
-from tests.test_api import test_tool_call_streaming as resume_fixtures
-from tests.test_api.test_tool_call_streaming import _anthropic_call
+from tests.helpers.tool_call_streaming import _anthropic_call
 
 PROVIDER = next(p for p in PROVIDERS if p.name == "anthropic")
 LOOKUP = _anthropic_call("lookup_scriptedreply_docs", "toolu_01optout", {"query": "tags"})

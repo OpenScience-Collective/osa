@@ -48,7 +48,7 @@ from tests.helpers.provider_replies import (
     real_request,
     scripted_reply,
 )
-from tests.test_api.test_tool_call_streaming import _anthropic_call
+from tests.helpers.tool_call_streaming import _anthropic_call
 
 provider_param = pytest.mark.parametrize("provider", PROVIDERS, ids=lambda p: p.name)
 LOOKUP = _anthropic_call("lookup_scriptedreply_docs", "toolu_01usage", {"query": "tags"})
@@ -186,8 +186,8 @@ class TestAParkedBrowserCall:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """A run that ends on a browser call returns through its own branch."""
-        from tests.test_api.test_tool_call_streaming import COMMUNITY as BROWSER_COMMUNITY
-        from tests.test_api.test_tool_call_streaming import _assistant as browser_assistant
+        from tests.helpers.tool_call_streaming import COMMUNITY as BROWSER_COMMUNITY
+        from tests.helpers.tool_call_streaming import _assistant as browser_assistant
 
         caplog.set_level(logging.WARNING)
         call = _anthropic_call("execute_code", "toolu_01park", {"code": "x", "description": "d"})

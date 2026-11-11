@@ -39,6 +39,15 @@ from tests.helpers.provider_replies import (
     real_request,
     scripted_reply,
 )
+from tests.helpers.tool_call_streaming import ALLOWED_ORIGIN as BROWSER_ORIGIN
+from tests.helpers.tool_call_streaming import (
+    CODE_CALL_ID,
+    _anthropic_call,
+    resume_client,  # noqa: F401
+)
+from tests.helpers.tool_call_streaming import COMMUNITY as BROWSER_COMMUNITY
+from tests.helpers.tool_call_streaming import _answer as browser_answer
+from tests.helpers.tool_call_streaming import _assistant as browser_assistant
 from tests.test_api.test_missing_usage import (  # noqa: F401
     _ask,
     _chat,
@@ -46,15 +55,6 @@ from tests.test_api.test_missing_usage import (  # noqa: F401
     client,
     metrics_db,
 )
-from tests.test_api.test_tool_call_streaming import ALLOWED_ORIGIN as BROWSER_ORIGIN
-from tests.test_api.test_tool_call_streaming import (
-    CODE_CALL_ID,
-    _anthropic_call,
-    resume_client,  # noqa: F401
-)
-from tests.test_api.test_tool_call_streaming import COMMUNITY as BROWSER_COMMUNITY
-from tests.test_api.test_tool_call_streaming import _answer as browser_answer
-from tests.test_api.test_tool_call_streaming import _assistant as browser_assistant
 
 OFFERED = [p for p in PROVIDERS if p.name != "openrouter"]
 OPENROUTER = next(p for p in PROVIDERS if p.name == "openrouter")
