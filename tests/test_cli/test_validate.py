@@ -53,6 +53,36 @@ class TestValidateCommand:
         assert "✓ Valid" in result.stdout
         assert "Validation passed" in result.stdout
 
+    def test_missing_procedure_document_fails(self, tmp_path: Path) -> None:
+        """A procedure whose file is absent passes the schema but fails at server start."""
+        config = {
+            "id": "test-community",
+            "name": "Test Community",
+            "description": "A test community for validation",
+            "procedures": [
+                {
+                    "id": "do-the-thing",
+                    "title": "Do the thing",
+                    "when": "A request to do the thing, in one line",
+                    "file": "procedures/do-the-thing.md",
+                }
+            ],
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(config), encoding="utf-8")
+
+        result = runner.invoke(cli, ["validate", str(config_path)])
+
+        assert result.exit_code == 1
+        assert "do-the-thing" in result.stdout
+        assert "does not exist" in result.stdout
+
+        (tmp_path / "procedures").mkdir()
+        (tmp_path / "procedures" / "do-the-thing.md").write_text("# Plan\n\n1. Step.\n")
+        result = runner.invoke(cli, ["validate", str(config_path)])
+        assert result.exit_code == 0
+        assert "Procedure Documents" in result.stdout
+
     def test_invalid_yaml_syntax_fails(self, tmp_path: Path) -> None:
         """Invalid YAML syntax should fail with line number."""
         config_path = tmp_path / "config.yaml"

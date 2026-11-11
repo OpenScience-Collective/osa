@@ -657,25 +657,30 @@ window = await read_window(index, index.stores[0], start_sample=0, n_samples=2)
     }
   }
 
-  // The prompt's own blocks, run as the prompt writes them: a model copies them, so a
-  // filter that stops filtering or a spectrum call this runtime refuses would reach
-  // every figure it draws.
-  const promptBlock = (bulletHeading) => {
-    const at = NEMAR.system_prompt.indexOf(bulletHeading);
-    const fence = at === -1 ? null : NEMAR.system_prompt.slice(at).match(/```python\n([\s\S]*?)\n\s*```/);
-    if (!fence) return { fence: null, code: '' };
+  // The procedure documents' own blocks (#719), run as the documents write them: a model
+  // fetches a document with get_procedure and copies its blocks, so a filter that stops
+  // filtering or a spectrum call this runtime refuses would reach every figure it draws.
+  // The first python fence of the document the community declares under `id`; `before` is
+  // the text ahead of it, which names what the block is for.
+  const procedureBlock = async (id) => {
+    const entry = (NEMAR.procedures || []).find((p) => p.id === id);
+    if (!entry) return { fence: null, code: '', before: '' };
+    const document = await Bun.file(new URL(entry.file, COMMUNITY_DIR)).text();
+    const fence = document.match(/```python\n([\s\S]*?)\n\s*```/);
+    if (!fence) return { fence: null, code: '', before: '' };
     const lines = fence[1].split('\n');
     const indent = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
-    return { fence, code: lines.map((l) => l.slice(indent)).join('\n') };
+    return { fence, code: lines.map((l) => l.slice(indent)).join('\n'), before: document.slice(0, fence.index) };
   };
   const indented = (code) => code.split('\n').map((l) => `    ${l}`).join('\n');
 
-  console.log('\nthe prompt\'s ERP low-pass keeps 5 Hz and removes the high tone, at 60 to 5000 Hz');
+  console.log('\nthe ERP procedure\'s low-pass keeps 5 Hz and removes the high tone, at 60 to 5000 Hz');
   {
-    const { fence, code } = promptBlock('**Epochs and ERP images.**');
-    assert(fence !== null, 'the ERP section carries a python block');
+    const { fence, code, before } = await procedureBlock('erp-by-condition');
+    assert(fence !== null, 'the ERP procedure carries a python block');
     // The block belongs to the sentence that introduces it, not to a later section.
-    assert(fence !== null && fence.index < 400, `it follows the bullet's opening lines (at ${fence && fence.index})`);
+    assert(before.trimEnd().endsWith('the whole channels-by-samples array:'), 'it follows the sentence that introduces the filter');
+    assert(before.includes('low-pass at 30 Hz'), 'and that sentence is the 30 Hz low-pass');
     if (fence) {
       // Defined as a function so each rate runs the block exactly as written, with
       // only `rate` and `x` bound, the two names the prompt says it takes.
@@ -721,12 +726,12 @@ print(json.dumps(out))
     }
   }
 
-  console.log('\nthe prompt\'s spectrum reads the recording in pieces, one channel at a time, and averages them over the whole recording');
+  console.log('\nthe spectrum procedure reads the recording in pieces, one channel at a time, and averages them over the whole recording');
   {
-    const { fence, code } = promptBlock('**Power spectrum.**');
-    assert(fence !== null, 'the spectrum bullet carries a python block');
+    const { fence, code } = await procedureBlock('power-spectrum');
+    assert(fence !== null, 'the spectrum procedure carries a python block');
     // The recipe takes its piece from the reader's budget as well as from this runtime's
-    // limit, and the prompt has the model write that budget in. The block runs as written,
+    // limit, and the document has the model write that budget in. The block runs as written,
     // and again with another budget on that line; a swap that found nothing to replace
     // would run the same code twice, so the line is checked.
     // The recipe prints a line of its own (how many segments and seconds it covered), so what a
@@ -970,6 +975,90 @@ print(json.dumps(out))
         assertEqual(r.pieces['1000:256'], r.limits['1000'], 'at 1000 Hz the runtime\'s limit sets it, for every budget');
         assert(r.many['256'] < r.many['2048'] && r.many['256'] < r.many_limit,
           `at 250 Hz with 33 channels the budget binds: 256 MB gives ${r.many['256']} samples, 2 GB ${r.many['2048']}, the limit ${r.many_limit}`);
+      }
+    }
+  }
+
+  console.log('\nthe band-power procedure integrates the whole-recording spectrum over each band');
+  {
+    // Both python fences of the document, as written: the Welch recipe, then the integration
+    // the document says to run directly after it, in the same run.
+    const entry = (NEMAR.procedures || []).find((p) => p.id === 'band-power');
+    const document = entry ? await Bun.file(new URL(entry.file, COMMUNITY_DIR)).text() : '';
+    const fences = [...document.matchAll(/```python\n([\s\S]*?)\n\s*```/g)].map((m) => m[1]);
+    assertEqual(fences.length, 2, 'the band-power procedure carries the Welch block and the integration block');
+    const SETUP = 'import eegprep_lean\nindex = await eegprep_lean.read_index("DATASET_ID")\nstore = index.store("RECORDING_PATH")';
+    assert(fences[0]?.includes(SETUP), 'the band-power Welch block opens its own index and store, so it stands alone');
+    assert(fences[0]?.includes('budget_mb = 512'), 'the band-power Welch block names the reader\'s budget on one line ("budget_mb = 512")');
+    if (fences.length === 2 && fences[0].includes(SETUP) && fences[0].includes('budget_mb = 512')) {
+      // A 1 MB budget cuts the read into several pieces, so the carried sums are exercised.
+      const welch = fences[0].replace(SETUP, 'pass  # the runtime opens the index and the store').replace('budget_mb = 512', 'budget_mb = 1');
+      const result = await run(`import json
+import numpy as np
+from scipy import signal
+
+WELCH = ${JSON.stringify(welch)}
+INTEGRATION = ${JSON.stringify(fences[1])}
+
+class Window:
+    def __init__(self, data, labels):
+        self.data, self.labels = data, labels
+
+class Group:
+    def __init__(self, rate, n_samples, n_channels):
+        self.rate, self.n_samples, self.n_channels = rate, n_samples, n_channels
+
+class Store:
+    def __init__(self, group):
+        self._group = group
+    def group(self, name):
+        return self._group
+
+class Lib:
+    def __init__(self, eeg, labels):
+        self.eeg, self.labels, self.reads = eeg, labels, 0
+    async def read_window(self, index, store, group, start_sample, n_samples):
+        self.reads += 1
+        return Window(self.eeg[:, start_sample:start_sample + n_samples], self.labels)
+
+async def band_power_run(eegprep_lean, index, store):
+    # Both blocks in one function body, so they share names as two blocks of one run do.
+    text = WELCH + "\\n" + INTEGRATION
+    body = "\\n".join("    " + line for line in text.split("\\n"))
+    scope = {}
+    exec("async def run_blocks(eegprep_lean, index, store):\\n" + body
+         + "\\n    return dict(bands=bands, band_power=band_power, keep=keep)", {"np": np, "signal": signal}, scope)
+    return await scope["run_blocks"](eegprep_lean, index, store)
+
+rate = 250.0
+t = np.arange(int(120 * rate)) / rate
+rng = np.random.default_rng(4)
+amplitude = 3.0
+eeg = rng.standard_normal((4, t.size)) + amplitude * np.sin(2 * np.pi * 10 * t)
+lib = Lib(eeg, ["E0", "E1", "E2", "VEOG_lower"])
+out = await band_power_run(lib, None, Store(Group(rate, t.size, 4)))
+print(json.dumps({
+    "bands": {k: list(v) for k, v in out["bands"].items()},
+    "band_power": {k: [float(x) for x in v] for k, v in out["band_power"].items()},
+    "keep": out["keep"], "reads": lib.reads, "expected": amplitude ** 2 / 2,
+}))
+`);
+      assertEqual(result.status, 'ok', `band power: both blocks run in one namespace (stderr: ${result.stderr.slice(-400)})`);
+      const r = JSON.parse((result.stdout || '').trim().split('\n').at(-1) || '{}');
+      assertEqual(Object.keys(r.bands), ['delta', 'theta', 'alpha', 'beta'], 'the default bands are named for step 2');
+      assertEqual(Object.keys(r.band_power), Object.keys(r.bands), 'band_power has one entry per band');
+      assertEqual(r.keep, [0, 1, 2], 'the electrooculography channel is left out by its label');
+      assert(r.reads > 1, `the small budget made ${r.reads} reads, so the pieces were averaged`);
+      for (const [name, values] of Object.entries(r.band_power)) {
+        assertEqual(values.length, 3, `${name}: one value per EEG channel`);
+      }
+      for (let channel = 0; channel < 3; channel++) {
+        const power = Object.fromEntries(Object.entries(r.band_power).map(([name, values]) => [name, values[channel]]));
+        const others = ['delta', 'theta', 'beta'].map((name) => power[name]);
+        assert(others.every((value) => power.alpha > 20 * value),
+          `channel ${channel}: the 10 Hz tone puts the power in alpha (${JSON.stringify(power)})`);
+        assert(Math.abs(power.alpha / r.expected - 1) < 0.05,
+          `channel ${channel}: alpha holds the tone's power, amplitude squared over two (${power.alpha} against ${r.expected})`);
       }
     }
   }

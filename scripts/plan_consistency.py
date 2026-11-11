@@ -300,6 +300,11 @@ class RunRecord:
     est_peak_mb: int | None = None
     session_id: str = ""
     note: str = ""
+    tools_before_plan: list[str] = field(default_factory=list)
+    """Names of the ``tool_start`` events before the outcome, in order: what the model
+    called before it proposed a plan (or before the stream ended without one). Not part of
+    the comparison; the report shows it so a run that fetched a procedure document first
+    can be told from one that did not."""
 
 
 def coerce_steps(raw_steps: Any) -> tuple[list[dict[str, Any]], int]:
@@ -329,16 +334,23 @@ def parse_plan_stream(lines: Iterable[str], deadline: float | None = None) -> Ru
     is an error.
     """
     session_id = ""
+    tools_before_plan: list[str] = []
     try:
         for event in iter_events(lines, deadline):
             kind = event.get("event")
             if kind == "session":
                 session_id = str(event.get("session_id", ""))
+            elif kind == "tool_start":
+                tools_before_plan.append(str(event.get("name", "")))
             elif kind == "tool_request":
                 tool = event.get("tool")
                 if tool != PLAN_TOOL:
                     return RunRecord(
-                        "no_plan", NO_PLAN, session_id=session_id, note=f"tool_request for {tool}"
+                        "no_plan",
+                        NO_PLAN,
+                        session_id=session_id,
+                        note=f"tool_request for {tool}",
+                        tools_before_plan=tools_before_plan,
                     )
                 raw_args = event.get("args")
                 args = raw_args if isinstance(raw_args, dict) else {}
@@ -357,10 +369,15 @@ def parse_plan_stream(lines: Iterable[str], deadline: float | None = None) -> Ru
                     est_peak_mb=peak if isinstance(peak, int) else None,
                     session_id=session_id,
                     note="; ".join(notes),
+                    tools_before_plan=tools_before_plan,
                 )
             elif kind == "done":
                 return RunRecord(
-                    "no_plan", NO_PLAN, session_id=session_id, note="done before propose_plan"
+                    "no_plan",
+                    NO_PLAN,
+                    session_id=session_id,
+                    note="done before propose_plan",
+                    tools_before_plan=tools_before_plan,
                 )
             elif kind == "error":
                 return RunRecord(
@@ -368,10 +385,23 @@ def parse_plan_stream(lines: Iterable[str], deadline: float | None = None) -> Ru
                     ERROR,
                     session_id=session_id,
                     note=f"error event: {event.get('message', '')}",
+                    tools_before_plan=tools_before_plan,
                 )
     except TimeoutError as exc:
-        return RunRecord("error", ERROR, session_id=session_id, note=str(exc))
-    return RunRecord("error", ERROR, session_id=session_id, note="stream ended with no outcome")
+        return RunRecord(
+            "error",
+            ERROR,
+            session_id=session_id,
+            note=str(exc),
+            tools_before_plan=tools_before_plan,
+        )
+    return RunRecord(
+        "error",
+        ERROR,
+        session_id=session_id,
+        note="stream ended with no outcome",
+        tools_before_plan=tools_before_plan,
+    )
 
 
 # Dataset ids inside a search tool's output, which arrives as the repr of a ToolMessage
@@ -576,18 +606,22 @@ def render_report(
     for request, runs in results.items():
         out += [f"### {request.kind} ({request.dataset_id})", "", f"> {request.message}", ""]
         out += [
-            "| Run | Outcome | Step | Operation | Decided by | Raw title |",
-            "|---|---|---|---|---|---|",
+            "| Run | Outcome | Tools before the plan | Step | Operation | Decided by | Raw title |",
+            "|---|---|---|---|---|---|---|",
         ]
         for i, run in enumerate(runs, start=1):
+            before = _cell(", ".join(run.tools_before_plan) or "none")
             if not run.steps:
                 out.append(
-                    f"| {i} | {run.kind} | - | {_cell(_seq(run.sequence))} | - | {_cell(run.note)} |"
+                    f"| {i} | {run.kind} | {before} | - | {_cell(_seq(run.sequence))} | - | "
+                    f"{_cell(run.note)} |"
                 )
                 continue
             for n, (step, op) in enumerate(zip(run.steps, run.sequence, strict=True), start=1):
                 basis = step_basis(step)[1]
-                out.append(f"| {i} | plan | {n} | {op} | {basis} | {_title_cell(step, basis)} |")
+                out.append(
+                    f"| {i} | plan | {before} | {n} | {op} | {basis} | {_title_cell(step, basis)} |"
+                )
         out.append("")
     out += [
         "## Normalization rules",
@@ -651,6 +685,7 @@ def records_from_raw(raw: dict[str, Any]) -> dict[PlanRequest, list[RunRecord]]:
                 est_peak_mb=entry.get("est_peak_mb"),
                 session_id=entry.get("session_id", ""),
                 note=entry.get("note", ""),
+                tools_before_plan=list(entry.get("tools_before_plan", [])),
             )
             if run.kind == "plan":
                 run.sequence = normalize_plan(run.steps)

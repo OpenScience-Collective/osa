@@ -439,9 +439,11 @@ def test_the_report_shows_the_detail_that_decided_a_vague_title():
     record = pc.parse_plan_stream([_plan_line(steps)])
     runs = {pc.REQUESTS[0]: [record] * 4}
     report = pc.render_report("https://x.test", 4, runs, "2026-01-01")
-    assert "| 1 | plan | 1 | filter | detail | Next step [detail: Apply a 1 to 40 Hz" in report
+    assert (
+        "| 1 | plan | none | 1 | filter | detail | Next step [detail: Apply a 1 to 40 Hz" in report
+    )
     assert "| (no title) [detail: Plot the evoked response." in report
-    assert "| 1 | plan | 3 | plot | title | Plot ERP |" in report  # title decided: no detail
+    assert "| 1 | plan | none | 3 | plot | title | Plot ERP |" in report  # title decided: no detail
     assert "..." in report  # a long detail is truncated
     assert "8 of 12 step(s) were classified by their detail" in report
 
@@ -461,3 +463,47 @@ def test_a_raw_file_with_an_unknown_outcome_is_refused():
     failed = asdict(pc.RunRecord("error", pc.ERROR)) | {"kind": "bogus"}
     with pytest.raises(ValueError, match="bogus"):
         pc.records_from_raw({"runs": {r.key: [failed] for r in pc.REQUESTS}})
+
+
+def test_the_tools_called_before_the_plan_are_recorded_in_order():
+    record = pc.parse_plan_stream(PLAN_STREAM.read_text().splitlines())
+    assert record.tools_before_plan == [
+        "nemar_describe_dataset",
+        "nemar_list_recordings",
+        "nemar_get_events",
+    ]
+
+
+def test_tools_before_the_plan_are_kept_when_there_is_no_plan():
+    lines = [
+        'data: {"event": "tool_start", "name": "get_procedure", "input": {}}',
+        'data: {"event": "done"}',
+    ]
+    record = pc.parse_plan_stream(lines)
+    assert record.kind == "no_plan"
+    assert record.tools_before_plan == ["get_procedure"]
+
+
+def test_the_report_shows_the_tools_before_the_plan():
+    record = pc.parse_plan_stream(PLAN_STREAM.read_text().splitlines())
+    report = pc.render_report("https://x.test", 4, {pc.REQUESTS[0]: [record] * 4}, "2026-01-01")
+    assert "Tools before the plan" in report
+    assert "nemar_describe_dataset, nemar_list_recordings, nemar_get_events" in report
+
+
+def test_tools_before_the_plan_survive_a_raw_round_trip(tmp_path):
+    record = pc.parse_plan_stream(PLAN_STREAM.read_text().splitlines())
+    results = {r: [record] for r in pc.REQUESTS}
+    path = tmp_path / "raw.json"
+    pc.save_raw(path, "https://x.test", "2026-01-01", results)
+    saved = json.loads(path.read_text())
+    assert saved["runs"][pc.REQUESTS[0].key][0]["tools_before_plan"] == record.tools_before_plan
+    rebuilt = pc.records_from_raw(saved)
+    assert rebuilt[pc.REQUESTS[0]][0].tools_before_plan == record.tools_before_plan
+
+
+def test_a_raw_file_from_before_the_field_defaults_to_no_tools():
+    old = asdict(pc.RunRecord("error", pc.ERROR, note="HTTP 429"))
+    del old["tools_before_plan"]
+    rebuilt = pc.records_from_raw({"runs": {r.key: [old] for r in pc.REQUESTS}})
+    assert rebuilt[pc.REQUESTS[0]][0].tools_before_plan == []

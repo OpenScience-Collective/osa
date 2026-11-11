@@ -37,6 +37,7 @@ from pydantic import (
     ConfigDict,
     Field,
     HttpUrl,
+    PrivateAttr,
     ValidationInfo,
     field_validator,
     model_validator,
@@ -54,7 +55,11 @@ from src.core.config.notebook_lock import (
     environment_base_url_problem,
     starter_path_problem,
 )
-from src.core.config.runtime_lock import canonical_name, lockfile_path_problem
+from src.core.config.runtime_lock import (
+    canonical_name,
+    lockfile_path_problem,
+    relative_community_path_problem,
+)
 from src.core.limits import (
     MAX_IMAGE_EDGE_PX,
     MAX_IMAGES,
@@ -670,6 +675,16 @@ EXECUTE_CODE_TOOL_NAME = "execute_code"
 A community that routes turns between a quick and an analysis model (``quick_model`` and
 ``analysis_model``) must configure a tool under this name, and a request must declare it
 for routing to apply.
+"""
+
+GET_PROCEDURE_TOOL_NAME = "get_procedure"
+"""The server tool that returns one of a community's known procedure documents.
+
+Bound by ``CommunityAssistant`` only when the community declares ``procedures`` and the
+turn can run code (``execute_code`` is bound): a procedure is a recipe for a plan that
+ends in code, so a turn with nothing to run gets neither the tool nor the prompt section
+that names it. A server tool, not a client one: it reads a file the server loaded at
+start-up and spends no browser run.
 """
 
 MAX_DECLARED_CLIENT_TOOLS = 8
@@ -2138,6 +2153,130 @@ class SyncConfig(BaseModel):
     """Schedule for Discourse forum topic sync."""
 
 
+MAX_PROCEDURES = 20
+"""How many procedures one community may declare."""
+
+MAX_PROCEDURE_CHARS = 32_000
+"""The longest a procedure document may be, in characters.
+
+About 8,000 tokens: the model reads a whole document in one tool result, so a bound
+keeps one fetch from taking a large share of the context.
+"""
+
+_PROCEDURE_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+class ProcedureConfig(BaseModel):
+    """One known analysis procedure a community offers, kept as a Markdown document.
+
+    The prompt carries only ``id``, ``title`` and ``when``; the model fetches the document
+    (``get_procedure``, ``GET_PROCEDURE_TOOL_NAME``) when a request matches, so the text
+    and code of a procedure cost context only on the turns that use it. Example:
+
+        procedures:
+          - id: power-spectrum
+            title: Power spectrum
+            when: Power spectrum or PSD of a recording
+            file: procedures/power-spectrum.md
+
+    This model checks the shape of each field. That the file exists, stays inside the
+    community's folder, is UTF-8 and is within the size bound is checked by
+    ``CommunityConfig.from_yaml``, the one place the folder is known.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    """What the model passes to ``get_procedure``: lowercase words joined by hyphens."""
+
+    title: str
+    """The procedure's name, one line, as the prompt lists it."""
+
+    when: str
+    """One line naming the requests this procedure covers, so the model can match one."""
+
+    file: str
+    """A Markdown file's path relative to the community's folder (``procedures/x.md``)."""
+
+    @field_validator("id")
+    @classmethod
+    def _id_is_a_slug(cls, value: str) -> str:
+        if not 1 <= len(value) <= 64 or not _PROCEDURE_ID.fullmatch(value):
+            raise ValueError(
+                f"procedure id {value!r} must be 1 to 64 characters of lowercase letters "
+                "and digits joined by single hyphens (for example 'power-spectrum')"
+            )
+        return value
+
+    @field_validator("title", "when")
+    @classmethod
+    def _one_line(cls, value: str, info: ValidationInfo) -> str:
+        bounds = {"title": (3, 80), "when": (10, 300)}[info.field_name or "title"]
+        # Strip first: a YAML folded or literal scalar (``when: >``) ends in one newline.
+        value = value.strip()
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"procedure {info.field_name} must be one line")
+        if not bounds[0] <= len(value) <= bounds[1]:
+            raise ValueError(
+                f"procedure {info.field_name} must be {bounds[0]} to {bounds[1]} characters"
+            )
+        return value
+
+    @field_validator("file")
+    @classmethod
+    def _file_stays_in_the_community_folder(cls, value: str) -> str:
+        problem = relative_community_path_problem(value, ".md")
+        if problem is not None:
+            raise ValueError(f"procedure file {value!r}: {problem}")
+        return value
+
+
+def _why(err: Exception) -> str:
+    """The reason for a read failure: the OS's message when it gave one, else the error's."""
+    return getattr(err, "strerror", None) or str(err)
+
+
+def read_procedure_documents(
+    procedures: list[ProcedureConfig], community_dir: Path
+) -> dict[str, str]:
+    """Each procedure's document text, keyed by id, read once from the community folder.
+
+    Raises ValueError, in plain words, for a file that is missing, cannot be read, resolves
+    outside the folder (a symlink included), is too large, is not UTF-8, or is blank.
+    ``Path.resolve`` raises RuntimeError for a symlink loop on Python 3.11 and 3.12, so that
+    is caught with OSError and reported the same way.
+    """
+    try:
+        root = community_dir.resolve()
+    except (OSError, RuntimeError) as err:
+        raise ValueError(f"the community's folder cannot be read: {_why(err)}") from err
+    texts: dict[str, str] = {}
+    for procedure in procedures:
+        where = f"procedure {procedure.id!r}: file {procedure.file!r}"
+        try:
+            path = (root / procedure.file).resolve()
+            if not path.is_relative_to(root):
+                raise ValueError(f"{where} resolves outside the community's folder")
+            if not path.is_file():
+                raise ValueError(f"{where} does not exist in the community's folder")
+            # UTF-8 takes at most four bytes a character, so a larger file cannot fit.
+            if path.stat().st_size > 4 * MAX_PROCEDURE_CHARS:
+                raise ValueError(f"{where} is longer than {MAX_PROCEDURE_CHARS:,} characters")
+            raw = path.read_bytes()
+        except (OSError, RuntimeError) as err:
+            raise ValueError(f"{where} cannot be read: {_why(err)}") from err
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise ValueError(f"{where} is not valid UTF-8 text") from err
+        if not text.strip():
+            raise ValueError(f"{where} is blank")
+        if len(text) > MAX_PROCEDURE_CHARS:
+            raise ValueError(f"{where} is longer than {MAX_PROCEDURE_CHARS:,} characters")
+        texts[procedure.id] = text
+    return texts
+
+
 class CommunityConfig(BaseModel):
     """Configuration for a single research community assistant.
 
@@ -2371,6 +2510,18 @@ class CommunityConfig(BaseModel):
     not disabled: text that tells a model to call a tool it was not given would send it to
     invent one. See ``src.agents.plan_first``.
     """
+
+    procedures: list[ProcedureConfig] = Field(default_factory=list)
+    """Known analysis procedures, each a Markdown document the model fetches on demand.
+
+    The prompt lists only each one's ``id``, ``title`` and ``when``; when a request
+    matches, the model calls ``get_procedure`` (``GET_PROCEDURE_TOOL_NAME``) and proposes
+    the document's plan. Offered only on a turn that can run code. Ids are unique, at most
+    ``MAX_PROCEDURES``. Each ``file`` is read once by ``from_yaml``; see ``ProcedureConfig``.
+    """
+
+    _procedure_texts: dict[str, str] | None = PrivateAttr(default=None)
+    """The documents' text by id, filled once by ``from_yaml``; None on any other build."""
 
     reasoning_effort: ReasoningEffort | None = None
     """How much this community's assistant thinks: one level of a provider-neutral scale.
@@ -2842,6 +2993,37 @@ class CommunityConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def validate_procedures(self) -> "CommunityConfig":
+        """At most ``MAX_PROCEDURES``, each id used once."""
+        if len(self.procedures) > MAX_PROCEDURES:
+            raise ValueError(f"procedures: at most {MAX_PROCEDURES} may be declared")
+        seen: set[str] = set()
+        for procedure in self.procedures:
+            if procedure.id in seen:
+                raise ValueError(f"procedures: id {procedure.id!r} is declared twice")
+            seen.add(procedure.id)
+        return self
+
+    def procedure_documents(self) -> dict[str, str]:
+        """The text of every declared procedure, by id, in declaration order.
+
+        Empty when the community declares none. Raises ValueError when it declares some
+        but their texts were never loaded, which is a config built without
+        ``CommunityConfig.from_yaml`` (the only place the folder is known): serving the
+        list without the documents would send the model to a tool that has nothing.
+        """
+        if not self.procedures:
+            return {}
+        texts = self._procedure_texts
+        if texts is None or set(texts) != {p.id for p in self.procedures}:
+            raise ValueError(
+                f"Community '{self.id}' declares procedures but their documents were not "
+                "loaded; build the config with CommunityConfig.from_yaml, which reads them "
+                "from the community's folder"
+            )
+        return {p.id: texts[p.id] for p in self.procedures}
+
+    @model_validator(mode="after")
     def validate_model_routing(self) -> "CommunityConfig":
         """``quick_model`` and ``analysis_model`` go together, and need ``execute_code``.
 
@@ -3025,6 +3207,8 @@ class CommunityConfig(BaseModel):
             FileNotFoundError: If file doesn't exist.
             yaml.YAMLError: If YAML syntax is invalid.
             ValidationError: If YAML structure is invalid.
+            ValueError: If a declared procedure's document is missing, outside the
+                community's folder, too large, not UTF-8 or blank.
         """
         try:
             with open(path) as f:
@@ -3032,7 +3216,10 @@ class CommunityConfig(BaseModel):
         except yaml.YAMLError as e:
             raise yaml.YAMLError(f"Failed to parse YAML file {path}: {e}") from e
 
-        return cls.model_validate(data or {})
+        config = cls.model_validate(data or {})
+        if config.procedures:
+            config._procedure_texts = read_procedure_documents(config.procedures, path.parent)
+        return config
 
 
 class CommunitiesConfig(BaseModel):

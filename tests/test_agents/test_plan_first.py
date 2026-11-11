@@ -198,3 +198,69 @@ class TestNemarPlanFirstText:
         assert "you may fix it once and run it again" in flat
         assert "Never run code that is not a step of the approved plan." in flat
         assert "Calling it ends your turn; write nothing after the call." in flat
+
+
+# The kinds of work the plan-first text orders (read; inspect; preprocess; epoch; compute;
+# plot), as the operations scripts/plan_consistency.py maps a step title to.
+KIND_ORDER = {
+    "load": 0,
+    "filter": 2,
+    "rereference": 2,
+    "reject": 2,
+    "epoch": 3,
+    "average": 4,
+    "spectrum": 4,
+    "stats": 4,
+    "plot": 5,
+}
+
+
+class TestTheProcedureDocumentsFollowThePlanFirstRules:
+    """A procedure's plan is the plan the model proposes (#719), so it must be one the
+    plan-first step rules would also have produced: one step per kind, in the fixed order."""
+
+    @pytest.fixture(scope="class")
+    def documents(self) -> dict[str, str]:
+        documents = CommunityConfig.from_yaml(NEMAR_YAML).procedure_documents()
+        assert documents
+        return documents
+
+    @staticmethod
+    def _plan(document: str) -> str:
+        return document.split("## Plan", 1)[1].split("\n## ", 1)[0]
+
+    def _operations(self, document: str) -> list[str]:
+        titles = re.findall(r"^\d+\. \*\*(.+?)\*\*", self._plan(document), flags=re.MULTILINE)
+        return [pc.normalize_step({"title": title, "detail": ""}) for title in titles]
+
+    def test_each_plan_names_the_kinds_in_the_fixed_order(self, documents: dict[str, str]) -> None:
+        for procedure_id, document in documents.items():
+            ranks = [KIND_ORDER[op] for op in self._operations(document)]
+            assert ranks == sorted(ranks), procedure_id
+            assert ranks[-1] == KIND_ORDER["plot"], procedure_id
+
+    def test_each_plan_has_one_step_per_kind_and_every_title_is_understood(
+        self, documents: dict[str, str]
+    ) -> None:
+        for procedure_id, document in documents.items():
+            operations = self._operations(document)
+            assert len(operations) == len(set(operations)), procedure_id
+            assert "other" not in operations, procedure_id
+
+    def test_preprocessing_is_titled_as_the_plan_first_text_pins_it(
+        self, documents: dict[str, str]
+    ) -> None:
+        for procedure_id, document in documents.items():
+            plan = self._plan(document)
+            if "re-reference" in plan:
+                assert "**Filter and clean the recording**" in plan, procedure_id
+
+    def test_the_plan_first_text_does_not_name_the_procedure_tool(self) -> None:
+        """It is sent on turns that have no ``get_procedure`` (one without ``execute_code``
+        gets neither), so it names no procedure tool; the generated section does, where
+        the tool is bound."""
+        config = CommunityConfig.from_yaml(NEMAR_YAML)
+        text = plan_first_section(config, "analysis", DECLARED)
+        assert text is not None
+        assert "get_procedure" not in text
+        assert "procedure" not in text.lower()

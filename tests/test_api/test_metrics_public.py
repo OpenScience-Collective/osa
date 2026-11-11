@@ -396,3 +396,24 @@ class TestCommunityMetricsValues:
                 assert tool_entry["count"] > 0
             checked += 1
         assert checked > 0, "Expected at least one community with a registered route"
+
+
+class TestAvailableToolsListProcedures:
+    """``get_procedure`` is listed for exactly the communities that declare procedures."""
+
+    @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
+    def test_the_tool_is_listed_when_the_community_declares_procedures(self, client):
+        from src.assistants.registry import registry
+
+        declaring = checked = 0
+        for info in registry.list_all():
+            config = info.community_config
+            response = client.get(f"/{info.id}/metrics/public")
+            if config is None or response.status_code != 200:
+                continue  # community route not registered in test app
+            listed = response.json()["available_tools_list"]
+            assert ("get_procedure" in listed) == bool(config.procedures), info.id
+            declaring += bool(config.procedures)
+            checked += 1
+        assert checked > 0, "Expected at least one community with a registered route"
+        assert declaring > 0, "Expected at least one community that declares procedures"
