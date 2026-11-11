@@ -92,8 +92,8 @@ plan_first_instructions: |
 # Known analysis procedures (#719): each a Markdown document in procedures/, listed in the
 # prompt by id, title and `when` and fetched by the model (get_procedure) before it proposes
 # a plan, so their text and code cost context only on the turns that use them. They are
-# offered only on a turn that can run code. The Welch block and the filter block in them are
-# run as written by frontend/test-data-lane.js.
+# offered only on a turn that can run code. The Welch block, the filter block, the scalp-map
+# block and the time-frequency block in them are run as written by frontend/test-data-lane.js.
 procedures:
   - id: power-spectrum
     title: Power spectrum
@@ -101,16 +101,28 @@ procedures:
     file: procedures/power-spectrum.md
   - id: band-power
     title: Band power
-    when: The power in frequency bands (delta, theta, alpha, beta, or the reader's own) of a recording, as a bar chart or a table
+    when: The power of a recording in frequency bands (delta, theta, alpha, beta, or the reader's own), as a bar chart or a table of one value per band
     file: procedures/band-power.md
   - id: erp-by-condition
     title: ERP by condition
-    when: The average ERP (evoked response) at a channel, one line per condition, such as target against non-target or face against scrambled face
+    when: The average ERP (evoked response) waveform at one channel, one line per condition, such as target against non-target or face against scrambled face
     file: procedures/erp-by-condition.md
   - id: erp-image-by-condition
     title: ERP image by condition
     when: An ERP image (single-trial epochs as the rows of an image, with the average beneath it) of a channel, one panel per condition
     file: procedures/erp-image-by-condition.md
+  - id: band-power-topography
+    title: Band power topography
+    when: A scalp map or topography of the power in one frequency band, such as "plot the alpha topography" or "scalp map of mu, 8 to 12 Hz, power"
+    file: procedures/band-power-topography.md
+  - id: erp-topography
+    title: ERP topography
+    when: Scalp maps (topographies) of the ERP in a time window, one map per condition and their difference, such as "scalp maps of faces against cars from 150 to 190 ms"
+    file: procedures/erp-topography.md
+  - id: time-frequency-by-condition
+    title: Time-frequency by condition
+    when: An event-related spectral perturbation (ERSP), time-frequency map or spectrogram of a channel around events, one map per condition
+    file: procedures/time-frequency-by-condition.md
 
 # External links for dashboard and discovery
 links:
