@@ -3350,3 +3350,78 @@ class TestModelInstructions:
     def test_other_shapes_are_still_rejected(self, model: str) -> None:
         with pytest.raises(ValidationError, match="Invalid model name"):
             CommunityConfig(id="d", name="D", description="x", default_model=model)
+
+
+def _routing_kwargs(**overrides: object) -> dict[str, object]:
+    """A community that can run code, which is what model routing needs, plus overrides."""
+    kwargs: dict[str, object] = {
+        "id": "routed",
+        "name": "Routed",
+        "description": "Routes turns between two models",
+        "extensions": ExtensionsConfig(
+            client_tools=[
+                ClientToolConfig(name="execute_code", runtime="python", description="Run code.")
+            ]
+        ),
+        "runtime": _python_runtime_config(),
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+class TestModelRoutingConfig:
+    """`quick_model` and `analysis_model` (issue #670, plan E8.1)."""
+
+    def test_neither_set_is_an_ordinary_community(self) -> None:
+        config = CommunityConfig(id="plain", name="Plain", description="No routing")
+        assert config.quick_model is None
+        assert config.analysis_model is None
+
+    def test_both_set_with_execute_code_loads(self) -> None:
+        config = CommunityConfig(**_routing_kwargs(quick_model="haiku", analysis_model="sonnet"))
+        assert config.quick_model == "haiku"
+        assert config.analysis_model == "sonnet"
+
+    @pytest.mark.parametrize("only", ["quick_model", "analysis_model"])
+    def test_one_without_the_other_is_rejected(self, only: str) -> None:
+        with pytest.raises(ValidationError, match="both be set or both unset"):
+            CommunityConfig(**_routing_kwargs(**{only: "haiku"}))
+
+    @pytest.mark.parametrize("field", ["quick_model", "analysis_model"])
+    def test_a_model_that_does_not_resolve_is_rejected(self, field: str) -> None:
+        kwargs = {"quick_model": "haiku", "analysis_model": "sonnet", field: "not-a-model"}
+        with pytest.raises(ValidationError, match="not an offered model"):
+            CommunityConfig(**_routing_kwargs(**kwargs))
+
+    def test_a_model_is_resolved_through_normalize_model(self) -> None:
+        """A class name and the id it stands for are both accepted, as for default_model."""
+        config = CommunityConfig(**_routing_kwargs(quick_model=HAIKU, analysis_model="sonnet"))
+        assert normalize_model(config.quick_model) == HAIKU
+        assert normalize_model(config.analysis_model) == normalize_model("sonnet")
+
+    def test_without_an_execute_code_client_tool_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="execute_code"):
+            CommunityConfig(
+                id="nocode", name="N", description="x", quick_model="haiku", analysis_model="sonnet"
+            )
+
+    def test_a_client_tool_that_is_not_execute_code_is_not_enough(self) -> None:
+        other = ExtensionsConfig(
+            client_tools=[ClientToolConfig(name="other", runtime="python", description="Run.")]
+        )
+        with pytest.raises(ValidationError, match="execute_code"):
+            CommunityConfig(
+                **_routing_kwargs(extensions=other, quick_model="haiku", analysis_model="sonnet")
+            )
+
+    def test_start_analysis_cannot_be_configured(self) -> None:
+        with pytest.raises(ValidationError, match="reserved"):
+            ClientToolConfig(name="start_analysis", runtime="python", description="Run.")
+
+    def test_nemar_routes_haiku_to_sonnet(self) -> None:
+        config = CommunityConfig.from_yaml(
+            Path(__file__).parents[3] / "src" / "assistants" / "nemar" / "config.yaml"
+        )
+        assert config.quick_model == "haiku"
+        assert config.analysis_model == "sonnet"
+        assert normalize_model(config.quick_model) == HAIKU

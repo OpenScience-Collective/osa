@@ -12,6 +12,14 @@ status: available
 # to the newest model of its kind (MODEL_CLASSES in src/core/services/anthropic_models.py), so
 # this line stays as it is when a new generation arrives. Write a model id only to pin a generation.
 default_model: haiku
+# Turns are routed between two models (issue #670, plan E8). Most turns are questions and
+# search, which the quick model answers; a turn that asks to run code, plot or analyze is
+# handed to the analysis model in a NEW session, because switching models inside one
+# session would send the quick model's thinking blocks to a model that cannot take them
+# (issue #522). Both keys or neither; routing applies only to a request that declares
+# execute_code and names no model of its own.
+quick_model: haiku
+analysis_model: sonnet
 # The level every model this community runs is asked to reason at, on every provider
 # (issue #545): none, low, medium, high, xhigh or max. A model clamps it to the levels it
 # accepts (the Claude models never run above high). Haiku 5.5 defaults to medium, so high

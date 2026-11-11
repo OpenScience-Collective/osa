@@ -37,7 +37,14 @@ from src.agents.content import (
     encode_citation_markers,
     normalize_citation_markers,
 )
+from src.agents.model_routing import (
+    QUICK_MODE_INSTRUCTIONS,
+    Summary,
+    reader_turn,
+    tier_for_turn,
+)
 from src.api.config import Settings, get_settings
+from src.api.handover import stream_handover
 from src.api.routers.health import compute_community_health
 from src.api.security import (
     AuthScope,
@@ -72,12 +79,14 @@ from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import (
     MAX_DECLARED_CLIENT_TOOLS,
+    START_ANALYSIS_TOOL_NAME,
     ClientToolConfig,
     ClientToolRuntime,
     CommunityConfig,
     LauncherOffsetPx,
     LauncherSizePx,
     RuntimeConfig,
+    Tier,
     WidgetConfig,
 )
 from src.core.config.deployment import current_deployment
@@ -737,6 +746,12 @@ class ChatSession:
         self.last_active = self.created_at
         self.pending_call: PendingClientCall | None = None
         self.turn_started_at: datetime | None = None
+        # Which model tier this conversation runs on, for a community that routes between
+        # a quick and an analysis model (`src.agents.model_routing`). Starts quick and
+        # only ever moves one way: a handover opens a NEW session already in analysis, and
+        # a first message that asks for analysis flips its own, so a session never changes
+        # model with quick-model thinking blocks in its history (issue #522).
+        self.mode: Tier = "quick"
 
     def add_user_message(self, content: str) -> None:
         """Add a user message to history.
@@ -1466,8 +1481,13 @@ def _select_model(
     has_byok: bool,
     *,
     log: bool = True,
+    tier: Tier | None = None,
 ) -> tuple[str, str | None]:
     """Select the model (and, on OpenRouter, its provider-routing hint).
+
+    A routed turn's ``tier`` stands in for the community's default model (see
+    ``_configured_default``); a caller-named ``requested_model`` is never combined with one,
+    because a request that names a model is not routed.
 
     **Anthropic:** the requested model, or else the community/platform
     default, is normalized against the offered models (see
@@ -1492,6 +1512,7 @@ def _select_model(
         has_byok: Whether the caller provided their own API key.
         log: Whether to log a configured default that cannot be served. False for a
             probe of a request that is routed again for real (see ``_route_request``).
+        tier: The routed turn's model tier, or None when the request is not routed.
 
     Returns:
         Tuple of (model, provider_routing_hint). The routing hint is always
@@ -1504,7 +1525,7 @@ def _select_model(
             requested without BYOK.
     """
     # The community's default model, else the platform's
-    default_model, default_provider = _configured_default(community_info, get_settings())
+    default_model, default_provider = _configured_default(community_info, get_settings(), tier)
 
     if provider in ("anthropic", "bedrock"):
         try:
@@ -1692,8 +1713,20 @@ def _bedrock_default_outcome(
     return "unavailable"
 
 
-def _configured_default(info: AssistantInfo, settings: Settings) -> tuple[str, str | None]:
-    """A community's default model and OpenRouter routing hint: its own, else the platform's."""
+def _configured_default(
+    info: AssistantInfo, settings: Settings, tier: Tier | None = None
+) -> tuple[str, str | None]:
+    """A community's default model and OpenRouter routing hint: its own, else the platform's.
+
+    A routed turn's `tier` picks the community's quick or analysis model in place of its
+    default. It is threaded down here rather than passed as the request's `requested_model`
+    because a caller-named model other than the default is a 403 on OpenRouter without a
+    key of the caller's own, and a tier is the community's choice, not the caller's. The
+    OpenRouter routing hint belongs to the default model, so a tier's model has none.
+    """
+    config = info.community_config
+    if tier and config and config.quick_model and config.analysis_model:
+        return (config.quick_model if tier == "quick" else config.analysis_model, None)
     if info.community_config and info.community_config.default_model:
         return (
             info.community_config.default_model,
@@ -1901,6 +1934,7 @@ def _route_request(
     requested_model: str | None,
     *,
     log: bool = True,
+    tier: Tier | None = None,
 ) -> RequestRoute:
     """Decide the provider and model for a request, with authorization checks.
 
@@ -1920,6 +1954,9 @@ def _route_request(
             be served, a Bedrock default replaced by Claude. A caller that routes the same
             request a second time (``/chat/resume`` probes the route before the stream
             makes it for real) passes False, so the request logs once.
+        tier: The routed turn's model tier (``src.agents.model_routing``): the community's
+            quick or analysis model runs in place of its default. None for a request that
+            is not routed.
 
     Raises:
         HTTPException: As ``_resolve_provider``, ``_select_model`` and
@@ -1932,6 +1969,7 @@ def _route_request(
         provider=choice.provider,
         has_byok=choice.key_source == "byok",
         log=log,
+        tier=tier,
     )
     if choice.provider == "anthropic" and is_bedrock_model(model):
         settings = get_settings()
@@ -2098,6 +2136,8 @@ def create_community_assistant(
     declared_client_tools: set[str] | None = None,
     browser_runs_left: int | None = None,
     session_id: str | None = None,
+    tier: Tier | None = None,
+    additional_instructions: str = "",
 ) -> AssistantWithMetrics:
     """Create a community assistant instance with authorization checks.
 
@@ -2120,6 +2160,13 @@ def create_community_assistant(
         page_context: Optional context about the page where the widget is embedded
         session_id: Chat session ID, recorded on the LangFuse trace so a
             conversation's turns can be grouped (chat endpoints only)
+        tier: The model tier of a routed turn (``src.agents.model_routing``), or None for a
+            request that is not routed. It picks the community's quick or analysis model
+            and decides which client tools are bound. A quick turn also gets the prompt
+            section that tells it to call ``start_analysis``, added to
+            ``additional_instructions`` here because it must exist exactly when that tool
+            is bound, which is not something the YAML prompt can say.
+        additional_instructions: Extra text for the system prompt.
 
     Returns:
         AssistantWithMetrics containing the assistant, resolved model, and key source.
@@ -2139,7 +2186,7 @@ def create_community_assistant(
 
     # Select provider, API key and model with authorization checks (including the
     # BYOK requirement for OpenRouter custom models)
-    route = _route_request(community_info, community_id, byok, origin, requested_model)
+    route = _route_request(community_info, community_id, byok, origin, requested_model, tier=tier)
     provider_choice = route.choice
     selected_model, selected_provider = route.model, route.provider_hint
     logger.debug(
@@ -2215,6 +2262,14 @@ def create_community_assistant(
             ),
         )
 
+    # A quick turn gets the section that tells it to call `start_analysis`, after any
+    # instructions the caller passed.
+    merged_instructions = additional_instructions
+    if tier == "quick":
+        merged_instructions = "\n\n".join(
+            part for part in (additional_instructions, QUICK_MODE_INSTRUCTIONS) if part
+        )
+
     assistant = registry.create_assistant(
         community_id,
         model=model,
@@ -2239,6 +2294,8 @@ def create_community_assistant(
         # than by a check.
         declared_client_tools=declared_client_tools,
         browser_runs_left=browser_runs_left,
+        tier=tier,
+        additional_instructions=merged_instructions,
     )
 
     # Wire LangFuse tracing if configured
@@ -3085,9 +3142,25 @@ def create_community_router(community_id: str) -> APIRouter:
             route_info = registry.get(community_id)
             if route_info is None:
                 raise HTTPException(status_code=404, detail="Unknown community.")
-            # A probe: the stream routes this request again, and that one logs.
+            # A probe: the stream routes this request again, and that one logs. It runs
+            # on the tier the stream will, which is the session's: a resume always
+            # continues on the model its turn began on.
+            probed = get_session(community_id, body.session_id)
             allow_images = _route_request(
-                route_info, community_id, byok, origin, body.model, log=False
+                route_info,
+                community_id,
+                byok,
+                origin,
+                body.model,
+                log=False,
+                tier=tier_for_turn(
+                    route_info.community_config,
+                    set(body.client_tools),
+                    body.model,
+                    session_mode=probed.mode if probed else "quick",
+                    message=None,
+                    resuming=True,
+                ),
             ).choice.takes_native_blocks
         except HTTPException as err:
             logger.debug(
@@ -3718,6 +3791,9 @@ def _tool_call_sse_events(
     run: `run_id` keeps the runs of one turn apart, since their indices restart at 0.
     `announced` belongs to the caller, one per stream, and remembers what was sent.
 
+    The `start_analysis` call is never announced: it is not a tool the reader's client
+    runs or shows, it ends the quick turn and the stream moves on to the analysis run.
+
     Never raises. This is a courtesy to the reader, and a stream must not fail over it.
     """
     try:
@@ -3730,6 +3806,11 @@ def _tool_call_sse_events(
                 continue
             name = call.get("name")
             if not isinstance(name, str) or not name.strip():
+                continue
+            if name.strip() == START_ANALYSIS_TOOL_NAME:
+                # Not a tool the reader's client runs or shows: calling it ends the quick
+                # turn and the stream moves on to the analysis run. Announcing it would
+                # leave a "writing" label with no tool_start or tool_end after it.
                 continue
             index = call.get("index")
             call_id = call.get("id")
@@ -3795,6 +3876,7 @@ def _log_streaming_metrics(
     cache_creation_tokens: int = 0,
     error_message: str | None = None,
     longest_prompt_tokens: int | None = None,
+    request_id_suffix: str = "",
 ) -> None:
     """Log metrics at the end of a streaming response.
 
@@ -3802,6 +3884,11 @@ def _log_streaming_metrics(
     before streaming completes. Wrapped in try/except to never disrupt
     the SSE stream on failure. ``error_message`` says why a row that is an error
     (status 400 and up) is one.
+
+    ``request_id_suffix`` is for a request that logs a second row: a handover logs the
+    quick model's work (its run and the summary) under ``<request id>:quick``, so the
+    request id the widget's feedback joins on (``done.request_id``) names one row, the
+    analysis run's, and the quick row is found next to it by its prefix.
     """
     try:
         duration_ms = (time.monotonic() - start_time) * 1000
@@ -3810,6 +3897,7 @@ def _log_streaming_metrics(
             request_id = getattr(http_request.state, "request_id", request_id)
             # Mark as logged so middleware doesn't double-log
             http_request.state.metrics_logged = True
+        request_id += request_id_suffix
 
         total_tokens = input_tokens + output_tokens
         has_tokens = total_tokens > 0
@@ -4514,6 +4602,7 @@ async def _stream_chat_response(
     carried_citations: Sequence[CitationMark] = (),
     browser_runs_answered: int = 0,
     code_runs_answered: int = 0,
+    turn_claimed: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -4524,16 +4613,40 @@ async def _stream_chat_response(
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "session", "session_id": "..."}  (sent first)
+        data: {"event": "handover", "stage": "summarizing"}
+        data: {"event": "handover", "stage": "summarized", "messages": 4, "words": 90,
+               "summary": "...", "degraded": true}  (`degraded` only when the quick model
+               failed and the summary is the reader's own words)
+        data: {"event": "handover", "stage": "started", "session_id": "...", "model": "..."}
+               (see "Handover" below; only a community that routes between two models)
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
         data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done;
                `codes` lists every kind when more than one applies)
         data: {"event": "done", "session_id": "...", "request_id": "...", "model": "...", "content": "final answer", "citations": [...],
-               "usage": {...}}  (`usage`: this run's tokens, cache tokens and estimated cost, or null;
-               see ReplyUsage, whose `input_tokens` includes the cached ones)
+               "usage": {...}, "mode": "quick"}  (`usage`: this run's tokens, cache tokens and
+               estimated cost, or null; see ReplyUsage, whose `input_tokens` includes the
+               cached ones; `mode`: "quick" or "analysis", the tier the turn ran on, present
+               only on a request that is routed between the two)
         data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
                "retryable": true, "suggested_model": {"id": "claude-haiku-5-5", "label": "..."}}
                (ends the stream, no `done`; `retryable` only when known; `suggested_model` only
                when the message tells the reader to try another model, and names it)
+
+    **Handover.** A community that sets `quick_model` and `analysis_model` answers most
+    turns on the quick model. A turn that asks to run code, plot or analyze, or in which the
+    quick model calls `start_analysis`, moves to the analysis model, never by switching
+    models inside a session (issue #522) but into a NEW session. When the conversation has
+    earlier turns, three `handover` events come first, in this order: `summarizing`; then
+    `summarized`, with the summary the analysis model is told (at most 150 words, written
+    by the quick model), `messages`, how many earlier messages it stands for, and `words`;
+    then `started`, with the new `session_id` and the analysis `model`. The analysis run
+    then streams as any turn does, on the new session: its own `session` event and
+    `done.session_id` carry the new id, which the client adopts. The old session is left as
+    it was, valid and on the quick model. A first message has no earlier turns to
+    summarize: its own session is flipped to analysis and no `handover` event is sent.
+    A session that is already in analysis stays there. Routing applies only to a request
+    that declares `execute_code` and names no `model`, and `/chat/resume` always runs on
+    its session's tier. A client that does not know the `handover` events ignores them.
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
@@ -4574,6 +4687,12 @@ async def _stream_chat_response(
     `code_runs_answered` is how many of those were runs of code the widget keeps on the
     reply (`PendingClientCall.runs_code`): a reply with one is shown even when it ends
     with no text, so it is what decides whether an empty ending is an error.
+
+    `turn_claimed` is True when the caller already holds `session`'s turn (`begin_turn`):
+    a handover claims the session it opens, and a first message that calls
+    `start_analysis` keeps its own claim, because releasing and re-claiming across this
+    function's first `yield` would leave the session open to a second request in between.
+    The turn is released in this function's `finally` either way.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -4605,7 +4724,7 @@ async def _stream_chat_response(
     sse_event = {"event": "session", "session_id": session.session_id}
     yield f"data: {json.dumps(sse_event)}\n\n"
 
-    if not session.begin_turn():
+    if not turn_claimed and not session.begin_turn():
         # Refusing is the honest answer. Running anyway means both turns write the
         # whole message list back and the later one silently discards the earlier,
         # including any browser call it had parked.
@@ -4641,18 +4760,144 @@ async def _stream_chat_response(
             # a server fault and goes to the generic handler with an error id.
             raise RuntimeError(f"the parked call's citations are malformed: {e}") from e
 
+        # Which model tier this turn runs on, or None when the request is not routed
+        # (see src.agents.model_routing). A resume runs on its session's tier.
+        routing_info = registry.get(community_id)
+        routing_config = routing_info.community_config if routing_info else None
+        resuming = initial_messages is not None
+        reader_message, earlier_messages = reader_turn(session.messages)
+        tier = tier_for_turn(
+            routing_config,
+            declared_client_tools,
+            requested_model,
+            session_mode=session.mode,
+            message=reader_message,
+            resuming=resuming,
+        )
+        # A message that asks for analysis in a session still on the quick model: the
+        # quick model writes the summary, and a new session runs the analysis.
+        handing_over = tier == "analysis" and session.mode == "quick"
+        if handing_over and not earlier_messages:
+            # Nothing to summarize on a first message: this session simply runs analysis.
+            session.mode = "analysis"
+            handing_over = False
+
+        def run_on(target: ChatSession) -> AsyncGenerator[str, None]:
+            """The analysis turn on `target`, through this same path."""
+            return _stream_chat_response(
+                community_id,
+                target,
+                byok,
+                origin,
+                user_id,
+                None,
+                page_context=page_context,
+                http_request=http_request,
+                declared_client_tools=declared_client_tools,
+                endpoint=endpoint,
+                turn_claimed=True,
+            )
+
+        quick_row_logged = False
+
+        def log_quick_row(summary: Summary | None) -> None:
+            """Log what the quick model did for a handover, as its own row, once.
+
+            That is the quick run that called `start_analysis` (none, for a keyword
+            handover) and the summary. The analysis run logs the request's own row
+            under `request_id`; this one is `request_id:quick`, so a feedback vote
+            (`done.request_id`) joins one row, and each row is priced at its own
+            model. Nothing is logged when the quick model did no work to account for.
+            """
+            nonlocal quick_row_logged
+            if quick_row_logged:
+                return
+            quick_row_logged = True
+            input_tokens = total_input_tokens
+            output_tokens = total_output_tokens
+            cache_read = total_cache_read_tokens
+            cache_creation = total_cache_creation_tokens
+            longest = longest_prompt_tokens
+            if summary is not None and summary.response is not None:
+                s_in, s_out, s_read, s_creation = _extract_token_usage({"output": summary.response})
+                input_tokens += s_in
+                output_tokens += s_out
+                cache_read += s_read
+                cache_creation += s_creation
+                longest = max(longest, s_in)
+                model_runs.note(summary.response)
+            if not (model_runs.runs or tools_called):
+                return
+            model_runs.warn_about_usage(
+                community_id=community_id,
+                model=awm.model if awm else None,
+                endpoint=metrics_endpoint,
+                request_id=request_id,
+            )
+            _log_streaming_metrics(
+                http_request=http_request,
+                community_id=community_id,
+                endpoint=metrics_endpoint,
+                awm=awm,
+                tools_called=tools_called,
+                start_time=start_time,
+                status_code=200,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_creation,
+                longest_prompt_tokens=longest,
+                request_id_suffix=":quick",
+            )
+
+        async def hand_over() -> AsyncGenerator[str, None]:
+            """Summarize this session on the quick model; run the analysis on a new one."""
+            # Handing over needs a routing config, and `awm` is built before this runs.
+            assert routing_info is not None
+            assert awm is not None
+            analysis_route = _route_request(
+                routing_info, community_id, byok, origin, None, log=False, tier="analysis"
+            )
+            try:
+                async for line in stream_handover(
+                    summarizer=awm.assistant.model,
+                    history=earlier_messages,
+                    reader_message=reader_message,
+                    open_session=lambda: get_or_create_session(community_id, None),
+                    analysis_model=analysis_route.model,
+                    run_analysis=run_on,
+                    summarizer_config=awm.langfuse_config,
+                    record_summary=log_quick_row,
+                ):
+                    yield line
+            finally:
+                # A no-op once the summary has been logged; the row for a request that
+                # ended while the summary was being written.
+                log_quick_row(None)
+
+        routing_kwargs: dict[str, Any] = {}
+        if tier is not None:
+            # Only a routed request passes a tier, so a community that does not route
+            # calls this exactly as it always did.
+            routing_kwargs["tier"] = "quick" if handing_over else tier
         awm = create_community_assistant(
             community_id,
             byok=byok,
             origin=origin,
             user_id=user_id,
             requested_model=requested_model,
-            preload_docs=True,
+            preload_docs=not handing_over,
             page_context=page_context,
             declared_client_tools=declared_client_tools,
             browser_runs_left=MAX_BROWSER_RUNS_PER_REPLY - browser_runs_answered,
             session_id=session.session_id,
+            **routing_kwargs,
         )
+        if handing_over:
+            async with contextlib.aclosing(hand_over()) as handed_over:
+                async for line in handed_over:
+                    yield line
+            return
         graph = awm.assistant.build_graph()
 
         # `initial_messages` is how run 2 of a browser-execution turn seeds the graph:
@@ -4797,6 +5042,31 @@ async def _stream_chat_response(
                 extra={"error_id": error_id, "community_id": community_id},
             )
             yield f"data: {json.dumps({'event': 'error', 'message': 'The assistant could not start a browser task.', 'error_id': error_id})}\n\n"
+            return
+
+        if (
+            pending_payload
+            and tier == "quick"
+            and pending_payload.get("tool") == START_ANALYSIS_TOOL_NAME
+        ):
+            # The quick model asked for the analysis model. Not a tool_request, because
+            # no browser runs anything: the parked call is dropped with the rest of this
+            # run's state, so the session never holds a tool call with no result.
+            # Its row is logged by `log_quick_row`, with the summary's tokens, once the
+            # summary is written (a first message has none, and logs it just below).
+            tools_called.append(START_ANALYSIS_TOOL_NAME)
+            if earlier_messages:
+                source = hand_over()
+            else:
+                # A first message: no summary, and the same session runs the analysis.
+                # Its claim is passed on, not released, so no request can take the
+                # session while the run below sends its first event.
+                session.mode = "analysis"
+                log_quick_row(None)
+                source = run_on(session)
+            async with contextlib.aclosing(source) as handed_over:
+                async for line in handed_over:
+                    yield line
             return
 
         if pending_payload:
@@ -4967,6 +5237,8 @@ async def _stream_chat_response(
                 request_id=request_id,
             ),
         }
+        if tier is not None:
+            sse_event["mode"] = tier
         yield f"data: {json.dumps(sse_event)}\n\n"
 
         # Log metrics at end of streaming

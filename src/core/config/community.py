@@ -638,6 +638,31 @@ than in ``src.tools.client_tools`` because this module must import without the
 RESERVED_CLIENT_TOOL_NAMES = frozenset({FULL_OUTPUT_TOOL_NAME})
 """Names a community may not configure, because the server binds them itself."""
 
+Tier = Literal["quick", "analysis"]
+"""Which of a community's two models (``quick_model``, ``analysis_model``) a turn runs on.
+
+A chat session's ``mode`` is one of these. Defined here, with the tool-name constants,
+because this module imports nothing heavy; the routing code, the assistant and the client
+tools all import it from here, so a third tier is added in one place.
+"""
+
+START_ANALYSIS_TOOL_NAME = "start_analysis"
+"""The client tool a quick-tier turn calls to hand the conversation to the analysis model.
+
+Bound by the server on a quick turn only (``src.tools.client_tools.build_client_tools``,
+``tier="quick"``), never declared by a widget and never configured, so a community may not
+name a tool this. It is kept out of ``RESERVED_CLIENT_TOOL_NAMES`` because that set is
+what a widget declares, and this one is not declared.
+"""
+
+EXECUTE_CODE_TOOL_NAME = "execute_code"
+"""The client tool that runs code in the browser: what the analysis model is for.
+
+A community that routes turns between a quick and an analysis model (``quick_model`` and
+``analysis_model``) must configure a tool under this name, and a request must declare it
+for routing to apply.
+"""
+
 MAX_DECLARED_CLIENT_TOOLS = 8
 """How many client tool names one chat or resume request may declare."""
 
@@ -706,6 +731,11 @@ class ClientToolConfig(BaseModel):
             raise ValueError(
                 f"'{value}' is reserved: the server binds it itself whenever a python "
                 "client tool is bound, so it must not be configured."
+            )
+        if value == START_ANALYSIS_TOOL_NAME:
+            raise ValueError(
+                f"'{value}' is reserved: the server binds it itself on a quick-model "
+                "turn, so it must not be configured."
             )
         return value
 
@@ -2154,6 +2184,23 @@ class CommunityConfig(BaseModel):
     If not specified, uses the platform-level default from Settings.
     """
 
+    quick_model: str | None = None
+    """The model that answers most turns when this community routes between two models.
+
+    Set together with ``analysis_model`` or not at all. A model class or id that resolves
+    through ``normalize_model`` to an offered model (``haiku``). Used for the turns of a
+    request that declares ``execute_code`` and names no ``model`` of its own, until one
+    asks for code, a plot or an analysis (see ``src.agents.model_routing``). A community
+    without the pair behaves exactly as if the keys did not exist.
+    """
+
+    analysis_model: str | None = None
+    """The model that runs code, plots and analysis (``sonnet``). See ``quick_model``.
+
+    A conversation reaches it by a handover into a new session, never by switching
+    models inside one session, so the quick model's thinking blocks never meet it.
+    """
+
     reasoning_effort: ReasoningEffort | None = None
     """How much this community's assistant thinks: one level of a provider-neutral scale.
 
@@ -2394,6 +2441,25 @@ class CommunityConfig(BaseModel):
         """Validate model name format (provider/model-name)."""
         return _validate_model_id(v, field_label="Model name")
 
+    @field_validator("quick_model", "analysis_model")
+    @classmethod
+    def validate_routing_model(cls, v: str | None, info: ValidationInfo) -> str | None:
+        """Format-check a routing model and require it to be an offered model.
+
+        Stricter than ``default_model``, which only warns: a routing model that does not
+        resolve would fail every turn that reaches its tier, and the tier is chosen per
+        message, so the failure would show up as a conversation that breaks at the first
+        plot instead of at load.
+        """
+        v = _validate_model_id(v, field_label=info.field_name or "Routing model")
+        if v is None:
+            return None
+        try:
+            normalize_model(v)
+        except ValueError as e:
+            raise ValueError(f"{info.field_name}={v!r} is not an offered model: {e}") from e
+        return v
+
     @field_validator("model_instructions")
     @classmethod
     def validate_model_instructions(cls, v: dict[str, str]) -> dict[str, str]:
@@ -2602,6 +2668,28 @@ class CommunityConfig(BaseModel):
                 f"Ultra-expensive models (>$15/1M tokens) cannot use the platform API key."
             )
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_model_routing(self) -> "CommunityConfig":
+        """``quick_model`` and ``analysis_model`` go together, and need ``execute_code``.
+
+        The pair routes a turn to the analysis model when it asks for code, so without a
+        client tool that runs code there is nothing for the analysis model to do and the
+        quick model would hand over to no purpose.
+        """
+        if (self.quick_model is None) != (self.analysis_model is None):
+            raise ValueError("quick_model and analysis_model must both be set or both unset")
+        if self.quick_model is None:
+            return self
+        configured = (
+            {entry.name for entry in self.extensions.client_tools} if self.extensions else set()
+        )
+        if EXECUTE_CODE_TOOL_NAME not in configured:
+            raise ValueError(
+                "quick_model and analysis_model route code requests to the analysis model, "
+                f"so extensions.client_tools must configure '{EXECUTE_CODE_TOOL_NAME}'"
+            )
         return self
 
     @model_validator(mode="after")

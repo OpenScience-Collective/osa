@@ -47,6 +47,7 @@ communities:
 | description | string | Yes | Short description |
 | status | string | No | 'available', 'beta', or 'coming_soon' (default: 'available') |
 | default_model | string | No | Model the community runs when a request names none: a model class (`haiku`, `sonnet`, `luna`; see `MODEL_CLASSES` in `src/core/services/anthropic_models.py`) or an offered model id. A class means the model it is today, so a generation change is made once, there |
+| quick_model, analysis_model | string | No | Route turns between two models: the quick model answers most turns, and a turn that asks to run code, plot or analyze is handed to the analysis model in a new session. Both or neither; each a model class or offered model id; `extensions.client_tools` must configure `execute_code`. Applies only to a streamed request that declares `execute_code` and names no `model`. See `src/agents/model_routing.py` and `docs/community-widget.md`, "Quick answers and analysis" |
 | reasoning_effort | string | No | `none`, `low`, `medium`, `high`, `xhigh` or `max`: how hard every model this community runs reasons, on every provider. Each model clamps it to the levels it accepts (the Claude models, Sonnet 5.5 and Haiku 5.5, never above `high`, and `none` is no up-front thinking at the lowest effort; Qwen3 Next ignores it). Unset means `high` for every model. See ADR 0015 |
 | documentation | list | No | Documentation sources |
 | github | object | No | GitHub configuration |
