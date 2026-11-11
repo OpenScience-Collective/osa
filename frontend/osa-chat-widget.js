@@ -347,8 +347,9 @@
   let communityDefaultModel = null; // Community's default model from API
   let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
-  // The active conversation's identity, {id, context, createdAt}; `messages` and
-  // `sessionId` above are its working copy (see the conversation store).
+  // The active conversation's identity, {id, context, createdAt}, never its
+  // content: `messages` and `sessionId` above are its working copy (see the
+  // conversation store).
   let activeConversation = null;
   // Conversations to take out of storage with the next save (a discarded chat, a
   // deleted one); kept until a save succeeds.
@@ -442,23 +443,39 @@
   // object, because a bare string could not tell a dataset whose id is "search"
   // from the search context.
   //
-  // Everything in this block is a pure function: parsed storage in, envelope out,
-  // with no DOM and no widget state, so loadHistory, saveHistory and the
-  // conversation functions further down are thin callers. The widget is one
-  // classic script pinned by SRI, so the store cannot be a module of its own.
-  //
-  // @typedef {{type: 'dataset', id: string} | {type: 'search'} | null} ConversationContext
-  // @typedef {{id: string, context: ConversationContext, title: string,
-  //   sessionId: string | null, createdAt: number, updatedAt: number,
-  //   messages: object[]}} Conversation
-  // @typedef {{version: 3, activeId: string | null,
-  //   conversations: Conversation[]}} Envelope
-  // @typedef {{kind: 'v3' | 'legacy' | 'empty' | 'unreadable', reason?: 'newer' | 'damaged',
-  //   envelope: Envelope | null, needsSave: boolean, dropped: number}} ReadResult
-  //   (`envelope` is null only when kind is 'unreadable')
-  // The working copy is the module's `messages` and `sessionId` plus
-  // `activeConversation`, {id, context, createdAt}: the active conversation's
-  // identity, never its content.
+  // The format logic in this block is pure: parsed storage in, envelope out, with
+  // no DOM and no widget state. loadHistory and saveHistory further down do the
+  // IO (reading and writing storage, the quota retry, the copy of an unreadable
+  // record, the notices) and call into it. The widget is one classic script pinned
+  // by SRI, so the store cannot be a module of its own.
+
+  /** @typedef {{type: 'dataset', id: string} | {type: 'search'} | null} ConversationContext */
+  /**
+   * @typedef {object} Conversation
+   * @property {string} id
+   * @property {ConversationContext} context
+   * @property {string} title
+   * @property {string | null} sessionId
+   * @property {number} createdAt
+   * @property {number} updatedAt
+   * @property {object[]} messages
+   */
+  /**
+   * @typedef {object} Envelope
+   * @property {3} version
+   * @property {string | null} activeId
+   * @property {Conversation[]} conversations
+   */
+  /**
+   * What readConversationStore returns. `envelope` is null only when kind is
+   * 'unreadable'.
+   * @typedef {object} ReadResult
+   * @property {'v3' | 'legacy' | 'empty' | 'unreadable'} kind
+   * @property {'newer' | 'damaged'} [reason]
+   * @property {Envelope | null} envelope
+   * @property {boolean} needsSave
+   * @property {number} dropped
+   */
   const CHAT_HISTORY_VERSION = 3;
   const MAX_CONVERSATIONS = 30;
   const CONVERSATION_TITLE_LIMIT = 60;
@@ -710,6 +727,7 @@
       conversations: trimConversations([conversation, ...others], working.id),
     };
   }
+
   let responseSequence = 0;
 
   function createResponseId() {
@@ -4807,36 +4825,30 @@
     sessionId = null;
     activeConversation = null;
     try {
-      const saved = localStorage.getItem(CONFIG.storageKey);
-      if (saved) {
-        const result = readConversationStore(JSON.parse(saved), Date.now());
-        if (result.kind === 'unreadable') {
-          historyLoadFailed = true;
-          if (result.reason === 'newer') {
-            // Written by a newer widget: leave it exactly as it is.
-            queuePendingNotice('Saved chat history was written by a newer version of this widget, so it was left untouched and this chat will not be saved.');
-          } else {
-            queuePendingNotice(unreadableHistoryNotice());
-          }
+      const { read: result } = readStoredHistoryRecord();
+      if (result.kind === 'unreadable') {
+        historyLoadFailed = true;
+        if (result.reason === 'newer') {
+          // Written by a newer widget: leave it exactly as it is.
+          queuePendingNotice('Saved chat history was written by a newer version of this widget, so it was left untouched and this chat will not be saved.');
         } else {
-          historyNeedsSave = result.needsSave;
-          const active = result.envelope.conversations.find((c) => c.id === result.envelope.activeId);
-          if (active) {
-            messages = active.messages;
-            sessionId = active.sessionId;
-            activeConversation = { id: active.id, context: active.context, createdAt: active.createdAt };
-          }
-          if (result.dropped > 0) console.warn('Some chat messages were invalid and filtered out');
+          queuePendingNotice(unreadableHistoryNotice());
         }
+      } else {
+        historyNeedsSave = result.needsSave;
+        const active = result.envelope.conversations.find((c) => c.id === result.envelope.activeId);
+        if (active) {
+          messages = active.messages;
+          sessionId = active.sessionId;
+          activeConversation = { id: active.id, context: active.context, createdAt: active.createdAt };
+        }
+        if (result.dropped > 0) console.warn('Some chat messages were invalid and filtered out');
       }
     } catch (e) {
       console.error('Failed to load chat history:', e);
       historyLoadFailed = true;
-      // Only an unparsable string is a record to copy aside; a storage that cannot
-      // be read is not one.
-      queuePendingNotice(e && e.name === 'SyntaxError'
-        ? unreadableHistoryNotice()
-        : 'Saved chat history is corrupted and could not be loaded.');
+      // Storage that cannot be read at all; an unreadable record is reported above.
+      queuePendingNotice('Saved chat history is corrupted and could not be loaded.');
     }
     if (messages.length === 0) {
       messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
@@ -4864,30 +4876,44 @@
 
   function unreadableHistoryNotice() {
     return 'Saved chat history is corrupted and could not be loaded. '
-      + `It is left as it is until your next message is saved, then replaced; a copy stays in browser storage under "${unreadableHistoryKey()}".`;
+      + `It is left as it is until your next message is saved, then replaced; a copy is kept in browser storage under "${unreadableHistoryKey()}" when there is room.`;
   }
 
-  // The stored record: {raw, record, unreadable}. `raw` is the stored string (null
-  // when there is none), `record` its parsed JSON, and `unreadable` is true for a
-  // string that is not JSON, or a version 3 record without a conversations list:
-  // nothing in it the widget can use, but not something to destroy unseen. A
-  // storage that cannot be read at all throws.
+  // The stored record: {raw, record, read}. `raw` is the stored string (null when
+  // there is none), `record` its parsed JSON, and `read` what readConversationStore
+  // makes of it, the one place that decides what is unreadable. A string that is not
+  // JSON reads as unreadable, reason 'damaged', with a null `record`. A storage that
+  // cannot be read at all throws.
   function readStoredHistoryRecord() {
     const raw = localStorage.getItem(CONFIG.storageKey);
-    if (!raw) return { raw: null, record: null, unreadable: false };
+    if (!raw) return { raw: null, record: null, read: readConversationStore(null, Date.now()) };
     let record;
     try {
       record = JSON.parse(raw);
     } catch {
-      return { raw, record: null, unreadable: true };
+      return {
+        raw,
+        record: null,
+        read: { kind: 'unreadable', reason: 'damaged', envelope: null, needsSave: false, dropped: 0 },
+      };
     }
-    const damaged = !!record && typeof record === 'object' && !Array.isArray(record)
-      && record.version === CHAT_HISTORY_VERSION && !Array.isArray(record.conversations);
-    return { raw, record, unreadable: damaged };
+    return { raw, record, read: readConversationStore(record, Date.now()) };
   }
 
   function isStorageFullError(error) {
     return !!error && (error.name === 'QuotaExceededError' || error.code === 22 || error.code === 1014);
+  }
+
+  // A notice about what a save cost, for a save the reader did not ask to see: with
+  // the panel open it stays until dismissed; otherwise it is queued for the next
+  // time the panel opens, so it is not timed out unseen.
+  function showStorageNotice(message) {
+    const container = isOpen ? document.querySelector('.osa-chat-widget') : null;
+    if (container) {
+      showError(container, message, { persist: true });
+    } else {
+      queuePendingNotice(message);
+    }
   }
 
   // Save chat history to localStorage
@@ -4922,9 +4948,19 @@
       });
       if (!activeConversation) beginConversation(null);
       const stored = readStoredHistoryRecord();
-      // The first save over a record the widget could not read keeps a copy of
-      // it first; if the copy cannot be kept, nothing is overwritten.
-      if (stored.unreadable) localStorage.setItem(unreadableHistoryKey(), stored.raw);
+      // The first save over a damaged record keeps a copy of it first. The copy is
+      // best effort: a full storage cannot hold it, and refusing to replace a
+      // record the widget cannot use would stop every save, so then the reader is
+      // told it was not kept and the record is replaced. Any other failure stops
+      // the save, so nothing is overwritten unseen.
+      if (stored.read.kind === 'unreadable' && stored.read.reason === 'damaged') {
+        try {
+          localStorage.setItem(unreadableHistoryKey(), stored.raw);
+        } catch (copyError) {
+          if (!isStorageFullError(copyError)) throw copyError;
+          showStorageNotice('Browser storage was full, so the unreadable saved chat history could not be kept aside before it was replaced.');
+        }
+      }
       let envelope = mergeActiveConversation(stored.record, {
         id: activeConversation.id,
         context: activeConversation.context,
@@ -4955,12 +4991,9 @@
       saveErrorShown = false;
       if (evicted > 0) {
         // The chat is saved, but the reader should know what it cost.
-        const container = document.querySelector('.osa-chat-widget');
-        if (container) {
-          showError(container, evicted === 1
-            ? 'Browser storage was full, so the oldest saved conversation was removed to keep this one.'
-            : `Browser storage was full, so the ${evicted} oldest saved conversations were removed to keep this one.`);
-        }
+        showStorageNotice(evicted === 1
+          ? 'Browser storage was full, so the oldest saved conversation was removed to keep this one.'
+          : `Browser storage was full, so the ${evicted} oldest saved conversations were removed to keep this one.`);
       }
     } catch (e) {
       console.error('[OSA] localStorage save failed:', {
@@ -5002,7 +5035,7 @@
   // record.
   function readStoredConversations() {
     try {
-      const result = readConversationStore(readStoredHistoryRecord().record, Date.now());
+      const result = readStoredHistoryRecord().read;
       return result.kind === 'v3' ? result.envelope.conversations : [];
     } catch (e) {
       console.error('[OSA] Failed to read saved conversations:', e);

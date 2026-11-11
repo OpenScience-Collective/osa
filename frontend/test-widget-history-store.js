@@ -73,11 +73,15 @@ function serverFetch(log = []) {
 
 // A storage that can be told to refuse writes: a full disk, as a browser reports it.
 function failingStorage(real) {
-  const control = { failNext: 0, failAlways: false, attempts: 0 };
+  // `failKey` refuses writes to one key only, with the error named `failName`.
+  const control = { failNext: 0, failAlways: false, attempts: 0, failKey: null, failName: 'QuotaExceededError' };
   const storage = {
     getItem: (k) => real.getItem(k),
     setItem: (k, v) => {
       control.attempts += 1;
+      if (control.failKey === k) {
+        throw Object.assign(new Error('The write was refused.'), { name: control.failName });
+      }
       if (control.failAlways || control.failNext > 0) {
         if (control.failNext > 0) control.failNext -= 1;
         throw Object.assign(new Error('The quota has been exceeded.'), { name: 'QuotaExceededError' });
@@ -472,7 +476,7 @@ console.log('\ncorrupt JSON is left byte-identical, with a notice');
   assert(ctx.localStorage.getItem(`${KEY}-unreadable`) === corrupt, 'after copying the unreadable one, byte for byte');
 }
 
-console.log('\nif the copy of an unreadable record cannot be kept, it is not overwritten');
+console.log('\nif the copy of an unreadable record fails for a reason other than a full storage, it is not overwritten');
 {
   const corrupt = '{"version": 3, "conversations": [{"id": "a", "mess';
   const probe = start();
@@ -480,7 +484,8 @@ console.log('\nif the copy of an unreadable record cannot be kept, it is not ove
   probe.window.localStorage.setItem(KEY, corrupt);
   const ctx = start({ shared: storage });
   ctx.hooks.setMessages([...ctx.hooks.getMessages(), { role: 'user', content: 'x' }]);
-  control.failAlways = true;
+  control.failKey = `${KEY}-unreadable`;
+  control.failName = 'SecurityError';
   const originalError = console.error;
   console.error = () => {};
   let thrown = null;
@@ -493,6 +498,21 @@ console.log('\nif the copy of an unreadable record cannot be kept, it is not ove
   }
   assert(thrown !== null, 'the save reports that it did not happen');
   assert(probe.window.localStorage.getItem(KEY) === corrupt, 'and the record is byte-identical');
+}
+
+console.log('\nif the storage is too full to hold the copy, the record is still replaced and the reader is told');
+{
+  const corrupt = '{"version": 3, "conversations": [{"id": "a", "mess';
+  const probe = start();
+  const { storage, control } = failingStorage(probe.window.localStorage);
+  probe.window.localStorage.setItem(KEY, corrupt);
+  const ctx = start({ shared: storage });
+  ctx.hooks.setMessages([...ctx.hooks.getMessages(), { role: 'user', content: 'x' }]);
+  control.failKey = `${KEY}-unreadable`;
+  ctx.hooks.saveHistory();
+  assertEqual(JSON.parse(probe.window.localStorage.getItem(KEY)).version, 3, 'the save goes through, so the widget can save again');
+  assert(probe.window.localStorage.getItem(`${KEY}-unreadable`) === null, 'with no copy kept');
+  assert(/could not be kept aside/.test(ctx.notice()), 'and the notice, shown when the panel opens, says the copy was not kept');
 }
 
 console.log('\na version 3 record without a conversations list is reported, kept aside, then replaced');
@@ -560,10 +580,26 @@ console.log('\na write that hits the storage limit once evicts the oldest inacti
   assertEqual(control.attempts, 2, 'one refused write and one that went through');
   assertEqual(stored.conversations.map((c) => c.id).sort(), ['conv-1', 'conv-3', 'conv-4'], 'the oldest inactive, conv-2, was given up');
   assert(activeOf(stored).messages.some((m) => m.content === 'a larger conversation'), 'and the new message is saved');
+  // The panel is closed: the notice waits for the next time it opens.
+  const shown = ctx.notice();
+  assert(/storage was full.*oldest saved conversation was removed/.test(shown),
+    'and the reader is told, when the panel opens, that the oldest saved conversation was removed');
+  assert(!/NOT saved/.test(shown), 'which does not say the chat was lost');
+}
+
+console.log('\nwith the panel open, the eviction notice stays until dismissed');
+{
+  const probe = start();
+  const { storage, control } = failingStorage(probe.window.localStorage);
+  probe.window.localStorage.setItem(KEY, envelope([conversation(1), conversation(2), conversation(3)], 'conv-1'));
+  const ctx = start({ shared: storage });
+  ctx.q('.osa-chat-button').click();
+  ctx.hooks.setMessages([...ctx.hooks.getMessages(), { role: 'user', content: 'a larger conversation' }]);
+  control.failNext = 1;
+  ctx.hooks.saveHistory();
   const notice = ctx.q('.osa-error');
-  assert(notice.style.display === 'block' && /storage was full.*oldest saved conversation was removed/.test(notice.textContent),
-    'and the reader is told, in a notice, that the oldest saved conversation was removed');
-  assert(!/NOT saved/.test(notice.textContent), 'which does not say the chat was lost');
+  assert(notice.style.display === 'block' && /oldest saved conversation was removed/.test(notice.textContent), 'the notice is shown at once');
+  assert(notice.classList.contains('osa-error-persistent'), 'and is the kind that does not time out');
 }
 
 console.log('\na storage that stays full gives up the others one by one, then reports it');
