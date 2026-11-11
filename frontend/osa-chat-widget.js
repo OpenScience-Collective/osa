@@ -838,6 +838,8 @@
       --osa-notice-bg: #f5fbfd;
       --osa-notice-border: #b9e0eb;
       --osa-notice-text: #0f3d4c;
+      /* An error line on the panel or on a notice (the notebook card, E4.3). */
+      --osa-danger-text: #b91c1c;
       --osa-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
       /* The launcher's geometry (#553). applyLauncherGeometry sets --osa-size-closed,
          --osa-size-open, --osa-closed-scale, --osa-edge-x and --osa-edge-y (and the
@@ -1791,6 +1793,127 @@
     }
 
     .osa-notebook-banner button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    /* The notebook card under the chat's last reply (E4.3): a bordered note in the
+       notice colors, with secondary-style buttons and no accent fill, so it asks
+       for nothing. Every control is 44 px tall. */
+    .osa-nb-entry {
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px;
+      color: var(--osa-notice-text);
+      background: var(--osa-notice-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 12px;
+    }
+
+    .osa-nb-entry p {
+      margin: 0;
+      font-size: 12.5px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .osa-nb-entry-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .osa-nb-entry button {
+      box-sizing: border-box;
+      min-width: 0;
+      min-height: 44px;
+      padding: 0 14px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--osa-text);
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .osa-nb-entry button:hover:not(:disabled) {
+      border-color: var(--osa-accent);
+    }
+
+    .osa-nb-entry button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    .osa-nb-entry button:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    .osa-nb-entry-menu {
+      display: flex;
+      flex-direction: column;
+      padding: 4px;
+      color: var(--osa-text);
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-border);
+      border-radius: 10px;
+    }
+
+    .osa-nb-entry-menu[hidden] {
+      display: none;
+    }
+
+    .osa-nb-entry-menu button {
+      text-align: left;
+      border-color: transparent;
+    }
+
+    .osa-nb-entry-menu button:hover:not(:disabled),
+    .osa-nb-entry-menu button:focus-visible {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-nb-entry .osa-nb-entry-note {
+      padding: 2px 10px 6px;
+      font-size: 11.5px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-nb-entry .osa-nb-entry-error {
+      font-weight: 600;
+      color: var(--osa-danger-text);
+    }
+
+    /* The History row menu's notebook items (E4.3): the reason a disabled Continue
+       cannot be used is text under it, and the menu is as wide as that needs. */
+    .osa-history-menu {
+      max-width: min(260px, calc(100% - 16px));
+    }
+
+    .osa-history-menu .osa-history-menu-reason {
+      display: block;
+      padding: 0 12px 6px;
+      font-size: 11.5px;
+      line-height: 1.4;
+      color: var(--osa-text-light);
+    }
+
+    .osa-history-menu .osa-history-save-choices {
+      display: flex;
+      flex-direction: column;
+      padding-left: 12px;
+    }
+
+    .osa-history-menu .osa-history-save-choices[hidden] {
+      display: none;
+    }
+
+    .osa-history-menu button:disabled {
       opacity: 0.55;
       cursor: default;
     }
@@ -4295,6 +4418,7 @@
       --osa-notice-bg: #12303a;
       --osa-notice-border: #2c5a69;
       --osa-notice-text: #d3eef6;
+      --osa-danger-text: #fca5a5;
       /* A shadow alone vanishes against a dark host page, so every raised surface
          (the panel, the launcher, the tooltips) also gets a hairline edge. */
       --osa-shadow: 0 0 0 1px #374151, 0 10px 25px rgba(0, 0, 0, 0.5);
@@ -4685,6 +4809,8 @@
     }
 
     renderTabStrip(container);
+    // The notebook card under the chat's last reply says what the notebook can do now (E4.3).
+    refreshNotebookEntry(container);
   }
 
   // Python is starting, or the notebook still loading: the cue a notebook circle or
@@ -6746,6 +6872,414 @@
     return true;
   }
 
+  // --- Notebook entry points (E4.3) ---
+  // The ways out of a chat's code (#675, board B1): a quiet card under the last
+  // reply once a run has succeeded, two items in the History row menu, and
+  // "Download code" as .ipynb or .py. The notebook and the script come from the
+  // runtime bundle's buildConversationNotebook (E4.1), so a community with no
+  // runtime has none of this; the import goes through importNotebookToTab (E4.2),
+  // which refuses unless the notebook on screen is the chat's dataset's.
+  // Nothing here puts conversation text in markup: the card is built with
+  // createElement and textContent, and the History items hold only fixed text and
+  // escaped ids.
+
+  const NOTEBOOK_ENTRY_FORMATS = [
+    { id: 'ipynb', label: 'Notebook (.ipynb)' },
+    { id: 'py', label: 'Python script with cells (.py)' }
+  ];
+  const NOTEBOOK_ENTRY_NOTE = 'Opens as cells in VS Code, Spyder and Jupytext.';
+
+  // The card's memory, per conversation id, for the life of the page: imports
+  // under way, imports that finished (with the step count they held and the
+  // banner's record of them), the last failure, and which conversation's
+  // "Download code" menu is open. Not persisted: after a reload the card offers
+  // Continue again.
+  const notebookEntry = {
+    importing: new Set(),
+    imported: new Map(),
+    errors: new Map(),
+    menuFor: null
+  };
+
+  // Pure: a conversation's stored runs in message order, without the reading of
+  // output back (get_full_output), which is not analysis.
+  function conversationRuns(conversation) {
+    const runs = [];
+    for (const message of conversation && Array.isArray(conversation.messages) ? conversation.messages : []) {
+      if (!message || !Array.isArray(message.executions)) continue;
+      for (const run of message.executions) {
+        if (run && typeof run === 'object' && run.tool !== FULL_OUTPUT_TOOL) runs.push(run);
+      }
+    }
+    return runs;
+  }
+
+  // Pure: whether any of those runs succeeded and has code, which is what the
+  // builder counts as a step.
+  function hasSuccessfulRun(conversation) {
+    return conversationRuns(conversation).some((run) => run.status === 'ok' && typeof run.code === 'string' && run.code.trim() !== '');
+  }
+
+  // Pure: the dataset a conversation was about, or null.
+  function conversationDatasetId(conversation) {
+    const context = conversation && conversation.context;
+    return context && context.type === 'dataset' && isValidDatasetId(context.id) ? context.id : null;
+  }
+
+  // Pure: `on002718-chat.ipynb`, named from the dataset.
+  function codeFileName(datasetId, format) {
+    return `${datasetId}-chat.${format}`;
+  }
+
+  // The active conversation in the shape the builder reads.
+  function activeConversationRecord() {
+    if (!activeConversation) return null;
+    return {
+      id: activeConversation.id,
+      context: activeConversation.context,
+      createdAt: activeConversation.createdAt,
+      title: conversationTitle(messages),
+      messages
+    };
+  }
+
+  // The notebook and the script for a conversation, from the real builder:
+  // {datasetId, title, notebook, script, stats}, or {error} with something to
+  // say. Never throws, so a builder that fails cannot break a render.
+  function buildConversationCode(conversation) {
+    const datasetId = conversationDatasetId(conversation);
+    if (!datasetId) return { error: 'This chat is not about a dataset, so there is no notebook to build from it.' };
+    if (!runtimeApi || typeof runtimeApi.buildConversationNotebook !== 'function') {
+      return { error: 'The notebook builder is not available here.' };
+    }
+    try {
+      const built = runtimeApi.buildConversationNotebook({
+        datasetId,
+        title: conversation.title || '',
+        createdAt: conversation.createdAt,
+        communityName: CONFIG.title,
+        executions: conversationRuns(conversation)
+      });
+      const steps = built && built.stats && built.stats.steps;
+      if (!built || !built.notebook || typeof built.script !== 'string' || !(steps > 0)) {
+        return { error: 'No run in this chat succeeded, so there is no code to take out.' };
+      }
+      return {
+        datasetId,
+        title: conversation.title || `Notebook for ${datasetId}`,
+        notebook: built.notebook,
+        script: built.script,
+        stats: built.stats
+      };
+    } catch (err) {
+      console.warn('[OSA] Could not build the notebook for a chat:', err);
+      return { error: `The notebook could not be built: ${(err && err.message) || err}` };
+    }
+  }
+
+  // Whether the chat's notebook can be continued in the notebook on screen:
+  // `offered` is false for a widget with no notebook tab (nothing to continue
+  // in), and `reason` says why not when it is offered but cannot be done now.
+  function notebookContinueState(datasetId) {
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container || !container.classList.contains('osa-capsule')) return { offered: false, reason: '' };
+    if (!currentDataset || currentDataset.id !== datasetId) {
+      return { offered: true, reason: `Open the ${datasetId} page to continue this chat in a notebook.` };
+    }
+    if (!isNotebookAvailable()) return { offered: true, reason: `The ${datasetId} notebook is not available yet.` };
+    return { offered: true, reason: '' };
+  }
+
+  // Hand the file to the reader, built from the builder's own output.
+  function saveConversationCode(built, format) {
+    const blob = format === 'py'
+      ? new Blob([built.script], { type: 'text/x-python' })
+      : new Blob([`${JSON.stringify(built.notebook, null, 1)}\n`], { type: 'application/x-ipynb+json' });
+    saveFile(blob, codeFileName(built.datasetId, format));
+  }
+
+  // Continue in notebook, for a conversation the caller already built: marks it
+  // importing, imports, and records the outcome for the card. Resolves with the
+  // import's answer; never throws.
+  async function runNotebookImport(conversationId, built) {
+    if (notebookEntry.importing.has(conversationId)) return { ok: false, error: 'This chat is already being sent to the notebook.' };
+    const container = document.querySelector('.osa-chat-widget');
+    notebookEntry.importing.add(conversationId);
+    notebookEntry.errors.delete(conversationId);
+    if (container) refreshNotebookEntry(container);
+    let result;
+    let record = null;
+    try {
+      const pending = importNotebookToTab({
+        datasetId: built.datasetId,
+        title: built.title,
+        notebook: built.notebook,
+        stats: built.stats
+      });
+      // importNotebookToTab makes its record before it first waits.
+      record = notebookEmbed.import;
+      result = await pending;
+    } catch (err) {
+      result = { ok: false, error: (err && err.message) || String(err) };
+    }
+    notebookEntry.importing.delete(conversationId);
+    if (result && (result.ok || result.path)) {
+      notebookEntry.imported.set(conversationId, { datasetId: built.datasetId, steps: built.stats.steps, record });
+    } else {
+      notebookEntry.errors.set(conversationId, {
+        steps: built.stats.steps,
+        text: (result && result.error) || 'The notebook could not be imported.'
+      });
+    }
+    const live = document.querySelector('.osa-chat-widget');
+    if (live) refreshNotebookEntry(live);
+    return result || { ok: false };
+  }
+
+  // Whether an import is still in the notebook: not undone, and for the dataset on screen.
+  function notebookImportStillThere(imported) {
+    return !!currentDataset && imported.datasetId === currentDataset.id &&
+      !(imported.record && imported.record.state === 'undone');
+  }
+
+  // "Open notebook": the notebook tab, on the notebook the import made.
+  function openImportedNotebook(container, conversationId) {
+    const imported = notebookEntry.imported.get(conversationId);
+    if (!imported) return;
+    setTab(container, 'notebook');
+    if (!isOpen) toggleChat(container);
+    const path = imported.record && imported.record.path;
+    if (path && notebookEmbed.tabs.active !== path) sendNotebookRequest('open-notebook', { path });
+  }
+
+  // The card for the reply at msgIndex, or null: only under the last assistant
+  // reply, once it is whole, when a run succeeded and the builder found a step.
+  function notebookEntryCard(msgIndex) {
+    if (!runtimeApi || isLoading || !activeConversation || msgIndex === revealingIndex) return null;
+    if (msgIndex !== messages.map((message) => message && message.role).lastIndexOf('assistant')) return null;
+    const conversation = activeConversationRecord();
+    if (!hasSuccessfulRun(conversation)) return null;
+    const built = buildConversationCode(conversation);
+    if (built.error) return null;
+    const id = conversation.id;
+    const steps = built.stats.steps;
+    const state = notebookContinueState(built.datasetId);
+    const canContinue = state.offered && !state.reason;
+    const imported = notebookEntry.imported.get(id);
+    const opened = canContinue && !!imported && imported.steps === steps && notebookImportStillThere(imported);
+    const importing = notebookEntry.importing.has(id);
+    const failure = notebookEntry.errors.get(id);
+    const error = failure && failure.steps === steps ? failure.text : '';
+    const menuOpen = notebookEntry.menuFor === id;
+    const container = document.querySelector('.osa-chat-widget');
+
+    const make = (tag, className, text) => {
+      const node = document.createElement(tag);
+      node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+    const button = (className, focus, label, onClick) => {
+      const node = make('button', className, label);
+      node.type = 'button';
+      node.dataset.focus = focus;
+      node.addEventListener('click', onClick);
+      return node;
+    };
+    // The current conversation's code, for a click: built again, since a run may
+    // have been added since the card was drawn.
+    const freshCode = () => {
+      const current = activeConversationRecord();
+      return current && current.id === id ? buildConversationCode(current) : { error: 'This chat is no longer open.' };
+    };
+    const card = make('div', 'osa-nb-entry');
+    card.setAttribute('role', 'group');
+    card.setAttribute('aria-label', 'Keep going in a notebook');
+    card.dataset.entryIndex = String(msgIndex);
+    card.dataset.key = JSON.stringify([msgIndex, id, steps, canContinue, opened, importing, error, menuOpen]);
+    const count = pluralize(steps, 'step', 'steps');
+    const code = steps === 1 ? 'its' : 'their';
+    card.appendChild(make('p', 'osa-nb-entry-text', canContinue
+      ? `${count} ran in this chat. Keep going in a notebook with all of ${code} code.`
+      : `${count} ran in this chat. Download all of ${code} code to keep going in a notebook.`));
+
+    const actions = make('div', 'osa-nb-entry-actions');
+    if (canContinue && opened) {
+      actions.appendChild(button('osa-nb-entry-open', 'open', 'Open notebook', () => openImportedNotebook(container, id)));
+    } else if (canContinue) {
+      const go = button('osa-nb-entry-continue', 'continue', 'Continue in notebook', () => {
+        const fresh = freshCode();
+        if (fresh.error) {
+          notebookEntry.errors.set(id, { steps, text: fresh.error });
+          refreshNotebookEntry(container);
+          return;
+        }
+        runNotebookImport(id, fresh);
+      });
+      go.disabled = importing;
+      if (importing) go.setAttribute('aria-busy', 'true');
+      actions.appendChild(go);
+    }
+    const download = button('osa-nb-entry-download', 'download', 'Download code', () => {
+      notebookEntry.menuFor = notebookEntry.menuFor === id ? null : id;
+      refreshNotebookEntry(container, { focus: notebookEntry.menuFor === id ? '[data-focus="ipynb"]' : '[data-focus="download"]' });
+    });
+    download.setAttribute('aria-haspopup', 'menu');
+    download.setAttribute('aria-expanded', menuOpen ? 'true' : 'false');
+    actions.appendChild(download);
+    card.appendChild(actions);
+
+    const menu = make('div', 'osa-nb-entry-menu');
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'Download code');
+    menu.hidden = !menuOpen;
+    for (const format of NOTEBOOK_ENTRY_FORMATS) {
+      const item = button('osa-nb-entry-item', format.id, format.label, () => {
+        notebookEntry.menuFor = null;
+        const fresh = freshCode();
+        try {
+          if (fresh.error) throw new Error(fresh.error);
+          saveConversationCode(fresh, format.id);
+          notebookEntry.errors.delete(id);
+        } catch (err) {
+          console.error('[OSA] Could not build the code download:', err);
+          notebookEntry.errors.set(id, { steps, text: `Could not download the code: ${(err && err.message) || err}` });
+        }
+        refreshNotebookEntry(container, { focus: '[data-focus="download"]' });
+      });
+      item.setAttribute('role', 'menuitem');
+      menu.appendChild(item);
+    }
+    menu.appendChild(make('p', 'osa-nb-entry-note', NOTEBOOK_ENTRY_NOTE));
+    card.appendChild(menu);
+
+    if (importing) {
+      const status = make('p', 'osa-nb-entry-status', 'Sending the code to the notebook…');
+      status.setAttribute('role', 'status');
+      card.appendChild(status);
+    }
+    if (error) {
+      const alert = make('p', 'osa-nb-entry-error', error);
+      alert.setAttribute('role', 'alert');
+      card.appendChild(alert);
+    }
+
+    card.addEventListener('keydown', (event) => {
+      if (notebookEntry.menuFor !== id) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        notebookEntry.menuFor = null;
+        refreshNotebookEntry(container, { focus: '[data-focus="download"]' });
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const items = [...menu.querySelectorAll('.osa-nb-entry-item')];
+        if (items.length === 0) return;
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        items[(items.indexOf(document.activeElement) + step + items.length) % items.length].focus();
+      }
+    });
+    // Tabbing away closes the menu. A null target is no evidence (some browsers
+    // do not focus a button on click), so that case is left alone.
+    card.addEventListener('focusout', (event) => {
+      const to = event.relatedTarget;
+      if (notebookEntry.menuFor === id && to && !card.contains(to)) {
+        notebookEntry.menuFor = null;
+        refreshNotebookEntry(container);
+      }
+    });
+    return card;
+  }
+
+  // Redraw the card in place when what it says has changed (a dataset arriving,
+  // a tab switch, an import ending), keeping focus on the same control. A no-op
+  // when there is no card on screen, or its state is the same.
+  function refreshNotebookEntry(container, { focus = null } = {}) {
+    const slot = container.querySelector('.osa-nb-entry');
+    if (!slot) return;
+    let next = null;
+    try {
+      next = notebookEntryCard(Number(slot.dataset.entryIndex));
+    } catch (err) {
+      console.error('[OSA] Could not draw the notebook card:', err);
+    }
+    if (!next) {
+      slot.remove();
+      return;
+    }
+    if (next.dataset.key === slot.dataset.key && !focus) return;
+    const active = document.activeElement;
+    const kept = !focus && slot.contains(active) && active.dataset ? active.dataset.focus : null;
+    slot.replaceWith(next);
+    const target = focus
+      ? next.querySelector(focus)
+      : (kept ? [...next.querySelectorAll('[data-focus]')].find((node) => node.dataset.focus === kept) : null);
+    if (target && !target.disabled) target.focus();
+  }
+
+  // What the History row's menu offers for a conversation, or null: nothing for a
+  // community with no runtime, a chat with no dataset, or one with no successful run.
+  function historyCodeEntry(conversation) {
+    if (!runtimeApi) return null;
+    const datasetId = conversationDatasetId(conversation);
+    if (!datasetId || !hasSuccessfulRun(conversation)) return null;
+    const state = notebookContinueState(datasetId);
+    return { datasetId, offerContinue: state.offered, reason: state.reason };
+  }
+
+  // The two items, as markup: fixed text and an escaped id only. Continue is
+  // disabled with its reason shown, not only in a tooltip.
+  function historyCodeItemsHtml(id, code, off) {
+    const reasonId = `osa-history-reason-${id}`;
+    const choices = NOTEBOOK_ENTRY_FORMATS.map((format) =>
+      `<button type="button" class="osa-history-menu-save" data-id="${escapeHtml(id)}" data-format="${escapeHtml(format.id)}"${off}>${escapeHtml(format.label)}</button>`).join('');
+    const continueItem = !code.offerContinue ? '' : `
+          <button type="button" class="osa-history-menu-continue" data-id="${escapeHtml(id)}"${code.reason ? ` disabled aria-describedby="${escapeHtml(reasonId)}"` : off}>Continue in notebook</button>${code.reason ? `
+          <span class="osa-history-menu-reason" id="${escapeHtml(reasonId)}">${escapeHtml(code.reason)}</span>` : ''}`;
+    return `${continueItem}
+          <button type="button" class="osa-history-menu-download" data-id="${escapeHtml(id)}" aria-expanded="false" aria-controls="osa-history-save-${escapeHtml(id)}"${off}>Download code</button>
+          <div class="osa-history-save-choices" id="osa-history-save-${escapeHtml(id)}" role="group" aria-label="Download code" hidden>${choices}<span class="osa-history-menu-reason">${escapeHtml(NOTEBOOK_ENTRY_NOTE)}</span></div>`;
+  }
+
+  // History: Continue in notebook for any saved chat, the active one or not. The
+  // sheet closes first, since the import takes the panel to the notebook tab.
+  async function continueHistoryConversation(container, id) {
+    if (isLoading) return;
+    const conversation = listConversations().find((candidate) => candidate.id === id);
+    const built = conversation ? buildConversationCode(conversation) : { error: 'That chat could not be found. It may have been deleted in another tab.' };
+    if (!built.error) {
+      const state = notebookContinueState(built.datasetId);
+      if (!state.offered || state.reason) built.error = state.reason || 'The notebook is not available here.';
+    }
+    if (built.error) {
+      historyNote = built.error;
+      renderHistorySheet(container);
+      return;
+    }
+    closeHistory(container, { restoreFocus: false });
+    const result = await runNotebookImport(id, built);
+    // A refusal that left the reader on the chat has nowhere else to say so.
+    if (!result.ok && !result.path && activeTab !== 'notebook') {
+      showError(container, `Could not continue in the notebook: ${result.error || 'it did not open here'}`);
+    }
+  }
+
+  // History: Download code, for any saved chat.
+  function saveHistoryConversationCode(container, id, format) {
+    const conversation = listConversations().find((candidate) => candidate.id === id);
+    const built = conversation ? buildConversationCode(conversation) : { error: 'That chat could not be found. It may have been deleted in another tab.' };
+    try {
+      if (built.error) throw new Error(built.error);
+      saveConversationCode(built, format);
+      historyNote = '';
+    } catch (err) {
+      console.error('[OSA] Could not build the code download:', err);
+      historyNote = `Could not download the code: ${(err && err.message) || err}`;
+    }
+    renderHistorySheet(container);
+    historySheet(container).focus();
+  }
+
   // --- History panel ---
   // The sheet over the chat that lists every saved conversation by day, with its
   // dataset, how many steps ran and figures were drawn, and a thumbnail of its first
@@ -6901,7 +7435,7 @@
         </button>
         <button type="button" class="osa-history-more" data-id="${escapeHtml(summary.id)}" aria-label="More actions for ${escapeHtml(title)}" aria-expanded="false" aria-controls="osa-history-menu-${escapeHtml(summary.id)}"${off}>${ICONS.more}</button>
         <div class="osa-history-menu" id="osa-history-menu-${escapeHtml(summary.id)}" role="group" aria-label="Actions for ${escapeHtml(title)}" hidden>
-          <button type="button" class="osa-history-menu-open" data-id="${escapeHtml(summary.id)}"${off}>Open</button>
+          <button type="button" class="osa-history-menu-open" data-id="${escapeHtml(summary.id)}"${off}>Open</button>${extra.code ? historyCodeItemsHtml(summary.id, extra.code, off) : ''}
           <button type="button" class="osa-history-menu-delete" data-id="${escapeHtml(summary.id)}"${off}>Delete</button>
         </div>
       </li>`;
@@ -6914,7 +7448,7 @@
     const locked = isLoading;
     const now = Date.now();
     const saved = listConversations().filter((c) => c.messages.some((m) => m && m.role === 'user'));
-    const extras = new Map(saved.map((c) => [c.id, { active: c.active, thumbCallId: firstFigureCallId(c) }]));
+    const extras = new Map(saved.map((c) => [c.id, { active: c.active, thumbCallId: firstFigureCallId(c), code: historyCodeEntry(c) }]));
     const groups = groupByDay(saved.map(conversationSummary), now);
     const list = sheet.querySelector('.osa-history-list');
     list.innerHTML = groups.length === 0
@@ -7199,6 +7733,16 @@
         openHistoryConversation(container, hit.getAttribute('data-id'));
       } else if ((hit = control('.osa-history-menu-delete'))) {
         deleteHistoryConversation(container, hit.getAttribute('data-id'));
+      } else if ((hit = control('.osa-history-menu-continue'))) {
+        continueHistoryConversation(container, hit.getAttribute('data-id'));
+      } else if ((hit = control('.osa-history-menu-download'))) {
+        const choices = hit.parentElement.querySelector('.osa-history-save-choices');
+        const opening = choices.hidden;
+        choices.hidden = !opening;
+        hit.setAttribute('aria-expanded', opening ? 'true' : 'false');
+        if (opening) choices.querySelector('button')?.focus();
+      } else if ((hit = control('.osa-history-menu-save'))) {
+        saveHistoryConversationCode(container, hit.getAttribute('data-id'), hit.getAttribute('data-format'));
       } else if ((hit = control('.osa-history-more'))) {
         const menu = hit.parentElement.querySelector('.osa-history-menu');
         const opening = menu.hidden;
@@ -8211,6 +8755,9 @@
           workspace: workspaceStore,
         });
         runtimeApi = api;
+        // The notebook card (E4.3) needs the builder, so a chat already on screen
+        // is drawn again now that it has one.
+        renderIfMounted();
       } catch (err) {
         browserRuntime = null;
         browserTools = null;
@@ -11224,6 +11771,8 @@
         ${feedbackRow}
       `;
       messagesEl.appendChild(msgEl);
+      const entryCard = notebookEntryCard(msgIndex);
+      if (entryCard) messagesEl.appendChild(entryCard);
     });
 
     // Add event listeners for copy buttons
