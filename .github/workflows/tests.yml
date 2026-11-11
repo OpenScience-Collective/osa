@@ -480,6 +480,14 @@ jobs:
       - name: Run the Settings dialog tests on a real DOM
         run: bun frontend/test-widget-settings.js
 
+      # Privacy choices (#706): the footer button and its modal, "Use this page for
+      # answers" under its old storage key and "Share usage data" under its own, the
+      # share_usage field on /chat and /chat/resume only while it is off, the Tab trap and
+      # Escape in the corner and the center, focus returning to the button, and the https
+      # privacy link from the community config or the default.
+      - name: Run the Privacy choices tests on a real DOM
+        run: bun frontend/test-widget-privacy-choices.js
+
       - name: Run the paced streaming tests on a real DOM
         run: bun frontend/test-widget-paced-streaming.js
 
@@ -630,6 +638,24 @@ jobs:
         with:
           name: center-stage-check-screenshots
           path: ${{ runner.temp }}/center-stage-check
+          if-no-files-found: ignore
+
+      # The Privacy choices button and dialog in real Chrome at 1280 x 900 and 390 x 844,
+      # light and dark, in the corner and in the center: inside the viewport with no
+      # sideways scroll, every target at least 24 px and every row 44, the real Tab key
+      # never leaving the dialog, Space toggling, Escape closing only the dialog with
+      # focus back on the button, and the colors at their contrast ratios.
+      - name: Check the Privacy choices dialog in headless Chrome
+        env:
+          PRIVACY_CHECK_SCREENSHOTS: ${{ runner.temp }}/privacy-check
+        run: bun frontend/browser-harness/privacy-choices-check.mjs
+
+      - name: Upload the Privacy choices check screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: privacy-check-screenshots
+          path: ${{ runner.temp }}/privacy-check
           if-no-files-found: ignore
 
       # What only a browser can check: Pyodide under a real Content-Security-Policy,
