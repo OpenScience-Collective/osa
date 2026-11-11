@@ -49,6 +49,7 @@ SCENARIOS = [
     "changes_with_feedback",
     "changes_without_feedback",
     "changes_largest",
+    "changes_astral",
     "approved_with_page_context",
 ]
 
@@ -176,3 +177,21 @@ def test_the_shared_page_context_does_not_break_the_decision(built: dict[str, An
     request = ResumeRequest.model_validate(body)
     assert request.page_context is not None
     assert isinstance(request.result, PlanDecision)
+
+
+def test_characters_beyond_the_basic_plane_are_counted_as_the_server_counts_them(
+    built: dict[str, Any],
+) -> None:
+    """The limits are code points (pydantic max_length), not UTF-16 code units.
+
+    A title of 120 code points is two code units per emoji; cutting it by code units would
+    drop half of it, or split a surrogate pair that the server's JSON parser refuses (a 422).
+    """
+    emoji = "\U0001f600"
+    decision = decision_of(built, "changes_astral")
+    (step,) = decision.steps
+    assert step.title == "a" + emoji * (MAX_PLAN_STEP_TITLE_CHARS - 1)
+    assert step.detail == "a" + emoji * (MAX_PLAN_STEP_DETAIL_CHARS - 1)
+    assert decision.feedback == "n" + emoji * (MAX_PLAN_FEEDBACK_CHARS - 1)
+    for text in (step.title, step.detail, decision.feedback):
+        text.encode("utf-8")  # a lone surrogate would raise here

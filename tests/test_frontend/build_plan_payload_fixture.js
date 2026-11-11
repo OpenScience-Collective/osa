@@ -87,6 +87,27 @@ out.changes_largest = await scenario({ args: longArgs }, async (page) => {
   return next;
 });
 
+// Characters outside the Basic Multilingual Plane (an emoji is two UTF-16 code units, one
+// code point): the server's limits count code points, so a title of 120 code points, a
+// detail of 600 and a note over 1000 must be sent whole or cut at a code point, never in
+// the middle of a surrogate pair, which the server's JSON parser refuses.
+const EMOJI = '\u{1F600}';
+const astralArgs = {
+  findings: `a${EMOJI.repeat(PLAN_LIMITS.findings - 1)}`,
+  est_peak_mb: 300,
+  steps: [{
+    title: `a${EMOJI.repeat(PLAN_LIMITS.title - 1)}`,
+    detail: `a${EMOJI.repeat(PLAN_LIMITS.detail - 1)}`,
+  }],
+};
+out.changes_astral = await scenario({ args: astralArgs }, async (page) => {
+  click(page, page.q('.osa-plan-ask'));
+  typeInto(page, page.q('.osa-plan-feedback textarea'), `n${EMOJI.repeat(PLAN_LIMITS.feedback + 100)}`);
+  const next = page.queue();
+  click(page, page.q('.osa-plan-send-feedback'));
+  return next;
+});
+
 // With the page context a reader shares by default: the body the widget really sends.
 out.approved_with_page_context = await scenario({ allowPageContext: true }, (page) => approve(page));
 
