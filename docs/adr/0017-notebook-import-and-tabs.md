@@ -66,7 +66,7 @@ A message the page ignores (another target, an unknown type, no usable `requestI
 **Undo** deletes the imported file and closes its tab, if the cells' source is still what was imported: running the cells is not an edit, typing in them is.
 
 **The widget** (`frontend/osa-chat-widget.js`, the block "Notebook tabs") opens the notebook tab and the panel, queues a message until the notebook has reported ready, posts it once and only to the notebook's origin, and draws the strip, the banner ("Imported N steps from your chat", the runs left out from the widget's own count, Run all and Undo) and the "+" menu from the notebook's messages, so it shows what the page has.
-`importNotebookToTab` is the one entry point; the "Continue in notebook" card (E4.3) will call it.
+`importNotebookToTab` is the one entry point; the "Continue in notebook" card and the History row item (E4.3) both call it.
 
 ## Consequences
 
