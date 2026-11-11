@@ -1,0 +1,148 @@
+data: {"event": "session", "session_id": "b6e5a4b5-574a-4fe3-a52d-dcec7e656178"}
+
+data: {"event": "tool_call", "name": "nemar_search_datasets"}
+
+data: {"event": "tool_start", "name": "nemar_search_datasets", "input": {"query": "TEST COPY", "limit": 100}}
+
+data: {"event": "tool_end", "name": "nemar_search_datasets", "output": "content='{\"results\": [{\"dataset_id\": \"xx099901\", \"name\": \"[TEST COPY] MEG-BIDS Brainstorm data sample\", \"doi\": \"10.5072/fk2xx099901\", \"license\": \"CC0\", \"modalities\": [\"anat\", \"meg\"], \"tasks\": [\"AEF\", \"noise\"], \"subject_count\": 2, \"has_hed\": false, \"has_zarr\": true}, {\"dataset_id\": \"xx099905\", \"name\": \"[TEST COPY] BNCI 2014-004 Motor Imagery dataset\", \"doi\": \"10.5072/fk2xx099905\", \"license\": \"CC-BY-ND-4.0\", \"modalities\": [\"eeg\"], \"tasks\": [\"imagery\"], \"subject_count\": 1, \"has_hed\": true, \"has_zarr\": true}, {\"dataset_id\": \"xx099902\", \"name\": \"[TEST COPY] OWM-Dataset\", \"doi\": \"10.5072/fk2xx099902\", \"license\": \"CC0\", \"modalities\": [\"ieeg\"], \"tasks\": [\"OWM\"], \"subject_count\": 13, \"has_hed\": false, \"has_zarr\": true}, {\"dataset_id\": \"xx099906\", \"name\": \"[TEST COPY] Electrophysiological markers of surprise-induced failures of visual and auditory awareness\", \"doi\": \"10.5072/fk2xx099906\", \"license\": \"CC0\", \"modalities\": [\"beh\", \"eeg\"], \"tasks\": [\"SiB\", \"SiD\"], \"subject_count\": 33, \"has_hed\": false, \"has_zarr\": true}, {\"dataset_id\": \"xx099904\", \"name\": \"[TEST COPY] BNCI 2015-003 P300 dataset\", \"doi\": \"10.5072/fk2xx099904\", \"license\": \"CC-BY-NC-ND-4.0\", \"modalities\": [\"eeg\"], \"tasks\": [\"p300\"], \"subject_count\": 10, \"has_hed\": true, \"has_zarr\": true}, {\"dataset_id\": \"xx099903\", \"name\": \"[TEST COPY] MUniverse Caillet et al 2023\", \"doi\": \"10.5072/fk2xx099903\", \"license\": \"CC0 BY 4.0\", \"modalities\": [\"emg\"], \"tasks\": [\"isometric30percentmvc\", \"isometric50percentmvc\"], \"subject_count\": 6, \"has_hed\": false, \"has_zarr\": true}, {\"dataset_id\": \"xx099900\", \"name\": \"[TEST COPY] Multisensory Gamma Entrainment\", \"doi\": \"10.5072/fk2xx099900\", \"license\": \"CC0\", \"modalities\": [\"eeg\"], \"tasks\": [\"MultisensoryGammaEntrainment\"], \"subject_count\": 1, \"has_hed\": false, \"has_zarr\": false}], \"count\": 7, \"limit\": 100, \"truncated\": false}' name='nemar_search_datasets' tool_call_id='toolu_01HZBafrdQKLbMoyFBzcFZ3Q'"}
+
+data: {"event": "thinking"}
+
+data: {"event": "thinking"}
+
+data: {"event": "content", "content": "The search for"}
+
+data: {"event": "content", "content": " \"TEST COPY\""}
+
+data: {"event": "content", "content": " returned 7 dat"}
+
+data: {"event": "content", "content": "asets:\n\n1"}
+
+data: {"event": "content", "content": ". `"}
+
+data: {"event": "content", "content": "xx099900`"}
+
+data: {"event": "content", "content": ": ["}
+
+data: {"event": "content", "content": "TEST COPY]"}
+
+data: {"event": "content", "content": " Multisensory Gamma"}
+
+data: {"event": "content", "content": " Entrainment (EE"}
+
+data: {"event": "content", "content": "G,"}
+
+data: {"event": "content", "content": " 1 subject)"}
+
+data: {"event": "content", "content": "\n2. `xx099901"}
+
+data: {"event": "content", "content": "`: [TEST COP"}
+
+data: {"event": "content", "content": "Y] MEG-BI"}
+
+data: {"event": "content", "content": "DS Brainstorm"}
+
+data: {"event": "content", "content": " data sample (M"}
+
+data: {"event": "content", "content": "EG, "}
+
+data: {"event": "content", "content": "2 subjects)\n3"}
+
+data: {"event": "content", "content": ". `xx099902`:"}
+
+data: {"event": "content", "content": " [TEST COPY]"}
+
+data: {"event": "content", "content": " OWM-Dataset"}
+
+data: {"event": "content", "content": " (iEEG, 13"}
+
+data: {"event": "content", "content": " subjects)\n4."}
+
+data: {"event": "content", "content": " `xx099903`: ["}
+
+data: {"event": "content", "content": "TEST COPY] M"}
+
+data: {"event": "content", "content": "Universe Caillet"}
+
+data: {"event": "content", "content": " et al 2023 (E"}
+
+data: {"event": "content", "content": "MG, 6 subj"}
+
+data: {"event": "content", "content": "ects)\n5. `xx"}
+
+data: {"event": "content", "content": "099904`: [TEST"}
+
+data: {"event": "content", "content": " COPY] BNCI"}
+
+data: {"event": "content", "content": " 2015-003 P300"}
+
+data: {"event": "content", "content": " dataset (EEG"}
+
+data: {"event": "content", "content": ", 10 subjects)"}
+
+data: {"event": "content", "content": "\n6. `xx099905"}
+
+data: {"event": "content", "content": "`: [TEST COP"}
+
+data: {"event": "content", "content": "Y] BNCI 2"}
+
+data: {"event": "content", "content": "014-004 Motor"}
+
+data: {"event": "content", "content": " Imagery dataset (E"}
+
+data: {"event": "content", "content": "EG, 1 subject"}
+
+data: {"event": "content", "content": ")\n7. `xx099"}
+
+data: {"event": "content", "content": "906`: [TEST CO"}
+
+data: {"event": "content", "content": "PY] Electrophys"}
+
+data: {"event": "content", "content": "iological markers of surprise"}
+
+data: {"event": "content", "content": "-induced failures of visual"}
+
+data: {"event": "content", "content": " and auditory awareness ("}
+
+data: {"event": "content", "content": "EEG and"}
+
+data: {"event": "content", "content": " behavior"}
+
+data: {"event": "content", "content": ", 33 subjects)"}
+
+data: {"event": "content", "content": "\n\nAll seven "}
+
+data: {"event": "content", "content": "ids use"}
+
+data: {"event": "content", "content": " the `xx` prefix"}
+
+data: {"event": "content", "content": " and"}
+
+data: {"event": "content", "content": " the"}
+
+data: {"event": "content", "content": " `10"}
+
+data: {"event": "content", "content": ".5072`"}
+
+data: {"event": "content", "content": " test"}
+
+data: {"event": "content", "content": " DOI nam"}
+
+data: {"event": "content", "content": "espace, so they look like test"}
+
+data: {"event": "content", "content": " copies rather than production"}
+
+data: {"event": "content", "content": " datasets. The"}
+
+data: {"event": "content", "content": " `"}
+
+data: {"event": "content", "content": "xx099900` ent"}
+
+data: {"event": "content", "content": "ry has"}
+
+data: {"event": "content", "content": " no Zarr cop"}
+
+data: {"event": "content", "content": "y."}
+
+data: {"event": "done", "session_id": "b6e5a4b5-574a-4fe3-a52d-dcec7e656178", "request_id": "7f8de59f-4146-4e6b-8853-aa45740b91f4", "model": "claude-haiku-5-5", "content": "The search for \"TEST COPY\" returned 7 datasets:\n\n1. `xx099900`: [TEST COPY] Multisensory Gamma Entrainment (EEG, 1 subject)\n2. `xx099901`: [TEST COPY] MEG-BIDS Brainstorm data sample (MEG, 2 subjects)\n3. `xx099902`: [TEST COPY] OWM-Dataset (iEEG, 13 subjects)\n4. `xx099903`: [TEST COPY] MUniverse Caillet et al 2023 (EMG, 6 subjects)\n5. `xx099904`: [TEST COPY] BNCI 2015-003 P300 dataset (EEG, 10 subjects)\n6. `xx099905`: [TEST COPY] BNCI 2014-004 Motor Imagery dataset (EEG, 1 subject)\n7. `xx099906`: [TEST COPY] Electrophysiological markers of surprise-induced failures of visual and auditory awareness (EEG and behavior, 33 subjects)\n\nAll seven ids use the `xx` prefix and the `10.5072` test DOI namespace, so they look like test copies rather than production datasets. The `xx099900` entry has no Zarr copy.", "citations": [], "usage": {"input_tokens": 28582, "output_tokens": 570, "cache_read_tokens": 27439, "cache_creation_tokens": 1137, "estimated_cost": 0.000702, "partial": false}, "mode": "quick"}
+
