@@ -330,7 +330,9 @@ class TestCostReport:
         result = runner.invoke(cli, ["metrics", "cost-report", "-c", "nemar", "--db", str(path)])
 
         assert result.exit_code == 1
-        assert "Cannot read" in result.output and "as a metrics database" in result.output
+        # Rich wraps the message at the terminal width, which is narrow on CI.
+        output = " ".join(result.output.split())
+        assert "Cannot read" in output and "as a metrics database" in output
 
     def test_the_default_path_does_not_create_the_data_directory(
         self, tmp_path, monkeypatch
