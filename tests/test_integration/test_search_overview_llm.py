@@ -26,7 +26,7 @@ from src.api.overview import (
     SUMMARY_MAX_WORDS,
     DatasetSegment,
     OverviewRequest,
-    TextSegment,
+    _plain_words,
     generate_overview,
 )
 from src.core.services.anthropic_llm import create_anthropic_llm
@@ -42,10 +42,6 @@ pytestmark = [
 ]
 
 FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "overview_results.json"
-
-
-def _words(segments: list) -> int:
-    return sum(len(s.text.split()) if isinstance(s, TextSegment) else 1 for s in segments)
 
 
 async def test_a_real_overview_cites_only_the_results_it_was_given() -> None:
@@ -66,7 +62,7 @@ async def test_a_real_overview_cites_only_the_results_it_was_given() -> None:
         if isinstance(segment, DatasetSegment):
             assert segment.dataset_id in given
     assert response.summary
-    assert 0 < _words(response.summary) <= SUMMARY_MAX_WORDS
+    assert 0 < _plain_words(response.summary) <= SUMMARY_MAX_WORDS
     assert len(response.picks) <= MAX_PICKS
     assert {pick.id for pick in response.picks} <= given
     assert response.shown == len(request.results)
