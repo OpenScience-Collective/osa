@@ -4804,6 +4804,9 @@ async def _stream_chat_response(
 
         async def hand_over() -> AsyncGenerator[str, None]:
             """Summarize this session on the quick model; run the analysis on a new one."""
+            # Handing over needs a routing config, and `awm` is built before this runs.
+            assert routing_info is not None
+            assert awm is not None
             analysis_route = _route_request(
                 routing_info, community_id, byok, origin, None, log=False, tier="analysis"
             )
