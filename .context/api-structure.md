@@ -169,8 +169,9 @@ async def get_community_config():
 If it is true, the request has no `prior_turns`, and the server holds no live session for
 `session_id` (unknown, evicted or expired), the server answers `409`
 `{"detail": "<plain sentence>", "code": "session_unknown"}` before it creates a session, starts a
-stream or calls a model; it writes no usage row, so it is not counted as an error. With `prior_turns` present it reseeds as above; without the field nothing
-changes. `/chat/resume` does not take it (it already answers 404 for an unknown session).
+stream or calls a model; it writes no usage row, so it is not counted as an error.
+With `prior_turns` present it reseeds as above;
+without the field nothing changes. `/chat/resume` does not take it (it already answers 404 for an unknown session).
 
 `prior_turns` (at most 24 turns of at most 4,000 characters; anything else is a 422) and `mode`
 are used only when the request creates the session; a session that already has messages ignores
