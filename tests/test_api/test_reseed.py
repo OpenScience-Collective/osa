@@ -12,6 +12,7 @@ followed. The companion test against the real models is
 
 import json
 import re
+import time
 
 import pytest
 from fastapi import FastAPI
@@ -27,6 +28,7 @@ from src.agents.model_routing import (
     researcher_words,
     reseeded_message,
     seeded_message,
+    strip_fences,
 )
 from src.api.routers.community import (
     MAX_MESSAGE_LENGTH,
@@ -380,6 +382,15 @@ class TestAFenceInATurn:
 
         assert seeded.count("</earlier_conversation>") == 1
         assert seeded.count("<researcher_message>") == 1
+
+    def test_a_long_run_of_spaces_after_an_angle_bracket_is_removed_in_linear_time(self) -> None:
+        # Two adjacent whitespace runs backtracked quadratically: 24 turns of this took 2.4 s.
+        payload = "<" + " " * 3999
+        started = time.perf_counter()
+        for _ in range(24):
+            strip_fences(payload)
+        strip_fences(payload * 24)
+        assert time.perf_counter() - started < 0.5
 
     @pytest.mark.parametrize(
         "variant",

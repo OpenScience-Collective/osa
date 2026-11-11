@@ -338,10 +338,14 @@ async def summarize_history(
 
 
 _FENCE = re.compile(
-    r"<\s*\\?/?\s*(?:summary|earlier_conversation|researcher_message)\b[^>]*>", re.IGNORECASE
+    r"<[\s\\/]*(?:summary|earlier_conversation|researcher_message)\b[^>]*>", re.IGNORECASE
 )
 """Any tag of the fences this module writes, closing or opening, however it is spaced,
-escaped (`<\\/x>`) or given attributes, so the text it wraps cannot close its own section."""
+escaped (`<\\/x>`) or given attributes, so the text it wraps cannot close its own section.
+
+The run between `<` and the name is ONE character class: two adjacent `\\s*` runs around
+optional tokens backtrack quadratically on a long run of spaces, and this runs over every
+turn on the event loop."""
 
 
 def strip_fences(text: str) -> str:
