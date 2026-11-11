@@ -548,7 +548,7 @@ async function openPopoutSharingStorage(page) {
   return { popup, ...(await popoutReady(page, popup)) };
 }
 
-console.log('\na run\'s code block, Copy and Download work in the pop-out, and it opens closed there (#491)');
+console.log('\na run\'s code, Copy and Download work in the pop-out, and it opens closed there (#491)');
 {
   const RUN_CODE = 'import numpy as np\nprint("<b>&amp;</b>")\n';
   const page = await hostPage({ testHooks: true, dataset: { id: 'nm000103', zarr: true } });
@@ -564,18 +564,18 @@ console.log('\na run\'s code block, Copy and Download work in the pop-out, and i
   hooks.saveHistory();
   hooks.renderMessages(page.container);
   // The reader opened the code on the page.
-  const pageBlock = page.q('.osa-execution-code');
-  pageBlock.open = true;
-  pageBlock.dispatchEvent(new page.window.Event('toggle'));
+  page.q('.osa-run-card-code-toggle').dispatchEvent(new page.window.Event('click', { bubbles: true }));
   assertEqual(hooks.getMessages()[2].executions[0]._codeOpen, true, 'sanity: open on the page');
   // A later save, as the next reply's end makes, with the block still open.
   hooks.saveHistory();
 
   const { popup, q } = await openPopoutSharingStorage(page);
-  const block = q('.osa-execution-code');
-  assert(!!block, 'the pop-out shows the run\'s code block');
+  const block = q('.osa-run-card');
+  assert(!!block, 'the pop-out shows the run\'s card');
   assertEqual(block.querySelector('pre code').textContent, RUN_CODE, 'with the exact code, escaped');
-  assert(!block.hasAttribute('open'), 'closed: the pop-out rebuilds the conversation from storage, which does not keep an open block, as a reload does');
+  assertEqual(block.querySelector('.osa-run-card-code-toggle').getAttribute('aria-expanded'), 'false',
+    'closed: the pop-out rebuilds the conversation from storage, which does not keep an open panel, as a reload does');
+  assert(block.querySelector('.osa-code-panel').hasAttribute('hidden'), 'and the code stays hidden');
 
   block.querySelector('.osa-code-copy').dispatchEvent(new popup.Event('click', { bubbles: true }));
   await waitUntil(() => block.querySelector('.osa-code-status').textContent === 'Copied', 'the pop-out\'s copy');

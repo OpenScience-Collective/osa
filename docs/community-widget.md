@@ -496,42 +496,71 @@ from both tabs, on a plain and a pinned widget tag (see the harness README); bot
 A community whose model runs code in the reader's browser (`execute_code`, [`docs/community-browser-runtime.md`](community-browser-runtime.md)) shows each run in the reply that asked for it.
 A community without it never has a run, and renders none of this.
 
-Each run is two disclosures, one under the other, joined by a rule down their left (issue #491):
+Every stage of a run is one **run card** (issues #664 and #672; the builders are the `// --- Run card ---` block in `frontend/osa-chat-widget.js`).
+A card never reads page state, so one restored from storage renders the same before the runtime bundle has loaded as after.
 
-- **The run**, titled by how it ended and what the model said it does (`Ran Python: plot ten seconds of Cz`): its printed output, its figures, and "Edit and run".
-  It opens by default when the run drew a figure, when the reader ran it, or while its editor is open, as it always has.
-- **Its code**, labeled with its length (`Code · 14 lines`) and closed until the reader opens it, so the code opens without the output, and a figure is not pushed down the page by the script that drew it.
-  It stays open while the reply keeps updating; a reload shows it closed again.
+- **Asking.** "Run this Python in your browser?", the assistant's description, the code in view with Copy, and Run, Don't run and "Run without asking until I reload".
+- **Running.** "Running Python", what the runtime is doing with a progress bar once the boot reports a step, and Stop.
+- **Done.** The card is titled by how the run ended (`Ran Python`, `Python raised an error`, `Not run`, `Stopped: took too long`, `Stopped`, `Stopped: out of memory`; `Your run: ` is added for a run the reader started), with the model's description under it.
+  Then, in this order:
+  the figures, visible by default, each with its **Download** (below);
+  a **Show code · N lines** button, the card's one prominent control (accent colored, bordered, with `aria-expanded` and `aria-controls` naming the code's panel), which reveals the code and becomes **Hide code · N lines**;
+  **Copy code**;
+  **Output · N lines**, which reveals what the code printed;
+  and **Edit and run**, whose editor opens inside the card.
+  The code, the output and every other panel are closed until the reader asks, except the output of a run the reader started themselves.
+  A choice survives a re-render (a streamed chunk, runtime progress) because it is kept on the run's record (`_codeOpen`, `_panelsOpen`); it is never stored, so a reload shows every panel closed.
+  Figures are never stored either, so a restored card is the same card without its figures, and leaves no placeholder where they were.
 
-The code's bar has two buttons:
+### When a run fails
 
-- **Copy** puts the code on the clipboard exactly as the run's record holds it, not the highlighted text on the page, and shows "Copied" for two seconds.
+A run that raised an error, timed out or ran out of memory opens its card by default (issue #672):
+
+- **What went wrong**, as `Type: message`, from the run's stderr, where the runtime writes the exception's type and message and then, when it knows the line, `  line N: code` (`_error_text`, `frontend/osa-output.js`).
+  An error the runtime found no line for shows the type and message alone, and no line is invented.
+  A run the runtime stopped shows its one `[runtime]` sentence.
+  Stderr that matches none of this is shown whole.
+- **The failing line**, marked in the code around it (the line, the one before and the one after), with a `>` and a hidden "Failing line" label as well as its color.
+- **All code · N lines**, **Full traceback** and **Copy error**.
+  The traceback is the one the browser kept for `get_full_output`; it is stored on the run (`traceback`, cut to 4,000 characters like the other output) and the button is not drawn for a run that has none.
+  Copy error puts the error as written, `Type: message` and the failing line, on the clipboard and says "Copied".
+- **A retry line** on the last run of a reply that is still waiting on the assistant after the failure: "The assistant is fixing this and will run it again (run K of 20)", where 20 is the most runs one reply may make.
+  It is gone once the reply has finished, and is never shown for a run the reader started, which the assistant does not see.
+
+A run that worked and warned shows **N warnings**, collapsed, counting the lines of its stderr that hold `Warning:`; stderr with no warning in it shows nothing, as before.
+
+Output that was cut says so: "Output was cut: N characters not shown."
+The runtime cuts a stream from its middle (`... N characters omitted ...`, at 16,384 characters of stdout and 8,192 of stderr), and the widget keeps at most 4,000 characters of each of stdout, stderr and the traceback.
+It cuts those from the middle too, keeping both ends, because a run's error is written at the end of its stderr; its own marker adds the runtime's count to what it dropped, so the number is of everything the run wrote that is not in the card.
+
+### Copy and Download
+
+- **Copy code** puts the code on the clipboard exactly as the run's record holds it, not the highlighted text on the page, and the button says "Copied" for two seconds (the card's status line, a live region, says it for a screen reader).
   Where the page may not use the Clipboard API (an insecure page, a frame without `clipboard-write`, or a browser that refuses), it tries the browser's older copy command;
   where that fails too, it opens the code, selects it, and says which keys copy it.
   It never opens a browser dialog.
-- **Download** saves the code as a `.py` file built in the page, named for the dataset the question was about and the run's place in the conversation, counted from 1: `nm000132-run-3.py`.
+  The permission gate's Copy, an icon over the code it asks about, and a failed run's, in the code's panel, work the same way, and copying neither runs nor denies anything.
+- **Download** in the code's panel saves the code as a `.py` file built in the page, named for the dataset the question was about and the run's place in the conversation, counted from 1: `nm000132-run-3.py`.
   The dataset is the one the page named with `setDataset` when the reader sent the question; a question sent from a page that named none takes the community's id instead (`nemar-run-3.py`).
   The count is of every run the conversation shows, one that was declined, stopped, timed out or ran out of memory included.
   The workspace download numbers its `run-NNN` files differently: per chat session, and only the runs it saved files for, which are the runs whose Python ran to an end, successfully or with an error, in a browser that could store them (`ClientToolController#persist`, `frontend/osa-controller.js`).
   So the two numbers agree only while every run has ended that way.
 
-The pop-out window (above) shows each run's code the same way, with the same Copy and Download; it rebuilds the conversation from storage, so a code block the reader opened on the page is closed there, as after a reload.
-
-The permission gate ("Run this Python in your browser?") has the same Copy over the code it asks about, and copying it neither runs nor denies it; Download waits until the code has run.
-
-Each figure a run shows has a **Download** button in a row under it, right-aligned, as the code's bar is (issue #492), never over the figure, where a legend often sits; it saves that figure's PNG, byte for byte, as `nm000132-run-3-figure-1.png`: the run's name, then the figure's number among the ones the run shows, counted from 1, as the workspace names a run's `figure-K.png`.
+Each figure a run shows has a **Download** button in a row under it, right-aligned (issue #492), never over the figure, where a legend often sits; it saves that figure's PNG, byte for byte, as `nm000132-run-3-figure-1.png`: the run's name, then the figure's number among the ones the run shows, counted from 1, as the workspace names a run's `figure-K.png`.
 It is a real button, reached with Tab and pressed with Enter or Space, and its label names the figure and the file (`Download figure 1 as nm000132-run-3-figure-1.png`), as the figure's own alternative text numbers it (`Figure 1 produced by the code`).
-It is drawn on the panel, in the panel's colors, the dark panel's included.
 A figure under an open "Edit and run" editor downloads as the reader's run it came from, not the run whose editor it is under.
-Figures live only in the page's memory (they are never stored), so a run read back after a reload shows none, and has none to download.
+
+The pop-out window (above) shows each run's card the same way; it rebuilds the conversation from storage, so a panel the reader opened on the page is closed there, as after a reload.
 
 Both copy and download the code the run's record keeps, its first 20,000 characters; the workspace download in Settings keeps every script whole ([`docs/community-browser-runtime.md`](community-browser-runtime.md), "Workspace").
-The code is the model's, so it is escaped wherever it is shown, highlighted or not.
+The code is the model's, so it is escaped wherever it is shown, highlighted or not, and so are the description, the output and the stderr.
 
-Testing: `frontend/test-widget-tools.js` runs the real widget source in a happy-dom window:
-the two disclosures and their markup for hostile code, Copy through happy-dom's own clipboard, when it refuses and without it, Download's Blob, file name and freed address, the gate's Copy, the code's open state across a re-render, and a reply that ran no code rendering none of it;
-and each figure's Download, its label and numbering, and its file's bytes and name.
-`frontend/test-widget-popout.js` checks the code block, Copy and Download in the pop-out.
+Testing:
+`frontend/test-widget-run-card.js` runs the real widget source in a happy-dom window: every state of the card (asking, running, done with and without a figure, each status), Show code, Copy code and Copy error on a real clipboard, Edit and run inside the card, the card after `saveHistory`, `loadHistory` and `renderMessages` with nothing transient stored, hostile content in every state, and the failures above from stderr recorded off real Pyodide (`frontend/test-support/run-card-fixtures.js`, re-recorded by `frontend/test-support/record-run-card-fixtures.js`).
+`frontend/test-widget-tools.js` holds the markup for hostile runs, Copy's fallbacks, Download's Blob, file name and freed address, each figure's Download, and the contrast of the card's buttons;
+`frontend/test-widget-color-scheme.js`, the card's dark colors;
+`frontend/test-widget-popout.js`, the card in the pop-out.
+`frontend/browser-harness/run-card-check.mjs [screenshot-dir]` draws every state at 400 px in headless Chrome, light and dark, checks the layout (inside the panel, nothing scrolls sideways, every button 36 px tall) and writes a screenshot of each.
 
 ## The first paint: remembering the community's look
 

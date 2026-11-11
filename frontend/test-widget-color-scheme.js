@@ -438,6 +438,11 @@ console.log('\nevery color the dark block replaces, on the widget\'s own element
     <div class="osa-execution-workspace-note">not saved</div>
     <pre class="osa-execution-output">out</pre>
     <button class="osa-code-action osa-code-copy copied">copied</button>
+    <div class="osa-run-card osa-run-card-failed">
+      <div class="osa-run-card-error-text probe-run-error">KeyError: 'x'</div>
+      <div class="osa-run-card-excerpt probe-run-excerpt">x = 1</div>
+      <button class="osa-run-card-button osa-run-card-copied probe-run-copied">Copied</button>
+    </div>
   </div>`;
   const CASES = [
     ['.osa-icon-badge', 'color', '#111827'],
@@ -453,6 +458,10 @@ console.log('\nevery color the dark block replaces, on the widget\'s own element
     ['.osa-execution-workspace-note', 'backgroundColor', 'rgba(220, 38, 38, 0.15)'],
     ['.osa-execution-output', 'backgroundColor', 'rgba(255, 255, 255, 0.06)'],
     ['.osa-code-action.copied', 'color', '#4ade80'],
+    ['.probe-run-error', 'color', '#fca5a5'],
+    ['.probe-run-error', 'backgroundColor', 'rgba(220, 38, 38, 0.15)'],
+    ['.probe-run-excerpt', 'backgroundColor', '#030712'],
+    ['.probe-run-copied', 'color', '#4ade80'],
     ['.osa-error', 'color', '#fca5a5'],
     ['.osa-error', 'backgroundColor', 'rgba(220, 38, 38, 0.15)'],
     ['.osa-error', 'borderTopColor', 'rgba(248, 113, 113, 0.35)'],
@@ -494,6 +503,7 @@ console.log('\nevery color the dark block replaces, on the widget\'s own element
     ['.osa-chat-widget.osa-dark .osa-suggestion:hover', 'background', '#374151'],
     ['.osa-chat-widget.osa-dark .osa-suggestion:hover', 'border-color', '#4b5563'],
     ['.osa-chat-widget.osa-dark .osa-message-copy-btn:hover', 'background', 'rgba(255, 255, 255, 0.08)'],
+    ['.osa-chat-widget.osa-dark .osa-run-card button.osa-run-card-button:hover', 'background', 'rgba(255, 255, 255, 0.08)'],
     ['.osa-chat-widget.osa-dark .osa-resize-handle::before', 'border-left-color', 'rgba(255, 255, 255, 0.3)'],
     ['.osa-chat-widget.osa-dark .osa-resize-handle::before', 'border-top-color', 'rgba(255, 255, 255, 0.3)'],
   ]) {
@@ -545,6 +555,37 @@ console.log('\nthe dark accent: NEMAR\'s teal as it is; a theme color too dark t
   platform.widget.setConfig({ themeColor: '#5bbad5' });
   platform.widget.setColorScheme('auto');
   assertEqual(platform.container.style.getPropertyValue('--osa-accent-on-dark'), '', 'a theme color that reads clears the lifted value');
+}
+
+console.log('\na run card\'s buttons read on the panel, in light and in dark');
+{
+  const card = '<div class="osa-run-card osa-run-card-failed">' +
+    '<div class="osa-run-card-error-text">KeyError</div>' +
+    '<div class="osa-run-card-actions">' +
+    '<button class="osa-run-card-button osa-run-card-toggle osa-run-card-code-toggle">Show code</button>' +
+    '<button class="osa-run-card-button osa-code-copy">Copy code</button>' +
+    '</div></div>';
+  const nemar = {
+    color_scheme: 'auto', theme_color: '#5bbad5', theme_text_color: '#04121f', accent_color: '#257a92',
+  };
+  for (const [label, scheme, panel, accent] of [
+    ['light', 'light', '#ffffff', '#257a92'],
+    ['dark', 'dark', DARK_PANEL_BG, '#5bbad5'],
+  ]) {
+    const { window, container } = await startWidget(configResponse(nemar), { prefersColorScheme: scheme });
+    container.insertAdjacentHTML('beforeend', card);
+    const style = (selector) => window.getComputedStyle(container.querySelector(selector));
+    const prominent = style('.osa-run-card-code-toggle');
+    assertEqual(prominent.color, accent, `${label}: Show code is the accent color`);
+    assertEqual(prominent.borderTopColor, accent, `${label}: with a border of it`);
+    const ratio = contrast(accent, panel);
+    assert(ratio >= 4.5, `${label}: Show code reads on the panel (${ratio.toFixed(1)}:1)`);
+    const plain = style('.osa-code-copy');
+    const plainRatio = contrast(plain.color, panel);
+    assertEqual(plain.backgroundColor, panel, `${label}: the other buttons sit on the panel`);
+    assert(plainRatio >= 7, `${label}: and their text reads at AAA contrast (${plainRatio.toFixed(1)}:1)`);
+    assertEqual(plain.minHeight, '36px', `${label}: at least 36px tall`);
+  }
 }
 
 console.log('\na pop-out keeps the scheme its host page chose; otherwise it follows the community');

@@ -454,6 +454,12 @@ jobs:
       - name: Run the activity status tests on a real DOM
         run: bun frontend/test-widget-activity-status.js
 
+      # The run card: consent, running, done with and without a figure, each status,
+      # the same card after a reload, and a failed run's error, failing line,
+      # warnings and cut output, from stderr recorded off real Pyodide.
+      - name: Run the run card tests on a real DOM
+        run: bun frontend/test-widget-run-card.js
+
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a
       # reading pace, the code block whole, and at once with reduced motion emulated.
