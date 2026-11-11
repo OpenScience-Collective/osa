@@ -2529,6 +2529,7 @@
       color: var(--osa-text-light);
       display: flex;
       align-items: center;
+      gap: 4px;
       transition: color 0.2s, background 0.2s;
       margin-left: auto;
     }
@@ -2545,6 +2546,41 @@
 
     .osa-message-copy-btn.copied {
       color: #22c55e;
+    }
+
+    /* "Copied" beside the check, on the copy buttons that are only an icon. */
+    .osa-copy-btn .osa-copied-text,
+    .osa-message-copy-btn .osa-copied-text {
+      font-size: 11px;
+      line-height: 1;
+    }
+
+    /* The line that names the keys when a copy is refused (the widget's status announcer
+       says it aloud; "Copied" is on the button). */
+    .osa-copy-status {
+      margin: 2px 0 4px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-copy-status:empty {
+      display: none;
+    }
+
+    /* An image reference in a reply: the alt text, with a pointer to the run's figure. */
+    .osa-image-reference {
+      font-style: italic;
+    }
+
+    .osa-image-hint {
+      color: var(--osa-text-light);
+    }
+
+    .osa-message-copy-fallback {
+      margin: 4px 0 8px;
+      max-height: 240px;
+      overflow: auto;
+      white-space: pre-wrap;
     }
 
     .osa-message-header {
@@ -3576,6 +3612,28 @@
     .osa-error-copy {
       margin-left: 4px;
       vertical-align: middle;
+    }
+
+    .osa-error-copy.copied {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      line-height: 1;
+    }
+
+    .osa-error-copy .osa-copied-text {
+      font-size: 12px;
+    }
+
+    .osa-error-reference .osa-copy-status {
+      display: inline;
+      margin: 0 0 0 4px;
+      font-size: inherit;
+      color: inherit;
+    }
+
+    .osa-error-reference .osa-copy-status:empty {
+      display: none;
     }
 
     .osa-error-dismiss {
@@ -6568,29 +6626,16 @@
     }
   }
 
-  // Copy text to clipboard
-  async function copyToClipboard(text, button) {
-    try {
-      await navigator.clipboard.writeText(text);
-      // Show success feedback
-      const originalHtml = button.innerHTML;
-      button.innerHTML = ICONS.check;
-      button.classList.add('copied');
-      setTimeout(() => {
-        button.innerHTML = originalHtml;
-        button.classList.remove('copied');
-      }, 2000);
-    } catch (e) {
-      console.error('Failed to copy:', e);
-    }
-  }
-
-  // Put text on the clipboard for the Copy button of a run's code (#491): the
-  // Clipboard API first, then, where the page may not use it (an insecure page, a
-  // frame without clipboard-write, a browser that refuses), the older copy
-  // command on a hidden textarea. Resolves true or false; never throws and never
-  // opens a dialog. copyToClipboard above, the chat's own code blocks' and
-  // messages', is left exactly as it was.
+  // BEGIN copy-text. The one way the widget copies text (#491, #665): reply code
+  // blocks, the whole-reply copy, the run card, the run gate and the error reference
+  // all go through copyCodeFromButton. It is a block of its own, between these markers,
+  // so a test can read it out of the shipped source; it uses ICONS, the document and
+  // the navigator, and nothing else of the widget.
+  //
+  // Put text on the clipboard: the Clipboard API first, then, where the page may not
+  // use it (an insecure page, a frame without clipboard-write, a browser that
+  // refuses), the older copy command on a hidden textarea. Resolves true or false;
+  // never throws and never opens a dialog.
   async function writeClipboard(text) {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       try {
@@ -6658,40 +6703,92 @@
     return pre;
   }
 
-  // A code block's Copy (#491): the exact code, never the highlighted page text,
-  // onto the clipboard, and "Copied" beside the button for a moment. A run card's
-  // buttons are worded ("Copy code", "Copy error": data-copy-label) and say "Copied"
-  // themselves; the icon buttons of the gate and of a failed run's code swap to a
-  // check. Either way the block's status line (a live region) says it too. Where the
-  // browser allows neither way to copy, the text is selected in place and the status
-  // names the keys that copy it, since nothing the page can do will: for a run's
-  // code, the code is opened first; `selectable` is what to select instead (an element,
-  // or a function that makes one, called only when the copy is refused).
+  // A reply message's source, to select when the copy is refused: the reply the
+  // button promised ("Copy as markdown"), not the page text as drawn. Built only then,
+  // and kept until the message redraws.
+  function replyFallbackFor(messageEl, text) {
+    let pre = messageEl.querySelector('.osa-message-copy-fallback');
+    if (!pre) {
+      pre = document.createElement('pre');
+      pre.className = 'osa-execution-output osa-message-copy-fallback';
+      pre.tabIndex = 0;
+      pre.setAttribute('aria-label', 'The reply as markdown, to copy');
+      const content = messageEl.querySelector('.osa-message-content');
+      if (content) content.insertAdjacentElement('afterend', pre);
+      else messageEl.appendChild(pre);
+    }
+    pre.textContent = text;
+    return pre;
+  }
+
+  // Where a refused copy says so when the button is not in a code block with a status
+  // line of its own: a plain line in the message (or the error reference) the button
+  // sits in, made when first needed. It is not a live region (a redraw would make the
+  // conversation say it again): the widget's one status announcer says it.
+  function copyNoteFor(home) {
+    let note = home.querySelector('.osa-copy-status');
+    if (!note) {
+      note = document.createElement(home.classList.contains('osa-error-reference') ? 'span' : 'div');
+      note.className = 'osa-copy-status';
+      const header = home.querySelector('.osa-message-header');
+      if (header) header.insertAdjacentElement('afterend', note);
+      else home.appendChild(note);
+    }
+    return note;
+  }
+
+  // Copy (#491, #665): the exact text, never the highlighted page text, onto the
+  // clipboard, and "Copied" said twice: on the button, and to a screen reader. A run
+  // card's buttons are worded ("Copy code", "Copy error": data-copy-label) and say
+  // "Copied" in place of their words, and the icon buttons of the gate and of a failed
+  // run's code swap to a check; in a code block both say it in the block's status line
+  // (a live region). Any other icon button (a reply's code block, the whole reply, the
+  // error reference) swaps to a check with "Copied" beside it, and the widget's status
+  // announcer says it. Where the browser allows neither way to copy, the text is
+  // selected in place and a line names the keys that copy it, since nothing the page
+  // can do will: for a run's code, the code is opened first; `selectable` is what to
+  // select instead (an element, or a function that makes one, called only when the copy
+  // is refused).
   async function copyCodeFromButton(button, code, selectable = null) {
     const block = button.closest('.osa-code-block');
-    const status = block && block.querySelector('.osa-code-status');
+    const blockStatus = block && block.querySelector('.osa-code-status');
+    const widgetEl = button.closest('.osa-chat-widget');
+    const announcer = widgetEl && widgetEl.querySelector('.osa-status-announcer');
+    const home = button.closest('.osa-message, .osa-error-reference');
     const label = button.getAttribute('data-copy-label');
+    const say = (text) => {
+      if (blockStatus) blockStatus.textContent = text;
+      else if (announcer) announcer.textContent = text;
+    };
+    const unsay = (text) => {
+      const live = blockStatus || announcer;
+      if (live && live.textContent === text) live.textContent = '';
+    };
+    const note = !blockStatus && home ? home.querySelector('.osa-copy-status') : null;
+    if (note) note.textContent = '';
     if (await writeClipboard(code)) {
       button.classList.add('copied');
       if (label) {
         button.classList.add('osa-run-card-copied');
         button.textContent = 'Copied';
       } else {
-        button.innerHTML = ICONS.check;
+        button.innerHTML = ICONS.check + (block ? '' : '<span class="osa-copied-text">Copied</span>');
       }
-      if (status) status.textContent = 'Copied';
+      say('Copied');
       setTimeout(() => {
         button.classList.remove('copied', 'osa-run-card-copied');
         if (label) button.textContent = label;
         else button.innerHTML = ICONS.copy;
-        if (status && status.textContent === 'Copied') status.textContent = '';
+        unsay('Copied');
       }, CODE_COPIED_MS);
       return true;
     }
     const toggle = block && block.querySelector('.osa-run-card-code-toggle');
     if (!selectable && toggle && toggle.getAttribute('aria-expanded') !== 'true') toggle.click();
+    const enclosingPre = button.closest('pre');
     const codeElement = (typeof selectable === 'function' ? selectable() : selectable) ||
-      (block && block.querySelector('pre code'));
+      (block && block.querySelector('pre code')) ||
+      (enclosingPre && enclosingPre.querySelector('code'));
     if (codeElement && typeof window.getSelection === 'function') {
       const selection = window.getSelection();
       const range = document.createRange();
@@ -6699,12 +6796,13 @@
       selection.removeAllRanges();
       selection.addRange(range);
     }
-    if (status) {
-      status.classList.remove('osa-code-status-quiet');
-      status.textContent = `This page cannot copy for you: the ${selectable ? 'text' : 'code'} is selected, so press ${isApplePlatform() ? 'Cmd' : 'Ctrl'}+C`;
-    }
+    const prompt = `This page cannot copy for you: the ${selectable || !block ? 'text' : 'code'} is selected, so press ${isApplePlatform() ? 'Cmd' : 'Ctrl'}+C`;
+    if (blockStatus) blockStatus.classList.remove('osa-code-status-quiet');
+    else if (home) copyNoteFor(home).textContent = prompt;
+    say(prompt);
     return false;
   }
+  // END copy-text
 
   // Hand the reader a file built in the page (#491), as the workspace export
   // does: a Blob's address on a link with `download`, clicked, and the address
@@ -6730,13 +6828,17 @@
     return 'osa-code-' + (++codeBlockId);
   }
 
-  // Render inline markdown (code, bold, italic, links, plain URLs, citation markers)
+  // Render inline markdown (code, bold, italic, links, image references, plain URLs,
+  // citation markers)
   // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
   // When provided, a bare "[1]" (not followed by "(", so it never collides
   // with a real markdown link) whose number is a known marker renders as a
   // superscript link to its source; any other "[n]" is left as plain text.
-  function renderInlineMarkdown(text, citationsByMarker) {
+  // options.figureAbove (#666): true when the reply's message has a run figure, so an
+  // image reference can point to it ("figure above"); otherwise it shows its alt text only.
+  function renderInlineMarkdown(text, citationsByMarker, options) {
     if (!text) return '';
+    const figureAbove = Boolean(options && options.figureAbove);
 
     // Code spans are lifted out before anything else is matched, so what is inside
     // one is never read as markup and an italic, bold or link match that starts
@@ -6751,7 +6853,7 @@
     const spanOpen = String.fromCharCode(0xE000);
     const spanClose = String.fromCharCode(0xE001);
     const placeholder = new RegExp(spanOpen + '(\\d+)' + spanClose, 'g');
-    let remaining = String(text)
+    const lifted = String(text)
       .split(spanOpen).join(String.fromCharCode(0xFFFD))
       .split(spanClose).join(String.fromCharCode(0xFFFD))
       .replace(/`([^`]+)`/g, (match, code) => {
@@ -6761,88 +6863,110 @@
     const withRawCode = (raw) => raw.replace(placeholder, (match, index) => '`' + codeSpans[index] + '`');
     const escapeRun = (raw) => escapeHtml(raw).replace(placeholder, (match, index) => '<code>' + escapeHtml(codeSpans[index]) + '</code>');
 
-    let result = '';
+    // One run of text, rendered. Bold and italic render their content through this
+    // again (#666), so a link, a code span or an image reference inside them renders
+    // too; the code spans are the ones lifted above, and every href goes through
+    // isSafeUrl wherever it is written.
+    const renderRun = (run) => {
+      let remaining = run;
+      let result = '';
 
-    while (remaining.length > 0) {
-      const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
-      const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
-      const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
-      const urlMatch = remaining.match(/(?<!\]\()(https?:\/\/[^\s\)]+)/);
-      let citationMatch = null;
-      if (citationsByMarker) {
-        // Scan every bracketed number, not just the first: prose of its own
-        // like "see item [42]" must not hide a real marker later in the same
-        // run. Matching only the first would leave that marker unlinked, and
-        // if nothing else matched either, the rest of the run would be
-        // emitted as plain text and the loop would exit.
-        for (const candidate of remaining.matchAll(/\[(\d+)\](?!\()/g)) {
-          if (citationsByMarker[candidate[1]]) {
-            citationMatch = candidate;
-            break;
+      while (remaining.length > 0) {
+        const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
+        const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
+        const imageMatch = remaining.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+        const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
+        const urlMatch = remaining.match(/(?<!\]\()(https?:\/\/[^\s\)]+)/);
+        let citationMatch = null;
+        if (citationsByMarker) {
+          // Scan every bracketed number, not just the first: prose of its own
+          // like "see item [42]" must not hide a real marker later in the same
+          // run. Matching only the first would leave that marker unlinked, and
+          // if nothing else matched either, the rest of the run would be
+          // emitted as plain text and the loop would exit.
+          for (const candidate of remaining.matchAll(/\[(\d+)\](?!\()/g)) {
+            if (citationsByMarker[candidate[1]]) {
+              citationMatch = candidate;
+              break;
+            }
           }
         }
-      }
 
-      const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
-      const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
-      const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
-      const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
-      const citationIndex = citationMatch ? citationMatch.index : -1;
+        const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
+        const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
+        const imageIndex = imageMatch ? remaining.indexOf(imageMatch[0]) : -1;
+        const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
+        const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
+        const citationIndex = citationMatch ? citationMatch.index : -1;
 
-      const indices = [boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
-      if (indices.length === 0) {
-        result += escapeRun(remaining);
-        break;
-      }
-      const minIndex = Math.min(...indices);
-
-      if (minIndex === boldIndex && boldMatch) {
-        if (boldIndex > 0) result += escapeRun(remaining.substring(0, boldIndex));
-        result += '<strong>' + escapeRun(boldMatch[1]) + '</strong>';
-        remaining = remaining.substring(boldIndex + boldMatch[0].length);
-      } else if (minIndex === italicIndex && italicMatch) {
-        if (italicIndex > 0) result += escapeRun(remaining.substring(0, italicIndex));
-        result += '<em>' + escapeRun(italicMatch[1]) + '</em>';
-        remaining = remaining.substring(italicIndex + italicMatch[0].length);
-      } else if (minIndex === linkIndex && linkMatch) {
-        if (linkIndex > 0) result += escapeRun(remaining.substring(0, linkIndex));
-        // Validate URL to prevent javascript: XSS
-        const linkUrl = withRawCode(linkMatch[2]);
-        if (isSafeUrl(linkUrl)) {
-          result += '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeRun(linkMatch[1]) + '</a>';
-        } else {
-          result += escapeRun(linkMatch[1]); // Just show text, no link
+        const indices = [boldIndex, italicIndex, imageIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
+        if (indices.length === 0) {
+          result += escapeRun(remaining);
+          break;
         }
-        remaining = remaining.substring(linkIndex + linkMatch[0].length);
-      } else if (minIndex === urlIndex && urlMatch) {
-        if (urlIndex > 0) result += escapeRun(remaining.substring(0, urlIndex));
-        // Plain URLs are already validated by regex to start with https?://
-        const plainUrl = withRawCode(urlMatch[0]);
-        result += '<a href="' + escapeHtml(plainUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(plainUrl) + '</a>';
-        remaining = remaining.substring(urlIndex + urlMatch[0].length);
-      } else if (minIndex === citationIndex && citationMatch) {
-        if (citationIndex > 0) result += escapeRun(remaining.substring(0, citationIndex));
-        const citation = citationsByMarker[citationMatch[1]];
-        const label = escapeHtml(citationMatch[1]);
-        if (isSafeUrl(citation.source)) {
-          // Every attribute value here is escaped inline rather than via a
-          // pre-escaped local, so the "attribute values go through escapeHtml"
-          // check in tests/test_frontend/test_widget_drift.py can stay literal.
-          result += '<sup class="osa-citation"><a href="' + escapeHtml(citation.source) +
-            '" target="_blank" rel="noopener noreferrer" title="' +
-            escapeHtml(citation.cited_text || citation.title || '') + '">[' + label + ']</a></sup>';
-        } else {
-          result += '<sup class="osa-citation">[' + label + ']</sup>';
-        }
-        remaining = remaining.substring(citationIndex + citationMatch[0].length);
-      }
-    }
+        const minIndex = Math.min(...indices);
 
-    return result;
+        if (minIndex === boldIndex && boldMatch) {
+          if (boldIndex > 0) result += escapeRun(remaining.substring(0, boldIndex));
+          result += '<strong>' + renderRun(boldMatch[1]) + '</strong>';
+          remaining = remaining.substring(boldIndex + boldMatch[0].length);
+        } else if (minIndex === italicIndex && italicMatch) {
+          if (italicIndex > 0) result += escapeRun(remaining.substring(0, italicIndex));
+          result += '<em>' + renderRun(italicMatch[1]) + '</em>';
+          remaining = remaining.substring(italicIndex + italicMatch[0].length);
+        } else if (minIndex === imageIndex && imageMatch) {
+          if (imageIndex > 0) result += escapeRun(remaining.substring(0, imageIndex));
+          // The widget never loads an image a reply names: a model-written address is
+          // somebody else's server. The alt text stands in, with a pointer to the run's own
+          // figure when the message has one. A span, escaped; never an img, never the address.
+          const alt = escapeRun(imageMatch[1].trim());
+          const hint = figureAbove
+            ? '<span class="osa-image-hint">' + (alt ? ' (see the figure above)' : '(see the figure above)') + '</span>'
+            : '';
+          if (alt || hint) result += '<span class="osa-image-reference">' + alt + hint + '</span>';
+          remaining = remaining.substring(imageIndex + imageMatch[0].length);
+        } else if (minIndex === linkIndex && linkMatch) {
+          if (linkIndex > 0) result += escapeRun(remaining.substring(0, linkIndex));
+          // Validate URL to prevent javascript: XSS
+          const linkUrl = withRawCode(linkMatch[2]);
+          if (isSafeUrl(linkUrl)) {
+            result += '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeRun(linkMatch[1]) + '</a>';
+          } else {
+            result += escapeRun(linkMatch[1]); // Just show text, no link
+          }
+          remaining = remaining.substring(linkIndex + linkMatch[0].length);
+        } else if (minIndex === urlIndex && urlMatch) {
+          if (urlIndex > 0) result += escapeRun(remaining.substring(0, urlIndex));
+          // Plain URLs are already validated by regex to start with https?://
+          const plainUrl = withRawCode(urlMatch[0]);
+          result += '<a href="' + escapeHtml(plainUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(plainUrl) + '</a>';
+          remaining = remaining.substring(urlIndex + urlMatch[0].length);
+        } else if (minIndex === citationIndex && citationMatch) {
+          if (citationIndex > 0) result += escapeRun(remaining.substring(0, citationIndex));
+          const citation = citationsByMarker[citationMatch[1]];
+          const label = escapeHtml(citationMatch[1]);
+          if (isSafeUrl(citation.source)) {
+            // Every attribute value here is escaped inline rather than via a
+            // pre-escaped local, so the "attribute values go through escapeHtml"
+            // check in tests/test_frontend/test_widget_drift.py can stay literal.
+            result += '<sup class="osa-citation"><a href="' + escapeHtml(citation.source) +
+              '" target="_blank" rel="noopener noreferrer" title="' +
+              escapeHtml(citation.cited_text || citation.title || '') + '">[' + label + ']</a></sup>';
+          } else {
+            result += '<sup class="osa-citation">[' + label + ']</sup>';
+          }
+          remaining = remaining.substring(citationIndex + citationMatch[0].length);
+        }
+      }
+
+      return result;
+    };
+
+    return renderRun(lifted);
   }
 
   // Full markdown to HTML converter
-  function markdownToHtml(text, citationsByMarker) {
+  function markdownToHtml(text, citationsByMarker, options) {
     if (!text) return '';
 
     const lines = text.split('\n');
@@ -6872,7 +6996,7 @@
           const tag = idx === 0 ? 'th' : 'td';
           tableHtml += '<tr>';
           cells.forEach(cell => {
-            tableHtml += '<' + tag + '>' + renderInlineMarkdown(cell.trim(), citationsByMarker) + '</' + tag + '>';
+            tableHtml += '<' + tag + '>' + renderInlineMarkdown(cell.trim(), citationsByMarker, options) + '</' + tag + '>';
           });
           tableHtml += '</tr>';
         });
@@ -6891,7 +7015,7 @@
         if (inCodeBlock) {
           const codeContent = codeBlockContent.join('\n');
           const blockId = getCodeBlockId();
-          result += '<pre data-code-id="' + blockId + '"><button class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
+          result += '<pre data-code-id="' + blockId + '"><button type="button" class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code" aria-label="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
           codeBlockContent = [];
           inCodeBlock = false;
         } else {
@@ -6930,7 +7054,7 @@
       if (headerMatch) {
         flushList();
         const level = headerMatch[1].length;
-        result += '<h' + level + '>' + renderInlineMarkdown(headerMatch[2], citationsByMarker) + '</h' + level + '>';
+        result += '<h' + level + '>' + renderInlineMarkdown(headerMatch[2], citationsByMarker, options) + '</h' + level + '>';
         continue;
       }
 
@@ -6941,7 +7065,7 @@
       if (bulletMatch) {
         if (currentListType !== 'ul') flushList();
         currentListType = 'ul';
-        currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1], citationsByMarker) + '</li>');
+        currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1], citationsByMarker, options) + '</li>');
         continue;
       }
 
@@ -6950,14 +7074,14 @@
       if (numberedMatch) {
         if (currentListType !== 'ol') flushList();
         currentListType = 'ol';
-        currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1], citationsByMarker) + '</li>');
+        currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1], citationsByMarker, options) + '</li>');
         continue;
       }
 
       flushList();
 
       if (line.trim()) {
-        result += '<p>' + renderInlineMarkdown(line, citationsByMarker) + '</p>';
+        result += '<p>' + renderInlineMarkdown(line, citationsByMarker, options) + '</p>';
       }
     }
 
@@ -6967,7 +7091,7 @@
     if (inCodeBlock && codeBlockContent.length > 0) {
       const codeContent = codeBlockContent.join('\n');
       const blockId = getCodeBlockId();
-      result += '<pre data-code-id="' + blockId + '"><button class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
+      result += '<pre data-code-id="' + blockId + '"><button type="button" class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code" aria-label="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
     }
 
     // Nothing rendered (a reply that is only an opening fence): the text still goes into
@@ -10863,6 +10987,13 @@
       `${error.line ? runExcerptHtml(run, error) : ''}</div>`;
   }
 
+  // Whether a reply's runs drew a figure the card shows, so a reply's image reference can
+  // point to "the figure above" (#666).
+  function messageHasFigure(msg) {
+    return Array.isArray(msg && msg.executions) && msg.executions.some((run) =>
+      run && Array.isArray(run.images) && run.images.some((image) => isShowableImage(image)));
+  }
+
   // The figures a run drew, each with its Download once the reply it belongs to is
   // known (`located`, {msgIndex, runIndex}). Numbered among the ones shown, from 1,
   // as the workspace numbers a run's figure-K.png; data-image-index is the figure's
@@ -13368,7 +13499,7 @@
       });
 
       const content = msg.role === 'assistant'
-        ? markdownToHtml(replyMarkdown(msg, msgIndex), citationsByMarker)
+        ? markdownToHtml(replyMarkdown(msg, msgIndex), citationsByMarker, { figureAbove: messageHasFigure(msg) })
         : escapeHtml(msg.content);
 
       // Compact numbered source list under the answer, when anything was cited. While
@@ -13398,7 +13529,7 @@
 
       // Add copy button for assistant messages
       const copyBtn = msg.role === 'assistant'
-        ? `<button class="osa-message-copy-btn" data-msg-index="${msgIndex}" title="Copy as markdown">${ICONS.copy}</button>`
+        ? `<button type="button" class="osa-message-copy-btn" data-msg-index="${msgIndex}" title="Copy as markdown" aria-label="Copy this reply as markdown">${ICONS.copy}</button>`
         : '';
 
       // Per-response feedback (thumbs up/down) for assistant replies, but not
@@ -13460,7 +13591,7 @@
         if (pre) {
           const code = pre.querySelector('code');
           if (code) {
-            copyToClipboard(code.textContent, btn);
+            copyCodeFromButton(btn, code.textContent, code);
           }
         }
       });
@@ -13472,7 +13603,9 @@
         e.stopPropagation();
         const msgIndex = parseInt(btn.getAttribute('data-msg-index'), 10);
         if (messages[msgIndex] && messages[msgIndex].content) {
-          copyToClipboard(messages[msgIndex].content, btn);
+          const messageEl = btn.closest('.osa-message');
+          const source = messages[msgIndex].content;
+          copyCodeFromButton(btn, source, messageEl && (() => replyFallbackFor(messageEl, source)));
         }
       });
     });
@@ -13934,24 +14067,10 @@
       copy.title = 'Copy the reference';
       copy.setAttribute('aria-label', 'Copy the error reference');
       copy.innerHTML = ICONS.copy;
-      copy.addEventListener('click', async (event) => {
+      copy.addEventListener('click', (event) => {
         event.stopPropagation();
-        if (await writeClipboard(reference)) {
-          copy.classList.add('copied');
-          copy.innerHTML = ICONS.check;
-          setTimeout(() => {
-            copy.classList.remove('copied');
-            copy.innerHTML = ICONS.copy;
-          }, CODE_COPIED_MS);
-        } else if (typeof window.getSelection === 'function') {
-          // A page that cannot copy for the reader: the reference is selected, so the
-          // keyboard's copy does it.
-          const selection = window.getSelection();
-          const range = document.createRange();
-          range.selectNodeContents(id);
-          selection.removeAllRanges();
-          selection.addRange(range);
-        }
+        // The one copy path: a refused copy selects the reference for the keyboard's copy.
+        copyCodeFromButton(copy, reference, id);
       });
       line.appendChild(copy);
       errorEl.appendChild(line);
@@ -15812,6 +15931,7 @@
       declaredClientToolsWithin,
       executionRecord,
       executionsHtml,
+      fillPersistentError,
       handleStreamingResponse,
       loadRuntimeBundle,
       normalizePersistedExecutions,

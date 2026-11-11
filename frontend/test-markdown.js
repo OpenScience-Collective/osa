@@ -225,5 +225,90 @@ assert(
   'a "<" in a paragraph is escaped, not passed through as the start of a tag'
 );
 
+console.log('\nLinks, code and emphasis inside bold and italic (#666)\n');
+
+const SAFE_LINK = (text, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+assert(
+  markdownToHtml('**[text](https://x)**') === `<p><strong>${SAFE_LINK('text', 'https://x')}</strong></p>`,
+  'a link that is all of a bold run renders as a link inside <strong>'
+);
+assert(
+  markdownToHtml('**see [the docs](https://x.org/a) first**') ===
+    `<p><strong>see ${SAFE_LINK('the docs', 'https://x.org/a')} first</strong></p>`,
+  'a link in the middle of bold text renders, with the text on either side kept'
+);
+assert(
+  markdownToHtml('**[`pop_loadset`](https://x)**') ===
+    `<p><strong>${SAFE_LINK('<code>pop_loadset</code>', 'https://x')}</strong></p>`,
+  'a link whose text is a code span, inside bold, renders both'
+);
+assert(
+  markdownToHtml('**run `a*b` now** and `c`') === '<p><strong>run <code>a*b</code> now</strong> and <code>c</code></p>',
+  'code inside bold stays valid code with its own asterisk, and a span after the bold is not confused with it'
+);
+assert(
+  markdownToHtml('*see [the docs](https://x)*') === `<p><em>see ${SAFE_LINK('the docs', 'https://x')}</em></p>`,
+  'a link inside italic renders'
+);
+assert(
+  markdownToHtml('**bold *and italic* text**') === '<p><strong>bold <em>and italic</em> text</strong></p>',
+  'italic inside bold renders'
+);
+assert(
+  markdownToHtml('*italic* and **bold**, then `code`') === '<p><em>italic</em> and <strong>bold</strong>, then <code>code</code></p>',
+  'italic, bold and code side by side keep rendering as before'
+);
+{
+  const unsafe = markdownToHtml('**[click](javascript:alert(1))**');
+  assert(!unsafe.includes('<a') && !unsafe.includes('href'), 'a javascript: link inside bold renders no anchor');
+  assert(unsafe.includes('<strong>click'), 'and its text is kept, in the bold');
+  const unsafeItalic = markdownToHtml('*[click](javascript:alert(1))*');
+  assert(!unsafeItalic.includes('href'), 'a javascript: link inside italic renders no anchor');
+  const dataUrl = markdownToHtml('**[x](data:text/html;base64,PHNjcmlwdD4=)**');
+  assert(!dataUrl.includes('href'), 'a data: link inside bold renders no anchor');
+  const forged = markdownToHtml('**[x](https://a.test/"onmouseover="alert(1))**');
+  assert(!/<a [^>]*"\s*onmouseover=/.test(forged) && !forged.includes('" onmouseover'), 'a quote in a link inside bold cannot open an attribute');
+}
+assert(
+  markdownToHtml('**<img src=x onerror=alert(1)>**') === '<p><strong>&lt;img src=x onerror=alert(1)&gt;</strong></p>',
+  'markup inside bold is escaped'
+);
+
+console.log('\nImage references point to the figure above, never load one (#666)\n');
+
+{
+  const plain = markdownToHtml('![Welch PSD](https://x/y.png)');
+  assert(!plain.includes('<img') && !plain.includes('<a') && !plain.includes('href'), 'an image reference renders no image and no link');
+  assert(!plain.includes('x/y.png'), 'and the remote address is not in the output');
+  assert(!plain.replace(/<[^>]*>/g, '').includes('!'), 'and no stray "!" is left');
+  assert(plain.replace(/<[^>]*>/g, '') === 'Welch PSD', 'with no run figure it reads as the alt text alone');
+
+  const withFigure = markdownToHtml('![Welch PSD](https://x/y.png)', undefined, { figureAbove: true });
+  assert(!withFigure.includes('<img') && !withFigure.includes('<a'), 'with a run figure it is still no image and no link');
+  assert(withFigure.replace(/<[^>]*>/g, '') === 'Welch PSD (see the figure above)', 'but reads as the alt text with a pointer to the figure above');
+  assert(withFigure.includes('<span class="osa-image-reference">'), 'inside one span');
+
+  assert(
+    markdownToHtml('Result: ![PSD](https://x/y.png) shown, and [a link](https://x).', undefined, { figureAbove: true }) ===
+      '<p>Result: <span class="osa-image-reference">PSD<span class="osa-image-hint"> (see the figure above)</span></span> shown, and ' +
+      `${SAFE_LINK('a link', 'https://x')}.</p>`,
+    'an image reference between text and an ordinary link leaves the link alone'
+  );
+  const emptyAlt = markdownToHtml('![](https://x/y.png)', undefined, { figureAbove: true });
+  assert(emptyAlt.replace(/<[^>]*>/g, '') === '(see the figure above)', 'an image with no alt text still points to the figure');
+  assert(markdownToHtml('![](https://x/y.png)') === '<p></p>', 'an image with no alt text and no figure to point to renders nothing');
+  const hostile = markdownToHtml('![<img src=x onerror=alert(1)>](javascript:alert(1))', undefined, { figureAbove: true });
+  assert(!hostile.includes('<img') && !hostile.includes('javascript:') && !hostile.includes('href'), 'a hostile alt text and address render as escaped text only');
+  const inCode = markdownToHtml('![a `b` c](https://x/y.png)');
+  assert(inCode.includes('<code>b</code>') && !inCode.includes('<img'), 'a code span in the alt text renders as code');
+  assert(
+    markdownToHtml('**![Fig](https://x/y.png)**').includes('<strong><span class="osa-image-reference">Fig</span></strong>'),
+    'an image reference inside bold renders as a reference too'
+  );
+  const inTable = markdownToHtml('| a |\n|---|\n| ![T](https://x/t.png) |', undefined, { figureAbove: true });
+  assert(!inTable.includes('<img') && inTable.includes('(see the figure above)'), 'in a table cell, the option reaches the reference');
+  assert(markdownToHtml('wow! [x](https://y) ok').includes('wow! ' + SAFE_LINK('x', 'https://y')), 'a "!" ending a sentence before a link stays text beside the link');
+}
+
 console.log(`\n${testsPassed} passed, ${testsFailed} failed\n`);
 process.exit(testsFailed === 0 ? 0 : 1);
