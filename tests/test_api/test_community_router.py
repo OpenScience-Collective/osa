@@ -1000,19 +1000,29 @@ class TestCommunityConfigPrivacyUrl:
         with pytest.raises(ValidationError, match="https"):
             self._client({"privacy_url": "http://example.org/privacy"})
 
-    def test_every_registered_community_that_sets_one_serves_an_https_one(self) -> None:
-        """Dynamic over the registry, through the route the widget calls."""
+    def test_every_registered_community_serves_what_its_config_sets(self) -> None:
+        """Dynamic over the registry, through the route the widget calls.
+
+        No registered community sets one today (every widget then falls back to the
+        platform's page), so this asserts for each that the route serves exactly its
+        config's value, `None` included, and that a value that is set is an https URL.
+        """
         from src.assistants import registry
 
+        checked = 0
         for info in registry.list_available():
             config = info.community_config
-            if not (config and config.widget and config.widget.privacy_url):
+            if not config:
                 continue
             app = FastAPI()
             app.include_router(create_community_router(info.id))
-            served = TestClient(app).get(f"/{info.id}/").json()["widget"]["privacy_url"]
-            assert served == config.widget.privacy_url, info.id
-            assert served.startswith("https://"), info.id
+            served = TestClient(app).get(f"/{info.id}/").json()["widget"]
+            expected = config.widget.privacy_url if config.widget else None
+            assert (served or {}).get("privacy_url") == expected, info.id
+            if expected:
+                assert expected.startswith("https://"), info.id
+            checked += 1
+        assert checked > 0, "no registered community has a config"
 
 
 class TestDeclaredClientToolsFitOneRequest:

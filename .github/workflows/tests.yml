@@ -302,7 +302,9 @@ jobs:
     # Not a required check, so a job-level skip is fine here.
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Recent runs take 400 to 465 s with the Chrome harnesses; the Privacy choices harness
+    # adds about a minute, so 10 minutes left too little room.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -655,13 +657,15 @@ jobs:
           PRIVACY_CHECK_SCREENSHOTS: ${{ runner.temp }}/privacy-check
         run: bun frontend/browser-harness/privacy-choices-check.mjs
 
+      # Always, not only on failure: the eight combinations are the reviewer's evidence.
       - name: Upload the Privacy choices check screenshots
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: privacy-check-screenshots
           path: ${{ runner.temp }}/privacy-check
           if-no-files-found: ignore
+          retention-days: 14
 
       # What only a browser can check: Pyodide under a real Content-Security-Policy,
       # the egress guard on a real worker global, and NEMAR's lock overlay loaded by
