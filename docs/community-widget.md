@@ -954,7 +954,7 @@ The record is `{version: 3, activeId, conversations: [...]}`.
 Each conversation has an id, a title (its first question, cut to 60 characters), a context (none, a dataset, or the search page), the server's session id, its two timestamps and its messages.
 When a 31st is saved, the one that last changed longest ago is dropped; the active conversation is never dropped.
 A conversation changes when a message is added or edited, a run is edited, or its session changes; a thumbs-up or thumbs-down does not count.
-A conversation with no question from the reader yet (only the greeting) does not use one of the 30 places, so starting a new chat never costs the oldest saved one.
+A conversation with no question from the reader and no reply the page seeded (only the greeting) does not use one of the 30 places, so starting a new chat never costs the oldest saved one.
 
 - **The widget shows the active conversation**, as it always showed its one chat, except on [a fresh chat on return](#a-fresh-chat-on-return). The History panel is built on this store.
 - **Older records are migrated on load.** A record any earlier widget wrote (version 2, version 1, or a bare list of messages) becomes one conversation, with its messages and session kept.
@@ -982,7 +982,7 @@ When the widget loads and the active conversation holds a question from the read
 - **A new browser session.** The first load in a tab sets a marker, `<storageKey>-session`, in `sessionStorage` (so a reload or a second page of the same tab keeps its chat, and a new tab or a restarted browser does not).
 - **The chat is older than the server's session.** Its last change was more than 24 hours ago, the same `SESSION_TTL_HOURS` after which the server forgets a session (`tests/test_frontend/test_widget_drift.py` keeps the two equal).
 
-A conversation with no question from the reader is never replaced.
+A conversation with no question from the reader and no reply the page seeded is never replaced.
 A browser that refuses `sessionStorage` reads as "the marker is there", so such a reader is not reset on every load; the 24 hour rule still applies.
 The [pop-out](#the-pop-out-window) never does this: it has a `sessionStorage` of its own and must show the same chat as its opener.
 
@@ -1056,7 +1056,8 @@ The page's context is:
 The widget compares the two when it loads, whenever `setDataset` is called, when the community config arrives (it may name a search path), when the browser reports `popstate` (the back and forward buttons), and just before a message is sent (a single-page site can move without telling the widget).
 A move made with `history.pushState` and no `setDataset` reports nothing, so it is found only at the send, and the new chat then starts without offering "Continue"; a single-page host that wants the notice calls `setDataset` (or `setDataset(null)`) on each navigation.
 
-- **A chat with no question from the reader switches silently.** The decision: with nothing the reader has said, there is nothing the new context could be confused with, so the chat takes the page's context and no notice is shown.
+- **A chat with no question from the reader and no reply the page seeded switches silently.** The decision: with nothing the reader has said and nothing the page said for them, there is nothing the new context could be confused with, so the chat takes the page's context and no notice is shown.
+  A chat holding a seeded reply (see [seed](#seed)) counts as one with content and shows the notice.
   A chat that has questions but no context at all (one saved by an earlier widget) also takes the page's context silently.
 - **Otherwise the old chat stays on screen** and a notice sits above the input: "You're on a new dataset, `<id>`. **Your next message starts a new chat;** the `<old>` chat is saved." (for the search page, "You're on the dataset search.").
   The next message starts a new conversation in the page's context; the old one stays saved with its messages and server session.

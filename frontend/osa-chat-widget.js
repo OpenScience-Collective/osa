@@ -9835,8 +9835,9 @@
   }
 
   // Pure: whether a conversation the reader returned to should give way to a new one.
-  // An empty conversation never does (one the page seeded is not empty, #730); otherwise
-  // a new browser session does, and so does a conversation idle for longer than the server keeps its session.
+  // An empty conversation never does (one the page seeded is not empty, #730);
+  // otherwise a new browser session does, and so does a conversation idle for longer
+  // than the server keeps its session.
   function isFreshReturn({ hasContent, sessionMarkerPresent, updatedAt, now }) {
     if (!hasContent) return false;
     return !sessionMarkerPresent || now - updatedAt > SESSION_TTL_MS;
@@ -10286,7 +10287,7 @@
   }
 
   // The notice is on screen while the page's context differs from a chat that holds
-  // the reader's questions: {conversationId, from, to}. Not stored.
+  // the reader's questions or a reply the page seeded: {conversationId, from, to}. Not stored.
   let pendingSwitch = null;
   // What choosing "Continue" left in a chat: {conversationId, from, to, atIndex, told}.
   // `atIndex` is where the divider goes (the message count when it was chosen); `told`
