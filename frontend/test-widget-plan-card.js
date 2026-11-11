@@ -894,6 +894,191 @@ console.log('\nthe stored plan conversation becomes a notebook with the step tit
   assert(!headings.some((h) => h.includes('Description 1')), 'rather than by the model\'s description');
 }
 
+// ---------------------------------------------------------------------------
+// Review round 1 (#695)
+// ---------------------------------------------------------------------------
+
+console.log('\na decision that never reached the server is undone: Not answered, and code asks again');
+{
+  const page = await start();
+  await proposeFirst(page);
+  // No stream is queued for /chat/resume, so the post fails, as a dropped connection, a 409
+  // or an expired parked call would.
+  click(page, page.q('.osa-plan-approve'));
+  await waitUntil(() => page.requests.some((r) => r.kind === 'resume'), 'the decision is posted');
+  await waitUntil(() => settled(page), 'the reply ends in an error');
+  assertEqual(lastReply(page).plan.status, 'unanswered', 'the plan is not approved on the page');
+  assertEqual(text(page.q('.osa-plan-badge')), 'Not answered', 'the card says Not answered');
+  assert(page.q('.osa-plan-approve') === null && page.q('.osa-plan-edit-btn') === null, 'and is read-only');
+  assert(page.q('.osa-plan-strip') === null && page.q('.osa-plan-bar') === null, 'with no strip and no bar');
+  assert(String(lastReply(page).content).includes('The reply stopped'), 'and the reply says it stopped');
+  // The next reply's code is asked about: nothing approved it.
+  const stream = page.queue();
+  send(page, 'Try again');
+  stream.send(sessionEvent());
+  stream.send(codeRequest('after-fail', 'print(1)', 'Count the onsets'));
+  stream.close();
+  await waitUntil(() => asking(page), 'code after a failed approval asks');
+  const last = page.queue();
+  click(page, page.q('.osa-tool-deny'));
+  await waitUntil(() => page.requests.length === 3, 'the refusal is posted');
+  last.send(doneEvent('OK.'));
+  last.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  assertEqual(lastReply(page).executions.map((r) => r.step), [undefined], 'and that run belongs to no step');
+}
+
+console.log('\na step the runtime refuses (denied_import) is a failed step, as nextRun counts it');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const afterDeny = page.queue();
+  first.send(codeRequest('d1', 'DENY:scipy\nimport scipy', 'Count the onsets'));
+  first.close();
+  await waitUntil(() => page.requests.length === 3, 'step 1 is answered without a question');
+  await waitUntil(() => page.q('.osa-run-card-retry'), 'the card says it will be tried again');
+  assertEqual(text(page.q('.osa-run-card .osa-run-card-title')), 'Step 1 failed · denied_import: scipy', 'the head says the step failed, and why');
+  assert(page.q('.osa-run-card-failed') !== null, 'it is a failed card');
+  assert(text(page.q('.osa-run-card-retry')).includes('attempt 2 of 2'), 'the retry line says which attempt is next');
+  assertEqual(text(page.q('.osa-plan-bar-text')), 'Step 2 waits until step 1 works.', 'the bar says step 2 waits');
+  assert(page.q('.osa-plan-seg-failed') !== null, 'the strip marks the step red');
+  // The retry is attempt 2 of the same step, with no question.
+  const afterRetry = page.queue();
+  afterDeny.send(codeRequest('d2', 'print(1)', 'Count the onsets without scipy'));
+  afterDeny.close();
+  await waitUntil(() => page.requests.length === 4, 'the retry is answered without a question');
+  afterRetry.send(doneEvent('Step 1 works now.'));
+  afterRetry.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  assertEqual(lastReply(page).executions.map((r) => [r.step, r.attempt, r.status]), [[1, 1, 'denied'], [1, 2, 'ok']], 'attempt 2 of step 1 followed the refusal');
+}
+
+console.log('\nconsent is by position, as docs/community-widget.md says: an unrelated question between steps runs the next step\'s slot');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const first = await approve(page);
+  const afterFirst = page.queue();
+  first.send(codeRequest('u1', 'print(1)', 'Count the onsets'));
+  first.close();
+  await waitUntil(() => page.requests.length === 3, 'step 1 ran');
+  afterFirst.send(doneEvent('Step 1 is done.'));
+  afterFirst.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  // A message that is not "Continue with step 2." and has nothing to do with the plan.
+  const unrelated = page.queue();
+  send(page, 'What does the N170 stand for?');
+  unrelated.send(sessionEvent());
+  unrelated.send(codeRequest('u2', 'print("anything")', 'Something else'));
+  unrelated.close();
+  const done = page.queue();
+  await waitUntil(() => page.requests.length === 5, 'the code request is answered');
+  assert(!asking(page), 'no permission card: an approved plan\'s next slot is taken by the next request, whatever it holds');
+  done.send(doneEvent('Answered.'));
+  done.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  assertEqual(lastReply(page).executions.map((r) => r.step), [2], 'and it is attributed to step 2');
+}
+
+console.log('\nthe plan card is announced, focused and sized for a touch');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const announcer = () => text(page.q('.osa-plan-announcer'));
+  assert(page.q('.osa-plan-announcer[role="status"][aria-live="polite"]') !== null, 'a polite live region of the plan\'s own is in the widget');
+  assertEqual(announcer(), '', 'it says nothing before a plan is approved');
+  const first = await approve(page);
+  assertEqual(page.window.document.activeElement, page.q('.osa-plan-title'), 'after Approve, focus is on the card\'s heading, not lost with the buttons');
+  assertEqual(announcer(), 'Plan · step 1 of 3. Working on step 1 of 3.', 'the live region says where the plan stands (the reply is going on)');
+  const next = page.queue();
+  first.send(codeRequest('a1', 'print(1)', 'Count the onsets'));
+  first.close();
+  await waitUntil(() => page.requests.length === 3, 'step 1 ran');
+  next.send(doneEvent('Step 1 is done.'));
+  next.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  assert(announcer().includes('Plan · step 2 of 3') && announcer().includes('Paused after step 1'), 'after the step it says "Paused after step 1"');
+  const style = (selector) => page.window.getComputedStyle(page.q(selector));
+  assert(cssNumber(style('.osa-plan-bar-btn').minHeight) >= 44, 'the bar\'s buttons are at least 44 px tall');
+  // Run step 2: the bar the button was in is replaced, and focus goes to the strip.
+  const go = page.queue();
+  click(page, page.q('.osa-plan-bar-run'));
+  await waitUntil(() => page.requests.length === 4, 'Run step 2 sends a message');
+  assertEqual(page.window.document.activeElement, page.q('.osa-plan-strip'), 'after Run step N, focus is on the progress strip');
+  go.send(sessionEvent());
+  go.send(doneEvent('Nothing more.'));
+  go.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  assert(/\.osa-plan-card button\.osa-plan-icon-btn \{[^}]*width: 44px;[^}]*height: 44px;/.test(SOURCE), 'the Edit and Remove buttons are 44 px');
+}
+
+console.log('\nformatStepElapsed never prints 60 seconds');
+{
+  const page = await start();
+  const fmt = (ms) => page.api.formatStepElapsed(ms);
+  assertEqual([fmt(0), fmt(340), fmt(1200), fmt(59949)], ['', '340 ms', '1.2 s', '59.9 s'], 'under a minute');
+  assertEqual([fmt(59950), fmt(65000), fmt(119400)], ['1 min 0 s', '1 min 5 s', '1 min 59 s'], 'a minute and more');
+  assertEqual([fmt(119600), fmt(119990), fmt(120000)], ['2 min 0 s', '2 min 0 s', '2 min 0 s'], '119.5 to 119.99 s is 2 min, not "1 min 60 s"');
+}
+
+console.log('\nlimits count code points, as the server does, and never end on half an emoji');
+{
+  const emoji = '\u{1F600}';
+  const lone = (value) => /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(value);
+  const title = `a${emoji.repeat(150)}`;
+  const cleaned = plan.cleanStep({ title, detail: `a${emoji.repeat(700)}` });
+  assertEqual([Array.from(cleaned.title).length, Array.from(cleaned.detail).length], [plan.PLAN_LIMITS.title, plan.PLAN_LIMITS.detail], 'a step is cut to 120 and 600 code points');
+  assert(!lone(cleaned.title) && !lone(cleaned.detail), 'with no lone surrogate');
+  const kept = plan.cleanStep({ title: `a${emoji.repeat(119)}`, detail: '' });
+  assertEqual(kept.title, `a${emoji.repeat(119)}`, 'a title of exactly 120 code points (239 code units) is kept whole');
+  const decision = plan.buildDecision({ ...plan.normalizeProposal(PLAN_ARGS, 'c1') }, 'changes_requested', `n${emoji.repeat(1200)}`);
+  assertEqual(Array.from(decision.feedback).length, plan.PLAN_LIMITS.feedback, 'feedback is cut to 1000 code points');
+  assert(!lone(decision.feedback), 'with no lone surrogate');
+  const page = await start();
+  const stored = page.api.normalizePersistedPlan({
+    callId: 'c1', status: 'approved', runMode: 'pause', findings: `a${emoji.repeat(2100)}`,
+    steps: [{ title, detail: `a${emoji.repeat(700)}` }],
+  });
+  assertEqual([Array.from(stored.steps[0].title).length, Array.from(stored.steps[0].detail).length, Array.from(stored.findings).length], [120, 600, 2000], 'the stored copy is cut the same way');
+  assert(!lone(stored.steps[0].title) && !lone(stored.steps[0].detail) && !lone(stored.findings), 'with no lone surrogate');
+}
+
+console.log('\nthe widget\'s copy of the plan vocabulary and cleaning cannot drift from osa-plan.js');
+{
+  const page = await start();
+  assertEqual(
+    Object.values(plan.PLAN_STATUS).sort(),
+    Object.keys(page.api.PLAN_STATUS_LABELS).sort(),
+    'every plan status has a label in the widget, and the widget has no other'
+  );
+  assertEqual(
+    { ...page.api.PLAN_STORAGE_LIMITS, attempts: undefined },
+    { ...plan.PLAN_LIMITS, attempts: undefined },
+    'the limits are the same'
+  );
+  assertEqual(page.api.PLAN_STORAGE_LIMITS.attempts, plan.MAX_STEP_ATTEMPTS, 'and so is the attempt limit');
+  const emoji = '\u{1F600}';
+  const hostile = [
+    { title: '  a\n\tb  ', detail: 'd' },
+    { title: 'x'.repeat(500), detail: 'y'.repeat(900) },
+    { title: `a${emoji.repeat(130)}`, detail: emoji.repeat(700) },
+    { title: 5, detail: null },
+    { title: ' \n ', detail: 'only a detail' },
+    'a string',
+    null,
+  ];
+  for (const step of hostile) {
+    const viaWidget = page.api.normalizePersistedPlan({ callId: 'c', status: 'draft', steps: [step, { title: 'ok', detail: '' }] });
+    const expected = plan.cleanStep(step);
+    if (expected.title === '') {
+      assertEqual(viaWidget, null, `a step with no title is refused by both (${JSON.stringify(step)})`);
+    } else {
+      assertEqual(viaWidget.steps[0], expected, `the same cleaning as osa-plan.js for ${JSON.stringify(step).slice(0, 40)}`);
+    }
+  }
+}
+
 clearTimeout(watchdog);
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

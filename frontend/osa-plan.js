@@ -55,7 +55,17 @@ export function oneLine(value) {
   return typeof value === 'string' ? value.split(/\s+/).filter(Boolean).join(' ') : '';
 }
 
-const text = (value, limit) => (typeof value === 'string' ? value.slice(0, limit) : '');
+/**
+ * The first `limit` code points of `value`. The server's limits count code points (pydantic
+ * max_length), where String.slice counts UTF-16 code units and could cut an emoji in half,
+ * leaving a lone surrogate the server's JSON parser refuses.
+ */
+export function clip(value, limit) {
+  if (typeof value !== 'string') return '';
+  return value.length <= limit ? value : Array.from(value).slice(0, limit).join('');
+}
+
+const text = clip;
 
 /** A whole number from 0 to `max`, else 0. */
 function wholeNumber(value, max) {
@@ -70,7 +80,7 @@ function wholeNumber(value, max) {
 export function cleanStep(step) {
   const raw = step && typeof step === 'object' ? step : {};
   return {
-    title: oneLine(text(raw.title, PLAN_LIMITS.title * 4)).slice(0, PLAN_LIMITS.title),
+    title: clip(oneLine(text(raw.title, PLAN_LIMITS.title * 4)), PLAN_LIMITS.title),
     detail: text(raw.detail, PLAN_LIMITS.detail),
   };
 }
@@ -164,7 +174,7 @@ export function buildDecision(plan, decision, feedback = '') {
   }
   const untitled = firstUntitledStep(steps);
   if (untitled > 0) throw new RangeError(`step ${untitled} needs a title`);
-  const note = typeof feedback === 'string' ? feedback.trim().slice(0, PLAN_LIMITS.feedback) : '';
+  const note = clip(typeof feedback === 'string' ? feedback.trim() : '', PLAN_LIMITS.feedback);
   const out = {
     call_id: plan.callId,
     decision,

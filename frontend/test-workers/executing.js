@@ -50,6 +50,25 @@ self.onmessage = (event) => {
       return;
     }
 
+    // DENY:<package> is a run the runtime refuses before it starts: status `denied` and
+    // `denied_import: <package>` in stderr, as the real worker reports an import it does not
+    // have (osa-worker-core.js).
+    const denyMatch = code.match(/^DENY:([A-Za-z_][\w.]*)/);
+    if (denyMatch) {
+      self.postMessage({
+        type: 'result',
+        call_id: data.call_id,
+        status: 'denied',
+        stdout: '',
+        stderr: `denied_import: ${denyMatch[1]}`,
+        summary: '',
+        images: [],
+        artifacts: [],
+        elapsed_ms: 1,
+      });
+      return;
+    }
+
     const delayMatch = code.match(/^DELAY:(\d+)/);
     const delay = delayMatch ? Number(delayMatch[1]) : 0;
 
