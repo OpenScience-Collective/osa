@@ -474,6 +474,13 @@ jobs:
       - name: Check the activity status in headless Chrome
         run: bun frontend/browser-harness/activity-status-check.mjs
 
+      # The run card in real Chrome, where layout is the browser's own: the card
+      # inside the 400 px panel with no sideways scroll, every button at least 36 px,
+      # the failing line marked, and Show code revealing the code. Its own server,
+      # so no backend and no network; the runner ships Chrome.
+      - name: Check the run card in headless Chrome
+        run: bun frontend/browser-harness/run-card-check.mjs
+
       # What only a browser can check: Pyodide under a real Content-Security-Policy,
       # the egress guard on a real worker global, and NEMAR's lock overlay loaded by
       # URL with each wheel's sha256 enforced (a valid wheel with other bytes must
