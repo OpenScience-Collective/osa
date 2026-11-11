@@ -146,10 +146,15 @@ class TestTheHandoverKeepsTheDataset:
         # The analysis session holds the summary and the message, and nothing else. A
         # question with no keyword stays on it (the session is sticky) and can only be
         # answered from the summary.
-        third = _chat(client, "which dataset were we discussing?", analysis_session)
+        third = _chat(
+            client,
+            "Without running anything, which dataset were we discussing?",
+            analysis_session,
+        )
 
         assert _stages(third) == []
-        done = next(e for e in third if e.get("event") == "done")
+        done = next((e for e in third if e.get("event") == "done"), None)
+        assert done is not None, [e.get("event") for e in third]
         assert done["session_id"] == analysis_session
         assert done["mode"] == "analysis"
         assert _DATASET in done["content"].lower()
