@@ -133,14 +133,16 @@ VOCABULARY = (
 # plot" is `plot`. `rereference` sits above `average` so "re-reference to the average"
 # is not read as an averaging step. Patterns are matched case-insensitively against the
 # title; only when no row matches the title is the detail tried the same way, and a step
-# neither matches is `other`. A reviewer tunes the plans' reading by editing this table
-# (and the report prints raw titles to check it against).
+# neither matches is `other`. `load` also takes the inspection steps (check, find, list:
+# reading what the data is), which the vocabulary has no word for. A reviewer tunes the
+# reading by editing this table and re-renders a saved run with `--from-raw`; the report
+# prints raw titles to check it against.
 RULES: tuple[tuple[str, str], ...] = (
     ("plot", r"plot|figure|visuali[sz]|topograph|topomap|scalp map|chart|graph|display|draw"),
     ("export", r"export|\bsave\b|\bcsv\b|write (?:out|to)|store (?:the )?results?"),
     (
         "stats",
-        r"statistic|t-?test|anova|signific|correlat|compar|summari[sz]|tally|"
+        r"statistic|t-?test|anova|signific|correlat|compar|summari[sz]|tally|tabulat|"
         r"\bcounts?\b|number of|peak (?:latenc|amplitude)|latenc(?:y|ies)",
     ),
     ("spectrum", r"spectr|\bpsd\b|welch|\bfft\b|wavelet|time-frequency|band[- ]?power|\bpower\b"),
@@ -153,7 +155,11 @@ RULES: tuple[tuple[str, str], ...] = (
     ),
     ("epoch", r"epoch|trial|baseline|time-locked|event-locked|\bcut\b"),
     ("filter", r"filter|band-?pass|high-?pass|low-?pass|notch|resampl|downsampl|detrend|smooth"),
-    ("load", r"\bload|\bread\b|fetch|\bopen\b|import|inspect|retriev|access"),
+    (
+        "load",
+        r"\bload|\bread\b|fetch|\bopen\b|import|inspect|retriev|access|"
+        r"check|confirm|\bfind\b|identify|\blist\b|describe|look up",
+    ),
 )
 _COMPILED_RULES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (op, re.compile(pattern, re.IGNORECASE)) for op, pattern in RULES
@@ -435,6 +441,20 @@ def render_report(
     return "\n".join(out)
 
 
+def records_from_raw(raw: dict[str, Any]) -> dict[PlanRequest, list[RunRecord]]:
+    """Rebuild the runs a ``--raw-out`` file saved, normalizing the steps with today's rules."""
+    results: dict[PlanRequest, list[RunRecord]] = {}
+    for request in REQUESTS:
+        runs: list[RunRecord] = []
+        for saved in raw["runs"][request.key]:
+            run = RunRecord(**{**saved, "sequence": tuple(saved["sequence"])})
+            if run.kind == "plan":
+                run.sequence = normalize_plan(run.steps)
+            runs.append(run)
+        results[request] = runs
+    return results
+
+
 # --- Entry point -------------------------------------------------------------------------
 
 
@@ -456,32 +476,46 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_SEARCH_QUERY,
         help="query for the dataset check (default: %(default)r)",
     )
+    parser.add_argument(
+        "--from-raw",
+        type=Path,
+        help="no network: re-render the report from a --raw-out file with the current rules",
+    )
     args = parser.parse_args(argv)
     if args.repeats < 1:
         parser.error("--repeats must be at least 1")
 
-    confirm_datasets(args.base_url, REQUESTS, args.search_query, args.origin)
-    results: dict[PlanRequest, list[RunRecord]] = {}
-    for request in REQUESTS:
-        runs: list[RunRecord] = []
-        for i in range(1, args.repeats + 1):
-            run = run_once(args.base_url, request, args.origin)
-            runs.append(run)
-            print(
-                f"{request.key} {i}/{args.repeats}: {_seq(run.sequence)} {run.note}",
-                file=sys.stderr,
-            )
-        results[request] = runs
+    if args.from_raw:
+        raw = json.loads(args.from_raw.read_text())
+        base_url, today = raw["base_url"], raw["date"]
+        results = records_from_raw(raw)
+    else:
+        base_url, today = args.base_url, date.today().isoformat()
+        confirm_datasets(base_url, REQUESTS, args.search_query, args.origin)
+        results = {}
+        for request in REQUESTS:
+            runs: list[RunRecord] = []
+            for i in range(1, args.repeats + 1):
+                run = run_once(base_url, request, args.origin)
+                runs.append(run)
+                print(
+                    f"{request.key} {i}/{args.repeats}: {_seq(run.sequence)} {run.note}",
+                    file=sys.stderr,
+                )
+            results[request] = runs
+    repeats = len(next(iter(results.values())))
 
-    report = render_report(args.base_url, args.repeats, results, date.today().isoformat())
+    report = render_report(base_url, repeats, results, today)
     if args.out:
         args.out.write_text(report + "\n")
         print(f"report written to {args.out}", file=sys.stderr)
     else:
         print(report)
     if args.raw_out:
-        raw = {r.key: [asdict(run) for run in runs] for r, runs in results.items()}
-        args.raw_out.write_text(json.dumps(raw, indent=2))
+        runs_raw = {r.key: [asdict(run) for run in runs] for r, runs in results.items()}
+        args.raw_out.write_text(
+            json.dumps({"base_url": base_url, "date": today, "runs": runs_raw}, indent=2)
+        )
     return 0
 
 

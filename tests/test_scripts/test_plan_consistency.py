@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import re
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -179,3 +180,13 @@ def test_the_report_has_a_row_per_request_and_the_raw_titles():
     for step in record.steps:
         assert step["title"] in report
     assert "HTTP 429" in report
+
+
+def test_raw_runs_round_trip_and_are_renormalized_with_the_current_rules():
+    record = pc.parse_plan_stream(PLAN_STREAM.read_text().splitlines())
+    stale = asdict(record) | {"sequence": ["stale"]}
+    failed = asdict(pc.RunRecord("error", pc.ERROR, note="HTTP 429"))
+    raw = {"runs": {r.key: [stale, failed] for r in pc.REQUESTS}}
+    first, second = pc.records_from_raw(raw)[pc.REQUESTS[0]]
+    assert first.sequence == record.sequence  # a plan is normalized again from its steps
+    assert second.sequence == pc.ERROR  # a failed run keeps its outcome
