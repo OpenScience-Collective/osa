@@ -24,7 +24,8 @@
  * widget's clock does not count how late its own timers fired (see MEASURE): it sees
  * every tick on time, as on a quiet machine, with the browser's real timers and the
  * widget's real code, and the lateness is added to the bounds on time below.
- * PACED_REVEAL_REAL_CLOCK=1 turns that off; PACED_REVEAL_CPU_THROTTLE=<rate> (CDP CPU
+ * That the widget draws fewer, larger steps under late ticks is therefore intentionally
+ * not tested here. PACED_REVEAL_REAL_CLOCK=1 turns that off; PACED_REVEAL_CPU_THROTTLE=<rate> (CDP CPU
  * throttling) and PACED_REVEAL_STALL_MS=<ms> (the main thread blocked that long, five
  * times in the reveal) starve the page on purpose, to show the failure and the fix.
  *
@@ -150,7 +151,7 @@ function startServer() {
 // PACED_REVEAL_REAL_CLOCK=1 leaves the widget's clock alone (see MEASURE), which is how
 // the failure of #691 is reproduced: with PACED_REVEAL_CPU_THROTTLE it fails on a quiet machine.
 const STALL_MS = Number(process.env.PACED_REVEAL_STALL_MS || 0);
-const FORGIVE_LATE_TICKS =!process.env.PACED_REVEAL_REAL_CLOCK;
+const FORGIVE_LATE_TICKS = process.env.PACED_REVEAL_REAL_CLOCK !== '1';
 
 // Send one question and record what the reader saw and when the stream's text arrived.
 const MEASURE = `(async () => {
@@ -169,8 +170,11 @@ const MEASURE = `(async () => {
   // the timers stay the browser's and what is drawn is still drawn by the widget. The
   // lateness is added up in \`forgiven\`, and the time bounds are stretched by the stall.
   let forgiven = 0;
+  let lastReported = 0;
   if (${FORGIVE_LATE_TICKS}) {
-    performance.now = () => now() - forgiven;
+    // Monotone, like the real clock: \`forgiven\` only grows, but a read taken just before a
+    // late timer fired must not be larger than one taken just after it.
+    performance.now = () => (lastReported = Math.max(lastReported, now() - forgiven));
     window.setTimeout = (fn, delay, ...rest) => {
       if (typeof fn !== 'function') return realSetTimeout(fn, delay, ...rest);
       const due = now() + (delay || 0);
@@ -276,6 +280,7 @@ const MEASURE = `(async () => {
 
 function summarize(run) {
   const { snapshots, frames, arrivals } = run;
+  if (!snapshots.some(([, len]) => len > 0) || !arrivals.length) return null;
   // What was drawn, and when, is read from the redraw records; the timer's frames say only
   // how late a timer ran.
   const shown = snapshots.filter(([, len]) => len > 0);
@@ -383,6 +388,8 @@ async function check(screenshotDir) {
     const paced = await measuring;
     await screenshot(cdp, page.sessionId, screenshotDir, 'after-reveal.png');
     const p = summarize(paced);
+    report(p !== null, 'the observer recorded the reply being drawn', `${paced.snapshots.length} redraws, ${paced.arrivals.length} chunks`);
+    if (!p) return;
     console.log('--- paced (a reader with default motion)');
     console.log(JSON.stringify({ ...p, redraws: paced.redraws }));
 
@@ -398,7 +405,7 @@ async function check(screenshotDir) {
     report(p.p100 - p.lastArrival <= 650 + p.stall, `the whole reply is on screen within about half a second of the last chunk (${Math.round(p.p100 - p.lastArrival)} ms, within ${650 + p.stall})`);
     report(p.p100 - p.firstText <= 700 + p.stall, `so the reveal adds little (${Math.round(p.p100 - p.firstText)} ms from the first words to the last, within ${700 + p.stall})`);
     report(p.distinctLengths >= 4, `the reader saw the reply grow through ${p.distinctLengths} different lengths`);
-    // Quartiles are read off sampled frames, and two can land on one frame where frames are far apart: so in order, and the first and third apart.
+    // Quartiles are read off the redraw records, and two can land on one redraw when a late tick draws a big slice: so in order, and the first and third apart.
     report(p.p25 < p.p75 && p.p25 <= p.p50 && p.p50 <= p.p75 && p.p75 <= p.p100, `25%, 50%, 75% and 100% arrive in order (${[p.p25, p.p50, p.p75, p.p100].map(Math.round).join(', ')} ms)`);
     const codeChars = CODE.split('\n').slice(1, -1).join('\n').length;
     report(p.codeLens.length === 1 && Math.abs(p.codeLens[0] - codeChars) <= 2,
@@ -409,6 +416,8 @@ async function check(screenshotDir) {
     const still = await openPage(cdp, base, { reducedMotion: true });
     const reduced = await evaluate(cdp, still.sessionId, MEASURE);
     const r = summarize(reduced);
+    report(r !== null, 'the observer recorded the reply being drawn (reduced motion)', `${reduced.snapshots.length} redraws, ${reduced.arrivals.length} chunks`);
+    if (!r) return;
     console.log('--- prefers-reduced-motion: reduce');
     console.log(JSON.stringify({ ...r, redraws: reduced.redraws }));
     report(reduced.reducedMotion === true, 'control: the browser reports prefers-reduced-motion: reduce', reduced.reducedMotion);
