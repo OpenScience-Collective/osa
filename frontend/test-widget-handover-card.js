@@ -534,11 +534,19 @@ console.log('\nreduced motion: the stylesheet holds the ring still');
 {
   // happy-dom cannot compute the cascade, so read it from the source: the override must
   // outrank the ring's own rule (two classes, later in the sheet).
-  const block = SOURCE.slice(SOURCE.indexOf('@media (prefers-reduced-motion: reduce)'));
-  const override = /([^{}]*\.osa-handover-marker\.osa-handover-live)\s*\{\s*animation:\s*none;/.exec(block);
+  // Comments are stripped first: a comment like "(E8.3)" would otherwise count as a class.
+  const block = SOURCE.slice(SOURCE.indexOf('@media (prefers-reduced-motion: reduce)')).replace(
+    /\/\*[\s\S]*?\*\//g,
+    '',
+  );
+  const override = /\n\s*([^\n{}]*\.osa-handover-marker\.osa-handover-live)\s*\{\s*animation:\s*none;/.exec(block);
   assert(!!override, 'the reduced-motion block stops the ring');
-  const classes = (override ? override[1] : '').match(/\.[\w-]+/g) || [];
-  assert(classes.length >= 3, 'with a selector of three classes or more, to outrank the ring rule');
+  const selector = override ? override[1].trim() : '';
+  const classes = selector.match(/\.[\w-]+/g) || [];
+  assert(
+    classes.length >= 3,
+    `with a selector of three classes or more, to outrank the ring rule (got: ${selector})`,
+  );
 }
 
 clearTimeout(watchdog);
