@@ -1097,6 +1097,48 @@ class TestDatasetSuggestedQuestions:
         )
 
 
+class TestWidgetSearchPaths:
+    """widget.search_paths (#656): where the reader is searching, not viewing a dataset."""
+
+    def test_default_is_empty_and_not_resolved(self) -> None:
+        widget = WidgetConfig()
+        assert widget.search_paths == []
+        assert "search_paths" not in widget.resolve("HED")
+
+    def test_resolved_when_set(self) -> None:
+        widget = WidgetConfig(search_paths=["/discover", "/find/datasets"])
+        assert widget.resolve("NEMAR")["search_paths"] == ["/discover", "/find/datasets"]
+
+    @pytest.mark.parametrize("bad", ["discover", "", "https://nemar.org/discover"])
+    def test_needs_a_leading_slash(self, bad: str) -> None:
+        with pytest.raises(ValidationError, match="must start with"):
+            WidgetConfig(search_paths=[bad])
+
+    @pytest.mark.parametrize("bad", ["/discover?q=1", "/discover#top", "/dis cover"])
+    def test_no_query_fragment_or_whitespace(self, bad: str) -> None:
+        with pytest.raises(ValidationError, match="query, a fragment or whitespace"):
+            WidgetConfig(search_paths=[bad])
+
+    def test_the_home_page_is_a_path(self) -> None:
+        assert WidgetConfig(search_paths=["/"]).search_paths == ["/"]
+
+    def test_at_most_200_characters(self) -> None:
+        longest = "/" + "a" * 199
+        assert WidgetConfig(search_paths=[longest]).search_paths == [longest]
+        with pytest.raises(ValidationError, match="longer than 200"):
+            WidgetConfig(search_paths=[longest + "a"])
+
+    def test_at_most_five(self) -> None:
+        paths = [f"/p{i}" for i in range(6)]
+        with pytest.raises(ValidationError, match="Maximum is 5"):
+            WidgetConfig(search_paths=paths)
+        assert len(WidgetConfig(search_paths=paths[:5]).search_paths) == 5
+
+    def test_a_bare_string_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            WidgetConfig(search_paths="/discover")
+
+
 class TestWidgetConfigLogoUrl:
     """Tests for WidgetConfig.logo_url field and validation."""
 

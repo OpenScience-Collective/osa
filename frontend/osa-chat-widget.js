@@ -98,6 +98,9 @@
     // Per-page instructions for the assistant (set by widget embedder)
     // These are sent to the backend as part of page_context
     widgetInstructions: null,
+    // Page paths where the reader is searching, not viewing a dataset (E1.3): a page
+    // under one gives the conversation the search context. From the community config.
+    searchPaths: [],
     showExperimentalBadge: true,
     repoUrl: 'https://osc.earth/osa/',
     repoName: 'Open Science Assistant',
@@ -372,7 +375,7 @@
   // when nothing was remembered.
   let displayDefaults = null;
   const DISPLAY_KEYS = ['title', 'initialMessage', 'placeholder', 'suggestedQuestions',
-    'datasetSuggestedQuestions', 'themeColor',
+    'datasetSuggestedQuestions', 'searchPaths', 'themeColor',
     'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor', 'logo', 'launcher',
     'launcherLabel', 'colorScheme', ...LAUNCHER_GEOMETRY_KEYS.map(([, key]) => key)];
   // The header avatar as createWidget draws it, for a config that drops its logo.
@@ -780,6 +783,8 @@
     close: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>',
     send: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>',
     reset: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+    history: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
+    swap: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11l-3-3M20 17H9l3 3"/></svg>',
     brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>',
     copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
     check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
@@ -816,6 +821,11 @@
       --osa-user-bg: #2563eb;
       --osa-user-text: #ffffff;
       --osa-assistant-bg: #f3f4f6;
+      /* The quiet teal tint of a notice the reader may act on (the context-switch
+         notice, the resume card): the boards' #f5fbfd, #b9e0eb and #0f3d4c. */
+      --osa-notice-bg: #f5fbfd;
+      --osa-notice-border: #b9e0eb;
+      --osa-notice-text: #0f3d4c;
       --osa-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
       /* The launcher's geometry (#553). applyLauncherGeometry sets --osa-size-closed,
          --osa-size-open, --osa-closed-scale, --osa-edge-x and --osa-edge-y (and the
@@ -2297,6 +2307,170 @@
       background: var(--osa-primary-dark);
     }
 
+    /* The empty state of a chat started on return (E1.2): a welcome and the card
+       that goes back to the chat the reader left. */
+    .osa-welcome-back {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .osa-welcome-back-text {
+      padding: 10px 14px;
+      border-radius: 12px;
+      border-bottom-left-radius: 4px;
+      background: var(--osa-assistant-bg);
+      color: var(--osa-text);
+    }
+
+    /* Ids drawn as code in the welcome, the context notice and the divider: set
+       outright, since a host theme's rule for a bare code element reaches them. */
+    .osa-welcome-back-text code,
+    .osa-context-notice code,
+    .osa-context-move code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12.5px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      white-space: normal;
+    }
+
+    .osa-resume-card {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 44px;
+      padding: 10px 12px;
+      text-align: left;
+      font: inherit;
+      font-size: 13px;
+      color: var(--osa-notice-text);
+      background: var(--osa-notice-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .osa-resume-card:hover {
+      border-color: var(--osa-accent);
+    }
+
+    .osa-resume-card:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-resume-card svg {
+      width: 16px;
+      height: 16px;
+      flex: none;
+      color: var(--osa-accent);
+    }
+
+    .osa-resume-card-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    /* The notice above the input when the page's context differs from the chat's
+       (E1.3): the next message starts a new chat, unless the reader continues. */
+    .osa-context-notice {
+      margin: 0 14px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px;
+      color: var(--osa-notice-text);
+      background: var(--osa-notice-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-bottom: 0;
+      border-radius: 12px 12px 0 0;
+    }
+
+    .osa-context-notice-body {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .osa-context-notice-body svg {
+      width: 18px;
+      height: 18px;
+      flex: none;
+      margin-top: 1px;
+      color: var(--osa-accent);
+    }
+
+    .osa-context-notice p {
+      margin: 0;
+      font-size: 12.5px;
+      line-height: 1.5;
+    }
+
+    .osa-context-continue {
+      align-self: flex-start;
+      min-height: 36px;
+      padding: 7px 10px;
+      font: inherit;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--osa-accent);
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .osa-context-continue:hover {
+      border-color: var(--osa-accent);
+    }
+
+    .osa-context-continue:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    /* What continuing a chat across a context change leaves in it: a divider, and
+       what the assistant is told. */
+    .osa-context-move {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin: 4px 0;
+    }
+
+    .osa-context-divider {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-context-divider::before,
+    .osa-context-divider::after {
+      content: '';
+      flex: 1 1 auto;
+      height: 1px;
+      background: var(--osa-border);
+    }
+
+    .osa-context-told {
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--osa-text-light);
+      border: 1px dashed var(--osa-border);
+      border-radius: 8px;
+    }
+
     .osa-suggestions {
       padding: 12px 16px;
       border-top: 1px solid var(--osa-border);
@@ -3540,6 +3714,9 @@
       --osa-text-light: #9ca3af;
       --osa-border: #374151;
       --osa-assistant-bg: #1f2937;
+      --osa-notice-bg: #12303a;
+      --osa-notice-border: #2c5a69;
+      --osa-notice-text: #d3eef6;
       /* A shadow alone vanishes against a dark host page, so every raised surface
          (the panel, the launcher, the tooltips) also gets a hairline edge. */
       --osa-shadow: 0 0 0 1px #374151, 0 10px 25px rgba(0, 0, 0, 0.5);
@@ -4440,6 +4617,7 @@
     renderLauncherIcons(container);
     if (container.querySelector('.osa-suggestions')) renderSuggestions(container);
     forwardDatasetToPopout();
+    evaluateContextSwitch();
   }
 
   // An open pop-out has no host page of its own to call setDataset, so it is told
@@ -5383,14 +5561,330 @@
     return true;
   }
 
-  // Get page context (URL, title, and widget instructions) for contextual answers
+  // --- Fresh chat on return ---
+  // A reader who comes back to the page, in a new browser session or after the
+  // server has forgotten the chat, starts a new conversation; the one they left stays
+  // in the store, and the empty state offers it back (E1.2, #655).
+
+  // How long the server keeps a session after its last request: SESSION_TTL_HOURS in
+  // src/api/routers/community.py, kept equal by tests/test_frontend/test_widget_drift.py.
+  const SESSION_TTL_HOURS = 24;
+  const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
+
+  // The pop-out is told its configuration by the page that opened it, and has a
+  // sessionStorage of its own, so it never decides on its own to start over: it
+  // shows the chat its opener shows.
+  function isPopoutWindow() {
+    return !!window.__OSA_CHAT_CONFIG__;
+  }
+
+  // Whether this browser session has loaded the widget before; the first load of a
+  // session sets the marker. A sessionStorage that cannot be used (blocked, or full)
+  // reads as "yes", so a reader whose browser forgets nothing is not reset on every load.
+  function takeSessionMarker() {
+    try {
+      const key = `${CONFIG.storageKey}-session`;
+      if (window.sessionStorage.getItem(key) !== null) return true;
+      window.sessionStorage.setItem(key, '1');
+      return false;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  // Pure: whether a conversation the reader returned to should give way to a new one.
+  // An empty conversation never does; otherwise a new browser session does, and so
+  // does a conversation idle for longer than the server keeps its session.
+  function isFreshReturn({ hasUserMessage, sessionMarkerPresent, updatedAt, now }) {
+    if (!hasUserMessage) return false;
+    return !sessionMarkerPresent || now - updatedAt > SESSION_TTL_MS;
+  }
+
+  // The conversation just left, while the empty state offers it back: {conversationId
+  // (the new one), previousId, previousTitle}. Not stored: a reload shows nothing.
+  let welcomeBack = null;
+
+  // Called by init() once the history is loaded. The new conversation takes the page's
+  // context (see pageContext).
+  function startFreshChatOnReturn() {
+    if (isPopoutWindow()) return;
+    const sessionMarkerPresent = takeSessionMarker();
+    if (!activeConversation) return;
+    const hasUserMessage = messages.some((m) => m.role === 'user');
+    const stored = listConversations().find((c) => c.active);
+    const updatedAt = stored ? stored.updatedAt : Date.now();
+    if (!isFreshReturn({ hasUserMessage, sessionMarkerPresent, updatedAt, now: Date.now() })) return;
+    const previous = { id: activeConversation.id, title: conversationTitle(messages) };
+    const id = startConversation({ context: pageContext() });
+    if (id) welcomeBack = { conversationId: id, previousId: previous.id, previousTitle: previous.title };
+  }
+
+  // Whether the empty state is showing: the new conversation is still empty, and the
+  // one it replaced is still saved.
+  function welcomeBackShown() {
+    if (!welcomeBack || !activeConversation || activeConversation.id !== welcomeBack.conversationId) return false;
+    if (messages.some((m) => m.role === 'user')) return false;
+    return readStoredConversations().some((c) => c.id === welcomeBack.previousId);
+  }
+
+  // The welcome and the resume card, drawn after the greeting.
+  function appendWelcomeBack(container, messagesEl) {
+    if (!welcomeBackShown()) return;
+    const context = activeConversation.context;
+    const about = context && context.type === 'dataset'
+      ? ` about <code>${escapeHtml(context.id)}</code>`
+      : '';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'osa-welcome-back';
+    wrapper.innerHTML = `
+      <div class="osa-welcome-back-text">Welcome back. This is a new chat${about}.</div>
+      <button type="button" class="osa-resume-card">
+        ${ICONS.history}
+        <span class="osa-resume-card-text">Pick up where you left off: <strong>${escapeHtml(welcomeBack.previousTitle || 'your last chat')}</strong></span>
+      </button>`;
+    wrapper.querySelector('.osa-resume-card').addEventListener('click', () => {
+      const previousId = welcomeBack && welcomeBack.previousId;
+      if (!previousId || !activateConversation(previousId)) return;
+      welcomeBack = null;
+      renderMessages(container);
+      renderSuggestions(container);
+      const resetBtn = container.querySelector('.osa-reset-btn');
+      if (resetBtn) resetBtn.disabled = messages.length <= 1;
+      evaluateContextSwitch();
+      // The card the reader pressed is gone with the welcome: focus goes to the input.
+      container.querySelector('.osa-chat-input input')?.focus();
+    });
+    messagesEl.appendChild(wrapper);
+  }
+
+  // --- Context switch ---
+  // A conversation has a context: the dataset the page names (setDataset), or the
+  // dataset search (a page under CONFIG.searchPaths), or none (E1.3, #656).
+
+  // Pure: the context a page gives a conversation, or null when it gives none and the
+  // conversation keeps the one it has. A dataset wins over a search path; a search path
+  // matches the pathname itself and anything below it at a path-segment boundary
+  // (/discover matches /discover/x, not /discovery); "/" matches the home page only.
+  function contextForPage(dataset, pathname, searchPaths) {
+    if (dataset && isValidDatasetId(dataset.id)) return { type: 'dataset', id: dataset.id };
+    const path = typeof pathname === 'string' ? pathname : '';
+    for (const raw of Array.isArray(searchPaths) ? searchPaths : []) {
+      if (typeof raw !== 'string' || !raw.startsWith('/')) continue;
+      const base = raw.replace(/\/+$/, '');
+      // "/" is the home page alone: as a prefix it would be every page.
+      if (base === '') {
+        if (/^\/+$/.test(path)) return { type: 'search' };
+        continue;
+      }
+      if (path === base || path.startsWith(`${base}/`)) return { type: 'search' };
+    }
+    return null;
+  }
+
+  // The context of the page on screen now.
+  function pageContext() {
+    return contextForPage(currentDataset, window.location.pathname, CONFIG.searchPaths);
+  }
+
+  // A context as the notice and the continue button name it: a dataset by its id, the
+  // search page as "search".
+  function contextName(context) {
+    return context && context.type === 'dataset' ? context.id : 'search';
+  }
+
+  // The same, as a place in a sentence.
+  function contextPlace(context) {
+    return context && context.type === 'dataset' ? context.id : 'the dataset search';
+  }
+
+  // Pure: whether two contexts are the same one (null is a context: none).
+  function sameContext(a, b) {
+    if (!a || !b) return !a && !b;
+    return a.type === b.type && (a.type !== 'dataset' || a.id === b.id);
+  }
+
+  // The notice is on screen while the page's context differs from a chat that holds
+  // the reader's questions: {conversationId, from, to}. Not stored.
+  let pendingSwitch = null;
+  // What choosing "Continue" left in a chat: {conversationId, from, to, atIndex, told}.
+  // `atIndex` is where the divider goes (the message count when it was chosen); `told`
+  // is set once the server has answered a request that carried the move, so a send
+  // that failed keeps it for the next. Not stored: the divider is for this page view.
+  let contextMove = null;
+
+  function pendingSwitchShown() {
+    return pendingSwitch && activeConversation && pendingSwitch.conversationId === activeConversation.id
+      ? pendingSwitch
+      : null;
+  }
+
+  // The move chosen in the active chat that no answered request has carried yet.
+  function untoldMove() {
+    if (!contextMove || contextMove.told || !activeConversation) return null;
+    return contextMove.conversationId === activeConversation.id ? contextMove : null;
+  }
+
+  // The move the request being built carries, or null. The server is told where the
+  // reader is from the dataset the request names (none: the search page), so a move is
+  // carried only while the page is still where the reader moved to; a page that has
+  // since become neither would have the server told something false.
+  function carriedMove() {
+    const move = untoldMove();
+    if (!move) return null;
+    const page = pageContext();
+    return page && sameContext(move.to, page) ? move : null;
+  }
+
+  // The move the next request tells the server about, as {type, id?}, or null.
+  function pendingMovedFrom() {
+    const move = carriedMove();
+    return move ? normalizeConversationContext(move.from) : null;
+  }
+
+  // Decide what the page's context means for the active conversation, and draw or
+  // remove the notice. Called when the widget loads, when the page names another
+  // dataset, when the community config arrives (a search path may be new), and before
+  // a send (a single-page site moves without telling the widget). A page that gives no
+  // context keeps the conversation's. With no question from the reader in the chat, or
+  // a chat that has no context yet, the new context is adopted silently: there is
+  // nothing earlier it could be confused with. A pop-out never asks: it shows its
+  // opener's chat.
+  function evaluateContextSwitch() {
+    if (isPopoutWindow() || !activeConversation) return;
+    const page = pageContext();
+    let adopted = false;
+    if (!page || sameContext(page, activeConversation.context)) {
+      pendingSwitch = null;
+    } else if (!messages.some((m) => m.role === 'user') || !activeConversation.context) {
+      activeConversation.context = page;
+      pendingSwitch = null;
+      adopted = true;
+    } else {
+      pendingSwitch = { conversationId: activeConversation.id, from: activeConversation.context, to: page };
+    }
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container) return;
+    if (adopted && welcomeBackShown()) renderMessages(container);
+    renderContextNotice(container);
+  }
+
+  let pageMovesWatched = false;
+
+  // A site that moves without calling setDataset (the back and forward buttons of a
+  // single-page site) is noticed when the browser reports it, so the notice appears
+  // before the next send. A pushState navigation reports nothing: it is found at the
+  // send, or when the host calls setDataset. Only the path matters, so a hash change
+  // is not watched.
+  function watchPageMoves() {
+    if (pageMovesWatched) return;
+    pageMovesWatched = true;
+    window.addEventListener('popstate', () => evaluateContextSwitch());
+  }
+
+  // The notice above the input (board A1), or none. It goes into a live region that is
+  // always in the page (an announcement is made when content is added to a region
+  // already there, not when the region arrives with its content). Rebuilt only when what
+  // it says changes, so a streamed reply's redraws leave a focused button alone.
+  function renderContextNotice(container) {
+    const live = pendingSwitchShown();
+    const key = live ? JSON.stringify([live.from, live.to]) : '';
+    const existing = container.querySelector('.osa-context-notice');
+    if (existing && existing.getAttribute('data-key') === key) return;
+    if (existing) existing.remove();
+    if (!live) return;
+    const slot = container.querySelector('.osa-context-notice-slot');
+    if (!slot) return;
+    const where = live.to.type === 'dataset'
+      ? `You're on a new dataset, <code>${escapeHtml(live.to.id)}</code>.`
+      : "You're on the dataset search.";
+    const old = escapeHtml(contextName(live.from));
+    const notice = document.createElement('div');
+    notice.className = 'osa-context-notice';
+    notice.setAttribute('data-key', key);
+    notice.innerHTML = `
+      <div class="osa-context-notice-body">
+        ${ICONS.swap}
+        <p>${where} <strong>Your next message starts a new chat;</strong> the ${old} chat is saved.</p>
+      </div>
+      <button type="button" class="osa-context-continue">Continue the ${old} chat instead</button>`;
+    notice.querySelector('.osa-context-continue').addEventListener('click', () => continueInContext(container));
+    slot.appendChild(notice);
+  }
+
+  // "Continue the <old> chat instead": the chat takes the page's context, shows the
+  // divider, and the next request tells the server the reader moved.
+  function continueInContext(container) {
+    const live = pendingSwitchShown();
+    if (!live) return;
+    // A second move before the first was told is one move, from where the chat started;
+    // a move back to where it started is no move at all.
+    const earlier = untoldMove();
+    const from = earlier ? earlier.from : live.from;
+    activeConversation.context = normalizeConversationContext(live.to);
+    contextMove = sameContext(from, live.to)
+      ? null
+      : {
+        conversationId: activeConversation.id,
+        from,
+        to: live.to,
+        atIndex: messages.length,
+        told: false,
+      };
+    pendingSwitch = null;
+    saveHistoryQuietly('continuing in a new context');
+    renderMessages(container);
+    renderContextNotice(container);
+    container.querySelector('.osa-chat-input input')?.focus();
+  }
+
+  // The divider and the note on what the assistant is told, drawn in the messages at
+  // the point the reader continued, or null when this is not that point.
+  function contextMoveElementAt(index) {
+    const move = contextMove;
+    if (!move || !activeConversation || move.conversationId !== activeConversation.id) return null;
+    if (move.atIndex !== index) return null;
+    const from = escapeHtml(contextPlace(move.from));
+    const to = escapeHtml(contextPlace(move.to));
+    const toCode = move.to.type === 'dataset' ? `<code>${to}</code>` : to;
+    const element = document.createElement('div');
+    element.className = 'osa-context-move';
+    element.innerHTML = `
+      <div class="osa-context-divider"><span>Moved to ${toCode} &middot; continuing this chat</span></div>
+      <div class="osa-context-told">The assistant is told: <em>the reader moved from ${from} to ${to}; compare or continue as they ask.</em></div>`;
+    return element;
+  }
+
+  // Before a message is sent: a page context that differs from the chat's, with the
+  // reader's questions in it, starts a new chat in the page's context, unless the
+  // reader chose to continue (which already made the contexts the same).
+  function prepareContextForSend() {
+    evaluateContextSwitch();
+    const live = pendingSwitchShown();
+    if (!live) return;
+    pendingSwitch = null;
+    contextMove = null;
+    startConversation({ context: live.to });
+  }
+
+  // The server has answered a request that carried `move` (see carriedMove); an answer
+  // to a request built before the move was chosen does not use it up.
+  function markContextMoveTold(move) {
+    if (move) move.told = true;
+  }
+
+  // Get page context (URL, title, widget instructions, the dataset and a move) for contextual answers
   function getPageContext() {
     // Widget instructions are always sent if configured, even if page context is off
     const hasWidgetInstructions = typeof CONFIG.widgetInstructions === 'string'
       && CONFIG.widgetInstructions.trim() !== '';
     const hasPageContext = CONFIG.allowPageContext && pageContextEnabled;
+    // The dataset on screen and a move the reader chose are about the chat itself, so,
+    // like the widget instructions, they are sent whether or not the reader shares the
+    // page's URL.
+    const datasetId = currentDataset ? currentDataset.id : null;
+    const movedFrom = pendingMovedFrom();
 
-    if (!hasPageContext && !hasWidgetInstructions) {
+    if (!hasPageContext && !hasWidgetInstructions && !datasetId && !movedFrom) {
       return null;
     }
 
@@ -5402,6 +5896,8 @@
     if (hasWidgetInstructions) {
       context.widget_instructions = CONFIG.widgetInstructions;
     }
+    if (datasetId) context.dataset_id = datasetId;
+    if (movedFrom) context.moved_from = movedFrom;
     return context;
   }
 
@@ -5588,6 +6084,13 @@
     }
     if (w.dataset_suggested_questions != null && !_userSetKeys.has('datasetSuggestedQuestions')) {
       CONFIG.datasetSuggestedQuestions = w.dataset_suggested_questions;
+      changed = true;
+    }
+    if (w.search_paths != null && !_userSetKeys.has('searchPaths')) {
+      // Paths only: anything else the server sent is not a place the reader can be.
+      CONFIG.searchPaths = Array.isArray(w.search_paths)
+        ? w.search_paths.filter((path) => typeof path === 'string' && path.startsWith('/'))
+        : [];
       changed = true;
     }
     if (w.theme_color != null && !_userSetKeys.has('themeColor')) {
@@ -5780,6 +6283,8 @@
           applyWidgetConfig();
         }
         rememberWidget(data.widget, requested);
+        // A search path the config names may make this page the search page.
+        evaluateContextSwitch();
       } else if (data) {
         console.warn('[OSA] API response missing widget config; using local defaults');
       }
@@ -6574,6 +7079,7 @@
       result,
       client_tools: browserTools ? browserTools.declared : [],
     };
+    const carried = carriedMove();
     const pageContext = getPageContext();
     if (pageContext) body.page_context = pageContext;
     const model = modelOverride || userSettings.model;
@@ -6608,6 +7114,7 @@
           idle.stop();
         }
       }
+      markContextMoveTold(carried);
       const contentType = response.headers.get('content-type') || '';
       if (!contentType.includes('text/event-stream')) {
         idle.stop();
@@ -8363,6 +8870,7 @@
         <div class="osa-turnstile-container" style="display: none;"></div>
         <div class="osa-error" style="display: none;"></div>
         <div class="osa-warning" style="display: none;"></div>
+        <div class="osa-context-notice-slot" role="status" aria-live="polite"></div>
         <div class="osa-chat-input">
           <input type="text" placeholder="${escapeHtml(CONFIG.placeholder)}" />
           <button class="osa-send-btn" aria-label="Send">
@@ -8802,6 +9310,8 @@
     announceStatus(container, status);
 
     messages.forEach((msg, msgIndex) => {
+      const moveEl = contextMoveElementAt(msgIndex);
+      if (moveEl) messagesEl.appendChild(moveEl);
       // The streaming handler keeps an empty assistant entry so the final
       // response can update it in place. While the model is thinking, that
       // state must stay invisible: the loading bubble below is the assistant
@@ -9112,6 +9622,10 @@
       });
     });
 
+    const trailingMoveEl = contextMoveElementAt(messages.length);
+    if (trailingMoveEl) messagesEl.appendChild(trailingMoveEl);
+    appendWelcomeBack(container, messagesEl);
+
     if (toolActivity) {
       // In place of the loading dots: nothing is loading, the reply is waiting
       // on the person or on code running in this page.
@@ -9153,6 +9667,7 @@
       messagesEl.appendChild(loadingEl);
     }
 
+    renderContextNotice(container);
     messagesEl.scrollTop = !follow && awayFromBottom > SCROLL_FOLLOW_SLACK_PX
       ? scrolledFrom
       : messagesEl.scrollHeight;
@@ -10341,6 +10856,10 @@
     // The last failed request's banner has been read, or is about to be replaced.
     dismissPersistentError(container);
 
+    // A page context that moved since the chat began starts a new chat (E1.3); before
+    // isLoading is set, since a conversation cannot be replaced mid-reply.
+    prepareContextForSend();
+
     isLoading = true;
     isThinking = false;
     beginWait();
@@ -10390,6 +10909,7 @@
       }
 
       // Add page context if enabled
+      const carried = carriedMove();
       const pageContext = getPageContext();
       if (pageContext) {
         body.page_context = pageContext;
@@ -10453,6 +10973,7 @@
         }
       }
       serverAnswered = true;
+      markContextMoveTold(carried);
       if (idle) idleTimers.set(response, idle);
 
       // Extract session ID from response header (set by streaming responses)
@@ -10899,6 +11420,7 @@
     loadPageContextPreference();
     loadUserSettings();
     const historyNeedsSave = loadHistory();
+    startFreshChatOnReturn();
     injectStyles();
     const container = createWidget();
     // Everything else the remembered config sets (the logo, the title, the
@@ -10920,6 +11442,8 @@
 
     renderMessages(container);
     renderSuggestions(container);
+    evaluateContextSwitch();
+    watchPageMoves();
 
     // Query required DOM elements with null checks
     const chatButton = container.querySelector('.osa-chat-button');
@@ -11283,6 +11807,11 @@
       },
       getSessionId: () => sessionId,
       setSessionId: (value) => { sessionId = value; },
+      // The context switch (E1.3): the pure helpers.
+      contextForPage,
+      sameContext,
+      pageContext,
+      getPageContext,
     };
     // What a pending reply is doing (#538): the labels, and the clock the elapsed
     // time is read from, which a test turns by hand.

@@ -50,6 +50,11 @@ class PageContext:
     url: str | None = None
     title: str | None = None
     widget_instructions: str | None = None
+    # The dataset the page names (setDataset); validated at the API boundary.
+    dataset_id: str | None = None
+    # {"type": "dataset", "id": ...} or {"type": "search"}: where the reader was before
+    # choosing to continue this conversation in the page's context.
+    moved_from: dict[str, str] | None = None
 
 
 # Default system prompt template for generic communities
@@ -554,17 +559,66 @@ class CommunityAssistant(ToolAgent):
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _describe_context(context: dict[str, str]) -> str:
+        """A reader context as a phrase: the dataset's id, or the dataset search."""
+        if context.get("type") == "dataset" and context.get("id"):
+            return f"dataset `{context['id']}`"
+        return "the dataset search"
+
+    def _format_reader_context(self) -> str:
+        """The dataset the reader is on, and where they came from in this conversation.
+
+        Without a dataset id the reader is on the community's search page, the only
+        other context the widget reports a move to.
+        """
+        page = self._page_context
+        if page is None or not (page.dataset_id or page.moved_from):
+            return ""
+        paragraphs: list[str] = []
+        if page.dataset_id:
+            paragraphs.append(
+                f"The reader is on the page for dataset `{page.dataset_id}`. Questions about "
+                '"this dataset" mean this one, whether or not the page URL is shared.'
+            )
+        if page.moved_from:
+            now = self._describe_context(
+                {"type": "dataset", "id": page.dataset_id}
+                if page.dataset_id
+                else {"type": "search"}
+            )
+            before = self._describe_context(page.moved_from)
+            # A reader back where the chat started has not moved: say nothing false.
+            if before != now:
+                paragraphs.append(
+                    f"In this conversation the reader moved from {before} to {now}, and "
+                    "chose to keep talking here. Earlier answers were about the first one; "
+                    "compare or continue as they ask."
+                )
+        if not paragraphs:
+            return ""
+        return "## Reader Context\n\n" + "\n\n".join(paragraphs)
+
     def _format_page_context_section(self) -> str:
         """Format page context section for system prompt."""
         if not self.config.enable_page_context:
             return ""
         if not self._page_context:
             return ""
-        # Need at least a URL or widget instructions to include this section
-        if not self._page_context.url and not self._page_context.widget_instructions:
+        # Need at least a URL, widget instructions or a dataset to include this section
+        if (
+            not self._page_context.url
+            and not self._page_context.widget_instructions
+            and not self._page_context.dataset_id
+            and not self._page_context.moved_from
+        ):
             return ""
 
         sections = []
+
+        reader_context = self._format_reader_context()
+        if reader_context:
+            sections.append(reader_context)
 
         if self._page_context.url:
             sections.append(

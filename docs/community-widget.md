@@ -22,6 +22,7 @@ this page is about the widget's appearance and copy.
 | `placeholder` | string, up to 200 characters | `"Ask a question..."` | The chat input field's placeholder text. |
 | `suggested_questions` | list of strings, at most 10 | empty list | Clickable suggestion buttons shown below the initial message. Empty and whitespace-only entries are dropped. |
 | `dataset_suggested_questions` | list of `{text, needs_zarr}`, at most 10 | empty list | Suggestions for a page that names a dataset with `setDataset`, in place of `suggested_questions`; see [Questions about the dataset on screen](#questions-about-the-dataset-on-screen). |
+| `search_paths` | list of paths, at most 5, each starting with `/`, at most 200 characters, with no query, fragment or whitespace | empty list | Pages where the reader is searching for datasets rather than viewing one: a page whose path is one of these, or below one at a path-segment boundary, gives the chat the search context (`/` is the home page alone); see [A context change starts a new chat](#a-context-change-starts-a-new-chat). |
 | `logo_url` | string: an `http://`/`https://` URL, or a path starting with `/` | none | A custom logo/icon for the widget header avatar. When unset, the API looks for a `logo.*` file (SVG, PNG, JPG, JPEG, WEBP) in the community's own folder; failing that, the widget falls back to a default brain icon. |
 
 ```yaml
@@ -628,7 +629,7 @@ When a 31st is saved, the one that last changed longest ago is dropped; the acti
 A conversation changes when a message is added or edited, a run is edited, or its session changes; a thumbs-up or thumbs-down does not count.
 A conversation with no question from the reader yet (only the greeting) does not use one of the 30 places, so starting a new chat never costs the oldest saved one.
 
-- **Nothing changes on screen yet.** The widget shows the active conversation, as it always showed its one chat. The History panel, a fresh chat on return and a reset when the dataset changes are built on this store.
+- **The widget shows the active conversation**, as it always showed its one chat, except on [a fresh chat on return](#a-fresh-chat-on-return). The History panel is built on this store.
 - **Older records are migrated on load.** A record any earlier widget wrote (version 2, version 1, or a bare list of messages) becomes one conversation, with its messages and session kept.
 - **A second tab, or the pop-out, does not drop the first's conversations.** Each save re-reads the record and replaces only its own conversation.
 - **A record from a newer widget is left alone.** If the stored version is above 3, the widget says so, does not save, and does not overwrite it.
@@ -645,6 +646,60 @@ A conversation with no question from the reader yet (only the greeting) does not
 - **Clearing the chat** (the header's reset button) discards the active conversation and starts an empty one; the others stay.
 
 Testing: `frontend/test-widget-history-store.js` runs the real widget source in happy-dom windows: the migrations, the 30-conversation limit, the save and load round trip, the records it must not overwrite, a full storage, and two widgets on one storage.
+
+### A fresh chat on return
+
+A reader who comes back to the page starts a new chat; the one they left stays saved.
+When the widget loads and the active conversation holds a question from the reader, it starts a new conversation if either of these is true:
+
+- **A new browser session.** The first load in a tab sets a marker, `<storageKey>-session`, in `sessionStorage` (so a reload or a second page of the same tab keeps its chat, and a new tab or a restarted browser does not).
+- **The chat is older than the server's session.** Its last change was more than 24 hours ago, the same `SESSION_TTL_HOURS` after which the server forgets a session (`tests/test_frontend/test_widget_drift.py` keeps the two equal).
+
+A conversation with no question from the reader is never replaced.
+A browser that refuses `sessionStorage` reads as "the marker is there", so such a reader is not reset on every load; the 24 hour rule still applies.
+The [pop-out](#the-pop-out-window) never does this: it has a `sessionStorage` of its own and must show the same chat as its opener.
+
+The new chat takes the page's context (see [a context change](#a-context-change-starts-a-new-chat)) and its empty state says so: "Welcome back. This is a new chat about `<dataset id>`." and, under it, a card, "Pick up where you left off: `<title>`".
+Clicking the card makes the conversation just left the active one again, with its messages and server session (a session the server has already forgotten starts a new one on the next message, as a resumed old chat always did); the card is hidden after the first message.
+The card is not stored: it is shown only on the load that started the new chat.
+
+Testing: `frontend/test-widget-fresh-return.js`.
+
+### A context change starts a new chat
+
+A conversation has a context: the dataset the page names with [`setDataset`](#osachatwidgetsetdatasetvalue), or the dataset search, or none.
+The page's context is:
+
+- the dataset from `setDataset`, when there is one;
+- otherwise the search context, when `location.pathname` is one of the community's `search_paths` or below one at a path-segment boundary (`/discover` matches `/discover` and `/discover/x`, not `/discovery`; `/` matches the home page alone, never every page; NEMAR sets `search_paths: [/discover]`);
+- otherwise none, and the chat keeps the context it has.
+
+The widget compares the two when it loads, whenever `setDataset` is called, when the community config arrives (it may name a search path), when the browser reports `popstate` (the back and forward buttons), and just before a message is sent (a single-page site can move without telling the widget).
+A move made with `history.pushState` and no `setDataset` reports nothing, so it is found only at the send, and the new chat then starts without offering "Continue"; a single-page host that wants the notice calls `setDataset` (or `setDataset(null)`) on each navigation.
+
+- **A chat with no question from the reader switches silently.** The decision: with nothing the reader has said, there is nothing the new context could be confused with, so the chat takes the page's context and no notice is shown.
+  A chat that has questions but no context at all (one saved by an earlier widget) also takes the page's context silently.
+- **Otherwise the old chat stays on screen** and a notice sits above the input: "You're on a new dataset, `<id>`. **Your next message starts a new chat;** the `<old>` chat is saved." (for the search page, "You're on the dataset search.").
+  The next message starts a new conversation in the page's context; the old one stays saved with its messages and server session.
+- **"Continue the `<old>` chat instead"** keeps the conversation and gives it the page's context.
+  A divider ("Moved to `<id>` · continuing this chat") and a dashed note ("The assistant is told: the reader moved from `<old>` to `<id>`; compare or continue as they ask.") appear in the chat, and the next request carries `page_context.moved_from`.
+  The move is told once: it is cleared when the server has answered a request that carried it (the first message or a resumed run), so a send that failed carries it again on the next try, and a reply to a request sent before "Continue" does not use it up.
+  It is sent only while the page is still where the reader moved to; on a page that is neither that dataset nor the search page it waits.
+  Two moves before a send are one, from where the chat started, and a move back to where it started is no move.
+  The divider is for this page view and is not stored; the move is not stored either, so a reload before the first message after "Continue" drops it (the chat keeps the new context, and the assistant is not told about the move).
+- **The pop-out never asks.** It shows its opener's chat and skips the comparison; its requests still name the dataset.
+
+What the request carries (`page_context`, beside `url`, `title` and `widget_instructions`):
+
+| Field | Value |
+|---|---|
+| `dataset_id` | The dataset `setDataset` named, matching `[A-Za-z0-9._-]{1,64}`. **Sent whether or not the reader shares the page URL** (the "Share page URL" toggle): like `widget_instructions`, it is about the chat, not about the reader's browsing, so a reader who keeps the URL private still gets answers about the dataset on screen. |
+| `moved_from` | `{type: 'dataset', id}` or `{type: 'search'}`: where the reader was before choosing to continue. Present only on the first request after "Continue". A `dataset` needs an `id`; `search` takes none, and the API refuses one. |
+
+The backend renders them in the system prompt's page context section, "Reader Context": the dataset the reader is on and, when `moved_from` is present, that the reader moved from one to the other in this conversation (a `moved_from` equal to where the reader is now is left out).
+A community with `enable_page_context: false` gets neither.
+
+Testing: `frontend/test-widget-context-switch.js` (the widget), `tests/test_api/test_page_context.py` (the validated fields), `tests/test_agents/test_page_context.py` (the prompt), and the `search_paths` cases in `tests/test_core/test_config/test_community.py` and `tests/test_api/test_communities_endpoint.py`.
 
 ## The first paint: remembering the community's look
 
@@ -707,6 +762,7 @@ field: once an embedder sets `themeColor`, no community config value for
 | `placeholder` | `placeholder` |
 | `suggested_questions` | `suggestedQuestions` |
 | `dataset_suggested_questions` | `datasetSuggestedQuestions` (the same `{text, needs_zarr}` entries) |
+| `search_paths` | `searchPaths` (a list of paths) |
 | `logo_url` | `logo` |
 | `theme_color` | `themeColor` |
 | `theme_text_color` | `themeTextColor` |
