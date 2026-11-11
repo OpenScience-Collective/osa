@@ -290,8 +290,11 @@
   // running, so Python state survives) and opens the next one in its place.
 
   const NOTEBOOK_OPEN_TIMEOUT_MS = 30_000;
-  // Shorter than the widget's own 180 s wait for a reply, so the answer is an error it reads.
-  const SETUP_WAIT_TIMEOUT_MS = 120_000;
+  // A healthy cold setup takes up to 120 s (notebook/e2e-check.js allows that),
+  // so this is longer, so as not to fail a request that is only waiting. It is
+  // shorter than the widget's own 240 s wait for a reply (this plus the 30 s to
+  // open the notebook), so the answer is an error the widget reads.
+  const SETUP_WAIT_TIMEOUT_MS = 150_000;
   const SETUP_WAIT_EXPIRED = Symbol('setup wait expired');
 
   const resultMessage = (requestId, outcome) => ({
@@ -497,7 +500,14 @@
       const path = files.importedPath(community, datasetId, files.BLANK_TITLE, taken);
       await writeNotebook(path, files.blankNotebook(), 'blank');
       addOpen(path);
-      await show(path);
+      try {
+        await show(path);
+      } catch (err) {
+        // As for an import: the file is written and listed, so the answer names
+        // it and the strip shows it; a bare error would hide that it exists.
+        warn('the new notebook was saved but not opened', err);
+        return { ok: false, path, error: `it was saved as a tab, but not opened: ${err.message || err}` };
+      }
       return { ok: true, path };
     }
 
@@ -533,6 +543,8 @@
     }
 
     async function undoImport(request) {
+      // Removing the file under a run would fail it: "closed before every cell ran".
+      if (runningAll === request.path) return { ok: false, path: request.path, error: 'the cells are running' };
       if (lastImport?.path !== request.path) return { ok: false, error: 'only the latest import can be undone' };
       if (await isEdited(lastImport)) return { ok: false, error: 'it has been edited, so it was kept' };
       if (activePath() === request.path) await show(neighbour(request.path));

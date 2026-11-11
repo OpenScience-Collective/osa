@@ -1110,6 +1110,23 @@ async function main() {
         report((await ask('undo-import', { path: failing?.path }))?.ok === true, 'and that notebook is undone too');
         report(!(await exists(passing?.path)) && !(await exists(failing?.path)), 'with both files gone');
 
+        // Undo is refused while the cells run: removing the file would fail the run.
+        const slow = await ask('import-notebook', {
+          datasetId: DATASET,
+          title: 'Slow run',
+          notebook: small([codeCell('a', 'import time\ntime.sleep(6)\nslept = True')]),
+        });
+        const slowRun = ask('run-all', { path: slow?.path }, 240_000);
+        await Bun.sleep(2_000);
+        const undoDuring = await ask('undo-import', { path: slow?.path });
+        report(
+          undoDuring?.ok === false && /running/.test(undoDuring.error) && (await exists(slow?.path)),
+          `undo-import while the cells run is refused and the file stays (${JSON.stringify(undoDuring)})`
+        );
+        const slowDone = await slowRun;
+        report(slowDone?.ok === true, `and the run, left alone, finishes ok (${JSON.stringify(slowDone)})`);
+        report((await ask('undo-import', { path: slow?.path }))?.ok === true, 'after it, Undo works');
+
         // --- Two imports of the same title arrive as two tabs ---
         log('tabs: the same import twice');
         const one = await ask('import-notebook', importFields);
