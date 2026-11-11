@@ -630,7 +630,7 @@ A move made with `history.pushState` and no `setDataset` reports nothing, so it 
   The move is told once: it is cleared when the server has answered a request that carried it (the first message or a resumed run), so a send that failed carries it again on the next try, and a reply to a request sent before "Continue" does not use it up.
   It is sent only while the page is still where the reader moved to; on a page that is neither that dataset nor the search page it waits.
   Two moves before a send are one, from where the chat started, and a move back to where it started is no move.
-  The divider is for this page view and is not stored.
+  The divider is for this page view and is not stored; the move is not stored either, so a reload before the first message after "Continue" drops it (the chat keeps the new context, and the assistant is not told about the move).
 - **The pop-out never asks.** It shows its opener's chat and skips the comparison; its requests still name the dataset.
 
 What the request carries (`page_context`, beside `url`, `title` and `widget_instructions`):
