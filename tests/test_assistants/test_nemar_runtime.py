@@ -65,6 +65,17 @@ NM000132_EEG_LABELS = (
 )  # fmt: skip
 # The consistency dataset xx099905 has three EEG channels.
 XX099905_EEG_LABELS = ("C3", "Cz", "C4")
+# The aliases and extras the position table keeps beside the 10-10 labels: the old names
+# (T3 to T6 are T7, T8, P7, P8), the 10-20 extras and the reference sites.
+TABLE_ALIASES_AND_EXTRAS = (
+    "T3", "T4", "T5", "T6", "P9", "P10", "T9", "T10", "Iz", "A1", "A2", "M1", "M2", "Fpz",
+    "C3", "Cz", "C4",
+)  # fmt: skip
+# A 10-10 label: Fp, AF, F, FT, FC, T, C, TP, CP, P, PO or O, then a number or z.
+TEN_TEN_LABEL = re.compile(r"(Fp|AF|F|FT|FC|T|C|TP|CP|P|PO|O)(\d+|z)")
+# The two topography documents measure about 15.8k and 17.3k characters: the 10-10 table is
+# 2.3k of them, and the rest is the shared plotting code and each document's own steps.
+TOPOGRAPHY_SIZE_CAP = 18_000
 PYTHON_FENCE = re.compile(r"^```python\n([\s\S]*?)\n```", re.MULTILINE)
 
 
@@ -822,11 +833,12 @@ class TestTheTopographyAndTimeFrequencyDocuments:
         assert band == erp
 
     @pytest.mark.parametrize("procedure_id", TOPOGRAPHIES)
-    def test_the_table_is_standard_1005_positions_to_three_decimals(
+    def test_the_table_is_the_1010_positions_and_aliases_to_three_decimals(
         self, documents: dict[str, str], procedure_id: str, capsys: pytest.CaptureFixture[str]
     ) -> None:
         table, _ = _the_matching(documents[procedure_id], capsys)
-        assert {"T3", "T4", "T5", "T6"} <= set(table)
+        # The aliases and the extras the readers' recordings use.
+        assert set(TABLE_ALIASES_AND_EXTRAS) <= set(table)
         for name, (x, y) in table.items():
             assert (x, y) == (round(x, 3), round(y, 3)), name
             assert x**2 + y**2 < 0.65**2, name  # on or near a head of radius 0.5
@@ -836,7 +848,31 @@ class TestTheTopographyAndTimeFrequencyDocuments:
         assert table["T8"][0] > 0.4 and table["T7"][0] < -0.4
         # An old name is the position of its new one.
         assert table["T3"] == table["T7"] and table["T6"] == table["P8"]
-        assert "MNE's `standard_1005`" in documents[procedure_id]
+        # The 10-05 labels (AFp1h, FFC1h, ...) are left out: a name is a 10-10 label or an extra.
+        for name in set(table) - set(TABLE_ALIASES_AND_EXTRAS):
+            assert TEN_TEN_LABEL.fullmatch(name), name
+        flat = _flat(documents[procedure_id])
+        assert "MNE's `standard_1005`" in flat
+        assert f"The positions are {len(table)} scalp positions" in flat
+
+    def test_the_two_topographies_carry_the_same_table_and_stay_small(
+        self, documents: dict[str, str]
+    ) -> None:
+        band, erp = (
+            _fence_with(documents[procedure_id], "positions = {") for procedure_id in TOPOGRAPHIES
+        )
+        assert band == erp
+        # The 10-10 table is a fence of about 2.3k characters; the 343-label one was 9k.
+        assert len(band) < 3_000
+        for procedure_id in TOPOGRAPHIES:
+            assert len(documents[procedure_id]) <= TOPOGRAPHY_SIZE_CAP, procedure_id
+
+    def test_the_changelog_names_the_real_count_of_positions(
+        self, documents: dict[str, str], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        table, _ = _the_matching(documents[BAND_TOPOGRAPHY], capsys)
+        changelog = (ROOT / "CHANGELOG.md").read_text()
+        assert f"one table of {len(table)} standard positions" in changelog
 
     @pytest.mark.parametrize("procedure_id", TOPOGRAPHIES)
     @pytest.mark.parametrize("labels", [NM000132_EEG_LABELS, XX099905_EEG_LABELS])
