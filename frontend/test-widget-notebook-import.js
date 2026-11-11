@@ -301,6 +301,57 @@ console.log('\nRun all and Undo post their messages, for the imported notebook, 
   assert(bannerText(q).includes('cell 3 did not finish without an error'), 'a run that stopped says where');
 }
 
+console.log('\nRun all is not timed out with the ordinary wait: the real result still arrives');
+{
+  const { window, widget, q, posts, importPosts, say } = await startNotebook();
+  widget.__notebook.setRequestTimeouts(30, 5000);
+  say({ type: 'ready' });
+  widget.__notebook.importNotebookToTab(conversationInput());
+  say({ type: 'result', requestId: importPosts()[0].message.requestId, ok: true, path: IMPORT_PATH });
+  const click = (selector) => q(selector).dispatchEvent(new window.Event('click', { bubbles: true }));
+  click('.osa-notebook-run-all');
+  const runPosts = () => posts.filter((p) => p.message.type === 'run-all');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assertEqual(state(window).import.state, 'running', 'a run that outlives the ordinary wait is still running');
+  assertEqual(state(window).requests, 1, 'its request is still pending');
+  assert(/Running/.test(bannerText(q)), 'and the banner still says so, not that the notebook did not answer');
+  say({ type: 'result', requestId: runPosts()[0].message.requestId, ok: true, path: IMPORT_PATH });
+  assertEqual(state(window).import.state, 'ran', 'the real result is shown when it arrives');
+  assert(/All cells ran/.test(bannerText(q)), 'as the outcome');
+
+  // The ordinary wait still applies to everything else.
+  widget.__notebook.setRequestTimeouts(30, 5000);
+  const undo = q('.osa-notebook-undo');
+  undo.dispatchEvent(new window.Event('click', { bubbles: true }));
+  assertEqual(state(window).import.state, 'undoing', 'set up: Undo is waiting');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assertEqual(state(window).requests, 0, 'an Undo nobody answers is settled by the ordinary wait');
+  assert(state(window).import.state !== 'undoing', 'and the banner leaves "removing"');
+}
+
+console.log('\nan import that was saved but not shown keeps its notebook, with Run all and Undo');
+{
+  const { window, widget, q, importPosts, say } = await startNotebook();
+  say({ type: 'ready' });
+  widget.__notebook.importNotebookToTab(conversationInput());
+  say({
+    type: 'result', requestId: importPosts()[0].message.requestId, ok: false, path: IMPORT_PATH,
+    error: 'it was saved as a tab, but not opened: the starter notebook is still setting up; try again in a moment'
+  });
+  assertEqual(state(window).import.state, 'imported', 'the import counts as imported');
+  assertEqual(state(window).import.path, IMPORT_PATH, 'with its path kept');
+  assert(/still setting up/.test(bannerText(q)), 'and what went wrong beside it');
+  assertEqual(bannerButtons(q), ['Run all', 'Undo'], 'Run all and Undo are offered for the saved file');
+
+  // Without a path there is nothing to keep: it is an error.
+  const none = await startNotebook();
+  none.say({ type: 'ready' });
+  none.widget.__notebook.importNotebookToTab(conversationInput());
+  none.say({ type: 'result', requestId: none.importPosts()[0].message.requestId, ok: false, error: 'this notebook is for another dataset' });
+  assertEqual(state(none.window).import.state, 'error', 'an answer with no path is an error');
+  assertEqual(bannerButtons(none.q), ['Dismiss'], 'with only Dismiss');
+}
+
 console.log('\nUndo posts undo-import, and the banner follows the answer');
 {
   const { window, widget, q, posts, importPosts, say } = await startNotebook();

@@ -4605,8 +4605,16 @@
   };
   const NOTEBOOK_KINDS = ['playground', 'chat', 'blank'];
   // Longest wait for the notebook's answer to one request. An import waits for
-  // the starter's setup first, which on a cold start takes a while.
-  const NOTEBOOK_REQUEST_MS = 180000;
+  // the starter's setup first (the page bounds that wait at 150 s), then opens
+  // the notebook (30 s), so this is longer than the two together.
+  let NOTEBOOK_REQUEST_MS = 240000;
+  // Run all waits for the setup too, then runs the cells one at a time, and a
+  // cell can take as long as the reader's analysis does. The ordinary wait
+  // would settle it as unanswered while the cells still ran, and the real
+  // outcome would then be dropped. This one only catches a page that went away
+  // without its frame being replaced (which settles the request on its own).
+  let NOTEBOOK_RUN_ALL_MS = 1800000;
+  const notebookRequestMs = (type) => (type === 'run-all' ? NOTEBOOK_RUN_ALL_MS : NOTEBOOK_REQUEST_MS);
   let notebookRequestCounter = 0;
 
   // The frame was replaced or failed: nothing posted to it will be answered.
@@ -4673,7 +4681,7 @@
       const timer = setTimeout(() => {
         notebookEmbed.outbox = notebookEmbed.outbox.filter((message) => message.requestId !== requestId);
         finishNotebookRequest(requestId, { ok: false, error: 'The notebook did not answer.' });
-      }, NOTEBOOK_REQUEST_MS);
+      }, notebookRequestMs(type));
       notebookEmbed.requests.set(requestId, { type, resolve, timer, onResult });
       const message = { target: 'osa-notebook', type, requestId, ...fields };
       notebookEmbed.outbox.push(message);
@@ -4757,10 +4765,14 @@
     renderNotebookBanner(container);
     return sendNotebookRequest('import-notebook', { datasetId, title, notebook }, (result) => {
       if (notebookEmbed.import !== record || record.state !== 'importing') return;
-      if (result.ok) {
+      // An answer that is not ok but names a path means the file was saved and
+      // only showing it failed: the notebook is there, so Run all and Undo are
+      // offered, with what went wrong beside them.
+      if (result.ok || result.path) {
         record.state = 'imported';
         record.path = result.path || null;
         record.undoable = true;
+        if (!result.ok) record.notice = result.error || 'It was saved, but not opened.';
       } else {
         record.state = 'error';
         record.error = result.error || 'The notebook could not be imported.';
@@ -12472,6 +12484,11 @@
       setTimeouts: (afterLoadMs, totalMs) => {
         NOTEBOOK_AFTER_LOAD_MS = afterLoadMs;
         NOTEBOOK_TOTAL_MS = totalMs;
+      },
+      // How long a request waits for its answer: most of them, and Run all.
+      setRequestTimeouts: (requestMs, runAllMs) => {
+        NOTEBOOK_REQUEST_MS = requestMs;
+        NOTEBOOK_RUN_ALL_MS = runAllMs;
       },
     };
     window.OSAChatWidget.__browser = {
