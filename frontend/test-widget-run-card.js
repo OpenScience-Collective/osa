@@ -479,6 +479,7 @@ console.log('\na KeyError opens with its type and message, and the failing line 
   assertEqual(textOf(error), "KeyError: 'Scrambled'", 'Type: message');
   assertEqual(textOf(error.querySelector('.osa-run-card-error-type')), 'KeyError', 'with the type of its own');
   assert(!error.closest('[hidden]'), 'open by default: nothing to click to see it');
+  assertEqual([error.getAttribute('role'), error.getAttribute('aria-label')], ['group', 'Error message'], 'its tab stop has a role and a name');
   const marked = card.querySelectorAll('.osa-run-card-line-marked');
   assertEqual(marked.length, 1, 'one line is marked');
   assertEqual(textOf(marked[0].querySelector('.osa-run-card-lineno')), '4', 'line 4');
@@ -530,6 +531,26 @@ console.log('\na message of several lines keeps the exception\'s own type');
   const noTrace = failedCard(window, api, 'multiLineMessage', { traceback: '' });
   assert(noTrace.querySelector('.osa-run-card-error-text').textContent.includes('column onset is missing'),
     'without a traceback to read the type from, nothing the run said is hidden');
+}
+
+console.log('\na library exception: the traceback writes its module, stderr does not');
+{
+  const { window, api } = loadWidget();
+  for (const name of ['qualifiedType', 'qualifiedMultiLine']) {
+    const fixture = RUN_CARD_FIXTURES[name];
+    assert(/^json\.decoder\.JSONDecodeError: /m.test(fixture.traceback) && fixture.stderr.startsWith('JSONDecodeError: '), `${name}: recorded with the two spellings`);
+    for (const traceback of [undefined, '']) {
+      const card = failedCard(window, api, name, traceback === undefined ? {} : { traceback });
+      assertEqual(textOf(card.querySelector('.osa-run-card-error-type')), 'JSONDecodeError', `${name}: named${traceback === '' ? ' with no traceback' : ' from its traceback'}`);
+      assertEqual(textOf(card.querySelector('.osa-run-card-line-marked .osa-run-card-lineno')), '2', `${name}: the failing line is marked`);
+    }
+  }
+  const multi = failedCard(window, api, 'qualifiedMultiLine');
+  assertEqual(textOf(multi.querySelector('.osa-run-card-error-text')),
+    'JSONDecodeError: could not read the table\nExpected 3 fields, saw 4: line 1 column 1 (char 0)', 'a message of several lines is whole');
+  // A traceback that names something stderr never wrote does no worse than having none.
+  const odd = failedCard(window, api, 'qualifiedType', { traceback: 'Traceback (most recent call last):\n  File "<cell>", line 2, in <module>\nSomethingElse: x\n' });
+  assertEqual(textOf(odd.querySelector('.osa-run-card-error-type')), 'JSONDecodeError', 'a traceback that disagrees with stderr falls back to the name heuristic');
 }
 
 console.log('\na custom exception name that does not end in Error');
@@ -709,6 +730,7 @@ console.log('\nCopy error copies the error as written, and says Copied');
   click(window, button);
   await waitUntil(() => button.textContent === 'Copied', 'the button says Copied');
   assertEqual(await window.navigator.clipboard.readText(), RUN_CARD_FIXTURES.keyErrorWithLine.stderr, 'the clipboard holds Type: message and the failing line');
+  assert(!container.querySelector('.osa-run-card-error-fallback'), 'a copy that worked draws no second copy of the error');
   const traceback = container.querySelector('.osa-run-card-toggle[data-panel="traceback"]');
   click(window, traceback);
   assert(!container.querySelector('.osa-run-card-traceback').closest('[hidden]'), 'Full traceback opens its panel');
@@ -735,6 +757,8 @@ console.log('\nwhere the browser refuses the clipboard, Copy error selects exact
   assert(/^This page cannot copy for you: the text is selected, so press (Cmd|Ctrl)\+C$/.test(status.textContent), `the bar names the keys (${JSON.stringify(status.textContent)})`);
   assertEqual(window.getSelection().toString(), RUN_CARD_FIXTURES.keyErrorWithLine.stderr, 'what is selected is the type, message and failing line, as the button promised');
   assert(!button.classList.contains('copied') && button.textContent === 'Copy error', 'the button does not claim it copied');
+  const fallbacks = container.querySelectorAll('.osa-run-card-error-fallback');
+  assertEqual([fallbacks.length, textOf(fallbacks[0])], [1, RUN_CARD_FIXTURES.keyErrorWithLine.stderr], 'the block the text is selected in holds exactly the error, once');
 }
 
 console.log('\na card opens its own panel, even when the page holds another element with the same id');

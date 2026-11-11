@@ -4241,17 +4241,10 @@
   // How long "Copied" shows on a code block's bar.
   const CODE_COPIED_MS = 2000;
 
-  // A code block's Copy (#491): the exact code, never the highlighted page text,
-  // onto the clipboard, and "Copied" beside the button for a moment. A run card's
-  // buttons are worded ("Copy code", "Copy error": data-copy-label) and say "Copied"
-  // themselves; the icon buttons of the gate and of a failed run's code swap to a
-  // check. Either way the block's status line (a live region) says it too. Where the
-  // browser allows neither way to copy, the text is selected in place and the status
-  // names the keys that copy it, since nothing the page can do will: for a run's
-  // code, the code is opened first; `selectable` is what to select instead.
   // Where a refused "Copy error" selects: a block holding exactly the text the button
   // promised (the type, the message and the failing line), since the error as drawn
-  // splits those across two places. Shown only then, and kept until the card redraws.
+  // splits those across two places. Built only when the copy is refused (copyCodeFromButton
+  // calls for it then), and kept until the card redraws.
   function errorFallbackFor(card, text) {
     let pre = card.querySelector('.osa-run-card-error-fallback');
     if (!pre) {
@@ -4267,6 +4260,15 @@
     return pre;
   }
 
+  // A code block's Copy (#491): the exact code, never the highlighted page text,
+  // onto the clipboard, and "Copied" beside the button for a moment. A run card's
+  // buttons are worded ("Copy code", "Copy error": data-copy-label) and say "Copied"
+  // themselves; the icon buttons of the gate and of a failed run's code swap to a
+  // check. Either way the block's status line (a live region) says it too. Where the
+  // browser allows neither way to copy, the text is selected in place and the status
+  // names the keys that copy it, since nothing the page can do will: for a run's
+  // code, the code is opened first; `selectable` is what to select instead (an element,
+  // or a function that makes one, called only when the copy is refused).
   async function copyCodeFromButton(button, code, selectable = null) {
     const block = button.closest('.osa-code-block');
     const status = block && block.querySelector('.osa-code-status');
@@ -4290,7 +4292,8 @@
     }
     const toggle = block && block.querySelector('.osa-run-card-code-toggle');
     if (!selectable && toggle && toggle.getAttribute('aria-expanded') !== 'true') toggle.click();
-    const codeElement = selectable || (block && block.querySelector('pre code'));
+    const codeElement = (typeof selectable === 'function' ? selectable() : selectable) ||
+      (block && block.querySelector('pre code'));
     if (codeElement && typeof window.getSelection === 'function') {
       const selection = window.getSelection();
       const range = document.createRange();
@@ -6383,15 +6386,23 @@
     let rest = '';
     // The exception's own type, when the traceback names it, wins over a line of its
     // message that looks like one: the nearest line above the marker with that name.
-    const known = tracebackTypeName(run.traceback);
-    for (let i = from; i >= 0; i--) {
-      const match = ANY_TYPE_LINE.exec(lines[i]);
-      if (match && (known !== '' ? match[1] === known : EXCEPTION_NAME.test(match[1]))) {
-        typeAt = i;
-        [, typeName, rest = ''] = match;
-        break;
+    // The traceback writes a library's exception with its module ("json.decoder.JSONDecodeError"),
+    // stderr without ("JSONDecodeError"), so names are compared by their last segment.
+    const lastSegment = (name) => name.split('.').pop();
+    const known = lastSegment(tracebackTypeName(run.traceback));
+    const findType = (matches) => {
+      for (let i = from; i >= 0; i--) {
+        const match = ANY_TYPE_LINE.exec(lines[i]);
+        if (match && matches(match[1])) {
+          typeAt = i;
+          [, typeName, rest = ''] = match;
+          return;
+        }
       }
-    }
+    };
+    if (known !== '') findType((name) => lastSegment(name) === known);
+    // A traceback that disagrees with stderr never does worse than having none.
+    if (typeAt < 0) findType((name) => EXCEPTION_NAME.test(name));
     if (typeAt < 0 && anchor > 0) {
       // A name that does not end like an exception's, directly above the marker.
       const match = ANY_TYPE_LINE.exec(lines[anchor - 1]);
@@ -6451,7 +6462,7 @@
     const type = error.type ? `<span class="osa-run-card-error-type">${escapeHtml(error.type)}</span>` : '';
     const text = `${type}${error.type && error.message ? ': ' : ''}${escapeHtml(error.message)}`;
     if (text === '') return '';
-    return `<div class="osa-run-card-error"><div class="osa-run-card-error-text" tabindex="0">${text}</div>` +
+    return `<div class="osa-run-card-error"><div class="osa-run-card-error-text" tabindex="0" role="group" aria-label="Error message">${text}</div>` +
       `${error.line ? runExcerptHtml(run, error) : ''}</div>`;
   }
 
@@ -8521,7 +8532,7 @@
         const error = run && runErrorInfo(run);
         if (!error) return;
         const card = btn.closest('.osa-run-card');
-        copyCodeFromButton(btn, error.text, card && errorFallbackFor(card, error.text));
+        copyCodeFromButton(btn, error.text, card && (() => errorFallbackFor(card, error.text)));
       });
     });
 

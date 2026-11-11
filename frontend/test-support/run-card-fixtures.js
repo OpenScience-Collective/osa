@@ -51,6 +51,20 @@ export const RUN_CARD_FIXTURES = {
     "stderr": "MyFailure: nope\n  line 3: raise MyFailure(\"nope\")",
     "traceback": "Traceback (most recent call last):\n  File \"<exec>\", line 728, in _execute\n  File \"/lib/python313.zip/_pyodide/_base.py\", line 597, in eval_code_async\n    await CodeRunner(\n    ...<9 lines>...\n    .run_async(globals, locals)\n  File \"/lib/python313.zip/_pyodide/_base.py\", line 411, in run_async\n    coroutine = eval(self.code, globals, locals)\n  File \"<cell>\", line 3, in <module>\nMyFailure: nope\n"
   },
+  "qualifiedType": {
+    "code": "import json\njson.loads(\"x\")",
+    "status": "error",
+    "stdout": "",
+    "stderr": "JSONDecodeError: Expecting value: line 1 column 1 (char 0)\n  line 2: json.loads(\"x\")",
+    "traceback": "Traceback (most recent call last):\n  File \"<exec>\", line 728, in _execute\n  File \"/lib/python313.zip/_pyodide/_base.py\", line 597, in eval_code_async\n    await CodeRunner(\n    ...<9 lines>...\n    .run_async(globals, locals)\n  File \"/lib/python313.zip/_pyodide/_base.py\", line 411, in run_async\n    coroutine = eval(self.code, globals, locals)\n  File \"<cell>\", line 2, in <module>\n  File \"/lib/python313.zip/json/__init__.py\", line 346, in loads\n    return _default_decoder.decode(s)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^\n  File \"/lib/python313.zip/json/decoder.py\", line 345, in decode\n    obj, end = self.raw_decode(s, idx=_w(s, 0).end())\n               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/lib/python313.zip/json/decoder.py\", line 363, in raw_decode\n    raise JSONDecodeError(\"Expecting value\", s, err.value) from None\njson.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)\n"
+  },
+  "qualifiedMultiLine": {
+    "code": "import json\nraise json.JSONDecodeError(\"could not read the table\\nExpected 3 fields, saw 4\", \"doc\", 0)",
+    "status": "error",
+    "stdout": "",
+    "stderr": "JSONDecodeError: could not read the table\nExpected 3 fields, saw 4: line 1 column 1 (char 0)\n  line 2: raise json.JSONDecodeError(\"could not read the table\\nExpected 3 fields, saw 4\", \"doc\", 0)",
+    "traceback": "Traceback (most recent call last):\n  File \"<exec>\", line 728, in _execute\n  File \"/lib/python313.zip/_pyodide/_base.py\", line 597, in eval_code_async\n    await CodeRunner(\n    ...<9 lines>...\n    .run_async(globals, locals)\n  File \"/lib/python313.zip/_pyodide/_base.py\", line 411, in run_async\n    coroutine = eval(self.code, globals, locals)\n  File \"<cell>\", line 2, in <module>\njson.decoder.JSONDecodeError: could not read the table\nExpected 3 fields, saw 4: line 1 column 1 (char 0)\n"
+  },
   "cutStderr": {
     "code": "import sys\nfor i in range(400):\n    print(f\"loading recording {i:04d} from the archive, retry 1\", file=sys.stderr)\nraise ValueError(\"no recording had a usable event file\")",
     "status": "error",

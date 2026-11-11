@@ -58,6 +58,16 @@ const CODE = {
     '    pass',
     'raise MyFailure("nope")',
   ].join('\n'),
+  // A library's exception, which the traceback writes with its module and stderr without.
+  qualifiedType: [
+    'import json',
+    'json.loads("x")',
+  ].join('\n'),
+  // The same, with a message of several lines: the type and the failing line must still be found.
+  qualifiedMultiLine: [
+    'import json',
+    'raise json.JSONDecodeError("could not read the table\\nExpected 3 fields, saw 4", "doc", 0)',
+  ].join('\n'),
   cutStderr: [
     'import sys',
     'for i in range(400):',
