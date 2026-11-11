@@ -435,13 +435,7 @@ def _request_rows() -> list[dict]:
         conn.row_factory = lambda cursor, row: dict(
             zip([c[0] for c in cursor.description], row, strict=True)
         )
-        # The metrics middleware writes a stub row (no model, no tokens) under the same
-        # request id when a streamed response starts, before the handler's own row (a
-        # pre-existing behavior of every streamed request, tracked in its own issue). Only
-        # the rows the chat path writes are counted here.
-        return conn.execute(
-            "SELECT * FROM request_log WHERE model IS NOT NULL ORDER BY id"
-        ).fetchall()
+        return conn.execute("SELECT * FROM request_log ORDER BY id").fetchall()
 
 
 @pytest.fixture
@@ -519,6 +513,37 @@ class TestHandoverMetrics:
         assert set(by_id) == {done["request_id"], f"{done['request_id']}:quick"}
         assert by_id[f"{done['request_id']}:quick"]["model"] == HAIKU
         assert by_id[done["request_id"]]["model"] == SONNET
+
+    def test_a_streamed_chat_leaves_one_row_per_request_id(
+        self, metered_client, monkeypatch
+    ) -> None:
+        """The middleware's stub row (no model, no tokens) is not written for a stream (#687)."""
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        _done(_chat(metered_client, "find datasets with face stimuli"))
+        _done(_chat(metered_client, "and with house stimuli", session_id="s-second"))
+
+        rows = _request_rows()
+        assert len(rows) == 2
+        assert len({r["request_id"] for r in rows}) == 2
+        assert all(r["model"] == HAIKU and r["total_tokens"] for r in rows)
+
+    def test_a_streamed_resume_leaves_one_row(self, metered_client, monkeypatch) -> None:
+        _parked_analysis_session("analysis")
+        _rig(monkeypatch, quick=[say("unused")], analysis=[say_with_usage("Peak at 10 Hz.", 80, 8)])
+        response = metered_client.post(
+            f"/{COMMUNITY}/chat/resume",
+            json={
+                "session_id": "sess-parked",
+                "result": {"call_id": EXECUTE_CALL_ID, "status": "ok", "summary": "peak 10 Hz"},
+                "client_tools": [EXECUTE_CODE],
+            },
+            headers={"Origin": ORIGIN, **BYOK},
+        )
+        assert response.status_code == 200, response.text
+
+        (row,) = _request_rows()
+        assert row["model"] == SONNET
 
     def test_a_plain_quick_turn_logs_one_row(self, metered_client, monkeypatch) -> None:
         _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])

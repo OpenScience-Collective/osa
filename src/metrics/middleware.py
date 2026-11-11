@@ -6,7 +6,9 @@ middleware reads after the response completes.
 
 Streaming caveat: For streaming responses, the middleware fires before
 streaming completes. Streaming handlers log metrics directly at the end
-of the generator instead.
+of the generator instead, and set ``request.state.metrics_logged`` before
+they return the response (``_claim_metrics_row``), so the middleware does
+not also write a stub row under the same request id (issue #687).
 """
 
 import logging

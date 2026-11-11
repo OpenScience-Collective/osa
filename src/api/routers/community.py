@@ -2901,6 +2901,7 @@ def create_community_router(community_id: str) -> APIRouter:
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
         if body.stream:
+            _claim_metrics_row(http_request)
             return StreamingResponse(
                 _stream_ask_response(
                     community_id,
@@ -3029,6 +3030,7 @@ def create_community_router(community_id: str) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
         if body.stream:
+            _claim_metrics_row(http_request)
             return StreamingResponse(
                 _stream_chat_response(
                     community_id,
@@ -3267,6 +3269,7 @@ def create_community_router(community_id: str) -> APIRouter:
             )
             raise
 
+        _claim_metrics_row(http_request)
         return StreamingResponse(
             _stream_chat_response(
                 community_id,
@@ -3914,6 +3917,19 @@ def _extract_token_usage(event_data: dict) -> tuple[int, int, int, int]:
         # dashboard instead of a visible log line.
         logger.warning("Failed to extract token usage from event data", exc_info=True)
         return 0, 0, 0, 0
+
+
+def _claim_metrics_row(http_request: Request | None) -> None:
+    """Tell the metrics middleware that a streamed request logs its own row.
+
+    The middleware decides whether to write its stub row (no model, no tokens) as soon as
+    the response starts, which for a stream is before the generator has run, so the
+    generator's own ``_log_streaming_metrics`` call sets ``metrics_logged`` too late. A
+    route that streams calls this before it returns the ``StreamingResponse`` instead, so
+    the generator's row is the only row under the request id (issue #687).
+    """
+    if http_request:
+        http_request.state.metrics_logged = True
 
 
 def _log_streaming_metrics(
