@@ -749,6 +749,65 @@ console.log('\nthumbnails: the first figure of each visible row, an icon for the
   }
 }
 
+console.log('\nthumbnails: the rows in view are read in one call, figure 1 only; a read the sheet outlived makes no object URL');
+{
+  const ctx = await start({ tools: true });
+  const real = await workspaceWithFigures([['session-a', 'call-a1'], ['session-a', 'call-a2'], ['session-b', 'call-b1']]);
+  // The real store behind a recorder and a gate: every call is passed to it as it came.
+  const calls = [];
+  let gate = null;
+  ctx.hooks.setWorkspaceStore({
+    figuresForCalls: async (ids, options) => {
+      calls.push({ ids: [...ids], options });
+      if (gate) await gate.promise;
+      return real.figuresForCalls(ids, options);
+    },
+  });
+  ctx.window.IntersectionObserver = class {
+    constructor(callback) { this.callback = callback; }
+    observe(target) { queueMicrotask(() => this.callback([{ isIntersecting: true, target }])); }
+    unobserve() {}
+    disconnect() {}
+  };
+  const made = [];
+  const revoked = [];
+  const realCreate = URL.createObjectURL;
+  const realRevoke = URL.revokeObjectURL;
+  URL.createObjectURL = (blob) => { const url = realCreate(blob); made.push(url); return url; };
+  URL.revokeObjectURL = (url) => { revoked.push(url); realRevoke(url); };
+  try {
+    ctx.button().click();
+    await waitUntil(() => ctx.qa('.osa-history-thumb img').length === 2, 'the thumbnails are made');
+    assertEqual(calls.length, 1, 'one read for every row that came into view');
+    assertEqual(calls[0].ids.sort(), ['call-a1', 'call-b1'], 'for the first figure\'s call of each chat');
+    assertEqual(calls[0].options, { limit: 1 }, 'asking for figure 1 of each run only');
+    ctx.sheet().dispatchEvent(key(ctx, 'Escape'));
+
+    // Closed while a read is out, and opened again: the stale read makes nothing.
+    made.length = 0;
+    revoked.length = 0;
+    calls.length = 0;
+    let open;
+    gate = { promise: new Promise((resolve) => { open = resolve; }) };
+    ctx.button().click();
+    await waitUntil(() => calls.length === 1, 'the read is out');
+    ctx.sheet().dispatchEvent(key(ctx, 'Escape'));
+    assert(!ctx.sheetOpen(), 'the sheet is closed');
+    ctx.button().click();
+    await waitUntil(() => calls.length === 2, 'and the sheet opened again reads for itself');
+    open();
+    gate = null;
+    await waitUntil(() => ctx.qa('.osa-history-thumb img').length === 2, 'the new sheet\'s thumbnails are made');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEqual(made.length, 2, 'one object URL per figure shown, none for the read the first sheet left');
+    ctx.sheet().dispatchEvent(key(ctx, 'Escape'));
+    assertEqual([...revoked].sort(), [...made].sort(), 'and each is revoked on close');
+  } finally {
+    URL.createObjectURL = realCreate;
+    URL.revokeObjectURL = realRevoke;
+  }
+}
+
 console.log('\nwithout the workspace, a row keeps its icon');
 {
   const ctx = await start();

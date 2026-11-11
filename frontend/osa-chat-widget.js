@@ -6081,6 +6081,12 @@
   let historyClearConfirming = false;
   const historyThumbs = new Map();
   let historyThumbObserver = null;
+  // Rows waiting for a read, whether one is queued, the rows awaiting a read already
+  // under way (by call id), and which opening of the sheet reads belong to.
+  let historyThumbQueue = [];
+  let historyThumbFlushQueued = false;
+  const historyThumbWaiting = new Map();
+  let historyThumbGeneration = 0;
   // The elements the sheet made inert while it is open, to give back on close.
   let historyInerted = [];
 
@@ -6184,39 +6190,68 @@
     }
   }
 
-  async function loadHistoryThumb(thumb) {
-    const callId = thumb.getAttribute('data-call-id');
-    if (!callId) return;
-    const show = (url) => {
-      // The sheet may have been redrawn or closed while the figure was read.
-      if (!url || !thumb.isConnected || !historyOpen) return;
-      thumb.innerHTML = `<img alt="" src="${escapeHtml(url)}">`;
-    };
-    if (historyThumbs.has(callId)) {
-      show(historyThumbs.get(callId));
-      return;
+  // Rows that came into view are read together: each call to figuresForCalls scans
+  // every run record of the community, so the thumbnails asked for in one turn of the
+  // event loop (the rows an observer reports at once) cost one scan, and figure 1 of
+  // each run only is read.
+  function loadHistoryThumb(thumb) {
+    if (!thumb.getAttribute('data-call-id')) return;
+    historyThumbQueue.push(thumb);
+    if (historyThumbFlushQueued) return;
+    historyThumbFlushQueued = true;
+    Promise.resolve().then(readHistoryThumbs);
+  }
+
+  function showHistoryThumb(thumb, url) {
+    // The sheet may have been redrawn or closed while the figure was read.
+    if (!url || !thumb.isConnected || !historyOpen) return;
+    thumb.innerHTML = `<img alt="" src="${escapeHtml(url)}">`;
+  }
+
+  async function readHistoryThumbs() {
+    historyThumbFlushQueued = false;
+    const queued = historyThumbQueue;
+    historyThumbQueue = [];
+    const toRead = [];
+    for (const thumb of queued) {
+      const callId = thumb.getAttribute('data-call-id');
+      if (historyThumbs.has(callId)) {
+        showHistoryThumb(thumb, historyThumbs.get(callId));
+      } else if (historyThumbWaiting.has(callId)) {
+        historyThumbWaiting.get(callId).push(thumb);
+      } else {
+        historyThumbWaiting.set(callId, [thumb]);
+        toRead.push(callId);
+      }
     }
-    let url = null;
+    if (toRead.length === 0) return;
+    const generation = historyThumbGeneration;
+    let found = new Map();
     try {
       const store = await workspaceStoreWhenReady();
-      const found = store ? await store.figuresForCalls([callId]) : new Map();
-      const first = (found.get(callId) || [])[0];
-      if (first) url = URL.createObjectURL(new Blob([first], { type: 'image/png' }));
+      if (store) found = await store.figuresForCalls(toRead, { limit: 1 });
     } catch (err) {
       console.warn('[OSA] Could not read a history thumbnail:', err && err.message);
     }
-    if (!historyOpen) {
-      // Closed while it was read: nothing holds this URL, so nothing keeps it.
-      if (url) URL.revokeObjectURL(url);
-      return;
+    // Closed while it was read (and perhaps opened again, which started its own reads):
+    // nothing made here is wanted, so no object URL is made for it.
+    if (generation !== historyThumbGeneration) return;
+    for (const callId of toRead) {
+      const waiting = historyThumbWaiting.get(callId) || [];
+      historyThumbWaiting.delete(callId);
+      const first = (found.get(callId) || [])[0];
+      const url = first ? URL.createObjectURL(new Blob([first], { type: 'image/png' })) : null;
+      historyThumbs.set(callId, url);
+      waiting.forEach((thumb) => showHistoryThumb(thumb, url));
     }
-    historyThumbs.set(callId, url);
-    show(url);
   }
 
   function releaseHistoryThumbs() {
     if (historyThumbObserver) historyThumbObserver.disconnect();
     historyThumbObserver = null;
+    historyThumbGeneration += 1;
+    historyThumbQueue = [];
+    historyThumbWaiting.clear();
     for (const url of historyThumbs.values()) {
       if (url) URL.revokeObjectURL(url);
     }
