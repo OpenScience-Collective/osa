@@ -16,7 +16,7 @@ Features:
 import importlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.tools import BaseTool, StructuredTool, tool
 
@@ -263,8 +263,13 @@ class CommunityAssistant(ToolAgent):
         browser_runs_left: int | None = None,
         tagged_citations: bool = False,
         model_id: str | None = None,
+        tier: Literal["quick", "analysis"] | None = None,
     ) -> None:
         """Initialize the community assistant.
+
+        `tier` is the model tier of a routed turn (`src.agents.model_routing`), or None for
+        a community that does not route. It decides which client tools are bound: see
+        `build_client_tools`.
 
         `declared_client_tools` names the client-executed tools the CALLER says it can
         run. Only tools that are both configured on the community and declared here are
@@ -283,6 +288,7 @@ class CommunityAssistant(ToolAgent):
         self._citations = citations
         self._tagged_citations = tagged_citations
         self._model_id = model_id
+        self.tier = tier
         self._preloaded_content: dict[str, str] = {}
 
         # Build doc registry from config
@@ -326,7 +332,7 @@ class CommunityAssistant(ToolAgent):
 
         # Tools this server binds but never executes; the browser does. Empty unless
         # the community configures them AND the caller declares it can run them.
-        client_tools = build_client_tools(config, declared_client_tools)
+        client_tools = build_client_tools(config, declared_client_tools, tier=tier)
 
         # A client tool sharing a name with a real server tool is the one configuration
         # mistake here with no symptom. `BaseAgent` partitions by name, so the server
