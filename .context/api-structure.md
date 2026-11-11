@@ -200,6 +200,65 @@ quick and an analysis model. See `docs/community-widget.md` ("A conversation the
 ]
 ```
 
+### 5. POST /{community_id}/overview - Search Overview
+
+**Purpose:** A short, cited reading of the top results of a dataset search, for the Discover panel (board D2, plan E6.3). The caller already holds the results; it sends them, and the community's quick model summarizes them in at most about 100 words. Code: `src/api/overview.py` (models, normalization, cache, prompt, parser, citation filter; no FastAPI import) and the route in `create_community_router`, beside `/ask`. Page for embedders: `docs/search-overview.md`.
+
+**Authentication:** An authorized origin (the community's `cors_origins`) or BYOK, as `/ask`. No other credential; the worker gives it rate limiting and no Turnstile (readers of Discover hold no token).
+
+**Request:**
+```json
+{
+  "query": "face recognition",
+  "filters": {"modality": ["eeg"], "has_hed": true},
+  "results": [
+    {"id": "on002718", "title": "Face processing EEG", "description": "...", "modalities": "eeg"}
+  ],
+  "total_count": 240
+}
+```
+- `query`: 1 to 300 characters, not blank.
+- `filters`: at most 20 keys; a value is a string, bool, int or list of strings (names up to 100 characters, strings up to 200, lists up to 20 items).
+- `results`: 1 to 10 rows in the search's ranking order. `id` is up to 64 characters of letters, digits, `.`, `_`, `-` and unique in the request; `title` up to 200 characters; `description` up to 500; `modalities` is an optional string.
+- `total_count`: optional, how many results matched in all.
+
+**Response 200:**
+```json
+{
+  "summary": [
+    {"text": "For event-related potentials to faces, "},
+    {"dataset_id": "on002718"},
+    {"text": " is the closest match: 18 participants viewed famous and scrambled faces."}
+  ],
+  "picks": [{"id": "on002718", "reason": "Face conditions, HED events."}],
+  "cited_ids": ["on002718"],
+  "shown": 10,
+  "cached": false,
+  "model": "claude-haiku-5-5",
+  "generated_at": "2026-11-11T08:30:00.123456Z"
+}
+```
+- `summary` is text and result-id segments, never markdown, so the website links an id without parsing HTML. `picks` has at most 3. `cited_ids` lists the ids the summary and then the picks name, in order of first mention. `shown` is the number of results the overview was written from.
+- `cached` is true when this request did not call the model: it was served from the cache, or it shared the call of an identical request already in flight.
+
+**Errors:**
+
+| Status | When |
+|---|---|
+| 403 | No authorized origin and no BYOK key; or the model costs more than the platform allows |
+| 404 | The community has no `quick_model` (no config key was added for this endpoint) |
+| 422 | A field is out of bounds: more than 10 results, an over-long field, an empty query, duplicate result ids |
+| 500 | A failure that is not the provider's (a bug, a missing API key for the model factory): logged with its traceback, not cached. The body is `{"detail": ...}` with an error id |
+| 502 | The model wrote nothing that survives the citation filter, names no result, could not be parsed, or the provider failed (after one retry). Not cached. The body is `{"detail": ...}` |
+
+**Citations.** The allowed ids are the ids of the request's `results`, and nothing the model or a result's text says widens them. The model is told to write `[[id]]` markers and a `picks` list as one JSON object; the server parses it. A sentence holding a `[[marker]]` or a bare id-shaped token (`\b[a-z]{2}\d{6}\b`, case-insensitive) that is not an allowed id is dropped, and so is a pick of such an id or whose reason names one. A bare token that is an allowed id becomes a link too. The text of the results reaches the model as JSON inside `<data>` tags with `<` and `>` escaped, and the prompt calls it untrusted. A sentence holding a link (`http://`, `https://`, `www.`) is dropped, and stray single brackets are removed from text. The bare-token check is hard-wired to the NEMAR id shape; another community's ids that do not match it are checked only inside `[[...]]` markers. When no sentence survives, or the summary that survives names no result (the prompt requires the closest match by id, so a refusal, an off-format reply or planted text has none), the answer is a 502 and nothing is cached. The summary is held to 120 words: sentences after the first that would pass it are dropped, and a first sentence that is over the cap on its own is kept.
+
+**Cache.** In memory per community and per process, 24 hours, at most 500 entries (the oldest evicted first), keyed on the normalized query (NFKC, case folded, spaces collapsed), the canonical filters (key order, list order and string case do not matter; `true` is not `1`) and a SHA-256 of the results payload (ids, titles, descriptions, modalities, in order, and `total_count`). The results are in the key because the caller supplies them: keyed on the query alone, one caller could plant an overview that every reader of that query is then shown. Concurrent identical requests share one in-flight model call, and a failure is delivered to all of them and cached for none. Authorization runs before the cache is read, so a hit is never served to a caller who could not have made the call. The cache is lost on restart and not shared between workers (`src/api/overview.py`, `OverviewCache`; the clock is injectable).
+
+**Model and budget.** `_route_request(..., tier="quick")` picks the community's `quick_model`, then `_check_model_cost`, then `_build_chat_model` (the helper `create_community_assistant` also uses) builds it with `reasoning_effort="low"` and `max_tokens=1500`; a failure the provider says can clear is retried once (`invoke_with_retry`, as the handover summary does). The metrics row is set as `/ask`'s is (`request.state.metrics_agent_data`), with `tier` `quick`, the model, the key source, the tokens and `estimated_cost`, and `overview` is in the middleware's `_COMMUNITY_SUFFIXES`, so the row carries the `community_id` that `src.metrics.budget.check_budget` sums by. A call that produced no answer is still paid for and still has its row. A cache hit, or a request that shared another's call, logs a row with zero tokens and zero cost. The call outlives a cancelled request (others may wait on it, and its result is cached), so when the request that started it is cancelled the call books its own cost, on a 499 row with the community, tier and tokens, once (`_OverviewSpend`). An error that is not the provider's is a 500 logged with its traceback; a classified provider failure is a 502.
+
+**Worker.** `workers/osa-worker/index.js` routes `POST /:communityId/overview` (`ROUTE_PATTERNS.communityOverview`) with rate limiting only: the per-minute limiter it shares with `/ask` and `/chat`, and its own per-IP hourly budget (`OVERVIEW_LIMIT_PER_HOUR`, 100 in production and 500 in development, key `rl:overview:hour:`), not the 20 an hour `/chat` counter, so Discover searches do not use up a reader's chat questions. There is no Turnstile and an `Origin` header is enforced by browsers only, so these per-IP limits are the only enforced control on the quick model's spend (the community's budget is monitored by the scheduler, which opens an alert issue when it is crossed, and does not refuse a request). The worker is deployed by hand (`wrangler deploy`), so it must be deployed before the website can call this endpoint through it.
+
 ## Model Selection Logic
 
 The model selection follows a clear priority:
