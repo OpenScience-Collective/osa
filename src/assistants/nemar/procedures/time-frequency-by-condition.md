@@ -10,7 +10,7 @@ Each step is one `execute_code` run, and the runs share one Python namespace, so
 `est_peak_mb` is the largest step: about three times the size of the read (every EEG channel, 8 bytes a sample), plus about 100 MB for the interpreter.
 
 This procedure is slow, so warn the reader before they approve it, every time, however short the recording.
-The code runs in their browser, in a Python runtime with a single processor and limited compute and memory, and step 3 transforms every epoch at every frequency, so it will likely take a long time.
+The code runs in their browser, in a Python runtime with a single processor and limited compute and memory, so it will likely take a long time, longer with more epochs, more frequencies or a longer window.
 Say so in the plan's findings, which the reader sees beside the steps before approving, and again in step 3's detail, and name the ways to make it shorter: fewer frequencies, fewer epochs (one condition first, or a subset of the trials), or a shorter epoch window.
 When step 3 runs, say again that it may take a while.
 

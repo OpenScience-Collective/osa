@@ -104,12 +104,10 @@ The block's four default bands are for a request that names no band, which this 
 Draw the map of the band's `band_power`, one value per EEG channel, with the labels step 1 kept: `labels` is every label of the group and `keep` the indices of the EEG channels among them, in the order of `band_power`'s columns.
 
 Copy these three blocks as written, into the one run of this step: the table of positions, the matching of labels to it, and the drawing of the figure.
-They are the same in every scalp-map procedure.
 
 The positions are 92 scalp positions of MNE's `standard_1005` montage: the 10-10 system (`Fp1` to `Iz`), the old names `T3`, `T4`, `T5` and `T6` for `T7`, `T8`, `P7` and `P8`, and the reference sites `A1`, `A2`, `M1` and `M2`, as `(x, y)` in a head of radius 0.5 with the nose up and the right ear at the right.
-The 10-05 labels in between (`AFp1h`, `FFC1h` and the like) are left out: a recording that uses them has those channels reported as left out, with no position.
-They were derived once, at development time, with MNE (which this runtime does not have and this project does not depend on): a sphere was fitted to the montage's 3D positions, each position's angle from the top of that sphere became its distance from the center (an azimuthal equidistant projection, 110 degrees from the top at radius 0.5), the table was shifted so that `Cz` is the origin, and the numbers were rounded to 3 decimals.
-The positions below the head's edge (`T9`, `A1` and the like) fall a little outside the circle.
+The 10-05 labels (`AFp1h`, `FFC1h` and the like) are left out, so a recording that uses them has those channels reported as left out.
+They were projected to 2D once, at development time, with MNE (not available in this runtime), with `Cz` as the origin; the labels below the head's edge (`T9`, `A1` and the like) fall a little outside the circle.
 
 ```python
 positions = {
@@ -158,7 +156,6 @@ def locate(labels):
 ```
 
 Drawing: one figure with a head for each panel (a head outline with a nose and two ears), the values interpolated with `scipy.interpolate.RBFInterpolator` only inside the head, a marker at each channel, one color bar with the unit, and a title.
-With fewer than 8 positioned channels there is nothing to interpolate, so each head shows only its colored markers, each named.
 
 ```python
 import numpy as np
