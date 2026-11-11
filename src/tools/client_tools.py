@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from src.core.config.community import (
     EXECUTE_CODE_TOOL_NAME,
     FULL_OUTPUT_TOOL_NAME,
+    PROPOSE_PLAN_TOOL_NAME,
     START_ANALYSIS_TOOL_NAME,
     Tier,
 )
@@ -158,6 +159,70 @@ _START_ANALYSIS_DESCRIPTION = (
 )
 
 
+MAX_PLAN_STEPS = 8
+"""Most steps one plan may carry, and the most a reader may leave it with after edits."""
+
+MAX_PLAN_STEP_TITLE_CHARS = 120
+MAX_PLAN_STEP_DETAIL_CHARS = 600
+MAX_PLAN_FINDINGS_CHARS = 2000
+MAX_PLAN_PEAK_MB = 8192
+
+
+class PlanStep(BaseModel):
+    """One step of a proposed plan: what it does, in a line, and how, in a few."""
+
+    title: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_PLAN_STEP_TITLE_CHARS,
+        description="Short name of the step, shown as its heading.",
+    )
+    detail: str = Field(
+        ...,
+        max_length=MAX_PLAN_STEP_DETAIL_CHARS,
+        description="What the step's one code run does and what it produces.",
+    )
+
+
+class ProposePlanArgs(BaseModel):
+    """Argument schema for the derived `propose_plan` client tool.
+
+    The plan is shown to the reader before any code runs, and the reader may edit it.
+    Every field is bounded because the call is stored in history and rendered in the
+    widget. `est_peak_mb` is only validated here; what it is compared with is the memory
+    budget (plan E5.1), not this tool.
+    """
+
+    findings: str = Field(
+        ...,
+        max_length=MAX_PLAN_FINDINGS_CHARS,
+        description="A short paragraph on what the inspection found, which the plan rests on.",
+    )
+    steps: list[PlanStep] = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_PLAN_STEPS,
+        description="The ordered steps; each one runs as exactly one execute_code call.",
+    )
+    est_peak_mb: int = Field(
+        ...,
+        ge=0,
+        le=MAX_PLAN_PEAK_MB,
+        description="Estimated peak memory, in megabytes, of the plan's largest step.",
+    )
+
+
+_PROPOSE_PLAN_DESCRIPTION = (
+    "Show the reader a plan for an analysis and wait for their decision before running "
+    "any code. Call it once, after inspecting the data, with what you found, 3 to 6 "
+    "steps (each will be one execute_code call) and the estimated peak memory in "
+    "megabytes of the largest step. The answer tells you whether the reader approved "
+    "(with the steps as they left them, which you follow as written, and whether to "
+    "pause after each step or run them all) or asked for changes (revise the plan and "
+    "call this again). It runs no code."
+)
+
+
 # Maps a client tool's configured `runtime` value to the pydantic model
 # describing that runtime's call arguments. Phase 1 ships exactly one
 # runtime ("python"); the indirection through a mapping, rather than a
@@ -277,7 +342,8 @@ def build_client_tools(
         A `ClientTool` for every entry in `config.extensions.client_tools`
         whose name is also in `declared`, in that list's order, followed by the
         derived `get_full_output` tool when a python tool was bound and the
-        caller declared it.
+        caller declared it, then `propose_plan` on an analysis turn under the
+        same two conditions.
     """
     configured = list(config.extensions.client_tools) if config.extensions else []
 
@@ -332,6 +398,19 @@ def build_client_tools(
                 name=FULL_OUTPUT_TOOL_NAME,
                 description=_FULL_OUTPUT_DESCRIPTION,
                 args_schema=GetFullOutputArgs,
+                requires_permission=False,
+            )
+        )
+    # Derived, like get_full_output, and only where a plan leads to code: a python tool
+    # is bound, the caller declares it, and the turn is on the analysis model. Never on
+    # a quick turn or a turn with no tier, which have no code to plan. No permission
+    # gate here: the call runs nothing, and the reader's approval is the answer to it.
+    if python_bound and PROPOSE_PLAN_TOOL_NAME in declared and tier == "analysis":
+        tools.append(
+            ClientTool(
+                name=PROPOSE_PLAN_TOOL_NAME,
+                description=_PROPOSE_PLAN_DESCRIPTION,
+                args_schema=ProposePlanArgs,
                 requires_permission=False,
             )
         )

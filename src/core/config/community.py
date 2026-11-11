@@ -635,7 +635,16 @@ than in ``src.tools.client_tools`` because this module must import without the
 ``server`` extra, and the name has to be reserved at config load.
 """
 
-RESERVED_CLIENT_TOOL_NAMES = frozenset({FULL_OUTPUT_TOOL_NAME})
+PROPOSE_PLAN_TOOL_NAME = "propose_plan"
+"""The client tool the analysis model calls to show the reader a plan before it runs code.
+
+Derived like ``get_full_output``: ``src.tools.client_tools.build_client_tools`` binds it on
+an analysis turn when a python tool is bound and the caller declares it, so a community
+never lists it. The call runs nothing; the reader's decision comes back through
+``/chat/resume`` as a ``PlanDecision`` (``src.api.tool_results``).
+"""
+
+RESERVED_CLIENT_TOOL_NAMES = frozenset({FULL_OUTPUT_TOOL_NAME, PROPOSE_PLAN_TOOL_NAME})
 """Names a community may not configure, because the server binds them itself."""
 
 Tier = Literal["quick", "analysis"]

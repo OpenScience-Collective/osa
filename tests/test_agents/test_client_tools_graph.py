@@ -14,7 +14,12 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
 from src.agents.base import ToolAgent, _after_client_tools
-from src.tools.client_tools import ClientTool, ExecuteCodeArgs, GetFullOutputArgs
+from src.tools.client_tools import (
+    ClientTool,
+    ExecuteCodeArgs,
+    GetFullOutputArgs,
+    ProposePlanArgs,
+)
 
 
 @tool
@@ -500,3 +505,73 @@ class TestARefusedClientCallStillGetsAReply:
         result = await agent.ainvoke([HumanMessage(content="do the thing")])
 
         assert result["messages"][-1].content == "That tool does not exist."
+
+
+def _plan_tool() -> ClientTool:
+    return ClientTool(
+        name="propose_plan",
+        description="Show the reader a plan.",
+        args_schema=ProposePlanArgs,
+        requires_permission=False,
+    )
+
+
+PLAN_ARGS = {
+    "findings": "18 participants, 3 runs each.",
+    "steps": [
+        {"title": "Load", "detail": "Load the epochs."},
+        {"title": "Plot", "detail": "Plot the ERP."},
+    ],
+    "est_peak_mb": 300,
+}
+
+
+class TestProposePlanInTheGraph:
+    """A plan parks the graph like a code call does, and needs no permission gate."""
+
+    async def test_a_plan_call_parks_the_run_with_no_permission_gate(self) -> None:
+        ai = AIMessage(
+            content="",
+            tool_calls=[{"id": "call_plan", "name": "propose_plan", "args": PLAN_ARGS}],
+        )
+        agent = ToolAgent(model=_fake_model(ai), tools=[_client_tool(), _plan_tool()])
+
+        result = await agent.ainvoke([HumanMessage(content="plot the ERP")])
+
+        assert result["pending_client_call"] == {
+            "call_id": "call_plan",
+            "tool": "propose_plan",
+            "args": PLAN_ARGS,
+            "requires_permission": False,
+        }
+        assert result["messages"][-1] == ai
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            {**PLAN_ARGS, "steps": []},
+            {**PLAN_ARGS, "steps": PLAN_ARGS["steps"] * 5},
+            {**PLAN_ARGS, "est_peak_mb": -1},
+            {**PLAN_ARGS, "findings": "x" * 2001},
+            {"findings": "only findings"},
+        ],
+    )
+    async def test_invalid_arguments_get_an_error_tool_message_and_are_not_parked(
+        self, args: dict
+    ) -> None:
+        bad = AIMessage(
+            content="",
+            tool_calls=[{"id": "call_plan", "name": "propose_plan", "args": args}],
+        )
+        reply = AIMessage(content="Let me fix the plan.")
+        agent = ToolAgent(model=_fake_model(bad, reply), tools=[_client_tool(), _plan_tool()])
+
+        result = await agent.ainvoke([HumanMessage(content="plot the ERP")])
+
+        assert not result.get("pending_client_call")
+        error = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+        assert error.tool_call_id == "call_plan"
+        assert error.status == "error"
+        assert "Invalid arguments for propose_plan" in error.content
+        assert len(error.content) < 700
+        assert result["messages"][-1].content == "Let me fix the plan."

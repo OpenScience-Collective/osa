@@ -59,8 +59,10 @@ from src.api.security import (
 from src.api.tool_results import (
     ClientToolResult,
     PendingClientCall,
+    PlanDecision,
     build_history_tool_message,
     build_live_tool_message,
+    build_plan_tool_message,
     build_unanswered_tool_message,
     scrub_stored_images,
 )
@@ -79,6 +81,7 @@ from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import (
     MAX_DECLARED_CLIENT_TOOLS,
+    PROPOSE_PLAN_TOOL_NAME,
     START_ANALYSIS_TOOL_NAME,
     ClientToolConfig,
     ClientToolRuntime,
@@ -267,12 +270,18 @@ class ChatRequest(BaseModel):
 
 
 class ResumeRequest(BaseModel):
-    """Run 2 of a browser-execution turn: the result of a call run 1 asked for."""
+    """Run 2 of a browser-execution turn: the result of a call run 1 asked for.
+
+    `result` is a `PlanDecision` for a `propose_plan` call and a `ClientToolResult` for
+    every other; the two shapes share no required field but `call_id`, and each forbids
+    extra keys, so a body parses as exactly one of them. `chat_resume` refuses a kind
+    that does not match the parked call.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(min_length=1, max_length=256)
-    result: ClientToolResult
+    result: ClientToolResult | PlanDecision
     model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
     page_context: PageContext | None = None
     client_tools: list[str] = Field(default_factory=list, max_length=MAX_DECLARED_CLIENT_TOOLS)
@@ -3175,6 +3184,29 @@ def create_community_router(community_id: str) -> APIRouter:
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found or expired.")
 
+        # The kind of answer must match the kind of call, and is checked BEFORE the claim:
+        # a claim clears the parked call, so a refusal after it would strand a plan the
+        # reader can still answer. A plan answered with a code result, or a code call
+        # answered with a decision, is the caller's mistake, and the call stays parked
+        # so the right answer can still arrive. Only the outstanding call's own id is
+        # compared; any other id is refused by the claim below like it always was.
+        parked = session.pending_call
+        if (
+            parked is not None
+            and parked.call_id == body.result.call_id
+            and (parked.tool == PROPOSE_PLAN_TOOL_NAME) != isinstance(body.result, PlanDecision)
+        ):
+            logger.info(
+                "Browser result refused for session %s: the answer is not the kind %s takes",
+                session.session_id,
+                parked.tool,
+                extra={"session_id": session.session_id, "reason": "result_kind_mismatch"},
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="That answer is not the kind the outstanding browser call takes.",
+            )
+
         # Synchronous by construction; see ChatSession.claim_pending_call. One refusal
         # for all three cases, because telling a caller WHICH of "no call outstanding",
         # "a different call is outstanding" and "that call expired" applies is only
@@ -3198,11 +3230,19 @@ def create_community_router(community_id: str) -> APIRouter:
         # have nothing left to abandon. Nothing in these two builders can raise today;
         # the re-park is here so that stays true when someone adds something that can.
         try:
-            live_messages = [
-                *session.messages,
-                build_live_tool_message(body.result, allow_images=allow_images),
-            ]
-            session.messages.append(build_history_tool_message(body.result))
+            if isinstance(body.result, PlanDecision):
+                # A decision carries no image, so the live and the stored message are one.
+                live_messages = [
+                    *session.messages,
+                    build_plan_tool_message(body.result, pending.args),
+                ]
+                session.messages.append(build_plan_tool_message(body.result, pending.args))
+            else:
+                live_messages = [
+                    *session.messages,
+                    build_live_tool_message(body.result, allow_images=allow_images),
+                ]
+                session.messages.append(build_history_tool_message(body.result))
         except Exception:
             session.set_pending_call(pending)
             logger.exception(
