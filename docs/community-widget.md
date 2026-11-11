@@ -620,6 +620,58 @@ The summary's tokens are counted, and it is traced with the request in LangFuse.
 On a routed request, `done` carries `mode` (`"quick"` or `"analysis"`) beside `model`.
 It is absent on a request that is not routed.
 
+## Plan first: `plan_first_instructions` and `propose_plan`
+
+A community that routes between two models can make the analysis model show the reader a plan before it runs code (issues #660 and #661, plan E2).
+The backend is in place; the widget's plan card is separate work (E2.3), so `ClientToolController.declared` does not declare `propose_plan` yet and nothing below happens in production until it does.
+
+**The key.**
+`plan_first_instructions` is a string of prompt text, valid only with `quick_model` and `analysis_model` and not blank.
+The server appends it to the system prompt of an analysis turn, and only when the request declares `propose_plan` in `client_tools` and client tools are not disabled (`OSA_CLIENT_TOOLS_DISABLED`).
+A quick turn, a request that does not declare the tool and a community that sets no text get none, so the prompt never names a tool the model was not given.
+NEMAR's text (`src/assistants/nemar/config.yaml`) applies to requests to analyze, plot or compute: inspect with `nemar_describe_dataset`, `nemar_get_events` and `nemar_list_recordings`, report what was found, call `propose_plan` with 3 to 6 steps, then run exactly one `execute_code` per step.
+A plain question gets a direct answer and no plan.
+
+**The tool.**
+`propose_plan` is derived like `get_full_output`: a community never configures it (`propose_plan` is in `RESERVED_CLIENT_TOOL_NAMES`), and the server binds it only on an analysis turn, beside a python tool, for a request that declares it.
+It has no permission gate and runs nothing.
+Its arguments:
+
+| Field | Bounds |
+|-------|--------|
+| `findings` | text, at most 2000 characters |
+| `steps` | 1 to 8 of `{title, detail}`; `title` 1 to 120 characters, `detail` at most 600 |
+| `est_peak_mb` | integer, 0 to 8192; validated and recorded only, the memory budget is separate work (E5.1) |
+
+A call that breaks a bound is answered with an error `ToolMessage`, as for any client tool, and the model calls again.
+A valid call parks the graph and sends a `tool_request` with `tool: "propose_plan"`, `requires_permission: false` and these arguments, like an `execute_code` call.
+
+**The answer.**
+`POST /{community}/chat/resume` takes a `PlanDecision` as `result` for a plan call, in place of the run result:
+
+```json
+{
+  "session_id": "...",
+  "client_tools": ["execute_code", "get_full_output", "propose_plan"],
+  "result": {
+    "call_id": "toolu_...",
+    "decision": "approved",
+    "steps": [{"title": "Load epochs", "detail": "Load runs 1 and 2."}],
+    "run_mode": "pause",
+    "feedback": ""
+  }
+}
+```
+
+- `decision` is `approved` or `changes_requested`.
+- `steps` are the steps as the reader left them after edits, adds and removes, 1 to 8 of them.
+- `run_mode` is `pause` (the default; stop after each step) or `run_all`.
+- `feedback` is at most 1000 characters, for a request for changes.
+
+The server turns the decision into the tool message the model reads: the decision, the run mode, the numbered steps and whether they differ from the proposal (worked out on the server from the parked call, never taken from the client), the feedback, and for changes "revise the plan and call propose_plan again; run no code".
+The kind of answer must match the parked call: a run result for a plan, or a decision for a code call, is a 409 and the call stays parked.
+Answering a plan does not use any of the `MAX_BROWSER_RUNS_PER_REPLY` runs a reply may make, and a plan is not a run of code for the widget's keep-the-reply rule.
+
 ## Saved conversations
 
 The widget keeps up to 30 conversations in the reader's browser, in one `localStorage` record per community and origin (`osa-chat-history-<community>` unless `storageKey` says otherwise).
