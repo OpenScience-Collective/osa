@@ -15,7 +15,8 @@ not streamed, the session store and the metrics database.
 What stands in: the chat model (``StreamingScriptedChatModel``), which yields chunks in
 the shape each provider adapter yields them (``tests/helpers/provider_replies.py``), and
 the router's ``create_community_assistant``, which would build a real client from settings
-this suite has no keys for, as in ``test_tool_call_streaming.py``. The last class drives
+this suite has no keys for, as in ``test_tool_call_streaming.py`` (the shared pieces are in
+``tests/helpers/tool_call_streaming.py``). The last class drives
 each provider's real client stack instead, with only the network under it staged.
 """
 

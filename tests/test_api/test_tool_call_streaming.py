@@ -237,7 +237,11 @@ def _resume(client: TestClient, monkeypatch, script: list[list[AIMessageChunk]])
 
 
 class TestTheResumeStream:
-    def test_a_search_after_the_browser_run_is_announced(self, resume_client, monkeypatch) -> None:  # noqa: F811
+    def test_a_search_after_the_browser_run_is_announced(
+        self,
+        resume_client,  # noqa: F811
+        monkeypatch,
+    ) -> None:
         events = _resume(
             resume_client,
             monkeypatch,
