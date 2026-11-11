@@ -50,6 +50,25 @@ self.onmessage = (event) => {
       return;
     }
 
+    // DENY:<package> is a run the runtime refuses before it starts: status `denied` and
+    // `denied_import: <package>` in stderr, as the real worker reports an import it does not
+    // have (osa-worker-core.js).
+    const denyMatch = code.match(/^DENY:([A-Za-z_][\w.]*)/);
+    if (denyMatch) {
+      self.postMessage({
+        type: 'result',
+        call_id: data.call_id,
+        status: 'denied',
+        stdout: '',
+        stderr: `denied_import: ${denyMatch[1]}`,
+        summary: '',
+        images: [],
+        artifacts: [],
+        elapsed_ms: 1,
+      });
+      return;
+    }
+
     const delayMatch = code.match(/^DELAY:(\d+)/);
     const delay = delayMatch ? Number(delayMatch[1]) : 0;
 
@@ -61,8 +80,17 @@ self.onmessage = (event) => {
     // ERR:<n> puts n characters in the full stderr and a traceback beside it, so
     // get_full_output's handling of those streams can be exercised.
     const errMatch = code.match(/^ERR:(\d+)/);
-    const fullStderr = errMatch ? 'e'.repeat(Number(errMatch[1])) : '';
-    const fullTraceback = errMatch ? 'Traceback (most recent call last):\n  File "<cell>", line 1\nValueError: boom' : '';
+    // FAIL:<Type>: <message> is a run that raised, as the runtime reports one: stderr
+    // reads "Type: message" and then "  line 1: <the first line of the code>" (osa-output.js
+    // _error_text), and the traceback names the same type.
+    const failMatch = code.match(/^FAIL:([A-Za-z_][\w.]*): ([^\n]*)/);
+    const failed = failMatch !== null;
+    const fullStderr = failed
+      ? `${failMatch[1]}: ${failMatch[2]}\n  line 1: ${code.split('\n')[0]}`
+      : (errMatch ? 'e'.repeat(Number(errMatch[1])) : '');
+    const fullTraceback = failed
+      ? `Traceback (most recent call last):\n  File "<cell>", line 1\n${failMatch[1]}: ${failMatch[2]}`
+      : (errMatch ? 'Traceback (most recent call last):\n  File "<cell>", line 1\nValueError: boom' : '');
     // IMAGE:<base64> adds one image of those PNG bytes (a harness that needs a
     // figure a browser can decode); a bare IMAGE adds the 8-byte PNG signature.
     const imageMatch = code.match(/^IMAGE:([A-Za-z0-9+/]+=*)/);
@@ -101,9 +129,9 @@ self.onmessage = (event) => {
       self.postMessage({
         type: 'result',
         call_id: data.call_id,
-        status: 'ok',
-        stdout: fullStdout.slice(0, 64),
-        stderr: '',
+        status: failed ? 'error' : 'ok',
+        stdout: failed ? '' : fullStdout.slice(0, 64),
+        stderr: failed ? fullStderr : '',
         // Echoed so a test can prove THIS result belongs to THIS call.
         summary: code,
         images,

@@ -662,7 +662,8 @@ Requests that belong to no conversation (everything logged before this change, a
 ## Plan first: `plan_first_instructions` and `propose_plan`
 
 A community that routes between two models can make the analysis model show the reader a plan before it runs code (issues #660 and #661, plan E2).
-The backend is in place; the widget's plan card is separate work (E2.3), so `ClientToolController.declared` does not declare `propose_plan` yet and nothing below happens in production until it does.
+The widget answers the call with an editable plan card and shows the plan's progress (E2.3 and E2.4); see [The plan card and step progress](#the-plan-card-and-step-progress) below.
+It declares `propose_plan` in `client_tools` on `/chat` and `/chat/resume` once the runtime bundle (which carries `OSARuntime.plan`) has loaded, for every community that configures `execute_code`; the server binds the tool only on an analysis turn, so a community with no `plan_first_instructions` never sees a plan.
 
 **The key.**
 `plan_first_instructions` is a string of prompt text, valid only with `quick_model` and `analysis_model` and not blank.
@@ -710,6 +711,61 @@ A valid call parks the graph and sends a `tool_request` with `tool: "propose_pla
 The server turns the decision into the tool message the model reads: the decision, the run mode, the numbered steps and whether they differ from the proposal (worked out on the server from the parked call, never taken from the client), the feedback, and for changes "revise the plan and call propose_plan again; run no code".
 The kind of answer must match the parked call: a run result for a plan, or a decision for a code call, is a 409 and the call stays parked.
 Answering a plan does not use any of the `MAX_BROWSER_RUNS_PER_REPLY` runs a reply may make, and a plan is not a run of code for the widget's keep-the-reply rule.
+
+### The plan card and step progress
+
+**The card** (`frontend/osa-chat-widget.js`, the Plan card block; the logic is `frontend/osa-plan.js`, exposed as `OSARuntime.plan`) is the answer to a `propose_plan` request.
+It shows what the assistant found, `Proposed plan · N steps`, one line of memory (`Largest step needs about N MB`, with no budget named, which comes with E5.1) and the steps.
+Each step has Edit (a title field of at most 120 characters and a detail field of at most 600, each with a label), and Remove, which stops at one step; `+ Add a step` stops at eight.
+A title is kept to one line, as the server keeps it.
+Two radios choose what happens when a step finishes: **Pause so I can look** (the default, `pause`) or **Run all steps** (`run_all`).
+**Approve and run step 1** posts the decision with the steps as they stand; **Ask for changes** opens an optional note of at most 1000 characters and posts `changes_requested`, which runs no code.
+Approve, Ask for changes, the Edit and Remove buttons and the bar's buttons are at least 44 px tall.
+Limits count code points, as the server's do, so a title with emoji is cut at a character, never in the middle of one.
+While a step is being edited the decision waits, so an unsaved edit is never sent or lost.
+The body is exactly `{session_id, result: {call_id, decision, steps, run_mode, feedback?}, client_tools}` (and `page_context` when the reader shares the page); `feedback` is left out when it is empty.
+The model's findings, titles and details, and the reader's text, are escaped.
+While the card waits, the input is off and the conversation says it is waiting for the decision; a plan the reader never answers leaves the parked call to the server's 15-minute limit.
+
+**Approval is consent.**
+After an approval, a run of `execute_code` that is the plan's next step, or the second attempt of a step that failed, is not asked about; the widget answers the controller's permission gate with Run, so `frontend/osa-controller.js` is unchanged.
+Any other request asks as before: a third attempt at one step, a request after the last step, any request after **Stop plan** or **Ask for changes**, and any code in a plan that is not approved.
+
+**The trust model: consent is by position, not by content.**
+The widget cannot tell whether a request's code is the step the plan describes, so it does not try: once a plan is approved, the next `execute_code` request after the plan, or after an `ok` run, is the next step, in this reply or in any later one.
+In pause mode that includes a request the model makes in answer to an unrelated question typed between steps; it runs without a permission card.
+What approving allows is bounded by the sandbox (Python in the reader's browser, the egress allowlist, the limits on a run), by the plan's own length (a step runs at most twice, and nothing runs after the last step), and by the reader, who can press **Stop plan** at any time and who reads each step's code on its run card.
+A new plan, from "Change step N", must be approved again, and counts only the runs from the reply that proposed it onward.
+A decision that does not reach the server (the post fails, or the parked call has expired) is undone on the page: the plan reads `Not answered`, is read-only and covers no run, so its code asks as before.
+
+**Which step a run is** is decided in the widget, with no change to the server.
+The first run of an approved plan is step 1; a run after an `ok` run is the next step; a run after a run that did not work (`error`, `timeout`, `oom`, `denied`, or one the reader stopped) is the next attempt of the same step, to two attempts.
+`denied` under an approved plan is the runtime's refusal, not the reader's (the gate answers Run), most often a package the runtime does not have (`denied_import: scipy`), so it is a failed step like an error.
+A run that is none of these is not a step.
+Each stored run carries `step`, `attempt`, `stepTitle` and `elapsedMs`, so the run card says `Step 2 · <title>` (or `Step 2 failed · KeyError: 'x'`, `Step 2 failed · denied_import: scipy`, or `Step 2 stopped`) with how long it took, a failed step's retry line says which attempt is next, and `OSARuntime.buildConversationNotebook` names the notebook's step by the title.
+
+**The strip and the bar.**
+A strip at the top of the conversation says `Plan · step N of M`, with a segment for each step and `Pauses after each step` or `Runs all steps`.
+A bar at the bottom says what the plan is waiting for:
+
+| State | Bar |
+|-------|-----|
+| The reply is running | `Working on step N of M.` and **Stop plan** |
+| A step failed and has an attempt left, and the reply goes on | `Step N+1 waits until step N works.` and **Stop plan** |
+| Paused after a step | **Run step N** (sends the message `Continue with step N.`), **Change step N** (focuses the input with `Change step N: ` typed in; the model must propose a new plan) and **Stop plan** |
+| A step has failed with no attempt left | **Change step N** and **Stop plan** |
+| Done or stopped | none; the strip says `Plan · all M steps done` or `Plan stopped · step N of M` |
+
+A polite live region of its own, outside the conversation, says where the plan stands (`Plan · step 2 of 3. Paused after step 1.`) each time that changes, since the strip and the bar are redrawn with the conversation.
+After Approve, focus moves to the card's heading; after **Run step N**, to the strip.
+
+**Stop plan** marks the plan stopped, cancels the run in progress, and the reply answers no further request for code: the request that arrives is left parked, as one past the 20-run cap is, and the next message repairs it.
+A plan is the newest plan in the conversation, so a paused plan continues in the next reply, and a plan proposed after "Change step N" replaces it.
+
+**A reload** keeps the plan on its reply (its steps as approved, its run mode, its status) and each run's step fields, bounded.
+The restored card is read-only and says `Approved` (or `Changes requested`, `Stopped`, or `Not answered` for a plan nobody answered); the strip and the bar come back once the runtime bundle has loaded.
+
+Testing: `frontend/test-widget-plan-card.js` runs the real widget and the runtime bundle as built in happy-dom, with `fetch` answering recorded-shape SSE; `tests/test_frontend/test_plan_resume_payload.py` feeds the payload the widget really posts to the server's `ResumeRequest`, `PlanDecision` and `build_plan_tool_message`.
 
 ## Saved conversations
 

@@ -28,8 +28,9 @@ analysis_model: sonnet
 reasoning_effort: high
 # Added to the analysis model's prompt, and only when the request declares `propose_plan`
 # (issues #660 and #661, plan E2): the server withholds it otherwise, so the prompt never names
-# a tool the model was not given. The widget does not declare `propose_plan` until its plan
-# card exists (E2.3), so this is inert in production until then.
+# a tool the model was not given. The widget declares `propose_plan` once its runtime bundle
+# has loaded (the plan card and step progress, E2.3 and E2.4), so this applies to every
+# analysis turn from a widget that has it.
 plan_first_instructions: |
   ## Plan first, then run one step at a time
 
