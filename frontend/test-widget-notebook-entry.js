@@ -678,6 +678,251 @@ console.log('\nthe existing menu still closes on Escape and keeps focus in the s
   assert(!ctx.hooks.history.isOpen(), 'a second Escape closes the sheet');
 }
 
+// ---------------------------------------------------------------------------
+// Review round 1: reveal, refusals, focus, the menu's roles, the cache
+// ---------------------------------------------------------------------------
+
+const quietly = async (fn) => {
+  const { warn, error } = console;
+  console.warn = () => {};
+  console.error = () => {};
+  try {
+    return await fn();
+  } finally {
+    console.warn = warn;
+    console.error = error;
+  }
+};
+const hasAlert = (ctx) => ctx.card() !== null && ctx.card().querySelector('[role="alert"]') !== null;
+
+console.log('\nthe card waits for the reply being revealed, and is drawn when the reveal settles');
+{
+  const ctx = await start({ storage: record('chat-erp', [erpChat()]) });
+  const last = ctx.hooks.getMessages().length - 1;
+  ctx.hooks.setRevealingIndex(last);
+  ctx.hooks.renderMessages(ctx.container);
+  assert(ctx.card() === null, 'no card while the last reply is still being paced onto the screen');
+  assert(ctx.qa('.osa-message').length === 3, 'and the reply itself is drawn');
+  ctx.hooks.setRevealingIndex(-1);
+  ctx.hooks.renderMessages(ctx.container);
+  assert(ctx.card() !== null, 'the card is drawn when the reveal has settled');
+}
+
+console.log('\na refusal from the import is said in the card, and focus is put back on the card');
+{
+  // A bridge error: Continue is disabled while it waits, so focus leaves it.
+  const ctx = await start({ storage: record('chat-erp', [erpChat()]) });
+  ctx.say({ type: 'ready' });
+  ctx.button('continue').focus();
+  assert(ctx.window.document.activeElement === ctx.button('continue'), 'set up: Continue has focus');
+  ctx.click(ctx.button('continue'));
+  assert(ctx.window.document.activeElement !== ctx.button('continue'), 'while it waits the old button is gone: focus is not on Continue');
+  // The reader comes back to the chat while it waits, and the notebook answers with an error.
+  ctx.click(ctx.q('.osa-launcher-capsule .osa-chat-button'));
+  assert(ctx.activeTab() === 'chat', 'set up: back on the chat tab');
+  ctx.q('.osa-chat-input input').blur();
+  assert(ctx.window.document.activeElement === ctx.window.document.body, 'set up: focus is nowhere');
+  ctx.say({ type: 'result', requestId: ctx.importPosts()[0].message.requestId, ok: false, error: 'The notebook said no.' });
+  await waitUntil(() => hasAlert(ctx), 'the error is said');
+  assert(ctx.window.document.activeElement === ctx.button('continue'), 'after a bridge error, focus is back on Continue, to try again');
+
+  // Focus somewhere else is left where it is.
+  const elsewhere = await start({ storage: record('chat-erp', [erpChat()]) });
+  elsewhere.say({ type: 'ready' });
+  elsewhere.button('continue').focus();
+  elsewhere.click(elsewhere.button('continue'));
+  elsewhere.click(elsewhere.q('.osa-launcher-capsule .osa-chat-button'));
+  const input = elsewhere.q('.osa-chat-input input');
+  input.focus();
+  elsewhere.say({ type: 'result', requestId: elsewhere.importPosts()[0].message.requestId, ok: false, error: 'No.' });
+  await waitUntil(() => hasAlert(elsewhere), 'the error is said');
+  assert(elsewhere.window.document.activeElement === input, 'when the reader moved on, focus is not taken back');
+}
+
+console.log('\na true refusal, before the notebook tab opens, is said in the card');
+{
+  // The page moves to another dataset between the card's drawing and the click.
+  const ctx = await start({ storage: record('chat-erp', [erpChat()]) });
+  ctx.say({ type: 'ready' });
+  const real = ctx.window.OSARuntime.buildConversationNotebook;
+  ctx.window.OSARuntime.buildConversationNotebook = (input) => {
+    ctx.window.OSARuntime.buildConversationNotebook = real;
+    ctx.api.setDataset({ id: OTHER, zarr: true });
+    return real(input);
+  };
+  ctx.button('continue').focus();
+  await quietly(async () => {
+    ctx.click(ctx.button('continue'));
+    await waitUntil(() => hasAlert(ctx), 'the refusal is said');
+  });
+  assertEqual(ctx.importPosts().length, 0, 'nothing was sent to the notebook');
+  assert(ctx.activeTab() === 'chat', 'the reader is still on the chat tab');
+  assert(ctx.card().querySelector('[role="alert"]').textContent.includes(DATASET), 'the card says which notebook it was for, with role=alert');
+  assert(ctx.button('continue') === null, 'Continue is gone (another dataset), and nothing is left disabled or busy');
+  assert(ctx.window.document.activeElement === ctx.button('download'), 'focus falls to Download code, the control that is left');
+}
+
+console.log('\na notebook that did not open here is said in the card, and Continue can be tried again');
+{
+  const ctx = await start({ storage: record('chat-erp', [erpChat()]), openNotebookFrame: false });
+  ctx.window.OSAChatWidget.__notebook.setTimeouts(20, 40);
+  ctx.click(ctx.q('.osa-notebook-btn'));
+  await waitUntil(() => ctx.window.OSAChatWidget.__notebook.state().state === 'failed', 'the notebook fails to load');
+  ctx.click(ctx.q('.osa-launcher-capsule .osa-chat-button'));
+  await quietly(async () => {
+    ctx.click(ctx.button('continue'));
+    await waitUntil(() => hasAlert(ctx), 'the refusal is said in the card');
+  });
+  assert(/did not open/.test(ctx.card().querySelector('[role="alert"]').textContent), 'the card says the notebook did not open here');
+  assert(!ctx.button('continue').disabled, 'and Continue is available again');
+}
+
+console.log('\nthe Download code menu: roles, aria-controls, and keys');
+{
+  const ctx = await start({ storage: record('chat-erp', [erpChat()]) });
+  const download = ctx.button('download');
+  const panel = ctx.card().querySelector('.osa-nb-entry-menu');
+  assert(download.getAttribute('aria-controls') === panel.id && panel.id !== '', 'the button names the panel it opens with aria-controls');
+  const menu = panel.querySelector('[role="menu"]');
+  assert(menu !== null && menu.getAttribute('aria-label') === 'Download code', 'the panel holds a labeled role=menu');
+  const allowed = ['menuitem', 'menuitemcheckbox', 'menuitemradio', 'group', 'separator'];
+  assert([...menu.children].every((child) => allowed.includes(child.getAttribute('role'))), 'every child of the menu has a role a menu may hold');
+  const note = panel.querySelector('.osa-nb-entry-note');
+  assert(note !== null && !menu.contains(note), 'the note is beside the menu, not in it');
+  assert(menu.getAttribute('aria-describedby') === note.id, 'and describes it');
+
+  ctx.click(download);
+  const doc = ctx.window.document;
+  keydown(ctx, doc.activeElement, 'End');
+  assert(doc.activeElement === ctx.button('py'), 'End goes to the last item');
+  keydown(ctx, doc.activeElement, 'Home');
+  assert(doc.activeElement === ctx.button('ipynb'), 'Home goes to the first');
+  // From the button that opened it (not an item), Up goes to the last item and Down to the first.
+  ctx.button('download').focus();
+  keydown(ctx, ctx.button('download'), 'ArrowUp');
+  assert(doc.activeElement === ctx.button('py'), 'ArrowUp from the button goes to the last item');
+  ctx.button('download').focus();
+  keydown(ctx, ctx.button('download'), 'ArrowDown');
+  assert(doc.activeElement === ctx.button('ipynb'), 'ArrowDown from the button goes to the first');
+}
+
+console.log('\nthe card is built once for a chat, not on every redraw, and a failure is logged once');
+{
+  const ctx = await start({ storage: record('chat-erp', [erpChat()]) });
+  const real = ctx.window.OSARuntime.buildConversationNotebook;
+  let calls = 0;
+  ctx.window.OSARuntime.buildConversationNotebook = (input) => {
+    calls += 1;
+    return real(input);
+  };
+  for (let i = 0; i < 4; i++) ctx.hooks.renderMessages(ctx.container);
+  assertEqual(calls, 1, 'four redraws of an unchanged chat run the builder once');
+  const messages = ctx.hooks.getMessages();
+  messages[messages.length - 1].executions.push(run({ code: 'print("another")', description: 'Another' }));
+  ctx.hooks.renderMessages(ctx.container);
+  assertEqual(calls, 2, 'a run added builds again');
+  assert(text(ctx.card().querySelector('p')).startsWith(`${expectedCode(erpChat()).stats.steps + 1} steps`), 'and the card says the new count');
+  messages[messages.length - 1].executions[0].code = 'print("edited")';
+  ctx.hooks.renderMessages(ctx.container);
+  assertEqual(calls, 3, 'a run whose code changed builds again');
+
+  const broken = await start({ storage: record('chat-erp', [erpChat()]) });
+  let warned = 0;
+  const warn = console.warn;
+  console.warn = () => { warned += 1; };
+  try {
+    broken.window.OSARuntime.buildConversationNotebook = () => { throw new Error('the builder broke'); };
+    for (let i = 0; i < 4; i++) broken.hooks.renderMessages(broken.container);
+  } finally {
+    console.warn = warn;
+  }
+  assertEqual(warned, 1, 'a builder that throws is logged once across four redraws');
+  assert(broken.card() === null, 'and the card stays hidden');
+}
+
+console.log('\nthe History item: a builder that fails, a chat deleted elsewhere, and a refusal on the chat tab');
+{
+  const chats = historyChats();
+  const openSheet = async () => {
+    const ctx = await start({ storage: record('chat-empty', chats) });
+    ctx.say({ type: 'ready' });
+    ctx.hooks.history.open(ctx.container);
+    return ctx;
+  };
+  const note = (ctx) => ctx.q('.osa-history-note').textContent;
+  const openMenu = (ctx, id) => ctx.click(rowFor(ctx, id).querySelector('.osa-history-more'));
+
+  // The builder fails at the click: the sheet stays open and says so.
+  const failing = await openSheet();
+  openMenu(failing, 'chat-here');
+  failing.window.OSARuntime.buildConversationNotebook = () => { throw new Error('the builder broke'); };
+  await quietly(async () => failing.click(rowFor(failing, 'chat-here').querySelector('.osa-history-menu-continue')));
+  assert(failing.hooks.history.isOpen(), 'a builder error leaves the sheet open');
+  assert(note(failing).includes('the builder broke'), 'and says why in the sheet\'s note');
+  assertEqual(failing.importPosts().length, 0, 'and nothing was imported');
+
+  // The chat is gone (deleted in another tab) between the sheet's drawing and the click.
+  const gone = await openSheet();
+  openMenu(gone, 'chat-here');
+  gone.hooks.deleteConversation('chat-here');
+  gone.click(rowFor(gone, 'chat-here').querySelector('.osa-history-menu-continue'));
+  assert(gone.hooks.history.isOpen() && note(gone).includes('could not be found'), 'a deleted chat is said in the sheet: it could not be found');
+  assertEqual(gone.importPosts().length, 0, 'with nothing imported');
+
+  // Download code, builder throws.
+  const saving = await openSheet();
+  openMenu(saving, 'chat-here');
+  saving.click(rowFor(saving, 'chat-here').querySelector('.osa-history-menu-download'));
+  saving.window.OSARuntime.buildConversationNotebook = () => { throw new Error('no build today'); };
+  await quietly(async () => saving.click(rowFor(saving, 'chat-here').querySelector('.osa-history-menu-save[data-format="py"]')));
+  assertEqual(saving.downloads.length, 0, 'a builder that throws saves nothing');
+  assert(note(saving).startsWith('Could not download the code:') && note(saving).includes('no build today'), 'and the sheet says so');
+  const savingGone = await openSheet();
+  openMenu(savingGone, 'chat-here');
+  savingGone.click(rowFor(savingGone, 'chat-here').querySelector('.osa-history-menu-download'));
+  savingGone.hooks.deleteConversation('chat-here');
+  await quietly(async () => savingGone.click(rowFor(savingGone, 'chat-here').querySelector('.osa-history-menu-save[data-format="ipynb"]')));
+  assert(note(savingGone).includes('could not be found'), 'a chat deleted before the save is said too');
+
+  // A refusal that leaves the reader on the chat tab: the same chat is already on its way.
+  const ctx = await start({ storage: record('chat-here', chats) });
+  ctx.say({ type: 'ready' });
+  ctx.click(ctx.button('continue'));
+  assertEqual(ctx.importPosts().length, 1, 'set up: the card started the import');
+  ctx.click(ctx.q('.osa-launcher-capsule .osa-chat-button'));
+  assert(ctx.activeTab() === 'chat', 'set up: the reader is back on the chat tab');
+  ctx.hooks.history.open(ctx.container);
+  ctx.click(rowFor(ctx, 'chat-here').querySelector('.osa-history-more'));
+  ctx.click(rowFor(ctx, 'chat-here').querySelector('.osa-history-menu-continue'));
+  await waitUntil(() => /already being sent/.test(ctx.q('.osa-error').textContent), 'the refusal is shown');
+  assertEqual(ctx.importPosts().length, 1, 'the second request sent nothing');
+  assert(!ctx.hooks.history.isOpen() && ctx.activeTab() === 'chat', 'the sheet closed and the reader is still on the chat');
+  assert(ctx.window.document.activeElement === ctx.q('.osa-history-btn'), 'focus is on the History button, not lost to the page');
+}
+
+console.log('\nan import that another one replaced still opens the notebook it made');
+{
+  const chats = [
+    chat('chat-a', { title: 'First chat', runs: erpRuns(), updatedAt: TODAY }),
+    chat('chat-b', { title: 'Second chat', runs: erpRuns(), updatedAt: TODAY - 1000 }),
+  ];
+  const ctx = await start({ storage: record('chat-a', chats) });
+  ctx.say({ type: 'ready' });
+  ctx.click(ctx.button('continue'));
+  ctx.click(ctx.q('.osa-launcher-capsule .osa-chat-button'));
+  ctx.hooks.history.open(ctx.container);
+  ctx.click(rowFor(ctx, 'chat-b').querySelector('.osa-history-more'));
+  ctx.click(rowFor(ctx, 'chat-b').querySelector('.osa-history-menu-continue'));
+  assertEqual(ctx.importPosts().length, 2, 'two imports are in flight, the second having taken the banner');
+  const [first] = ctx.importPosts();
+  ctx.say({ type: 'result', requestId: first.message.requestId, ok: true, path: IMPORT_PATH });
+  ctx.click(ctx.q('.osa-launcher-capsule .osa-chat-button'));
+  await waitUntil(() => ctx.button('open') !== null, 'the first chat\'s card becomes Open notebook');
+  ctx.click(ctx.button('open'));
+  const opens = ctx.posts.filter((p) => p.message.type === 'open-notebook');
+  assertEqual(opens.map((p) => p.message.path), [IMPORT_PATH], 'Open notebook asks for the path the answer named, not a record that never finished');
+}
+
 console.log(`\n${'='.repeat(60)}`);
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 console.log('='.repeat(60));
