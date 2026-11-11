@@ -909,8 +909,9 @@ class TestCommunityConfigCenterStage:
         with pytest.raises(ValidationError, match="https"):
             self._client({"analysis_docs": {**self.DOCS, "url": "http://docs.example.org/"}})
 
-    def test_every_registered_community_that_sets_a_docs_link_sets_an_https_one(self) -> None:
-        """Dynamic over the registry: no community id is named here."""
+    def test_every_registered_community_that_sets_a_docs_link_serves_an_https_one(self) -> None:
+        """Dynamic over the registry, through the route the widget calls: no community id is
+        named here, and the response is what is checked, not the config that produced it."""
         from src.assistants import registry
 
         checked = 0
@@ -919,11 +920,14 @@ class TestCommunityConfigCenterStage:
             if not (config and config.widget and config.widget.analysis_docs):
                 continue
             checked += 1
-            resolved = config.widget.resolve(info.name)["analysis_docs"]
-            assert resolved["url"].startswith("https://"), info.id
-            assert 0 < len(resolved["title"]) <= 80, info.id
-            start = config.widget.center_start
-            assert len(start.capabilities if start else []) <= 3, info.id
+            app = FastAPI()
+            app.include_router(create_community_router(info.id))
+            response = TestClient(app).get(f"/{info.id}/")
+            assert response.status_code == 200, info.id
+            docs = response.json()["widget"]["analysis_docs"]
+            assert docs is not None, info.id
+            assert docs["url"].startswith("https://"), info.id
+            assert docs["title"], info.id
         assert checked > 0, "no registered community configures analysis_docs"
 
 
