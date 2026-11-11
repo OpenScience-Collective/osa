@@ -762,6 +762,10 @@ class ChatSession:
         # a first message that asks for analysis flips its own, so a session never changes
         # model with quick-model thinking blocks in its history (issue #522).
         self.mode: Tier = "quick"
+        # Groups the usage-metrics rows of one conversation. It is this session's id until
+        # a handover opens the analysis session, which inherits the old session's value,
+        # so a conversation that changed sessions is still one conversation in the report.
+        self.conversation_id = session_id
 
     def add_user_message(self, content: str) -> None:
         """Add a user message to history.
@@ -3927,6 +3931,8 @@ def _log_streaming_metrics(
     error_message: str | None = None,
     longest_prompt_tokens: int | None = None,
     request_id_suffix: str = "",
+    tier: Tier | None = None,
+    conversation_id: str | None = None,
 ) -> None:
     """Log metrics at the end of a streaming response.
 
@@ -3939,6 +3945,10 @@ def _log_streaming_metrics(
     quick model's work (its run and the summary) under ``<request id>:quick``, so the
     request id the widget's feedback joins on (``done.request_id``) names one row, the
     analysis run's, and the quick row is found next to it by its prefix.
+
+    ``tier`` is the model tier the row ran on (None for a community that does not route),
+    and ``conversation_id`` groups the rows of one conversation across a handover; both
+    are what ``osa metrics cost-report`` prices quick against analysis with.
     """
     try:
         duration_ms = (time.monotonic() - start_time) * 1000
@@ -3984,6 +3994,8 @@ def _log_streaming_metrics(
             total_tokens=total_tokens if has_tokens else None,
             estimated_cost=cost,
             error_message=error_message,
+            tier=tier,
+            conversation_id=conversation_id,
         )
         log_request(entry)
     except Exception:
@@ -4754,6 +4766,9 @@ async def _stream_chat_response(
     longest_prompt_tokens = 0
     model_runs = ModelRuns()
     retry = RetryState()
+    # The tier of the model whose work this request's metrics row records, set once the
+    # turn is routed (see `row_tier` below). None for a community that does not route.
+    row_tier: Tier | None = None
 
     # The metrics middleware assigns a per-request UUID. The widget attaches the one on the
     # final `done` event to a reply for feedback, which joins it back to request_log, so it
@@ -4831,6 +4846,10 @@ async def _stream_chat_response(
             # Nothing to summarize on a first message: this session simply runs analysis.
             session.mode = "analysis"
             handing_over = False
+        # What this request's own row says it ran on: a handover's request row is the
+        # analysis run's, but until the analysis session starts the assistant in hand is
+        # the quick model, and an error before that is the quick model's.
+        row_tier = "quick" if handing_over else tier
 
         def run_on(target: ChatSession) -> AsyncGenerator[str, None]:
             """The analysis turn on `target`, through this same path."""
@@ -4890,6 +4909,8 @@ async def _stream_chat_response(
                 endpoint=metrics_endpoint,
                 awm=awm,
                 tools_called=tools_called,
+                tier=row_tier,
+                conversation_id=session.conversation_id,
                 start_time=start_time,
                 status_code=200,
                 input_tokens=input_tokens,
@@ -4899,6 +4920,12 @@ async def _stream_chat_response(
                 longest_prompt_tokens=longest,
                 request_id_suffix=":quick",
             )
+
+        def open_analysis_session() -> ChatSession:
+            """The new session a handover runs the analysis on, in the same conversation."""
+            analysis_session = get_or_create_session(community_id, None)
+            analysis_session.conversation_id = session.conversation_id
+            return analysis_session
 
         async def hand_over() -> AsyncGenerator[str, None]:
             """Summarize this session on the quick model; run the analysis on a new one."""
@@ -4913,7 +4940,7 @@ async def _stream_chat_response(
                     summarizer=awm.assistant.model,
                     history=earlier_messages,
                     reader_message=reader_message,
-                    open_session=lambda: get_or_create_session(community_id, None),
+                    open_session=open_analysis_session,
                     analysis_model=analysis_route.model,
                     run_analysis=run_on,
                     summarizer_config=awm.langfuse_config,
@@ -5160,6 +5187,8 @@ async def _stream_chat_response(
                 endpoint=metrics_endpoint,
                 awm=awm,
                 tools_called=tools_called,
+                tier=row_tier,
+                conversation_id=session.conversation_id,
                 start_time=start_time,
                 status_code=200,
                 input_tokens=total_input_tokens,
@@ -5205,6 +5234,8 @@ async def _stream_chat_response(
                 endpoint=metrics_endpoint,
                 awm=awm,
                 tools_called=tools_called,
+                tier=row_tier,
+                conversation_id=session.conversation_id,
                 start_time=start_time,
                 status_code=502,
                 input_tokens=total_input_tokens,
@@ -5235,6 +5266,8 @@ async def _stream_chat_response(
                     endpoint=metrics_endpoint,
                     awm=awm,
                     tools_called=tools_called,
+                    tier=row_tier,
+                    conversation_id=session.conversation_id,
                     start_time=start_time,
                     status_code=500,
                     input_tokens=total_input_tokens,
@@ -5298,6 +5331,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=200,
             input_tokens=total_input_tokens,
@@ -5325,6 +5360,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=e.status_code,
             input_tokens=total_input_tokens,
@@ -5365,6 +5402,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=status_code,
             input_tokens=total_input_tokens,
@@ -5393,6 +5432,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=500,
             input_tokens=total_input_tokens,

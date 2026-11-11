@@ -554,6 +554,139 @@ class TestHandoverMetrics:
         assert f"{done['request_id']}:quick" not in by_id
 
 
+class TestConversationAndTierColumns:
+    """Every row says which tier ran it and which conversation it belongs to."""
+
+    def test_a_handover_writes_a_quick_row_and_an_analysis_row_in_one_conversation(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+
+        done = _done(_chat(metered_client, "plot the ERP", session_id="sess-quick"))
+
+        by_id = {r["request_id"]: r for r in _request_rows()}
+        analysis = by_id[done["request_id"]]
+        quick = by_id[f"{done['request_id']}:quick"]
+        assert (quick["tier"], quick["model"]) == ("quick", HAIKU)
+        assert (analysis["tier"], analysis["model"]) == ("analysis", SONNET)
+        assert quick["conversation_id"] == analysis["conversation_id"] == "sess-quick"
+        # The analysis ran on a new session, so the shared id is the old session's, not it.
+        assert done["session_id"] != "sess-quick"
+
+    def test_a_follow_up_on_the_new_session_stays_in_the_conversation(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200), say_with_usage("More.", 50, 5)],
+        )
+        first = _done(_chat(metered_client, "plot the ERP", session_id="sess-quick"))
+
+        second = _done(_chat(metered_client, "and the spectrum?", session_id=first["session_id"]))
+
+        by_id = {r["request_id"]: r for r in _request_rows()}
+        assert by_id[second["request_id"]]["tier"] == "analysis"
+        assert by_id[second["request_id"]]["conversation_id"] == "sess-quick"
+
+    def test_a_start_analysis_handover_shares_the_conversation_too(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[call_start_analysis_with_usage(100, 10), say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+
+        done = _done(
+            _chat(metered_client, "could you look at the alpha band?", session_id="sess-quick")
+        )
+
+        by_id = {r["request_id"]: r for r in _request_rows()}
+        assert by_id[f"{done['request_id']}:quick"]["tier"] == "quick"
+        assert by_id[done["request_id"]]["tier"] == "analysis"
+        assert {r["conversation_id"] for r in by_id.values()} == {"sess-quick"}
+
+    def test_a_plain_quick_turn_writes_one_quick_row(self, metered_client, monkeypatch) -> None:
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        done = _done(_chat(metered_client, "find datasets with face stimuli"))
+
+        (row,) = _request_rows()
+        assert (row["tier"], row["model"]) == ("quick", HAIKU)
+        assert row["conversation_id"] == done["session_id"]
+
+    def test_a_first_message_flip_is_an_analysis_row(self, metered_client, monkeypatch) -> None:
+        _rig(monkeypatch, quick=[say("unused")], analysis=[say_with_usage("Plotting.", 90, 9)])
+
+        done = _done(_chat(metered_client, "plot the ERP", session_id="s-flip"))
+
+        (row,) = _request_rows()
+        assert (row["tier"], row["conversation_id"]) == ("analysis", "s-flip")
+        assert done["session_id"] == "s-flip"
+
+    def test_a_resume_keeps_the_analysis_sessions_conversation_and_tier(
+        self, metered_client, monkeypatch
+    ) -> None:
+        session = _parked_analysis_session("analysis")
+        session.conversation_id = "conv-from-quick"
+        _rig(monkeypatch, quick=[say("unused")], analysis=[say_with_usage("Peak at 10 Hz.", 80, 8)])
+        response = metered_client.post(
+            f"/{COMMUNITY}/chat/resume",
+            json={
+                "session_id": "sess-parked",
+                "result": {"call_id": EXECUTE_CALL_ID, "status": "ok", "summary": "peak 10 Hz"},
+                "client_tools": [EXECUTE_CODE],
+            },
+            headers={"Origin": ORIGIN, **BYOK},
+        )
+        assert response.status_code == 200, response.text
+
+        (row,) = _request_rows()
+        assert (row["tier"], row["model"]) == ("analysis", SONNET)
+        assert row["conversation_id"] == "conv-from-quick"
+        assert row["endpoint"].endswith("/chat/resume")
+
+    def test_a_community_that_does_not_route_has_no_tier_but_a_conversation(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        init_metrics_db()
+        app = FastAPI()
+        app.add_middleware(MetricsMiddleware)
+        app.include_router(create_community_router(PLAIN))
+        plain_client = TestClient(app)
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        done = _done(_chat(plain_client, "hello there", community=PLAIN))
+
+        (row,) = _request_rows()
+        assert row["tier"] is None
+        assert row["conversation_id"] == done["session_id"]
+
+    def test_no_row_with_tokens_lacks_a_model(self, metered_client, monkeypatch) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[call_start_analysis_with_usage(100, 10), say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+        _chat(metered_client, "could you look at the alpha band?", session_id="sess-quick")
+
+        with metrics_connection() as conn:
+            unnamed = conn.execute(
+                "SELECT COUNT(*) FROM request_log WHERE total_tokens > 0 AND model IS NULL"
+            ).fetchone()[0]
+        assert unnamed == 0
+
+
 class TestAFirstMessage:
     def test_a_keyword_first_message_flips_its_own_session(self, client, monkeypatch) -> None:
         rig = _rig(monkeypatch, quick=[say("unused")])
