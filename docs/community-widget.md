@@ -846,7 +846,7 @@ One case is not covered: once the server has confirmed the session in a page loa
   If the reader later asks for analysis, the summary for the handover is written from the turns and the reader's message, not from the framing the server added.
 - **What it does not do.**
   It does not store history on the server, summarize the transcript with a model, carry figures, or reseed `/chat/resume`, which still answers 404 for a session the server no longer holds.
-  A request sent to a live session carries the transcript for nothing; the bytes are bounded (at most about 24 KB) and are the price of not asking the server first.
+  A request sent to a live session carries the transcript for nothing; the bytes are bounded (at most about 12,000 characters of text, before JSON escaping) and are the price of not asking the server first.
 
 Testing: `frontend/test-widget-reseed.js`, `tests/test_api/test_reseed.py` and `tests/test_integration/test_reseed_llm.py`.
 
