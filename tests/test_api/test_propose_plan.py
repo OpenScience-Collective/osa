@@ -417,6 +417,8 @@ class TestALeftPlan:
         assert answer.tool_call_id == request["call_id"]
         text = answer.content[0]["text"]
         assert "did not decide on the plan" in text
+        assert "the conversation moved on before it was answered" in text
+        assert "before it was run" not in text
         assert "Run no code from it" in text
         assert "Browser execution" not in text
         session = _get_session_store(COMMUNITY)[request["session_id"]]

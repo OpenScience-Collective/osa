@@ -3015,7 +3015,7 @@ def create_community_router(community_id: str) -> APIRouter:
         # The person moved on instead of answering a browser call. Close it out before
         # anything else: leaving an assistant message with tool_calls and no matching
         # result makes the provider reject EVERY later turn, not just this one.
-        if session.abandon_pending_call("the conversation moved on before it was run"):
+        if session.abandon_pending_call("the conversation moved on before it was answered"):
             logger.info("Abandoned an unanswered browser call on session %s", session.session_id)
 
         # Add user message with constraint validation
