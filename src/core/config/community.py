@@ -2212,13 +2212,15 @@ class ProcedureConfig(BaseModel):
     @classmethod
     def _one_line(cls, value: str, info: ValidationInfo) -> str:
         bounds = {"title": (3, 80), "when": (10, 300)}[info.field_name or "title"]
+        # Strip first: a YAML folded or literal scalar (``when: >``) ends in one newline.
+        value = value.strip()
         if "\n" in value or "\r" in value:
             raise ValueError(f"procedure {info.field_name} must be one line")
-        if not bounds[0] <= len(value.strip()) <= bounds[1]:
+        if not bounds[0] <= len(value) <= bounds[1]:
             raise ValueError(
                 f"procedure {info.field_name} must be {bounds[0]} to {bounds[1]} characters"
             )
-        return value.strip()
+        return value
 
     @field_validator("file")
     @classmethod
@@ -2234,23 +2236,30 @@ def _read_procedure_documents(
 ) -> dict[str, str]:
     """Each procedure's document text, keyed by id, read once from the community folder.
 
-    Raises ValueError, in plain words, for a file that is missing, resolves outside the
-    folder (a symlink included), is too large, is not UTF-8, or is blank.
+    Raises ValueError, in plain words, for a file that is missing, cannot be read, resolves
+    outside the folder (a symlink included), is too large, is not UTF-8, or is blank.
     """
-    root = community_dir.resolve()
+    try:
+        root = community_dir.resolve()
+    except OSError as err:
+        raise ValueError(f"the community's folder cannot be read: {err.strerror}") from err
     texts: dict[str, str] = {}
     for procedure in procedures:
         where = f"procedure {procedure.id!r}: file {procedure.file!r}"
-        path = (root / procedure.file).resolve()
-        if not path.is_relative_to(root):
-            raise ValueError(f"{where} resolves outside the community's folder")
-        if not path.is_file():
-            raise ValueError(f"{where} does not exist in the community's folder")
-        # UTF-8 takes at most four bytes a character, so a larger file cannot fit.
-        if path.stat().st_size > 4 * MAX_PROCEDURE_CHARS:
-            raise ValueError(f"{where} is longer than {MAX_PROCEDURE_CHARS:,} characters")
         try:
-            text = path.read_bytes().decode("utf-8")
+            path = (root / procedure.file).resolve()
+            if not path.is_relative_to(root):
+                raise ValueError(f"{where} resolves outside the community's folder")
+            if not path.is_file():
+                raise ValueError(f"{where} does not exist in the community's folder")
+            # UTF-8 takes at most four bytes a character, so a larger file cannot fit.
+            if path.stat().st_size > 4 * MAX_PROCEDURE_CHARS:
+                raise ValueError(f"{where} is longer than {MAX_PROCEDURE_CHARS:,} characters")
+            raw = path.read_bytes()
+        except OSError as err:
+            raise ValueError(f"{where} cannot be read: {err.strerror}") from err
+        try:
+            text = raw.decode("utf-8")
         except UnicodeDecodeError as err:
             raise ValueError(f"{where} is not valid UTF-8 text") from err
         if not text.strip():

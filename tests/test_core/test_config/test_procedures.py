@@ -218,6 +218,30 @@ class TestAFailureAtLoad:
         with pytest.raises(ValidationError, match="procedure title"):
             CommunityConfig.from_yaml(path)
 
+    def test_a_one_line_value_with_a_trailing_newline_loads(self, folder: Path) -> None:
+        """A YAML folded scalar (``when: >``) ends in one newline; the value is one line."""
+        path = _write(
+            folder,
+            [_entry(when="A request to do the thing, in one line\n", title="Do the thing\n")],
+            {"procedures/do-the-thing.md": DOCUMENT},
+        )
+        loaded = CommunityConfig.from_yaml(path).procedures[0]
+        assert (loaded.title, loaded.when) == (
+            "Do the thing",
+            "A request to do the thing, in one line",
+        )
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+    def test_a_file_that_cannot_be_read_is_a_plain_value_error(self, folder: Path) -> None:
+        path = _write(folder, [_entry()], {"procedures/do-the-thing.md": DOCUMENT})
+        document = folder / "procedures" / "do-the-thing.md"
+        document.chmod(0)
+        try:
+            with pytest.raises(ValueError, match=r"do-the-thing.*cannot be read"):
+                CommunityConfig.from_yaml(path)
+        finally:
+            document.chmod(0o644)
+
     def test_more_than_the_most_procedures(self, folder: Path) -> None:
         entries = [
             _entry(id=f"procedure-{n}", file=f"procedures/{n}.md")
