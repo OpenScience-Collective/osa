@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 import src.api.routers.community as community_module
 from src.api.config import get_settings
 from src.api.main import app
+from src.api.routers.community import _get_session_store
 from src.core.services.anthropic_models import HAIKU, SONNET
 
 pytestmark = [
@@ -34,7 +35,12 @@ pytestmark = [
 _NEMAR_ORIGIN = "https://nemar.org"
 _DECLARED_TOOLS = ["execute_code", "get_full_output"]
 _DATASET = "xx099904"
+# "Without running anything" is the whole instruction needed to keep the model from calling
+# `execute_code`, which would end the stream with a `tool_request` and no `done`: the
+# answer is in the transcript, and the declared tools stay because routing (the tier the
+# checks below read) only applies to a request that declares `execute_code`.
 _ASK = "Without running anything, which dataset were we discussing?"
+_SESSION_IDS = ["reseed-llm-quick", "reseed-llm-analysis", "reseed-llm-none"]
 _PRIOR_TURNS = [
     {"role": "user", "text": "find datasets with face stimuli"},
     {"role": "assistant", "text": f"The closest match is {_DATASET}, with 18 participants."},
@@ -53,6 +59,17 @@ def _auth_headers() -> dict[str, str]:
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _no_sessions_left_behind():
+    """The real app's in-memory store keeps these sessions; take them out before and after."""
+    store = _get_session_store("nemar")
+    for session_id in _SESSION_IDS:
+        store.pop(session_id, None)
+    yield
+    for session_id in _SESSION_IDS:
+        store.pop(session_id, None)
 
 
 @pytest.fixture
@@ -90,14 +107,17 @@ def _chat(client: TestClient, message: str, **body) -> list[dict]:
 
 def _done(events: list[dict]) -> dict:
     done = next((e for e in events if e.get("event") == "done"), None)
-    assert done is not None, [e.get("event") for e in events]
+    assert done is not None, (
+        "no done event; a tool_request here means the model tried to run code instead of "
+        f"answering from the transcript: {[e.get('event') for e in events]}"
+    )
     return done
 
 
 class TestAReseededSession:
     def test_a_quick_conversation_answers_with_the_prior_context(self, client, models_used) -> None:
         events = _chat(
-            client, _ASK, session_id="reseed-llm-quick", prior_turns=_PRIOR_TURNS, mode="quick"
+            client, _ASK, session_id=_SESSION_IDS[0], prior_turns=_PRIOR_TURNS, mode="quick"
         )
 
         done = _done(events)
@@ -105,7 +125,7 @@ class TestAReseededSession:
         assert done["mode"] == "quick"
         assert done["model"] == HAIKU
         assert models_used == [HAIKU]
-        assert done["session_id"] == "reseed-llm-quick"
+        assert done["session_id"] == _SESSION_IDS[0]
 
     def test_an_analysis_conversation_stays_on_the_analysis_model_without_a_handover(
         self, client, models_used
@@ -113,7 +133,7 @@ class TestAReseededSession:
         events = _chat(
             client,
             _ASK,
-            session_id="reseed-llm-analysis",
+            session_id=_SESSION_IDS[1],
             prior_turns=_PRIOR_TURNS,
             mode="analysis",
         )
@@ -126,7 +146,7 @@ class TestAReseededSession:
         assert models_used == [SONNET]
 
     def test_without_the_turns_the_model_cannot_know(self, client, models_used) -> None:
-        events = _chat(client, _ASK, session_id="reseed-llm-none")
+        events = _chat(client, _ASK, session_id=_SESSION_IDS[2])
 
         assert _DATASET not in _done(events)["content"].lower()
         assert models_used == [HAIKU]
