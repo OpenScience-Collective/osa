@@ -50,6 +50,13 @@ function assertEqual(actual, expected, msg) {
 
 // The page and the server's side of it: frontend/test-support/plan-widget-harness.js.
 
+/** The widget with the dialog raised in the middle of the page, where the plan rail is. */
+async function centerRailPage() {
+  const page = await start();
+  page.widget.open({ mode: 'center' });
+  return page;
+}
+
 console.log('='.repeat(60));
 console.log('Widget: the plan card and the step progress (E2.3, E2.4)');
 console.log('='.repeat(60));
@@ -178,6 +185,8 @@ console.log('\ncurrentPlan and progressOf: read back from the conversation');
   assert(pauseOffer(runAll, [{ step: 1, attempt: 1, status: 'error' }], true), 'and while a failed step is tried again');
   assert(!pauseOffer(approved, [ok(1)], true), 'not to a plan that pauses after each step');
   assert(!pauseOffer(runAll, [ok(1)], false), 'not to one that is already waiting');
+  assert(!pauseOffer(runAll, [ok(1), ok(2)], true) && !pauseOffer(runAll, [ok(1), ok(2), { step: 3, attempt: 1, status: 'error' }], true), 'not on the last step, running or tried again: no later step is left to hold');
+  assert(plan.runsOnItsOwn(plan.progressOf(runAll, [ok(1), ok(2)], { active: true })), 'though a run-all plan on its last step still runs on its own');
   assert(!pauseOffer(runAll, [ok(1), { step: 2, attempt: 2, status: 'error' }], true), 'not to one whose step is out of attempts');
   assert(!pauseOffer(runAll, [ok(1), ok(2), ok(3)], true) && !pauseOffer({ ...runAll, status: 'stopped' }, [ok(1)], true), 'not to one that is done or stopped');
   assert(!plan.canPause(null), 'and not to no plan');
@@ -676,12 +685,15 @@ console.log('\nrun all, the bar: Run step N is never offered while it runs; Paus
     stream.send(codeRequest(`r${n}`, `DELAY:150\nprint(${n})`, `Step ${n}`));
     stream.close();
     await waitUntil(() => page.api.getBrowserTools().busy, `step ${n} is running`);
-    assertEqual(barButtons(page), ['Pause', 'Stop plan'], `step ${n} running: Pause and Stop plan`);
+    // Pause is offered while a later step is left to hold, so not on the last one.
+    const running = n < 3 ? ['Pause', 'Stop plan'] : ['Stop plan'];
+    assertEqual(barButtons(page), running, `step ${n} running: ${running.join(' and ')}`);
     assertEqual(text(page.q('.osa-plan-bar-text')), `Working on step ${n} of 3.`, `and the bar says it is working on step ${n}`);
     await waitUntil(() => page.requests.length === 2 + n, `step ${n} is answered`);
     if (n < 3) {
       // Between the steps: the result is back with the model, the next request not yet in.
-      assertEqual(barButtons(page), ['Pause', 'Stop plan'], `between step ${n} and step ${n + 1}: Pause and Stop plan`);
+      const between = n + 1 < 3 ? ['Pause', 'Stop plan'] : ['Stop plan'];
+      assertEqual(barButtons(page), between, `between step ${n} and step ${n + 1}: ${between.join(' and ')}`);
       assertEqual(text(page.q('.osa-plan-bar-text')), `Working on step ${n + 1} of 3.`, `the bar says it is on step ${n + 1}, not that it waits`);
     }
     stream = next;
@@ -719,6 +731,8 @@ console.log('\nrun all, Pause: the step that is running finishes, the next is he
   assertEqual(lastReply(page).executions.length, 1, 'only step 1 ran');
   assertEqual(lastReply(page).plan.status, 'approved', 'the plan is still approved');
   assertEqual(text(page.q('.osa-plan-strip-label')), 'Plan · step 2 of 3', 'the strip is on step 2');
+  assertEqual(lastReply(page).plan.held, 2, 'it remembers that step 2 was held, and stores it');
+  assertEqual(page.stored().conversations.find((c) => c.id === page.api.getActiveConversation().id).messages.at(-1).plan.held, 2, 'in the saved chat');
   assertEqual(text(page.q('.osa-plan-strip-mode')), 'Runs all steps', 'still in run-all mode');
   assertEqual(barButtons(page), ['Run step 2', 'Change step 2', 'Stop plan'], 'the bar waits as a paused plan does');
   assert(text(page.q('.osa-plan-bar-text')).startsWith('Paused after step 1'), 'and says Paused after step 1');
@@ -730,12 +744,17 @@ console.log('\nrun all, Pause: the step that is running finishes, the next is he
   const afterStep3 = page.queue();
   click(page, page.q('.osa-plan-bar-run'));
   await waitUntil(() => page.requests.length === 4, 'Run step 2 sends a message');
-  assertEqual(page.requests[3].body.message, 'Continue with step 2, then run the remaining steps without stopping.', 'which says to carry on to the end');
+  assertEqual(
+    page.requests[3].body.message,
+    'Continue with step 2. It has not run: I paused before it started, so it is not a failed attempt. Run it now, then run the remaining steps without stopping.',
+    'which says step 2 never ran, so it is no failed attempt, and to carry on to the end'
+  );
+  assertEqual(messagesOf(page).find((m) => m.plan).plan.held, undefined, 'and the hold is cleared once the model has been told');
   go.send(sessionEvent());
   go.send(codeRequest('q2b', 'print(2)', 'Epoch the EEG'));
   go.close();
   await waitUntil(() => page.requests.length === 5, 'step 2 is answered');
-  assertEqual(barButtons(page), ['Pause', 'Stop plan'], 'running again: Pause and Stop plan, no Run step');
+  assertEqual(barButtons(page), ['Stop plan'], 'running again, on step 3 next, the last: Stop plan only, no Run step');
   afterStep2.send(codeRequest('q3', 'print(3)', 'Average per condition'));
   afterStep2.close();
   await waitUntil(() => page.requests.length === 6, 'step 3 is answered without a click');
@@ -808,6 +827,154 @@ console.log('\nrun all, Pause while a step is being tried again: the retry runs,
   assertEqual(barButtons(page), ['Run step 2', 'Change step 2', 'Stop plan'], 'the plan waits after step 1');
 }
 
+console.log('\nrun all, the reply shows text between the steps: it is still running, so Run step N is not offered');
+{
+  // `isLoading` is false once a reply shows any text, so it cannot say a reply is going on.
+  const page = await centerRailPage();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const runButtons = () => page.qa('button').filter((b) => /^Run step/.test(text(b))).map(text);
+  const seen = [];
+  const sampler = setInterval(() => {
+    if (!settled(page) && runButtons().length) seen.push(text(page.q('.osa-plan-bar-text')));
+  }, 2);
+  const after1 = page.queue();
+  first.send({ event: 'content', content: 'Running step 1 now. ' });
+  first.send(codeRequest('t1', 'DELAY:100\nprint(1)', 'Step 1'));
+  first.close();
+  await waitUntil(() => page.requests.length === 3, 'step 1 is answered');
+  after1.send({ event: 'content', content: 'Step 1 showed 40 onsets. ' });
+  await waitUntil(() => page.api.getMessages().some((m) => (m.content || '').includes('Step 1 showed')), 'the text shows');
+  assert(!settled(page), 'the reply is still going');
+  assertEqual(barButtons(page), ['Pause', 'Stop plan'], 'after the text, between steps 1 and 2: Pause and Stop plan');
+  assertEqual(text(page.q('.osa-plan-bar-text')), 'Working on step 2 of 3.', 'working on step 2, not paused');
+  assertEqual(page.qa('.osa-plan-rail-current').length, 1, 'the rail has its current row');
+  assertEqual(text(page.q('.osa-plan-rail-heading')), 'Plan · 1 of 3 done', 'and counts one done');
+  assertEqual(runButtons(), [], 'with no Run step button anywhere');
+  const before = page.requests.length;
+  page.q('.osa-plan-bar-buttons').dispatchEvent(new page.window.Event('click', { bubbles: true }));
+  assertEqual(page.requests.length, before, 'and nothing sends a second request');
+
+  const after2 = page.queue();
+  after1.send(codeRequest('t2', 'DELAY:100\nprint(2)', 'Step 2'));
+  after1.close();
+  await waitUntil(() => page.requests.length === 4, 'step 2 is answered');
+  after2.send({ event: 'content', content: 'Step 2 epoched the data. ' });
+  await waitUntil(() => page.api.getMessages().some((m) => (m.content || '').includes('Step 2 epoched')), 'more text shows');
+  assertEqual(barButtons(page), ['Stop plan'], 'after more text, between steps 2 and 3 (3 is the last): Stop plan only');
+  const after3 = page.queue();
+  after2.send(codeRequest('t3', 'print(3)', 'Step 3'));
+  after2.close();
+  await waitUntil(() => page.requests.length === 5, 'step 3 is answered');
+  after3.send(doneEvent('All three steps ran.'));
+  after3.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  clearInterval(sampler);
+  assertEqual(seen, [], 'no Run step button was in the bar or the rail while the reply went on');
+}
+
+console.log('\nrun all, Pause pressed between steps after the reply showed text: the next step is held');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const after1 = page.queue();
+  first.send({ event: 'content', content: 'Running step 1 now. ' });
+  first.send(codeRequest('m1', 'print(1)', 'Step 1'));
+  first.close();
+  await waitUntil(() => page.requests.length === 3, 'step 1 is answered');
+  after1.send({ event: 'content', content: 'Step 1 showed 40 onsets. ' });
+  await waitUntil(() => page.api.getMessages().some((m) => (m.content || '').includes('Step 1 showed')), 'the text shows');
+  click(page, page.qa('.osa-plan-bar button').find((b) => text(b) === 'Pause'));
+  after1.send(codeRequest('m2', 'print(2)', 'Step 2'));
+  after1.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  assertEqual(page.requests.length, 3, 'step 2 was held');
+  assertEqual(barButtons(page), ['Run step 2', 'Change step 2', 'Stop plan'], 'the plan waits');
+}
+
+console.log('\nrun all, Pause asked during the second to last step stays said, though the last has no Pause');
+{
+  const page = await start();
+  await proposeFirst(page);
+  let stream = await approve(page, { runAll: true });
+  const next1 = page.queue();
+  stream.send(codeRequest('n1', 'print(1)', 'Step 1'));
+  stream.close();
+  await waitUntil(() => page.requests.length === 3, 'step 1 is answered');
+  stream = next1;
+  const next2 = page.queue();
+  stream.send(codeRequest('n2', 'DELAY:300\nprint(2)', 'Step 2'));
+  stream.close();
+  await waitUntil(() => page.api.getBrowserTools().busy, 'step 2 is running');
+  click(page, page.qa('.osa-plan-bar button').find((b) => text(b) === 'Pause'));
+  await waitUntil(() => page.requests.length === 4, 'step 2 is answered');
+  assert(/^Pausing/.test(text(page.q('.osa-plan-bar-text'))) && barButtons(page)[0] === 'Stop plan' && barButtons(page).length === 1, 'the bar still says it is pausing, with Stop plan');
+  next2.send(codeRequest('n3', 'print(3)', 'Step 3'));
+  next2.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  assertEqual(page.requests.length, 4, 'step 3, the last, was held');
+  // Run step 3 says it never ran, and has nothing after it to carry on to.
+  const go = page.queue();
+  click(page, page.q('.osa-plan-bar-run'));
+  await waitUntil(() => page.requests.length === 5, 'Run step 3 sends a message');
+  assertEqual(page.requests[4].body.message, 'Continue with step 3. It has not run: I paused before it started, so it is not a failed attempt. Run it now.', 'which says so, with no remaining steps to name');
+  go.send(doneEvent('Done.'));
+  go.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+}
+
+console.log('\nrun all, a run-all reply that ended on its own: Run step N does not claim a pause');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const next = page.queue();
+  first.send(codeRequest('o1', 'print(1)', 'Count'));
+  first.close();
+  await waitUntil(() => page.requests.length === 3, 'step 1 ran');
+  next.send(doneEvent('Step 1 done.'));
+  next.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  const go = page.queue();
+  click(page, page.q('.osa-plan-bar-run'));
+  await waitUntil(() => page.requests.length === 4, 'Run step 2 sends a message');
+  assertEqual(page.requests[3].body.message, 'Continue with step 2, then run the remaining steps without stopping.', 'it says to carry on, and nothing about a pause');
+  go.send(doneEvent('Done.'));
+  go.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+}
+
+console.log('\nrun all, a new plan in the same reply is not held by the old plan\'s Pause');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const afterStep1 = page.queue();
+  first.send(codeRequest('z1', 'DELAY:300\nprint(1)', 'Count'));
+  first.close();
+  await waitUntil(() => page.api.getBrowserTools().busy, 'step 1 is running');
+  click(page, page.qa('.osa-plan-bar button').find((b) => text(b) === 'Pause'));
+  await waitUntil(() => page.requests.length === 3, 'step 1 ends');
+  // The model proposes another plan instead of going on: the Pause was for the old one.
+  afterStep1.send(planRequest('plan-2'));
+  afterStep1.close();
+  await waitUntil(() => page.qa('.osa-plan-card.osa-plan-live').length > 0 && page.q('.osa-plan-approve'), 'the new plan is on screen');
+  const resumed = page.queue();
+  const radio = page.q('.osa-plan-card input[value="run_all"]');
+  radio.checked = true;
+  radio.dispatchEvent(new page.window.Event('change', { bubbles: true }));
+  click(page, page.q('.osa-plan-approve'));
+  await waitUntil(() => page.requests.length === 4, 'the new plan is approved');
+  resumed.send(codeRequest('z2', 'print(1)', 'Count again'));
+  const afterNew = page.queue();
+  resumed.close();
+  await waitUntil(() => page.requests.length === 5, 'the new plan\'s step 1 is answered, not held');
+  afterNew.send(doneEvent('Done.'));
+  afterNew.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+}
+
 console.log('\nthe plan that pauses after each step is offered no Pause');
 {
   const page = await start();
@@ -817,8 +984,11 @@ console.log('\nthe plan that pauses after each step is offered no Pause');
   first.close();
   await waitUntil(() => page.api.getBrowserTools().busy, 'step 1 is running');
   assertEqual(barButtons(page), ['Stop plan'], 'only Stop plan');
+  const after = page.queue();
   click(page, page.q('.osa-plan-bar-stop'));
-  page.queue().close();
+  await waitUntil(() => page.requests.length === 3, 'the cancelled run is answered');
+  after.send(doneEvent('Stopped.'));
+  after.close();
   await waitUntil(() => settled(page), 'the reply ends');
 }
 

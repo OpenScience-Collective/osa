@@ -329,15 +329,27 @@ export function progressOf(plan, runs, { active = false } = {}) {
 }
 
 /**
- * Whether the bar offers Pause: a run-all plan whose reply is going on, a step running
- * or being tried again. A plan that pauses after each step has nothing to add, and one
- * waiting, failed, done or stopped is not running.
+ * Whether the plan is running by itself, as a run-all plan does: a step running, being
+ * tried again, or about to start, with the reply going on.
  *
  * @param {{mode: string, state: string} | null} progress as progressOf gives it
  */
-export function canPause(progress) {
+export function runsOnItsOwn(progress) {
   return Boolean(progress) && progress.mode === RUN_MODE.RUN_ALL
     && (progress.state === PROGRESS_STATE.RUNNING || progress.state === PROGRESS_STATE.RETRYING);
+}
+
+/**
+ * Whether the bar offers Pause: the plan runs on its own and a later step is left to
+ * hold. On the last step there is nothing to pause before, so the bar would announce a
+ * pause that never happens. A plan that pauses after each step has nothing to add, and
+ * one waiting, failed, done or stopped is not running.
+ *
+ * @param {{mode: string, state: string, step: number, total: number} | null} progress
+ *   as progressOf gives it
+ */
+export function canPause(progress) {
+  return runsOnItsOwn(progress) && progress.step < progress.total;
 }
 
 /**

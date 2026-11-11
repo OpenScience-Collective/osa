@@ -257,7 +257,9 @@ _PLAN_RUN_MODE_TEXT: Final = {
 # thing run_all must not do: the reader was told they would not be asked (issue #731).
 _RUN_ALL_NEXT: Final = (
     "In run_all mode, after each step's result call execute_code for the next step in the "
-    "same turn, and write no closing message until the last step has run."
+    "same turn, and write no closing message until the last step has run. An execute_code "
+    "call left unanswered during a run_all plan means the reader paused before that step "
+    "started: it never ran, and is not a failed attempt."
 )
 
 

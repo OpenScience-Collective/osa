@@ -824,7 +824,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-YBVeIuUXNpx7o7foET5DTAQuIIogIvTAC7NEk0h9p34YtY+N11QB64a5cBK0ZgRj';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-DPWudLIV/KQb04Ao0aPcMlgSwVyROQswEmlaOo3LLL5YSW44XfY0UYx1kafbrEEJ';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -11688,6 +11688,9 @@
       // left unanswered, like Stop plan's, and the next message ("Run step N") abandons
       // it. The plan stays approved, so it waits as a paused plan does.
       if (planPauseDue(toolRequest)) {
+        const current = runtimeApi.plan.currentPlan(messages);
+        const next = runtimeApi.plan.nextRunOf(messages);
+        if (current && next) current.plan.held = next.step;
         if (typeof steps.stopped === 'function') steps.stopped(messageIndex);
         return;
       }
@@ -12646,6 +12649,8 @@
       runMode: raw.runMode === 'run_all' ? 'run_all' : 'pause',
       status: status === 'draft' ? 'unanswered' : status,
       ...(feedback ? { feedback } : {}),
+      // The step the reader's Pause held, until Run step says so to the model.
+      ...(planCount(raw.held, PLAN_STORAGE_LIMITS.steps) ? { held: planCount(raw.held, PLAN_STORAGE_LIMITS.steps) } : {}),
     };
   }
 
@@ -12676,7 +12681,11 @@
   function notePlanProposal(message, event) {
     if (!message || !event || event.tool !== PROPOSE_PLAN_TOOL || !runtimeApi || !runtimeApi.plan) return;
     const plan = runtimeApi.plan.normalizeProposal(event.args, event.call_id);
-    if (plan) message.plan = plan;
+    if (plan) {
+      message.plan = plan;
+      // A pause was asked of the plan that was running; this is another plan.
+      if (currentReply) currentReply.pausing = false;
+    }
   }
 
   // Answer a `propose_plan` request: the card is the question, and this resolves with
@@ -13057,7 +13066,17 @@
   // to follow (none, still a draft, or asked to change) or the runtime has not loaded.
   function planProgressNow() {
     if (!runtimeApi || !runtimeApi.plan) return null;
-    return runtimeApi.plan.progressOfConversation(messages, { active: isLoading || toolActivity !== null });
+    return runtimeApi.plan.progressOfConversation(messages, { active: planReplyActive() });
+  }
+
+  // Whether a reply is in flight, for where the plan stands. Not `isLoading`: that means
+  // "no visible text yet" and is cleared as soon as the reply shows any, so between two
+  // steps, once the model has written a sentence, it is false while the reply goes on
+  // and the plan would read as paused, with a Run step button that sends a second
+  // request alongside the one running (#731). `currentReply` is set when a message is
+  // sent and cleared when the whole reply, every run of it, has ended.
+  function planReplyActive() {
+    return currentReply !== null || toolActivity !== null;
   }
 
   function planStripLabel(progress) {
@@ -13087,8 +13106,11 @@
   // pauses after each step already does, so it is offered no Pause.
   function planBarParts(progress) {
     const { state, step, total, attempt } = progress;
-    const canPause = Boolean(runtimeApi && runtimeApi.plan) && runtimeApi.plan.canPause(progress);
-    const pausing = canPause && Boolean(currentReply && currentReply.pausing);
+    const planApi = runtimeApi && runtimeApi.plan ? runtimeApi.plan : null;
+    const canPause = Boolean(planApi) && planApi.canPause(progress);
+    // Shown for as long as the pause is pending, so also once the running step was the
+    // second to last and the held one is the last, where Pause is no longer offered.
+    const pausing = Boolean(planApi) && planApi.runsOnItsOwn(progress) && Boolean(currentReply && currentReply.pausing);
     // Asked, not yet done: the step that is running finishes first.
     if (pausing) {
       return { text: 'Pausing: the plan will wait before the next step starts.', buttons: ['stop'] };
@@ -13166,6 +13188,21 @@
     return runtimeApi.plan.pauseDue(messages);
   }
 
+  // What Run step N says. A plan that runs all steps goes on in that mode, so the reply
+  // must not stop again. After the reader's Pause the model's request for step N was left
+  // unanswered and the server repaired it as a call that did not complete; the message
+  // says the step never ran, so it is not counted as a failed attempt.
+  function planContinueMessage(progress) {
+    const current = runtimeApi && runtimeApi.plan ? runtimeApi.plan.currentPlan(messages) : null;
+    const held = current && current.plan.held === progress.step;
+    if (current && held) delete current.plan.held;
+    const rest = progress.step < progress.total ? ', then run the remaining steps without stopping' : '';
+    if (held) {
+      return `Continue with step ${progress.step}. It has not run: I paused before it started, so it is not a failed attempt. Run it now${rest}.`;
+    }
+    return `Continue with step ${progress.step}${progress.mode === 'run_all' ? rest : ''}.`;
+  }
+
   function fillChatInput(container, text) {
     const input = container.querySelector('.osa-chat-input input');
     if (!input) return;
@@ -13180,14 +13217,13 @@
     } else if (name === 'pause') {
       pausePlan(container);
     } else if (name === 'run') {
-      // sendMessage returns without drawing while a reply is going on; nothing is then
-      // pending, so focus is not moved by some later, unrelated render.
-      if (isLoading) return;
+      // sendMessage returns without drawing while a reply is going on (`isLoading` is
+      // not that: it is false once text shows); nothing is then pending, so focus is not
+      // moved by some later, unrelated render.
+      if (currentReply) return;
       // The bar the button was in is replaced; focus goes to the strip, which says what runs.
       planFocusAfterRender = '.osa-plan-strip';
-      // A plan that runs all steps goes on in that mode, so the reply must not stop again.
-      const goOn = progress.mode === 'run_all' ? ', then run the remaining steps without stopping' : '';
-      sendMessage(container, `Continue with step ${progress.step}${goOn}.`);
+      sendMessage(container, planContinueMessage(progress));
     } else if (name === 'change') {
       fillChatInput(container, `Change step ${progress.step}: `);
     }
@@ -18109,7 +18145,7 @@
   function planRailModel() {
     if (hostMode !== 'center' || !runtimeApi || !runtimeApi.plan || !runtimeApi.planRail) return null;
     try {
-      return runtimeApi.planRail.planRailOf(messages, { active: isLoading || toolActivity !== null });
+      return runtimeApi.planRail.planRailOf(messages, { active: planReplyActive() });
     } catch (error) {
       console.error('[OSA] Could not read the plan for the rail:', error);
       return null;

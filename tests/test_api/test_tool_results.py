@@ -622,6 +622,10 @@ class TestPlanToolMessage:
 
         assert "call execute_code for the next step in the same turn" in run_all
         assert "no closing message until the last step has run" in run_all
+        # A step the reader paused before was never run: the parked call is repaired as an
+        # error, and the model must not count it as a failed attempt.
+        assert "left unanswered during a run_all plan means the reader paused" in run_all
+        assert "not a failed attempt" in run_all
         assert "same turn" not in pause
 
     def test_edits_are_detected_on_the_server_and_the_edited_steps_are_what_is_shown(self) -> None:
