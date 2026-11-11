@@ -5640,7 +5640,7 @@
       <div class="osa-welcome-back-text">Welcome back. This is a new chat${about}.</div>
       <button type="button" class="osa-resume-card">
         ${ICONS.history}
-        <span class="osa-resume-card-text">Pick up where you left off: <strong>${escapeHtml(welcomeBack.previousTitle)}</strong></span>
+        <span class="osa-resume-card-text">Pick up where you left off: <strong>${escapeHtml(welcomeBack.previousTitle || 'your last chat')}</strong></span>
       </button>`;
     wrapper.querySelector('.osa-resume-card').addEventListener('click', () => {
       const previousId = welcomeBack && welcomeBack.previousId;

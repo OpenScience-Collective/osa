@@ -280,6 +280,12 @@ console.log('\nthe welcome without a dataset says no more than it knows');
   assertEqual(ctx.hooks.getActiveConversation().context, null, 'with no context');
 }
 
+console.log('\na previous chat with no readable title is offered as "your last chat"');
+{
+  const ctx = start({ storage: { [KEY]: envelope([conversation('old', '   ')], 'old') }, marker: false });
+  assertEqual(ctx.q('.osa-resume-card').textContent.replace(/\s+/g, ' ').trim(), 'Pick up where you left off: your last chat', 'no empty bold span');
+}
+
 console.log('\nthe first send hides the card, and a reload does not bring it back');
 {
   const ctx = start({ storage: { [KEY]: envelope([conversation('old', 'Compare ERPs')], 'old') }, marker: false });
