@@ -166,15 +166,16 @@ function listen() {
 
 // A page before init(): the widget's script has run. `boot()` is what the page's init
 // call does.
-async function load({ path = '/dataset/x', dataset = { id: A, title: TITLE }, storage = null, turnstile = null } = {}) {
+async function load({ path = '/dataset/x', dataset = { id: A, title: TITLE }, storage = null, turnstile = null, sessionMarker = true, popout = false } = {}) {
   const window = new Window({
     url: `http://localhost${path}`,
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
   });
   window.__OSA_TEST__ = true;
-  window.sessionStorage.setItem(`${KEY}-session`, '1');
+  if (sessionMarker) window.sessionStorage.setItem(`${KEY}-session`, '1');
   if (storage) window.localStorage.setItem(KEY, storage);
   if (turnstile) window.turnstile = turnstile;
+  if (popout) window.__OSA_CHAT_CONFIG__ = { apiEndpoint: API, communityId: 'nemar', storageKey: KEY, initialMessage: GREETING, fullscreen: true };
   window.document.body.innerHTML = '<main id="host-page"><h1>The host page</h1></main>';
   const script = window.document.createElement('script');
   script.setAttribute('src', 'http://localhost/static/osa-chat-widget.js');
@@ -435,6 +436,37 @@ console.log('\na chat that had a session but no message from the reader does not
   assertEqual(ctx.sent[0].prior_turns, [{ role: 'assistant', text: SEED }], 'and carries it');
 }
 
+console.log('\na seeded chat is content when the page moves or the reader comes back');
+{
+  const B = 'xx099905';
+  const ctx = await start();
+  ctx.api.seed(SEED);
+  const id = idOf(ctx);
+  assertEqual(ctx.hooks.getActiveConversation().context, { type: 'dataset', id: A }, 'the seeded chat has the page\'s context');
+  ctx.api.setDataset({ id: B, title: 'Another dataset' });
+  const notice = ctx.q('.osa-context-notice');
+  assert(notice && text(notice).includes(B), 'the page moving to another dataset asks, instead of taking the context silently');
+  assertEqual(ctx.hooks.getActiveConversation().context, { type: 'dataset', id: A }, 'the chat keeps its own context until the reader chooses');
+  await typeAndSend(ctx, 'About the new one');
+  assert(idOf(ctx) !== id, 'the next message starts a new chat');
+  assert(ctx.hooks.listConversations().some((c) => c.id === id && c.messages[0].seeded === true), 'and the seeded one is kept in History');
+  assert(!('prior_turns' in ctx.sent[0]), 'without carrying the other dataset\'s summary into it');
+
+  // A chat opened under no context takes the page's when it is seeded.
+  const bare = await start({ dataset: null, path: '/elsewhere' });
+  bare.api.setDataset({ id: A, title: TITLE });
+  bare.api.seed(SEED);
+  assertEqual(bare.hooks.getActiveConversation().context, { type: 'dataset', id: A }, 'a reused chat takes the context of the page it is seeded on');
+
+  // A return in a new browser session starts a new chat, as for a chat the reader wrote in.
+  const first = await start();
+  first.api.seed(SEED);
+  const raw = first.window.localStorage.getItem(KEY);
+  const back = await start({ storage: raw, sessionMarker: false });
+  assert(back.hooks.getActiveConversation().id !== idOf(first), 'a seeded chat is not taken for an empty one on a return');
+  assertEqual(back.hooks.listConversations().filter((c) => c.messages.some((m) => m.seeded)).length, 1, 'the seeded one stays in History');
+}
+
 // ---------------------------------------------------------------------------
 // What the first send carries
 // ---------------------------------------------------------------------------
@@ -494,6 +526,11 @@ console.log('\na bad call warns with the seed prefix and does nothing');
   assertEqual(ctx.sent.length, 0, 'nothing was sent');
   ctx.api.seed(' '.repeat(3) + 'x'.repeat(RESEED_TURN_MAX_CHARS - 3));
   assert(ctx.isOpen(), 'a text of exactly the limit is accepted');
+  // The limit counts the text as stored and sent, which is trimmed.
+  ctx.api.close();
+  const padded = ' '.repeat(2) + 'y'.repeat(RESEED_TURN_MAX_CHARS) + '\n\n';
+  ctx.api.seed(padded);
+  assert(ctx.isOpen() && ctx.hooks.getMessages()[0].content === 'y'.repeat(RESEED_TURN_MAX_CHARS), 'a text that trims to the limit is accepted, and stored trimmed');
 
   const early = await load();
   const earlyWarnings = listen();
@@ -503,6 +540,21 @@ console.log('\na bad call warns with the seed prefix and does nothing');
   assertEqual(earlyWarnings.warn.length, 2, 'before init() it says so at once, and does not keep the call');
   await early.boot();
   assert(!early.isOpen() && early.hooks.getMessages().length === 1, 'so there is nothing to replay');
+}
+
+console.log('\nthe pop-out shows its opener\'s chat: seed does nothing there');
+{
+  const ctx = await start({ popout: true });
+  const heard = record(ctx);
+  const warnings = listen();
+  ctx.api.seed(SEED, { mode: 'center' });
+  warnings.stop();
+  assertEqual(warnings.warn.length, 1, 'it says so on the console, once');
+  assert(warnings.warn[0].startsWith('[OSA] seed: ') && warnings.warn[0].includes('pop-out'), 'with the seed prefix, naming the pop-out');
+  assertEqual(ctx.hooks.getMessages().map((m) => m.content), [GREETING], 'the chat is untouched');
+  assert(!ctx.isCenter(), 'the window did not change mode');
+  assertEqual(heard.events, [], 'no event fired');
+  assertEqual(ctx.sent.length, 0, 'nothing was sent');
 }
 
 console.log('\na call before init() is kept and replayed, in order');
@@ -567,7 +619,7 @@ function blockAt(css, open) {
   throw new Error('unbalanced braces');
 }
 
-const NEW_ANIMATIONS = ['osa-center-in', 'osa-center-scrim-in', 'osa-center-scrim-out'];
+const NEW_ANIMATIONS = ['osa-center-in', 'osa-dock-in', 'osa-center-scrim-in', 'osa-center-scrim-out'];
 const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
 
 console.log('\nthe dialog opens and docks with a short keyframe animation');
@@ -590,6 +642,16 @@ console.log('\nthe dialog opens and docks with a short keyframe animation');
   assert(selectors.some((sel) => sel.includes('.osa-dock-in')), 'the corner window fades in after a dock');
   assert(selectors.some((sel) => sel.includes('.osa-center-scrim.closing')), 'the scrim fades out after a dock');
   assert(rules.every((rule) => !/transition/.test(rule.body)), 'all of them are animations, not transitions (the center rules force transition: none)');
+
+  // A dock swaps the center-open rule for the dock rule in one style recalc; with the same
+  // animation-name the browser keeps the finished animation and nothing plays.
+  const animName = (selectorPart) => {
+    const rule = rules.find((r) => r.selector.includes(selectorPart));
+    return rule && /animation:\s*([\w-]+)/.exec(rule.body)[1];
+  };
+  const openName = animName('.osa-chat-window.osa-center.open');
+  const dockName = animName('.osa-dock-in');
+  assert(!!openName && !!dockName && openName !== dockName, `the dock animation has its own name (${openName} vs ${dockName}) so it restarts after a settled open`);
 
   const durations = rules.map((rule) => Number(/animation:\s*[\w-]+\s+(\d+)ms/.exec(rule.body)[1]));
   assert(durations.length === rules.length && durations.every((ms) => ms >= 80 && ms <= 150), `every duration is between 80 and 150 ms (${durations.join(', ')})`);

@@ -1267,15 +1267,16 @@ The nemarOrg website calls `OSAChatWidget.seed(text, {mode: 'center'})` and chec
   A chat with no message from the reader (only the greeting, or an earlier seed) is reused and its message replaced; a chat the reader has written in stays in History, and a new chat, in the page's current context, takes the seeded reply, as in [A context change starts a new chat](#a-context-change-starts-a-new-chat).
   The conversation is saved, so it is in History (titled by the first 60 characters of the text, or **Untitled chat** when stored with no title) and survives a reload.
   The stored message carries `seeded: true`, which is what keeps it out of the places that treat a chat of one message as empty: the center-stage start screen, the reset button, the suggestions and `setConfig({initialMessage})`.
+  A seeded chat counts as one with content everywhere else too: the page's context at the time of the seed becomes the chat's, a later move to another page or search shows the "next message starts a new chat" notice instead of adopting the new context silently, and a return after the session has expired starts a new chat, with the seeded one kept in History.
+  A host page that reseeds on every navigation therefore replaces the seeded reply under the new context, as before.
 - **The first message the reader sends.**
   The request carries `prior_turns: [{role: "assistant", text}]` and no session, so the server, which makes a new session, gives the model the text as the earlier conversation; see [A conversation the server forgot](#a-conversation-the-server-forgot).
   That request has no `expect_session`, as there is no session for the server to lose.
   The next one names the session the server returned and carries no turns, as any chat does.
 - **Limits and refusals.**
-  `text` must be a non-empty string of at most 2,000 characters (the most a turn carries, `RESEED_TURN_MAX_CHARS`).
+  `text` must be a non-empty string of at most 2,000 characters once trimmed (the most a turn carries, `RESEED_TURN_MAX_CHARS`).
   A bad `text`, `mode` or `options`, and a call made while a reply is loading, each log `console.warn('[OSA] seed: ...')` and change nothing.
   Before `init()` the call is queued with the others, in order.
-
 
 ### The start screen
 

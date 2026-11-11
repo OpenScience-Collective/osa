@@ -618,7 +618,7 @@
 
   // Whether a conversation holds anything worth a slot: a message the reader wrote, or
   // a reply the page seeded. One that is only the greeting holds nothing.
-  function hasUserMessage(conversation) {
+  function hasContent(conversation) {
     return conversation.messages.some((m) => m && (m.role === 'user' || isSeededMessage(m)));
   }
 
@@ -632,9 +632,9 @@
     const byNewest = (a, b) => b.updatedAt - a.updatedAt;
     const active = conversations.find((conversation) => conversation.id === activeId);
     const others = conversations
-      .filter((conversation) => conversation !== active && hasUserMessage(conversation))
+      .filter((conversation) => conversation !== active && hasContent(conversation))
       .sort(byNewest);
-    const slots = active && hasUserMessage(active) ? max - 1 : max;
+    const slots = active && hasContent(active) ? max - 1 : max;
     const kept = others.slice(0, slots);
     // The active one first, so that on a tie of timestamps it is the newest.
     return (active ? [active, ...kept] : kept).sort(byNewest);
@@ -5619,7 +5619,7 @@
     /* Docked: the corner window fades in, and the scrim, which is already gone as far as
        the page is concerned, fades out under a class a timer removes (CENTER_FADE_CLEANUP_MS). */
     .osa-chat-widget .osa-chat-window.open.osa-dock-in:not(.osa-center) {
-      animation: osa-center-in 120ms ease-out;
+      animation: osa-dock-in 120ms ease-out;
     }
 
     .osa-center-scrim.closing {
@@ -5629,6 +5629,14 @@
     }
 
     @keyframes osa-center-in {
+      from { opacity: 0; transform: scale(0.98); }
+      to { opacity: 1; transform: none; }
+    }
+
+    /* The same frames as osa-center-in under its own name: a dock swaps the center-open
+       rule for this one in a single style recalc, and a browser keeps the finished
+       animation when the name is unchanged instead of starting a new one. */
+    @keyframes osa-dock-in {
       from { opacity: 0; transform: scale(0.98); }
       to { opacity: 1; transform: none; }
     }
@@ -8650,7 +8658,7 @@
   function retireActiveConversation() {
     if (!activeConversation) return;
     flushFeedbackBeforeSwap();
-    if (hasUserMessage({ messages })) {
+    if (hasContent({ messages })) {
       saveHistoryQuietly('leaving a conversation');
     } else {
       droppedConversationIds.add(activeConversation.id);
@@ -9411,7 +9419,7 @@
     if (!sheet) return;
     const locked = isLoading;
     const now = Date.now();
-    const saved = listConversations().filter(hasUserMessage);
+    const saved = listConversations().filter(hasContent);
     const extras = new Map(saved.map((c) => [c.id, { active: c.active, thumbCallId: firstFigureCallId(c), code: historyCodeEntry(c) }]));
     const groups = groupByDay(saved.map(conversationSummary), now);
     const list = sheet.querySelector('.osa-history-list');
@@ -9827,10 +9835,10 @@
   }
 
   // Pure: whether a conversation the reader returned to should give way to a new one.
-  // An empty conversation never does; otherwise a new browser session does, and so
-  // does a conversation idle for longer than the server keeps its session.
-  function isFreshReturn({ hasUserMessage, sessionMarkerPresent, updatedAt, now }) {
-    if (!hasUserMessage) return false;
+  // An empty conversation never does (one the page seeded is not empty, #730); otherwise
+  // a new browser session does, and so does a conversation idle for longer than the server keeps its session.
+  function isFreshReturn({ hasContent, sessionMarkerPresent, updatedAt, now }) {
+    if (!hasContent) return false;
     return !sessionMarkerPresent || now - updatedAt > SESSION_TTL_MS;
   }
 
@@ -9951,10 +9959,9 @@
     if (isPopoutWindow()) return;
     const sessionMarkerPresent = takeSessionMarker();
     if (!activeConversation) return;
-    const hasUserMessage = messages.some((m) => m.role === 'user');
     const stored = listConversations().find((c) => c.active);
     const updatedAt = stored ? stored.updatedAt : Date.now();
-    if (!isFreshReturn({ hasUserMessage, sessionMarkerPresent, updatedAt, now: Date.now() })) return;
+    if (!isFreshReturn({ hasContent: hasContent({ messages }), sessionMarkerPresent, updatedAt, now: Date.now() })) return;
     const previous = { id: activeConversation.id, title: conversationTitle(messages) };
     const id = startConversation({ context: pageContext() });
     if (id) welcomeBack = { conversationId: id, previousId: previous.id, previousTitle: previous.title };
@@ -9964,7 +9971,7 @@
   // one it replaced is still saved.
   function welcomeBackShown() {
     if (!welcomeBack || !activeConversation || activeConversation.id !== welcomeBack.conversationId) return false;
-    if (hasUserMessage({ messages })) return false;
+    if (hasContent({ messages })) return false;
     return readStoredConversations().some((c) => c.id === welcomeBack.previousId);
   }
 
@@ -10320,9 +10327,11 @@
   // remove the notice. Called when the widget loads, when the page names another
   // dataset, when the community config arrives (a search path may be new), and before
   // a send (a single-page site moves without telling the widget). A page that gives no
-  // context keeps the conversation's. With no question from the reader in the chat, or
-  // a chat that has no context yet, the new context is adopted silently: there is
-  // nothing earlier it could be confused with. A pop-out never asks: it shows its
+  // context keeps the conversation's. With nothing in the chat (no question from the
+  // reader, no reply the page seeded), or a chat that has no context yet, the new context
+  // is adopted silently: there is nothing earlier it could be confused with. A chat the
+  // page seeded does ask, so a seeded summary of one dataset is never carried silently
+  // under another page's context. A pop-out never asks: it shows its
   // opener's chat.
   function evaluateContextSwitch() {
     if (isPopoutWindow() || !activeConversation) return;
@@ -10330,7 +10339,7 @@
     let adopted = false;
     if (!page || sameContext(page, activeConversation.context)) {
       pendingSwitch = null;
-    } else if (!messages.some((m) => m.role === 'user') || !activeConversation.context) {
+    } else if (!hasContent({ messages }) || !activeConversation.context) {
       activeConversation.context = page;
       pendingSwitch = null;
       adopted = true;
@@ -14975,8 +14984,9 @@
         : '';
 
       // Per-response feedback (thumbs up/down) for assistant replies, but not
-      // the canned opening greeting (index 0) and a reply the page seeded. Up is a one-click count; down
-      // reveals an optional "what went wrong?" box before it is committed.
+      // the canned opening greeting (index 0) and a reply the page seeded. Up is a
+      // one-click count; down reveals an optional "what went wrong?" box before it is
+      // committed.
       const showFeedback = msg.role === 'assistant' && msgIndex > 0 && !msg.seeded;
       const fb = msg.feedback;
       const committed = !!msg.feedbackCommitted;
@@ -17549,6 +17559,9 @@
       flushFeedbackBeforeSwap();
       sessionId = null;
       serverConfirmedAt = null;
+      // The seeded reply is about the page the host is on now, whatever the chat was
+      // opened under.
+      if (activeConversation) activeConversation.context = pageContext();
     }
     messages = [{ role: 'assistant', content: text.trim(), seeded: true }];
     welcomeBack = null;
@@ -18489,8 +18502,10 @@
         hostWarn('seed', 'the text must be a non-empty string, ignoring:', text);
         return;
       }
-      if (text.length > RESEED_TURN_MAX_CHARS) {
-        hostWarn('seed', `the text must be at most ${RESEED_TURN_MAX_CHARS} characters, ignoring a text of`, text.length);
+      // The stored and sent text is the trimmed one, so that is what the limit counts.
+      const trimmedLength = text.trim().length;
+      if (trimmedLength > RESEED_TURN_MAX_CHARS) {
+        hostWarn('seed', `the text must be at most ${RESEED_TURN_MAX_CHARS} characters, ignoring a text of`, trimmedLength);
         return;
       }
       const mode = modeOption('seed', options);
