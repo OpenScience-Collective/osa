@@ -19,8 +19,8 @@
  * sampler remains only to say how late a timer ran, and when the reply stopped changing.
  *
  * The widget's reveal is a deadline, so a tick that runs late draws a bigger slice, and
- * a runner that stalls the page for 150 ms or more makes the widget itself draw fewer,
- * larger steps: nothing that counts them can count steps that were not taken. So the
+ * a runner that stalls the page for a few hundred ms (five 300 ms stalls reproduced it
+ * here; 150 ms ones did not) makes the widget itself draw fewer, larger steps: nothing that counts them can count steps that were not taken. So the
  * widget's clock does not count how late its own timers fired (see MEASURE): it sees
  * every tick on time, as on a quiet machine, with the browser's real timers and the
  * widget's real code, and the lateness is added to the bounds on time below.
@@ -149,7 +149,8 @@ function startServer() {
 // ------------------------------------------------------------------ in the page
 
 // PACED_REVEAL_REAL_CLOCK=1 leaves the widget's clock alone (see MEASURE), which is how
-// the failure of #691 is reproduced: with PACED_REVEAL_CPU_THROTTLE it fails on a quiet machine.
+// the failure of #691 is reproduced: with PACED_REVEAL_STALL_MS=300 it fails every run,
+// with PACED_REVEAL_CPU_THROTTLE at about 50x only some runs (4x to 8x does not fail).
 const STALL_MS = Number(process.env.PACED_REVEAL_STALL_MS || 0);
 const FORGIVE_LATE_TICKS = process.env.PACED_REVEAL_REAL_CLOCK !== '1';
 
@@ -272,7 +273,6 @@ const MEASURE = `(async () => {
     frames,
     arrivals: arrivals.map(([t, n]) => [t - sentOffset, n]),
     redraws: redrawSeen,
-    forgiven: Math.round(forgiven),
     reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
     assistantBefore,
   };
@@ -310,6 +310,7 @@ function summarize(run) {
     firstText: shown[0][0],
     p25: at(0.25), p50: at(0.5), p75: at(0.75), p100: at(1),
     distinctLengths: distinct.length,
+    // Printed to compare with distinctLengths (observer versus sampler); not asserted.
     sampledLengths: new Set(frames.map(([, len]) => len).filter((n) => n > 0)).size,
     codeLens: [...codeLens],
     sourcesAhead,
