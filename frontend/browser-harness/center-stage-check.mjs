@@ -23,6 +23,15 @@
  *   them: text at 4.5:1, an icon at 3:1;
  * - under prefers-reduced-motion the pills' transition is immediate.
  *
+ * And, with an approved plan in the conversation (board C3, E6.1): the plan rail beside
+ * the thread, on a bubble and a capsule widget at 1280 x 900 (280 px wide, header across
+ * the top, thread and input in the right column, the footer across both, nothing
+ * scrolling sideways, rows and its "change" at least 36 px tall, its text at 4.5:1 in the
+ * light and the dark scheme, the thread's strip hidden while the bar stays, a row taking
+ * a click to its run card without touching the address, "change" opening Settings on the
+ * memory choices, the header's Continue in notebook) and at a phone's 390 x 844 (no rail,
+ * the strip showing, nothing scrolling sideways, the header's button icon only).
+ *
  * It stands up its own server, so it needs no backend and no network. Screenshots are
  * written when a directory is given, as the argument or as CENTER_CHECK_SCREENSHOTS
  * (CI sets it, and uploads them when the check fails).
@@ -36,8 +45,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect, findChrome, launch } from './chrome.js';
+import { run } from '../test-support/notebook-conversations.js';
 
 const WIDGET = readFileSync(new URL('../osa-chat-widget.js', import.meta.url), 'utf8');
+const RUNTIME_BUNDLE = readFileSync(new URL('../osa-runtime.bundle.js', import.meta.url), 'utf8');
 
 let failed = 0;
 function report(ok, label, detail) {
@@ -90,6 +101,81 @@ const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta n
   OSAChatWidget.init();
 </script></body></html>`;
 
+// A second community, with a runtime (the plan rail needs the bundle, which is only loaded
+// for a community with client tools) and a conversation stored with an approved plan, three
+// of its five steps done: the state of board C3. `preload_on: first_run` keeps Python from
+// booting, so no network is needed.
+const PLAN_COMMUNITY = 'centerplan';
+const PLAN_STORAGE_KEY = `center-plan-check-${Math.random().toString(36).slice(2, 8)}`;
+const PLAN_STEPS = [
+  'Count face onsets per condition',
+  'Cut epochs, -200 to 600 ms',
+  'Average epochs per condition',
+  'Plot famous vs scrambled ERPs',
+  'Summarize, offer all 18 subjects',
+];
+const PLAN_CONFIG = {
+  ...WIDGET_CONFIG,
+  suggested_questions: [],
+  dataset_suggested_questions: [],
+};
+const PLAN_CHAT = JSON.stringify({
+  version: 3,
+  activeId: 'chat-plan',
+  conversations: [{
+    id: 'chat-plan',
+    context: { type: 'dataset', id: DATASET.id },
+    title: 'Compare ERPs for famous vs scrambled faces',
+    sessionId: 'session-plan',
+    createdAt: Date.now() - 120_000,
+    updatedAt: Date.now() - 60_000,
+    messages: [
+      { role: 'assistant', content: 'Hello' },
+      { role: 'user', content: 'Compare ERPs for famous vs scrambled faces' },
+      {
+        role: 'assistant',
+        content: 'Steps 1 to 3 are done. Step 4 plots the ERPs.',
+        citations: [],
+        plan: {
+          callId: 'plan-1',
+          findings: 'Three conditions, 18 subjects.',
+          estPeakMb: 300,
+          runMode: 'pause',
+          status: 'approved',
+          steps: PLAN_STEPS.map((title) => ({ title, detail: '' })),
+        },
+        executions: PLAN_STEPS.slice(0, 3).map((title, i) => run({
+          callId: `plan-run-${i + 1}`,
+          step: i + 1,
+          attempt: 1,
+          stepTitle: title,
+          elapsedMs: 3400,
+          description: title,
+          code: `print(${i + 1})`,
+          stdout: `${i + 1}\n`,
+        })),
+      },
+    ],
+  }],
+});
+
+function planPage(launcher) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>center plan</title>
+<style>body{margin:0;font-family:system-ui,sans-serif;background:#fff;color:#0f172a}main{padding:24px 80px;min-height:2400px}</style></head>
+<body><main id="host-page"><button id="host-pill" type="button">AI Mode</button></main>
+<script>
+  window.__OSA_TEST__ = true;
+  localStorage.setItem(${JSON.stringify(PLAN_STORAGE_KEY)}, ${JSON.stringify(PLAN_CHAT)});
+  sessionStorage.setItem(${JSON.stringify(`${PLAN_STORAGE_KEY}-session`)}, '1');
+</script>
+<script src="/osa-chat-widget.js" data-no-auto-init></script>
+<script>
+  OSAChatWidget.setDataset({ id: ${JSON.stringify(DATASET.id)}, title: ${JSON.stringify(DATASET.title)}, zarr: true });
+  OSAChatWidget.setConfig({ apiEndpoint: location.origin + '/api', communityId: ${JSON.stringify(PLAN_COMMUNITY)}, storageKey: ${JSON.stringify(PLAN_STORAGE_KEY)}, launcher: ${JSON.stringify(launcher)} });
+  OSAChatWidget.init();
+</script></body></html>`;
+}
+
 function startServer() {
   const encoder = new TextEncoder();
   return Bun.serve({
@@ -100,6 +186,20 @@ function startServer() {
       const js = (body) => new Response(body, { headers: { 'content-type': 'text/javascript' } });
       if (pathname === '/') return new Response(PAGE, { headers: { 'content-type': 'text/html' } });
       if (pathname === '/osa-chat-widget.js') return js(WIDGET);
+      if (pathname === '/osa-runtime.bundle.js') return js(RUNTIME_BUNDLE);
+      if (pathname === '/plan') {
+        const launcher = new URL(request.url).searchParams.get('launcher') === 'bubble' ? 'bubble' : 'capsule';
+        return new Response(planPage(launcher), { headers: { 'content-type': 'text/html' } });
+      }
+      if (pathname === `/api/${PLAN_COMMUNITY}`) {
+        return Response.json({
+          default_model: 'm',
+          offered_models: [],
+          widget: PLAN_CONFIG,
+          client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+          runtime: { python: { pyodide_version: '0.29.5', preload: [], preload_on: 'first_run', fetch_allow: [], limits: { exec_seconds: 60 } } },
+        });
+      }
       if (pathname === '/api/health') return Response.json({ status: 'healthy' });
       if (pathname === `/api/${COMMUNITY}/chat`) {
         const body = await request.json();
@@ -160,7 +260,7 @@ const TAB = { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 };
 const SHIFT_TAB = { ...TAB, modifiers: 8 };
 const ESCAPE = { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 };
 
-async function openPage(cdp, base, { width, height }) {
+async function openPage(cdp, base, { width, height }, path = '/') {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   await cdp.send('Runtime.enable', {}, sessionId);
@@ -169,7 +269,7 @@ async function openPage(cdp, base, { width, height }) {
   // The community follows the device ('auto'): the "light" run is a light device, whatever
   // this machine's own setting is, and the dark run is the host page's choice.
   await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] }, sessionId);
-  await cdp.send('Page.navigate', { url: `${base}/` }, sessionId);
+  await cdp.send('Page.navigate', { url: `${base}${path}` }, sessionId);
   return { targetId, sessionId };
 }
 
@@ -421,6 +521,192 @@ async function checkViewport(cdp, base, screenshotDir, viewport) {
   await cdp.send('Target.closeTarget', { targetId: page.targetId });
 }
 
+// ------------------------------------------------------------------ the plan rail (board C3)
+
+const RAIL_GEOMETRY = `(() => {
+  const win = document.querySelector('.osa-chat-window');
+  const winBox = win.getBoundingClientRect();
+  const box = (selector) => {
+    const el = document.querySelector(selector);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height, display: style.display };
+  };
+  const heights = (selector) => [...document.querySelectorAll(selector)].map((el) => Math.round(el.getBoundingClientRect().height * 10) / 10);
+  const railEl = document.querySelector('.osa-plan-rail');
+  const threadEl = document.querySelector('.osa-chat-messages');
+  const headingEl = document.querySelector('.osa-plan-rail-heading');
+  return {
+    win: { left: winBox.left, top: winBox.top, right: winBox.right, bottom: winBox.bottom, width: winBox.width },
+    rail: box('.osa-plan-rail'),
+    header: box('.osa-chat-header'),
+    thread: box('.osa-chat-messages'),
+    input: box('.osa-chat-input'),
+    disclaimer: box('.osa-ai-disclaimer'),
+    footer: box('.osa-combined-footer'),
+    strip: box('.osa-plan-strip'),
+    bar: box('.osa-plan-bar'),
+    notebookBtn: box('.osa-center-notebook-btn'),
+    notebookHidden: document.querySelector('.osa-center-notebook-btn').hidden,
+    notebookLabel: box('.osa-center-notebook-btn .osa-center-label'),
+    dock: box('.osa-center-dock-btn'),
+    rowHeights: heights('.osa-plan-rail-step'),
+    changeHeight: heights('.osa-plan-rail-change')[0],
+    rows: [...document.querySelectorAll('.osa-plan-rail ol > li')].map((li) => ({ cls: li.className.replace('osa-plan-rail-row ', ''), button: !!li.querySelector('button') })),
+    heading: headingEl ? headingEl.textContent : null,
+    headingCase: headingEl ? getComputedStyle(headingEl).textTransform : null,
+    sideways: document.documentElement.scrollWidth > window.innerWidth + 1 || win.scrollWidth > win.clientWidth + 1
+      || (railEl ? railEl.scrollWidth > railEl.clientWidth + 1 : false)
+      || threadEl.scrollWidth > threadEl.clientWidth + 1,
+    barButtons: [...document.querySelectorAll('.osa-plan-bar button')].map((b) => b.textContent.trim()),
+  };
+})()`;
+
+// Text on the rail, at 4.5:1; the check mark, a graphic, at 3:1.
+const RAIL_CONTRASTS = [
+  ['.osa-plan-rail-heading', 4.5, 'the heading'],
+  ['.osa-plan-rail-done .osa-plan-rail-title', 4.5, 'a done row'],
+  ['.osa-plan-rail-current .osa-plan-rail-title', 4.5, 'the current row'],
+  ['.osa-plan-rail-pending .osa-plan-rail-title', 4.5, 'a pending row'],
+  ['.osa-plan-rail-mode', 4.5, 'the run mode'],
+  ['.osa-plan-rail-memory', 4.5, 'the memory budget'],
+  ['.osa-plan-rail-change', 4.5, 'the change button'],
+  ['.osa-plan-rail-done .osa-plan-rail-icon', 3, 'the check mark'],
+];
+const RAIL_NOTEBOOK_CONTRAST = ['.osa-center-notebook-btn', 4.5, 'Continue in notebook'];
+
+async function checkPlanRail(cdp, base, screenshotDir, viewport, launcher) {
+  const { name, width, height } = viewport;
+  const label = `${name} ${launcher} plan`;
+  console.log(`--- ${label}: ${width} x ${height}`);
+  const page = await openPage(cdp, base, viewport, `/plan?launcher=${launcher}`);
+  const { sessionId } = page;
+  const call = (expression, options) => evaluate(cdp, sessionId, expression, options);
+  report(await call(WIDGET_READY), `${label}: the widget has its community config`);
+  await call(`document.getElementById('host-pill').focus()`);
+  await call(`OSAChatWidget.open({ mode: 'center' })`, { userGesture: true });
+  report(
+    await waitFor(cdp, sessionId, `document.querySelector('.osa-chat-window.open.osa-center') !== null && OSAChatWidget.__browser.getBrowserTools() !== null && document.querySelector('.osa-chat-messages .osa-run-card') !== null`, 'the dialog, the runtime and the chat'),
+    `${label}: the dialog opens on the stored conversation`
+  );
+  if (width <= 900) {
+    // A phone: the strip and the bar carry the plan, and no rail is drawn.
+    const g = await call(RAIL_GEOMETRY);
+    report(g.rail === null || (g.rail.display === 'none' && g.rail.width === 0), `${label}: the rail is not drawn`, g.rail);
+    report(g.strip !== null && g.strip.height > 0 && g.strip.display !== 'none', `${label}: the strip in the thread shows`, g.strip);
+    report(g.bar !== null && g.bar.height > 0 && g.barButtons.includes('Run step 4'), `${label}: and so does the bar, with Run step 4`, g.barButtons);
+    report(!g.sideways, `${label}: nothing scrolls sideways`);
+    report(g.win.width === width, `${label}: the dialog is the whole screen`, g.win);
+    report(!g.notebookHidden && g.notebookBtn.width >= 36 && g.notebookBtn.height >= 36, `${label}: Continue in notebook is in the header, at least 36 x 36`, g.notebookBtn);
+    report(g.notebookLabel === null || g.notebookLabel.display === 'none' || g.notebookLabel.width === 0, `${label}: as an icon only`, g.notebookLabel);
+    report(g.notebookBtn.right <= g.dock.left + 1, `${label}: before Move to corner`, [g.notebookBtn, g.dock]);
+    await screenshot(cdp, sessionId, screenshotDir, `center-plan-${name}-${launcher}-light.png`);
+    await call(`OSAChatWidget.setColorScheme('dark')`);
+    // The header's buttons fade their background over 200 ms; read the colors after.
+    await Bun.sleep(400);
+    const dark = await call(RAIL_GEOMETRY);
+    report(!dark.sideways && (dark.rail === null || dark.rail.display === 'none'), `${label}, dark: still no rail and nothing scrolls sideways`);
+    const c = await call(CONTRAST_OF('.osa-center-notebook-btn'));
+    report(c.ratio !== null && c.ratio >= 4.5, `${label}, dark: the header button reads at 4.5:1`, c.ratio);
+    await screenshot(cdp, sessionId, screenshotDir, `center-plan-${name}-${launcher}-dark.png`);
+    await cdp.send('Target.closeTarget', { targetId: page.targetId });
+    return;
+  }
+
+  const g = await call(RAIL_GEOMETRY);
+  report(g.rail !== null && Math.round(g.rail.width) === 280, `${label}: the rail is 280 px wide`, g.rail && g.rail.width);
+  report(g.rail !== null && g.rail.display === 'flex', `${label}: and drawn`, g.rail && g.rail.display);
+  if (!g.rail) {
+    await cdp.send('Target.closeTarget', { targetId: page.targetId });
+    return;
+  }
+  report(Math.abs(g.rail.left - g.win.left) < 1.5, `${label}: at the window's left edge`, [g.rail.left, g.win.left]);
+  report(g.header.width >= g.win.width - 1 && g.header.bottom <= g.rail.top + 1, `${label}: the header runs across the top, above the rail`, [g.header, g.rail]);
+  report(g.thread.left >= g.rail.right - 1 && g.input.left >= g.rail.right - 1, `${label}: the thread and its input are in the right column`, [g.thread.left, g.input.left, g.rail.right]);
+  report(g.rail.bottom <= g.disclaimer.top + 1 || g.disclaimer.height === 0, `${label}: the rail ends above the disclaimer`, [g.rail.bottom, g.disclaimer]);
+  report(g.footer.width >= g.win.width - 1 && g.footer.left <= g.win.left + 1, `${label}: the footer runs across both columns`, g.footer);
+  report(g.disclaimer.height === 0 || g.disclaimer.width >= g.win.width - 1, `${label}: and so does the disclaimer`, g.disclaimer);
+  report(!g.sideways, `${label}: nothing scrolls sideways`);
+  report(g.rowHeights.length === 5 && g.rowHeights.every((h) => h >= 36), `${label}: the five rows are at least 36 px tall`, g.rowHeights);
+  report(g.changeHeight >= 36, `${label}: and "change" is`, g.changeHeight);
+  report(g.heading === 'Plan · 3 of 5 done' && g.headingCase === 'uppercase', `${label}: the heading reads PLAN · 3 OF 5 DONE`, [g.heading, g.headingCase]);
+  report(JSON.stringify(g.rows.map((r) => [r.cls, r.button])) === JSON.stringify([
+    ['osa-plan-rail-done', true], ['osa-plan-rail-done', true], ['osa-plan-rail-done', true], ['osa-plan-rail-current', false], ['osa-plan-rail-pending', false],
+  ]), `${label}: three done rows that are buttons, then the current and a pending row as text`, g.rows);
+  report(g.strip !== null && g.strip.display === 'none', `${label}: the strip in the thread is hidden`, g.strip);
+  report(g.bar !== null && g.bar.height > 0 && g.barButtons.includes('Run step 4') && g.barButtons.includes('Change step 4'), `${label}: the paused bar stays, with Run step 4 and Change step 4`, g.barButtons);
+  if (launcher === 'capsule') {
+    report(!g.notebookHidden && g.notebookBtn.height >= 36 && g.notebookLabel.width > 0, `${label}: Continue in notebook is in the header, with its label`, [g.notebookHidden, g.notebookBtn]);
+    report(g.notebookBtn.right <= g.dock.left + 1, `${label}: before Move to corner`, [g.notebookBtn, g.dock]);
+  } else {
+    report(g.notebookHidden && g.notebookBtn.display === 'none', `${label}: no notebook tab, so no Continue in notebook`, [g.notebookHidden, g.notebookBtn]);
+  }
+  await screenshot(cdp, sessionId, screenshotDir, `center-plan-${name}-${launcher}-light.png`);
+
+  for (const [selector, minimum, what] of launcher === 'capsule' ? [...RAIL_CONTRASTS, RAIL_NOTEBOOK_CONTRAST] : RAIL_CONTRASTS) {
+    const { ratio, why } = await call(CONTRAST_OF(selector));
+    report(ratio !== null && ratio >= minimum, `${label}, light: ${what} reads at ${minimum}:1 or better`, ratio === null ? why : ratio);
+  }
+
+  // The real Tab key: from the header's last button, the rail, then the thread, then the input.
+  await call(`document.querySelector('.osa-close-btn').focus()`);
+  const seen = [];
+  for (let i = 0; i < 60; i++) {
+    await pressKey(cdp, sessionId, TAB);
+    seen.push(await call(`(() => { const el = document.activeElement; return el.closest('.osa-plan-rail') ? 'rail' : el.closest('.osa-chat-messages') ? 'thread' : el.closest('.osa-chat-input') ? 'input' : el.closest('.osa-chat-header') ? 'header' : 'other'; })()`));
+  }
+  const places = seen.filter((place, i) => i === 0 || place !== seen[i - 1]);
+  report(JSON.stringify(places.slice(0, 3)) === JSON.stringify(['rail', 'thread', 'input']), `${label}: from the header's last button, Tab goes to the rail, then the thread, then the input`, places);
+
+  // A row: a click takes you to its run card, without changing the address.
+  const before = await call(`({ hash: location.hash, href: location.href })`);
+  await call(`document.querySelector('.osa-plan-rail-done button[data-plan-rail-step="2"]').click()`, { userGesture: true });
+  const after = await call(`({
+    focused: document.activeElement === document.querySelector('.osa-run-card[data-plan-step="2"]'),
+    hash: location.hash,
+    href: location.href,
+  })`);
+  report(after.focused, `${label}: a done row's click focuses that step's run card`, after);
+  report(after.hash === before.hash && after.href === before.href, `${label}: and the address is as it was`, [before, after]);
+
+  // change opens Settings on the memory choices.
+  await call(`document.querySelector('.osa-plan-rail-change').click()`, { userGesture: true });
+  const settings = await call(`({
+    open: !!document.querySelector('.osa-settings-overlay.open'),
+    focus: !!document.activeElement && document.activeElement.classList.contains('osa-memory-radio') && document.activeElement.checked,
+  })`);
+  report(settings.open && settings.focus, `${label}: change opens Settings with focus on the memory choice that is on`, settings);
+  await pressKey(cdp, sessionId, ESCAPE);
+  report(await call(`!document.querySelector('.osa-settings-overlay.open') && document.querySelector('.osa-chat-window').classList.contains('osa-center')`), `${label}: Escape closes Settings first, and the dialog stays`);
+
+  // Docking: the rail goes, the thread stays the same node.
+  await call(`window.__thread = document.querySelector('.osa-chat-messages'); window.__cards = [...document.querySelectorAll('.osa-run-card')]; 0`);
+  await call(`OSAChatWidget.setMode('corner')`);
+  const docked = await call(`({
+    rail: !!document.querySelector('.osa-plan-rail'),
+    sameThread: document.querySelector('.osa-chat-messages') === window.__thread,
+    sameCards: document.querySelectorAll('.osa-run-card').length === window.__cards.length
+      && [...document.querySelectorAll('.osa-run-card')].every((c, i) => c === window.__cards[i]),
+  })`);
+  report(!docked.rail && docked.sameThread && docked.sameCards, `${label}: docking removes the rail and keeps the thread and its cards`, docked);
+  await screenshot(cdp, sessionId, screenshotDir, `center-plan-docked-${launcher}.png`);
+  await call(`OSAChatWidget.setMode('center')`);
+  report(await call(`!!document.querySelector('.osa-plan-rail') && document.querySelector('.osa-chat-messages') === window.__thread`), `${label}: raising it puts the rail back`);
+
+  // The dark scheme.
+  await call(`OSAChatWidget.setColorScheme('dark')`);
+  await Bun.sleep(400);
+  const dark = await call(RAIL_GEOMETRY);
+  report(!dark.sideways && Math.round(dark.rail.width) === 280 && dark.rowHeights.every((h) => h >= 36), `${label}, dark: the rail is 280 px, its rows at least 36 px, nothing scrolls sideways`, dark.rowHeights);
+  for (const [selector, minimum, what] of launcher === 'capsule' ? [...RAIL_CONTRASTS, RAIL_NOTEBOOK_CONTRAST] : RAIL_CONTRASTS) {
+    const { ratio, why } = await call(CONTRAST_OF(selector));
+    report(ratio !== null && ratio >= minimum, `${label}, dark: ${what} reads at ${minimum}:1 or better`, ratio === null ? why : ratio);
+  }
+  await screenshot(cdp, sessionId, screenshotDir, `center-plan-${name}-${launcher}-dark.png`);
+  await cdp.send('Target.closeTarget', { targetId: page.targetId });
+}
+
 async function check(screenshotDir) {
   const chromePath = findChrome();
   if (!chromePath) {
@@ -448,6 +734,11 @@ async function check(screenshotDir) {
     ]) {
       await checkViewport(cdp, base, screenshotDir, viewport);
     }
+    // The plan rail, on the capsule launcher NEMAR uses and on the bubble, at the laptop;
+    // and on the phone, where it is not drawn.
+    await checkPlanRail(cdp, base, screenshotDir, { name: 'laptop', width: 1280, height: 900 }, 'capsule');
+    await checkPlanRail(cdp, base, screenshotDir, { name: 'laptop', width: 1280, height: 900 }, 'bubble');
+    await checkPlanRail(cdp, base, screenshotDir, { name: 'phone', width: 390, height: 844 }, 'capsule');
   } finally {
     try { cdp?.close?.(); } catch (error) { /* already gone */ }
     chrome?.kill();
