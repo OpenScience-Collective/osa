@@ -570,7 +570,7 @@ console.log('\na run keeps how many figures it drew, never the figures');
     run('capped', { images: [image, image, image, image, image] }),
     run('unread', { images: [], figureCount: 2 }),
     run('none'),
-    run('both', { images: [image], figureCount: 3, _figuresMissing: 2, _figuresLoading: true }),
+    run('both', { images: [image], figureCount: 3, _figuresMissing: 2, _figuresUnavailable: true, _figuresLoading: true }),
   ])]);
   ctx.hooks.saveHistory();
   const saved = ctx.stored().conversations.find((c) => c.id === ctx.hooks.getActiveConversation().id).messages[1].executions;
@@ -580,17 +580,52 @@ console.log('\na run keeps how many figures it drew, never the figures');
   assert(!/"_figures/.test(JSON.stringify(saved)), 'nor the transient flags of reading them');
 }
 
-console.log('\nfigures that cannot be read show a one-line note, and the count is kept');
+console.log('\nfigures that cannot be read say so, and the count is kept for a later try');
 {
   const ctx = await start({ activeId: 'chat-a', tools: true });
-  await waitUntil(() => ctx.hooks.getMessages()[2].executions[0]._figuresMissing === 1, 'the read fails, with no IndexedDB behind the workspace');
+  await waitUntil(() => ctx.hooks.getMessages()[2].executions[0]._figuresUnavailable === true, 'the read fails, with no IndexedDB behind the workspace');
   const notes = ctx.qa('.osa-figure-note').map(text);
-  assertEqual(notes, ['A figure from this run is no longer saved in this browser.', 'A figure from this run is no longer saved in this browser.'],
-    'each run that drew a figure says so, in one line');
+  assertEqual(notes, ['Figures from this run could not be loaded.', 'Figures from this run could not be loaded.'],
+    'each run that drew a figure says it could not be loaded, which is not that the figure is gone');
+  assert(ctx.hooks.getMessages()[2].executions.every((r) => r._figuresMissing === undefined), 'and none is counted as missing');
   assertEqual(ctx.qa('.osa-execution-figure img').length, 0, 'no figure is drawn');
   ctx.hooks.saveHistory();
   assertEqual(ctx.stored().conversations.find((c) => c.id === 'chat-a').messages[2].executions.map((r) => r.figureCount), [1, 1, undefined],
     'the stored count is not lost, so a later load can still find the figure');
+  assert(!/_figures/.test(ctx.window.localStorage.getItem(KEY)), 'nor is the flag stored');
+}
+
+console.log('\na workspace whose read rejects is not a workspace without the figure');
+{
+  const ctx = await start({ activeId: 'chat-a', tools: true });
+  await waitUntil(() => ctx.hooks.getMessages()[2].executions[0]._figuresUnavailable === true, 'the first read ends');
+  let reads = 0;
+  ctx.hooks.setWorkspaceStore({ figuresForCalls: async () => { reads += 1; throw new Error('the database was closed'); } });
+  await ctx.hooks.hydrateFigures();
+  const runs = ctx.hooks.getMessages()[2].executions;
+  assertEqual(reads, 1, 'the store was asked');
+  assert(runs.slice(0, 2).every((r) => r._figuresUnavailable === true && r._figuresMissing === undefined), 'the runs are unavailable, none missing');
+  assertEqual(runs.slice(0, 2).map((r) => r.figureCount), [1, 1], 'with their counts left alone');
+  assertEqual(ctx.qa('.osa-figure-note').map(text), ['Figures from this run could not be loaded.', 'Figures from this run could not be loaded.'], 'and say so');
+  // The workspace is back: the same runs are read again and drawn.
+  ctx.hooks.setWorkspaceStore(await workspaceWithFigures([['session-a', 'call-a1'], ['session-a', 'call-a2']]));
+  await ctx.hooks.hydrateFigures();
+  assertEqual(ctx.qa('.osa-execution-figure img').length, 2, 'a later read finds both figures');
+  assertEqual(ctx.qa('.osa-figure-note').length, 0, 'and the note is gone');
+}
+
+console.log('\na call id two runs share is unavailable, not missing');
+{
+  const ctx = await start({ activeId: 'chat-a', tools: true });
+  await waitUntil(() => ctx.hooks.getMessages()[2].executions[0]._figuresUnavailable === true, 'the first read ends');
+  // The reader's own runs are named person-run-N from a counter that starts over with each page load.
+  ctx.hooks.getMessages()[2].executions[2].figureCount = 1;
+  ctx.hooks.setWorkspaceStore(await workspaceWithFigures([['session-a', 'call-a1'], ['session-a', 'call-a2'], ['session-a', 'person-run-1'], ['session-z', 'person-run-1']]));
+  await ctx.hooks.hydrateFigures();
+  const runs = ctx.hooks.getMessages()[2].executions;
+  assertEqual(runs[0].images.length + runs[1].images.length, 2, 'the figures that can be told are drawn');
+  assertEqual([runs[2]._figuresUnavailable, runs[2]._figuresMissing], [true, undefined], 'the shared name is unavailable, and is not said to be gone');
+  assertEqual(ctx.qa('.osa-figure-note').map(text), ['Figures from this run could not be loaded.'], 'with that note on that run alone');
 }
 
 // A real workspace over the in-memory IndexedDB, with real figures recorded by its
@@ -610,14 +645,14 @@ async function workspaceWithFigures(runs) {
 console.log('\nhydrateFigures fills run.images from the workspace, in memory only');
 {
   const ctx = await start({ activeId: 'chat-a', tools: true });
-  await waitUntil(() => ctx.hooks.getMessages()[2].executions[0]._figuresMissing === 1, 'the first read, with no storage behind it, ends');
+  await waitUntil(() => ctx.hooks.getMessages()[2].executions[0]._figuresUnavailable === true, 'the first read, with no storage behind it, ends');
   ctx.hooks.setWorkspaceStore(await workspaceWithFigures([['session-a', 'call-a1'], ['session-a', 'call-a2'], ['session-b', 'call-b1']]));
   await ctx.hooks.hydrateFigures();
   const runs = ctx.hooks.getMessages()[2].executions;
   assertEqual(runs[0].images, [{ mime: 'image/png', data_base64: PNG_BASE64 }], 'the run has its figure, as the image a run just made has');
   assertEqual(runs[1].images.length, 1, 'so does the next');
   assertEqual(runs[2].images, [], 'the run that drew none has none');
-  assert(runs.every((r) => r._figuresMissing === undefined && r._figuresLoading === undefined), 'no note is left over, and nothing is marked as loading');
+  assert(runs.every((r) => r._figuresMissing === undefined && r._figuresUnavailable === undefined && r._figuresLoading === undefined), 'no note is left over, and nothing is marked as loading');
   const imgs = ctx.qa('.osa-execution-figure img');
   assertEqual(imgs.length, 2, 'both figures are on screen');
   assertEqual(imgs[0].getAttribute('src'), `data:image/png;base64,${PNG_BASE64}`, 'as the PNG the workspace holds');
@@ -642,7 +677,7 @@ console.log('\nhydrateFigures fills run.images from the workspace, in memory onl
 console.log('\na figure the workspace lacks among ones it has: the note counts only what is missing');
 {
   const ctx = await start({ activeId: 'chat-a', tools: true });
-  await waitUntil(() => ctx.hooks.getMessages()[2].executions[0]._figuresMissing === 1, 'the first read ends');
+  await waitUntil(() => ctx.hooks.getMessages()[2].executions[0]._figuresUnavailable === true, 'the first read ends');
   ctx.hooks.setWorkspaceStore(await workspaceWithFigures([['session-a', 'call-a1']]));
   await ctx.hooks.hydrateFigures();
   const runs = ctx.hooks.getMessages()[2].executions;
@@ -665,7 +700,7 @@ console.log('\nopening a chat reads its figures; the pop-out reads the same work
   // active chat from storage and reads the figures with its own init, so no bytes
   // are passed to it (openPopout carries a config and a dataset, not a figure).
   const popout = await start({ tools: true, popout: true, storage: ctx.window.localStorage.getItem(KEY) });
-  await waitUntil(() => popout.hooks.getMessages()[2].executions[0]._figuresMissing === 1, 'its own first read, with no storage behind it, ends');
+  await waitUntil(() => popout.hooks.getMessages()[2].executions[0]._figuresUnavailable === true, 'its own first read, with no storage behind it, ends');
   popout.hooks.setWorkspaceStore(await workspaceWithFigures([['session-b', 'call-b1']]));
   await popout.hooks.hydrateFigures();
   assertEqual(popout.qa('.osa-execution-figure img').length, 1, 'a second window of the origin draws the active chat\'s figure');

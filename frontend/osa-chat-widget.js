@@ -5745,7 +5745,7 @@
           rest.executions = rest.executions.map((run) => {
             const {
               _editing, _draft, _runningLocal, _localResult, _codeOpen, _panelsOpen,
-              _figuresLoading, _figuresMissing, figureCount: previousCount, ...keep
+              _figuresLoading, _figuresMissing, _figuresUnavailable, figureCount: previousCount, ...keep
             } = run;
             // What was drawn is remembered as a count, and the figures themselves are
             // read back from the workspace (hydrateFigures): with no image in memory
@@ -7471,16 +7471,20 @@
   // Read the figures of the chat's runs back from the workspace once the runtime
   // (which carries the workspace's code) is ready, put them on the runs as the
   // images a run just produced would be, and redraw. Memory only: saveHistory
-  // still stores no image. A figure the workspace no longer has (deleted, never
-  // saved, a browser that cannot reach IndexedDB) is counted on the run, which
-  // shows a one-line note instead. Safe to call at any time and as often as
-  // asked: a run being read is not read twice, and one with nothing to read is
-  // left alone.
+  // still stores no image. Two outcomes are told apart. When the workspace was
+  // reached and answered, a figure it lacks (deleted, never saved) is counted on the
+  // run (_figuresMissing), which shows a one-line note instead. When it could not be
+  // reached or read (no runtime, no IndexedDB, a deadline), or cannot say which run a
+  // call id is (the reader's own person-run-N), nothing is known about the figures:
+  // the run is marked _figuresUnavailable, keeps its count, and is read again the next
+  // time this is called. Safe to call at any time and as often as asked: a run being
+  // read is not read twice, and one with nothing to read is left alone.
   async function hydrateFigures() {
     const runs = runsAwaitingFigures();
     if (runs.length === 0) return;
     for (const run of runs) run._figuresLoading = true;
-    let figures = new Map();
+    // null until the workspace has answered.
+    let figures = null;
     // Never draws inside the call that asked: a caller that has just changed the chat
     // draws it itself.
     await null;
@@ -7492,6 +7496,12 @@
     }
     for (const run of runs) {
       delete run._figuresLoading;
+      if (!figures || (figures.ambiguous instanceof Set && figures.ambiguous.has(run.callId))) {
+        run._figuresUnavailable = true;
+        delete run._figuresMissing;
+        continue;
+      }
+      delete run._figuresUnavailable;
       const wanted = normalizeFigureCount(run.figureCount);
       run.images = (figures.get(run.callId) || []).slice(0, wanted)
         .map((bytes) => ({ mime: 'image/png', data_base64: bytesToBase64(bytes) }));
@@ -7504,8 +7514,12 @@
     }
   }
 
-  // The line a run shows in place of figures the workspace no longer has.
+  // The line a run shows in place of figures it has no image for: gone from the
+  // workspace, or not readable this time.
   function missingFiguresHtml(run) {
+    if (run._figuresUnavailable === true) {
+      return '<div class="osa-figure-note">Figures from this run could not be loaded.</div>';
+    }
     const count = Number.isInteger(run._figuresMissing) ? run._figuresMissing : 0;
     if (count <= 0) return '';
     const what = count === 1 ? 'A figure from this run is' : `${count} figures from this run are`;
