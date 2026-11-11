@@ -734,7 +734,12 @@ print(json.dumps(out))
     const lastJson = (stdout, fallback) => JSON.parse((stdout || '').trim().split('\n').at(-1) || fallback);
     const BUDGET_LINE = 'budget_mb = 512';
     assert(code.includes(BUDGET_LINE), `the block names the reader's budget on one line ("${BUDGET_LINE}")`);
-    if (fence && code.includes(BUDGET_LINE)) {
+    // The block opens its own read, so a fresh execute_code can copy it alone: the three
+    // lines the model fills in with the dataset and the recording. Here they give way to a
+    // pass, since the recording is held in memory and the stand-in library is handed in.
+    const SETUP = 'import eegprep_lean\nindex = await eegprep_lean.read_index("DATASET_ID")\nstore = index.store("RECORDING_PATH")';
+    assert(code.includes(`${SETUP}\ngroup = store.group("GROUP")`), 'the block opens its own index and store, so it stands alone');
+    if (fence && code.includes(BUDGET_LINE) && code.includes(SETUP)) {
       // The block as an async function over a recording held in memory. The only thing that
       // stands in is its read: `eegprep_lean.read_window` slices an array here (and records
       // each read), where the shipped runtime reads NEMAR's Zarr store, which the checks
@@ -746,7 +751,7 @@ print(json.dumps(out))
 import numpy as np
 from scipy import signal
 
-BLOCK = ${JSON.stringify(code)}
+BLOCK = ${JSON.stringify(code.replace(SETUP, 'pass  # the runtime opens the index and the store'))}
 BUDGET_LINE = ${JSON.stringify(BUDGET_LINE)}
 
 class Window:
@@ -916,7 +921,7 @@ print(json.dumps({
         assert(r.longest_read_mb <= 16, `each read fits a quarter of the 64 MB budget (${r.longest_read_mb.toFixed(1)} MB)`);
         assertEqual(r.read_to, r.samples, 'the last piece ends at the end of the recording');
         assertEqual(r.covered_seconds, MINUTES * 60, `the segments span the whole ${MINUTES} minutes (${r.covered_seconds} s)`);
-        assert(result.stdout.startsWith(`${r.total} segments of 2 s, ${r.covered_seconds} s of the recording, in pieces of ${r.m} segments, 3 EEG channels`),
+        assert(result.stdout.startsWith(`${r.total} segments of 2 s, ${r.covered_seconds} s of the recording, in pieces of ${r.m} segments, 3 EEG channels, left out: none`),
           `the recipe says what it covered, for the model to report (${JSON.stringify(result.stdout.split('\n')[0])})`);
         assert(r.difference < 1e-9, `and the average is the by-hand estimate over all of them (${r.difference})`);
         assert(Math.abs(r.tone_hz - 10) < 0.6, `the tone only the last tenth carries is the peak (${r.tone_hz} Hz)`);

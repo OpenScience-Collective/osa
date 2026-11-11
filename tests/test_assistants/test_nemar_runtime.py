@@ -61,10 +61,11 @@ class TestTheShippedConfig:
     ) -> None:
         """The model reads this on every call, and it says nothing else can be installed,
         so a preloaded package it leaves out is one the model will not use: SciPy was
-        preloaded before the description said so (#495). The welch rule is here too, one
-        channel at a time and chunks of a bounded length averaged by segment count,
-        since past either limit the call fails in this runtime and a capped read would
-        report a part of the recording as the whole."""
+        preloaded before the description said so (#495). The spectrum rule is here too: the
+        recording is read in pieces sized by the budget and welch's limit, one channel of
+        a piece at a time, averaged by segment count, since past either limit the call
+        fails in this runtime and a capped read would report a part of the recording as
+        the whole."""
         assert nemar.extensions is not None and nemar.runtime is not None
         assert nemar.runtime.python is not None
         description = nemar.extensions.client_tools[0].description.lower()
@@ -74,9 +75,12 @@ class TestTheShippedConfig:
         for package in nemar.runtime.python.preload:
             assert package.replace("-", "_") in installed, (package, installed)
         flat = " ".join(description.split())
-        assert "scipy.signal.welch one channel at a time" in flat
-        assert "chunks of at most 2**28 // nperseg samples" in flat
-        assert "average the chunks weighted by their segment counts" in flat
+        assert "read the recording in pieces sized by the reader's memory budget" in flat
+        assert "and by welch's limit" in flat
+        assert "scipy.signal.welch on one channel of a piece at a time" in flat
+        assert "average over the pieces weighted by their segment counts" in flat
+        # The old recipe, which read the whole recording first and chunked it in memory.
+        assert "chunks of at most 2**28 // nperseg samples" not in flat
         assert "spectrum of the whole recording" in flat
         assert "array is too big" in flat
         # The capped recipe is gone: no read cut at a maximum, and no "on at most".
@@ -101,6 +105,11 @@ class TestTheShippedConfig:
             in flat
         )
         assert "await eegprep_lean.read_window(" in flat
+        # The block stands alone: it opens its own index and store, which the model fills in.
+        assert 'index = await eegprep_lean.read_index("DATASET_ID")' in flat
+        assert 'store = index.store("RECORDING_PATH")' in flat
+        assert "`DATASET_ID`, `RECORDING_PATH` and `GROUP`" in flat
+        assert "left_out" in flat
         assert "summed[row] += k * p" in flat
         assert "power = summed / used" in flat
         assert "assert used == total" in flat

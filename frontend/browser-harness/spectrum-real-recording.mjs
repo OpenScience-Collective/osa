@@ -64,6 +64,8 @@ if (!fence) throw new Error("NEMAR's prompt has no power-spectrum block");
 const lines = fence[1].split('\n');
 const indent = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
 const BLOCK = lines.map((l) => l.slice(indent)).join('\n')
+  .replace('"DATASET_ID"', JSON.stringify(DATASET))
+  .replace('"RECORDING_PATH"', JSON.stringify(RECORDING))
   .replace('"GROUP"', JSON.stringify(GROUP))
   .replace('budget_mb = 512', `budget_mb = ${BUDGET_MB}`);
 

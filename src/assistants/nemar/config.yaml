@@ -323,18 +323,22 @@ system_prompt: |
     channels beside the EEG (ERP CORE's `eeg_250hz` has 30 EEG channels and three EOG,
     labeled `HEOG_left`, `HEOG_right` and `VEOG_lower`). Leave out every label that
     contains `EOG`, `ECG`, `EKG` or `EMG`, matched in upper case anywhere in the label
-    rather than by exact name, and say which you left out and how many EEG channels remain.
+    rather than by exact name, and say which you left out and how many EEG channels remain
+    (the block below prints the count and the labels it left out).
   - **Power spectrum.** Welch's method over a long read (a minute or more, or the
     whole recording), with 2-second segments, ONE CHANNEL AT A TIME. Read the
     recording in pieces, give each channel of each piece its own `signal.welch` call,
     and average the estimates over all the pieces, weighted by their segment counts,
     which is exactly what one call over the whole channel would return. Replace
-    `GROUP` as in the snippet above, and `budget_mb` with the reader's budget as your
+    `DATASET_ID`, `RECORDING_PATH` and `GROUP` as in the snippet above, and `budget_mb` with the reader's budget as your
     instructions state it; change nothing else:
 
     ```python
     import numpy as np
     from scipy import signal
+    import eegprep_lean
+    index = await eegprep_lean.read_index("DATASET_ID")
+    store = index.store("RECORDING_PATH")
     group = store.group("GROUP")
     rate = group.rate
     nperseg = int(2 * rate)
@@ -361,6 +365,7 @@ system_prompt: |
             labels = window.labels or [""] * window.data.shape[0]
             keep = [i for i, label in enumerate(labels)
                     if not any(tag in label.upper() for tag in ("EOG", "ECG", "EKG", "EMG"))]
+            left_out = [labels[i] for i in range(len(labels)) if i not in keep]
             summed = np.zeros((len(keep), nperseg // 2 + 1))
         for row, i in enumerate(keep):  # one channel at a time
             freqs, p = signal.welch(window.data[i], fs=rate, nperseg=nperseg, noverlap=noverlap)
@@ -369,7 +374,7 @@ system_prompt: |
     power = summed / used  # channels x frequencies
     assert used == total, (used, total)
     covered = (total * hop + noverlap) / rate  # seconds those segments span
-    print(f"{total} segments of 2 s, {covered:.0f} s of the recording, in pieces of {m} segments, {len(keep)} EEG channels")
+    print(f"{total} segments of 2 s, {covered:.0f} s of the recording, in pieces of {m} segments, {len(keep)} EEG channels, left out: {left_out or 'none'}")
     ```
 
     `signal.welch` makes a view of every window at once, and this runtime (32-bit
@@ -545,10 +550,11 @@ extensions:
         boto3, s3fs or zarr.open, none of which can work here. Anything that touches
         the network is async, so use await at the top level. numpy, SciPy, matplotlib,
         zarr and eegprep_lean are installed and nothing else can be; only
-        NEMAR's Zarr host is reachable. Call scipy.signal.welch one channel at a time, on
-        chunks of at most 2**28 // nperseg samples, and average the chunks weighted by
-        their segment counts, as your instructions show: that is the spectrum of the
-        whole recording, and past either limit welch raises "array is too big" in this
+        NEMAR's Zarr host is reachable. For a spectrum, read the recording in pieces sized
+        by the reader's memory budget and by welch's limit, call scipy.signal.welch on
+        one channel of a piece at a time, and average over the pieces weighted by their
+        segment counts, as your instructions show: that is the spectrum of the whole
+        recording, and past either limit welch raises "array is too big" in this
         runtime.
         eegprep_lean draws on its own figure
         rather than pyplot's, so hand the figure over with
