@@ -2447,13 +2447,13 @@
        over everything but the header, so the History button that opened it still
        closes it. Colors are the panel's own tokens, so the dark scheme and a
        community's theme carry over. */
-    .osa-history-btn[aria-pressed="true"] {
+    .osa-history-btn[aria-expanded="true"] {
       opacity: 1;
       background: var(--osa-bg);
       color: var(--osa-accent);
     }
 
-    .osa-history-btn:disabled {
+    .osa-history-btn[aria-disabled="true"] {
       cursor: not-allowed;
       opacity: 0.45;
     }
@@ -4219,7 +4219,7 @@
 
     /* The History sheet on the dark panel: a heavier scrim, and the delete reds
        lightened to read on it. */
-    .osa-chat-widget.osa-dark .osa-history-btn[aria-pressed="true"] {
+    .osa-chat-widget.osa-dark .osa-history-btn[aria-expanded="true"] {
       color: var(--osa-on-primary);
       background: rgba(255, 255, 255, 0.28);
     }
@@ -6133,10 +6133,10 @@
             <span class="osa-history-meta">${dataset}<span class="osa-history-facts">${dataset && factsText ? ' &middot; ' : ''}${escapeHtml(factsText)}</span></span>
           </span>
         </button>
-        <button type="button" class="osa-history-more" data-id="${escapeHtml(summary.id)}" aria-label="More actions for ${escapeHtml(title)}" aria-haspopup="menu" aria-expanded="false"${off}>${ICONS.more}</button>
-        <div class="osa-history-menu" role="menu" aria-label="Actions for ${escapeHtml(title)}" hidden>
-          <button type="button" role="menuitem" class="osa-history-menu-open" data-id="${escapeHtml(summary.id)}"${off}>Open</button>
-          <button type="button" role="menuitem" class="osa-history-menu-delete" data-id="${escapeHtml(summary.id)}"${off}>Delete</button>
+        <button type="button" class="osa-history-more" data-id="${escapeHtml(summary.id)}" aria-label="More actions for ${escapeHtml(title)}" aria-expanded="false" aria-controls="osa-history-menu-${escapeHtml(summary.id)}"${off}>${ICONS.more}</button>
+        <div class="osa-history-menu" id="osa-history-menu-${escapeHtml(summary.id)}" role="group" aria-label="Actions for ${escapeHtml(title)}" hidden>
+          <button type="button" class="osa-history-menu-open" data-id="${escapeHtml(summary.id)}"${off}>Open</button>
+          <button type="button" class="osa-history-menu-delete" data-id="${escapeHtml(summary.id)}"${off}>Delete</button>
         </div>
       </li>`;
   }
@@ -6263,11 +6263,17 @@
   function syncHistoryButton(container) {
     const button = container.querySelector('.osa-history-btn');
     if (!button) return;
-    button.setAttribute('aria-pressed', historyOpen ? 'true' : 'false');
+    button.setAttribute('aria-expanded', historyOpen ? 'true' : 'false');
     // A reply on its way holds the store still (see the store API), so there is
-    // nothing the panel could do; an open panel stays closable.
-    button.disabled = isLoading && !historyOpen;
-    button.title = button.disabled ? HISTORY_BUSY_NOTE : 'History';
+    // nothing the panel could do; an open panel stays closable. aria-disabled, not
+    // disabled: the button stays focusable, and its description says why it does
+    // nothing (a title is neither read on touch nor on focus).
+    const busy = isLoading && !historyOpen;
+    if (busy) button.setAttribute('aria-disabled', 'true');
+    else button.removeAttribute('aria-disabled');
+    button.title = busy ? HISTORY_BUSY_NOTE : 'History';
+    const why = container.querySelector('#osa-history-busy');
+    if (why) why.textContent = busy ? HISTORY_BUSY_NOTE : '';
   }
 
   // Keep the panel true to a reply starting or ending: called with every redraw of
@@ -9880,9 +9886,10 @@
             </div>
           </div>
           <div class="osa-header-actions">
-            <button class="osa-header-btn osa-history-btn" title="History" aria-label="History" aria-pressed="false" aria-controls="osa-history-sheet">
+            <button class="osa-header-btn osa-history-btn" title="History" aria-label="History" aria-expanded="false" aria-controls="osa-history-sheet" aria-describedby="osa-history-busy">
               ${ICONS.historyClock}
             </button>
+            <span id="osa-history-busy" class="osa-sr-only"></span>
             <button class="osa-header-btn osa-settings-btn-open" title="Settings">
               ${ICONS.settings}
             </button>

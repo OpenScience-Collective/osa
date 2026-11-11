@@ -227,7 +227,7 @@ const SHEET_MEASURE = `(() => {
     smallTargets: small('button'),
     background: style.backgroundColor,
     rows: [...sheet.querySelectorAll('.osa-history-row')].map((row) => row.innerText.replace(/\\s+/g, ' ').trim()),
-    pressed: document.querySelector('.osa-history-btn').getAttribute('aria-pressed'),
+    expanded: document.querySelector('.osa-history-btn').getAttribute('aria-expanded'),
     inert: !!document.querySelector('.osa-chat-messages').closest('[inert]'),
   };
 })()`;
@@ -304,7 +304,7 @@ async function check(screenshotDir) {
     report(sheet.sheetVisible && sheet.inside, `the sheet is on screen, inside the ${sheet.windowWidth} px window`, sheet);
     report(!sheet.sideways, 'nothing scrolls sideways');
     report(sheet.smallTargets.length === 0, 'every button in the sheet is at least 44 x 44', sheet.smallTargets);
-    report(sheet.pressed === 'true' && sheet.inert, 'the History button is pressed and the chat behind the sheet is inert');
+    report(sheet.expanded === 'true' && sheet.inert, 'the History button is expanded and the chat behind the sheet is inert');
     report(/Plot the ERP for on002718/.test(sheet.rows[0]) && /on002718/.test(sheet.rows[0]) && /1 step/.test(sheet.rows[0]) && /1 figure/.test(sheet.rows[0]),
       'the row has the title, the dataset, one step and one figure', sheet.rows);
     report(await waitFor(cdp, sessionId, FIGURE_DECODED('.osa-history-thumb img'), 'the thumbnail is a decoded image'), 'the row\'s thumbnail is the figure, decoded by the browser');

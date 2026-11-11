@@ -289,12 +289,13 @@ console.log('\nthe History button, and the sheet it opens');
   const ctx = await start();
   const button = ctx.button();
   assert(!!button && button.closest('.osa-header-actions') !== null, 'the header has a History button');
-  assertEqual(button.getAttribute('aria-pressed'), 'false', 'not pressed while the sheet is closed');
+  assertEqual(button.getAttribute('aria-expanded'), 'false', 'collapsed while the sheet is closed');
+  assert(!button.hasAttribute('aria-pressed') && !button.hasAttribute('aria-haspopup'), 'a disclosure, neither a toggle nor a menu button');
   assert(ctx.container.querySelector(`#${button.getAttribute('aria-controls')}`) === ctx.sheet(), 'aria-controls names the sheet');
   assert(!ctx.sheetOpen(), 'the sheet is closed');
   button.click();
   assert(ctx.sheetOpen(), 'a click opens it');
-  assertEqual(button.getAttribute('aria-pressed'), 'true', 'the button is pressed');
+  assertEqual(button.getAttribute('aria-expanded'), 'true', 'the button says it is expanded');
   assertEqual(ctx.sheet().getAttribute('role'), 'dialog', 'the sheet is a dialog');
   assertEqual(ctx.sheet().getAttribute('aria-modal'), 'true', 'a modal one');
   assert(ctx.sheet().contains(ctx.window.document.activeElement), 'focus is in the sheet');
@@ -319,7 +320,12 @@ console.log('\nthe History button, and the sheet it opens');
   assert(/[A-Z][a-z]{2}\s\d{1,2}/.test(factsC), 'an earlier chat has its date');
   assertEqual(text(ctx.q('.osa-history-footer')), 'Saved in this browser only, the last 30 chats with their figures.', 'the footer');
   assert(rowFor(ctx, 'chat-a').querySelector('.osa-history-open').getAttribute('aria-current') !== 'true', 'no row is current: the open chat is the empty one');
-  assert(ctx.rows().every((row) => row.querySelector('.osa-history-more').getAttribute('aria-haspopup') === 'menu'), 'every row has an actions menu');
+  assert(ctx.rows().every((row) => {
+    const more = row.querySelector('.osa-history-more');
+    return more.getAttribute('aria-expanded') === 'false' && !more.hasAttribute('aria-haspopup')
+      && row.querySelector(`#${more.getAttribute('aria-controls')}`) === row.querySelector('.osa-history-menu');
+  }), 'every row has an actions disclosure: aria-expanded and aria-controls, and no menu role it does not keep');
+  assertEqual(ctx.qa('[role=menu], [role=menuitem]').length, 0, 'the sheet declares no ARIA menu, whose arrow-key model it does not implement');
 }
 
 console.log('\nEscape closes the sheet and returns focus to the button; so does the scrim');
@@ -329,7 +335,7 @@ console.log('\nEscape closes the sheet and returns focus to the button; so does 
   ctx.sheet().dispatchEvent(key(ctx, 'Escape'));
   assert(!ctx.sheetOpen(), 'Escape closes the sheet');
   assert(ctx.window.document.activeElement === ctx.button(), 'focus is back on the History button');
-  assertEqual(ctx.button().getAttribute('aria-pressed'), 'false', 'unpressed');
+  assertEqual(ctx.button().getAttribute('aria-expanded'), 'false', 'collapsed again');
   assert(ctx.q('[inert]') === null, 'nothing is inert any more');
   ctx.button().click();
   ctx.q('.osa-history-scrim').click();
@@ -347,7 +353,7 @@ console.log('\na row\'s menu: Escape closes the menu first, then the sheet');
   more.click();
   const menu = rowFor(ctx, 'chat-b').querySelector('.osa-history-menu');
   assert(!menu.hidden && more.getAttribute('aria-expanded') === 'true', 'the menu opens');
-  assertEqual([...menu.querySelectorAll('[role=menuitem]')].map(text), ['Open', 'Delete'], 'with Open and Delete');
+  assertEqual([...menu.querySelectorAll('button')].map(text), ['Open', 'Delete'], 'with Open and Delete');
   ctx.sheet().dispatchEvent(key(ctx, 'Escape'));
   assert(menu.hidden && ctx.sheetOpen(), 'the first Escape closes only the menu');
   assert(ctx.window.document.activeElement === more, 'and returns to the row\'s button');
@@ -555,16 +561,18 @@ console.log('\nwhile a reply loads, History is off, with a note');
   ctx.q('.osa-chat-input input').value = 'A slow question';
   ctx.q('.osa-send-btn').click();
   await waitUntil(() => ctx.sent.length === 1, 'the request is on its way');
-  assert(ctx.button().disabled, 'the History button is disabled');
-  assert(/reply is loading/.test(ctx.button().title), 'and its title says why');
-  ctx.button().disabled = false;
+  assertEqual(ctx.button().getAttribute('aria-disabled'), 'true', 'the History button is disabled');
+  assert(!ctx.button().disabled, 'but still focusable, so a keyboard user reaches it');
+  assert(/reply is loading/.test(ctx.button().title), 'its title says why');
+  const reason = ctx.container.querySelector(`#${ctx.button().getAttribute('aria-describedby')}`);
+  assert(reason !== null && /reply is loading/.test(text(reason)), 'and so does its description, which a screen reader and touch read');
   ctx.button().click();
   assert(!ctx.sheetOpen(), 'even a click that gets through opens nothing');
   assertEqual(ctx.hooks.activateConversation('chat-b'), false, 'the store refuses to open a chat');
   assertEqual(ctx.hooks.deleteConversation(ctx.hooks.getActiveConversation().id), false, 'nor delete the chat the reply is for');
   release();
   await waitUntil(() => !ctx.q('.osa-chat-input input').disabled, 'the reply ends');
-  assert(!ctx.button().disabled, 'the button is back when the reply ends');
+  assert(!ctx.button().hasAttribute('aria-disabled') && text(ctx.container.querySelector('#osa-history-busy')) === '', 'the button and its description are back when the reply ends');
 }
 
 console.log('\nan open sheet goes off when a reply starts, and back when it ends');
@@ -575,7 +583,7 @@ console.log('\nan open sheet goes off when a reply starts, and back when it ends
   ctx.hooks.history.sync(ctx.container);
   assert(/not available while a reply is loading/.test(text(ctx.q('.osa-history-note'))), 'the sheet says so');
   assert(ctx.qa('.osa-history-open, .osa-history-more, .osa-history-new, .osa-history-clear').every((el) => el.disabled), 'every control is disabled');
-  assert(!ctx.button().disabled, 'the button stays, to close it');
+  assert(!ctx.button().hasAttribute('aria-disabled'), 'the button stays, to close it');
   ctx.q('.osa-history-clear').click();
   assertEqual(ctx.hooks.clearAllConversations(), false, 'clearing is refused by the store');
   assertEqual(ctx.rows().length, 3, 'nothing was deleted');
