@@ -978,6 +978,88 @@ print(json.dumps(out))
       }
     }
   }
+
+  console.log('\nthe band-power procedure integrates the whole-recording spectrum over each band');
+  {
+    // Both python fences of the document, as written: the Welch recipe, then the integration
+    // the document says to run directly after it, in the same run.
+    const entry = (NEMAR.procedures || []).find((p) => p.id === 'band-power');
+    const document = entry ? await Bun.file(new URL(entry.file, COMMUNITY_DIR)).text() : '';
+    const fences = [...document.matchAll(/```python\n([\s\S]*?)\n\s*```/g)].map((m) => m[1]);
+    assertEqual(fences.length, 2, 'the band-power procedure carries the Welch block and the integration block');
+    const SETUP = 'import eegprep_lean\nindex = await eegprep_lean.read_index("DATASET_ID")\nstore = index.store("RECORDING_PATH")';
+    if (fences.length === 2 && fences[0].includes(SETUP) && fences[0].includes('budget_mb = 512')) {
+      // A 1 MB budget cuts the read into several pieces, so the carried sums are exercised.
+      const welch = fences[0].replace(SETUP, 'pass  # the runtime opens the index and the store').replace('budget_mb = 512', 'budget_mb = 1');
+      const result = await run(`import json
+import numpy as np
+from scipy import signal
+
+WELCH = ${JSON.stringify(welch)}
+INTEGRATION = ${JSON.stringify(fences[1])}
+
+class Window:
+    def __init__(self, data, labels):
+        self.data, self.labels = data, labels
+
+class Group:
+    def __init__(self, rate, n_samples, n_channels):
+        self.rate, self.n_samples, self.n_channels = rate, n_samples, n_channels
+
+class Store:
+    def __init__(self, group):
+        self._group = group
+    def group(self, name):
+        return self._group
+
+class Lib:
+    def __init__(self, eeg, labels):
+        self.eeg, self.labels, self.reads = eeg, labels, 0
+    async def read_window(self, index, store, group, start_sample, n_samples):
+        self.reads += 1
+        return Window(self.eeg[:, start_sample:start_sample + n_samples], self.labels)
+
+async def band_power_run(eegprep_lean, index, store):
+    # Both blocks in one function body, so they share names as two blocks of one run do.
+    text = WELCH + "\\n" + INTEGRATION
+    body = "\\n".join("    " + line for line in text.split("\\n"))
+    scope = {}
+    exec("async def run_blocks(eegprep_lean, index, store):\\n" + body
+         + "\\n    return dict(bands=bands, band_power=band_power, keep=keep)", {"np": np, "signal": signal}, scope)
+    return await scope["run_blocks"](eegprep_lean, index, store)
+
+rate = 250.0
+t = np.arange(int(120 * rate)) / rate
+rng = np.random.default_rng(4)
+amplitude = 3.0
+eeg = rng.standard_normal((4, t.size)) + amplitude * np.sin(2 * np.pi * 10 * t)
+lib = Lib(eeg, ["E0", "E1", "E2", "VEOG_lower"])
+out = await band_power_run(lib, None, Store(Group(rate, t.size, 4)))
+print(json.dumps({
+    "bands": {k: list(v) for k, v in out["bands"].items()},
+    "band_power": {k: [float(x) for x in v] for k, v in out["band_power"].items()},
+    "keep": out["keep"], "reads": lib.reads, "expected": amplitude ** 2 / 2,
+}))
+`);
+      assertEqual(result.status, 'ok', `band power: both blocks run in one namespace (stderr: ${result.stderr.slice(-400)})`);
+      const r = JSON.parse((result.stdout || '').trim().split('\n').at(-1) || '{}');
+      assertEqual(Object.keys(r.bands), ['delta', 'theta', 'alpha', 'beta'], 'the default bands are named for step 2');
+      assertEqual(Object.keys(r.band_power), Object.keys(r.bands), 'band_power has one entry per band');
+      assertEqual(r.keep, [0, 1, 2], 'the electrooculography channel is left out by its label');
+      assert(r.reads > 1, `the small budget made ${r.reads} reads, so the pieces were averaged`);
+      for (const [name, values] of Object.entries(r.band_power)) {
+        assertEqual(values.length, 3, `${name}: one value per EEG channel`);
+      }
+      for (let channel = 0; channel < 3; channel++) {
+        const power = Object.fromEntries(Object.entries(r.band_power).map(([name, values]) => [name, values[channel]]));
+        const others = ['delta', 'theta', 'beta'].map((name) => power[name]);
+        assert(others.every((value) => power.alpha > 20 * value),
+          `channel ${channel}: the 10 Hz tone puts the power in alpha (${JSON.stringify(power)})`);
+        assert(Math.abs(power.alpha / r.expected - 1) < 0.05,
+          `channel ${channel}: alpha holds the tone's power, amplitude squared over two (${power.alpha} against ${r.expected})`);
+      }
+    }
+  }
 } finally {
   server.stop(true);
 }
