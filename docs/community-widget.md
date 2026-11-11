@@ -731,7 +731,7 @@ Two radios choose what happens when a step finishes: **Pause so I can look** (th
 Approve, Ask for changes, the Edit and Remove buttons and the bar's buttons are at least 44 px tall.
 Limits count code points, as the server's do, so a title with emoji is cut at a character, never in the middle of one.
 While a step is being edited the decision waits, so an unsaved edit is never sent or lost.
-The body is exactly `{session_id, result: {call_id, decision, steps, run_mode, feedback?}, client_tools}` (and `page_context` when the reader shares the page); `feedback` is left out when it is empty.
+The body is exactly `{session_id, result: {call_id, decision, steps, run_mode, feedback?}, client_tools}` (and `page_context` when there is anything to send: the shared page, the dataset, the memory budget); `feedback` is left out when it is empty.
 The model's findings, titles and details, and the reader's text, are escaped.
 While the card waits, the input is off and the conversation says it is waiting for the decision; a plan the reader never answers leaves the parked call to the server's 15-minute limit.
 
@@ -786,12 +786,13 @@ It appears only on a page that can run code in the browser, after the model and 
 Choosing is part of the dialog like the model: **Save** stores it, **Cancel** leaves what was saved.
 The choice is stored with the other user settings (`memoryBudgetMb` in `osa-settings-<community>`).
 A stored value that is not one of the four, such as a hand-edited `300`, reads as 512 and is never sent.
-Below the choices, **Last step used** shows the heap of the latest run in the chat against the chosen budget.
+Below the choices, **Runtime memory after the last step** shows the heap of the latest run in the chat against the chosen budget, in MB, with a bar in the caution color when it is over (and "over budget" in the text for a screen reader, since the bar is decorative).
 
 **The request.**
-The widget sends `page_context.memory_budget_mb` on `/chat` and `/chat/resume`, and only from a page whose browser runtime has loaded.
+The widget sends `page_context.memory_budget_mb` on `/chat` and `/chat/resume`, whether or not the reader shares the page URL, and only from a page whose browser runtime has loaded and that declares its tools on the request (a first request sent with streaming off declares none, so it states none).
 A page that cannot run code sends nothing, and `page_context` stays absent when nothing else is set, as before.
-The server accepts exactly 256, 512, 1024 or 2048 and refuses any other value with a 422 (`PageContext` in `src/api/routers/community.py`).
+The rest of the first request's page context (the URL, the dataset, a carried move) is read when the question is sent, not after the wait for the runtime, so a reader who navigates during that wait still asked about the page they were on.
+The server accepts exactly 256, 512, 1024 or 2048 and refuses any other value with a 422 (`PageContext` in `src/api/routers/community.py`); the agent's own `PageContext` dataclass raises `ValueError` for any other value too, since it is what the prompt is written from.
 The system prompt then carries its own paragraph, `## Browser memory budget`: "Each step must fit in B MB of the reader's browser memory; read long recordings in pieces."
 A community that sets `enable_page_context: false` states none.
 NEMAR's `plan_first_instructions` also require the plan's `est_peak_mb` not to exceed it.
@@ -801,8 +802,11 @@ The budget is advice to the model, not a limit: nothing enforces it, on the serv
 After each run the worker reads the size of Pyodide's WebAssembly memory (`pyodide._module.HEAPU8.byteLength`) and sends it beside the result as `heap_bytes`.
 It is not a `ClientToolResult` field and never reaches the server: `PyodideRuntime#heapBytes(callId)` hands it to the widget, which stores it on the run record as `heapMb`, with `budgetMb`, the budget the run was under.
 WebAssembly memory only grows, so the figure is the most the tab has had to give the runtime so far, the interpreter and its packages included (about 20 MB before any package loads), not what the one step held.
-The run card says `Heap N MB of B MB` under the figures.
-When N is more than B, the line takes a warning style and a second line names the step: "Step 2, Epoch the EEG, used more than the 512 MB budget. Ask for smaller pieces, or raise the budget in Settings." (a run no plan covers is "This run").
+The run card says `Heap N MB of B MB` under the figures, with the same MB wording in every line (Settings' four choices alone read "1 GB" and "2 GB").
+Because the figure only grows, only the run that took it past the budget is blamed.
+That run's line takes a warning style and a second line names the step: "Step 2, Epoch the EEG, used more than the 512 MB budget. Ask for smaller pieces, or raise the budget in Settings." (a run no plan covers is "This run"), and so does a later run that grows an over-budget heap further.
+A run that reports the same figure as the run before it, `print(1)` after a large read included, says "The runtime is still holding N MB from earlier steps; its memory does not shrink between runs." and keeps the plain style.
+The widget decides this from the heap the run before it in the chat reported, which the run record keeps as `heapBeforeMb`; a smaller figure than that one belongs to a runtime started since (a reload), so its first over-budget run is blamed.
 A reload and the History sheet restore the line, against the budget the run had, whatever the setting is now.
 A run with no figure (one refused before it started, a timeout) has no line.
 
@@ -811,6 +815,8 @@ A run with no figure (one refused before it started, a timeout) has no line.
 The pure logic is `frontend/osa-memory.js`, exported as `OSARuntime.memory`.
 The widget holds its own copy of the four sizes and the heap limit, because a saved setting is read before the runtime bundle has loaded, and the heap line itself waits for the bundle (a chat restored before it loads is drawn again when it does).
 `frontend/test-widget-memory-budget.js` holds the copies to each other and to the server's list.
+
+The caution color is one token, `--osa-warn` (`#b45309` on the light panel, 4.9:1; `#fbbf24` on the dark one), which the Settings bar, the run card and the plan card read.
 
 Testing: `frontend/test-widget-memory-budget.js` runs the real widget and the runtime bundle as built in happy-dom, with a test worker that reports a heap when the code says `HEAP_MB=<n>`; `frontend/test-worker-core.js` holds the real worker's figure against real Pyodide; `tests/test_api/test_page_context.py` and `tests/test_agents/test_page_context.py` hold the server's side.
 
@@ -889,9 +895,10 @@ What the request carries (`page_context`, beside `url`, `title` and `widget_inst
 |---|---|
 | `dataset_id` | The dataset `setDataset` named, matching `[A-Za-z0-9._-]{1,64}`. **Sent whether or not the reader shares the page URL** (the "Share page URL" toggle): like `widget_instructions`, it is about the chat, not about the reader's browsing, so a reader who keeps the URL private still gets answers about the dataset on screen. |
 | `moved_from` | `{type: 'dataset', id}` or `{type: 'search'}`: where the reader was before choosing to continue. Present only on the first request after "Continue". A `dataset` needs an `id`; `search` takes none, and the API refuses one. |
+| `memory_budget_mb` | The reader's browser memory budget per step, one of 256, 512, 1024 or 2048 ("Browser memory" in Settings). **Sent whether or not the reader shares the page URL**, but only by a page whose browser runtime has loaded and that declares its client tools on the request; a page with no runtime sends none. |
 
-The backend renders them in the system prompt's page context section, "Reader Context": the dataset the reader is on and, when `moved_from` is present, that the reader moved from one to the other in this conversation (a `moved_from` equal to where the reader is now is left out).
-A community with `enable_page_context: false` gets neither.
+The backend renders the dataset and the move in the system prompt's page context section, "Reader Context": the dataset the reader is on and, when `moved_from` is present, that the reader moved from one to the other in this conversation (a `moved_from` equal to where the reader is now is left out), and the budget as its own "Browser memory budget" paragraph.
+A community with `enable_page_context: false` gets none of the three.
 
 Testing: `frontend/test-widget-context-switch.js` (the widget), `tests/test_api/test_page_context.py` (the validated fields), `tests/test_agents/test_page_context.py` (the prompt), and the `search_paths` cases in `tests/test_core/test_config/test_community.py` and `tests/test_api/test_communities_endpoint.py`.
 
