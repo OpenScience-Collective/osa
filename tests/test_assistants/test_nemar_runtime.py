@@ -960,21 +960,28 @@ class TestTheTopographyAndTimeFrequencyDocuments:
         assert "PO8 for ERP CORE's N170" in flat
         assert "epochs x frequencies x times" in flat
 
-    def test_the_time_frequency_plan_warns_before_approval_that_the_run_is_slow(
+    def test_the_time_frequency_plan_warns_before_approval_how_long_it_can_take(
         self, documents: dict[str, str]
     ) -> None:
+        """The warning scales with the request: it names what makes the run long in a
+        single-processor browser, and the measured size at which it is not, so the model
+        neither promises a long wait for a small request nor a quick one for a large one."""
         document = documents[TIME_FREQUENCY]
         plan = _flat(document.split("## Plan", 1)[1].split("\n## ", 1)[0])
         for phrase in (
             "single processor",
             "limited compute and memory",
-            "likely take a long time",
+            "can take a long time with many epochs, many frequencies, a long epoch window or a high sampling rate",
+            "well under a second in testing",
+            "never promise a long wait for a request no bigger than that",
+            "never promise that a larger one will be quick",
             "in the plan's findings",
             "again in step 3",
         ):
             assert phrase in plan, phrase
+        assert "likely take a long time" not in plan
         # The warning comes before the numbered steps, so it is said before approval.
-        assert plan.index("likely take a long time") < plan.index("1. **Read the recording**")
+        assert plan.index("can take a long time") < plan.index("1. **Read the recording**")
 
     def test_the_time_frequency_epochs_hold_the_lowest_frequencys_wavelet(
         self, documents: dict[str, str]
