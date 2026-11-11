@@ -17,7 +17,7 @@ Send the reader's query, the filters they applied, and up to 10 results in the
 search's ranking order.
 
 ```js
-const response = await fetch('https://edge.osc.earth/osa/nemar/overview', {
+const response = await fetch('https://widget.osc.earth/osa/nemar/overview', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
