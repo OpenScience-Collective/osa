@@ -42,12 +42,16 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -uo pipefail
-          # Code is an example, not an instruction: drop fenced blocks, then inline
-          # code. Then take a closing keyword, an optional colon, and #N, this
+          # Code is an example, not an instruction: a one-line triple-backtick span,
+          # fenced blocks (``` or ~~~) and inline code are replaced or dropped (a span
+          # becomes a word, so a keyword before it is not joined to a number after
+          # it). Then take a closing keyword, an optional colon, and #N, this
           # repository's owner/name#N, or its issue URL, the forms GitHub honours.
           # shellcheck disable=SC2016  # the backticks in the sed pattern are literal
           numbers=$(printf '%s\n' "$PR_BODY" \
-            | sed -e '/^[[:space:]]*```/,/^[[:space:]]*```/d' -e 's/`[^`]*`//g' \
+            | sed -E -e 's/```[^`]*```/CODE/g' \
+                -e '/^[[:space:]]*(```|~~~)/,/^[[:space:]]*(```|~~~)/d' \
+                -e 's/`[^`]*`/CODE/g' \
             | grep -oiE "\b(close[sd]?|fix(e[sd])?|resolve[sd]?):? +(https://github\.com/${GH_REPO}/issues/|${GH_REPO}#|#)[0-9]+\b" \
             | grep -oE '[0-9]+$' | sort -un || true)
           if [ -z "$numbers" ]; then
