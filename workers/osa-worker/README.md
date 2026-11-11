@@ -115,6 +115,7 @@ wrangler deploy --env dev
 | `/hed/ask` | POST | Single question | Turnstile + Rate limit |
 | `/hed/chat` | POST | Multi-turn chat | Turnstile + Rate limit |
 | `/hed/chat/resume` | POST | Resume chat after a client-executed tool call | Rate limit only (per-minute, plus its own resume-chain hourly cap; exempt from the `/chat` per-hour counter) |
+| `/nemar/overview` | POST | Search overview for the Discover panel (quick model, cached 24 h) | Rate limit only (no Turnstile: Discover readers hold no token). Deploy the worker (`wrangler deploy`) before the website calls it |
 | `/feedback` | POST | Submit feedback | Rate limit only |
 
 ## Rate Limits

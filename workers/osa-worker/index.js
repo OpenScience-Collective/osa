@@ -21,6 +21,10 @@ export const ROUTE_PATTERNS = {
   // /:communityId/chat/resume -- three segments, so it can never be matched
   // by communityAction above (which is anchored to exactly two segments).
   communityChatResume: /^\/([^\/]+)\/chat\/resume$/,
+  // /:communityId/overview -- the search overview the Discover panel asks for.
+  // Its own matcher rather than a third action on communityAction, because the
+  // handler differs: rate limit only, no Turnstile (see handleOverview).
+  communityOverview: /^\/([^\/]+)\/overview$/,
   // /:communityId/runtime/:file -- a wheel the browser runtime loads (#431).
   // A coarse filter: anything that is not a bare wheel name never reaches the
   // backend. The backend owns the exact rule (pure-Python -py3-none-any wheels,
@@ -783,6 +787,17 @@ export default {
         return await handleChatResume(request, env, communityId, corsHeaders, CONFIG);
       }
 
+      // Community endpoint: /:communityId/overview (POST only)
+      const communityOverviewMatch = pathname.match(ROUTE_PATTERNS.communityOverview);
+      if (communityOverviewMatch && request.method === 'POST') {
+        const [, communityId] = communityOverviewMatch;
+
+        const invalid = validateCommunityId(communityId, corsHeaders);
+        if (invalid) return invalid;
+
+        return await handleOverview(request, env, communityId, corsHeaders, CONFIG);
+      }
+
       // Community endpoints: /:communityId/ask and /:communityId/chat
       const communityActionMatch = pathname.match(ROUTE_PATTERNS.communityAction);
       if (communityActionMatch && request.method === 'POST') {
@@ -981,6 +996,33 @@ async function handleFeedback(request, env, corsHeaders, CONFIG) {
     });
   }
   return await proxyToBackend(request, env, '/feedback', body, corsHeaders, CONFIG);
+}
+
+/**
+ * Handle the search overview endpoint (POST /:communityId/overview): rate
+ * limited, no Turnstile.
+ *
+ * Handled like handleFeedback, for a different reason: Turnstile tokens are
+ * single-use and come from the widget's composer, and the readers of the
+ * Discover panel hold none (the panel is not the widget). The backend still
+ * authorizes the request (an allowed Origin or a caller's own key), caches the
+ * overview for a day, and keeps its spend in the community's budget, so the
+ * rate limit here is the edge's share of the protection.
+ */
+async function handleOverview(request, env, communityId, corsHeaders, CONFIG) {
+  const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
+  if (rejected) return rejected;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON in request body' }), {
+      status: 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+  return await proxyToBackend(request, env, `/${communityId}/overview`, body, corsHeaders, CONFIG);
 }
 
 /**
