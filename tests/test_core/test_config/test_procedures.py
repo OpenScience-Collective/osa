@@ -138,6 +138,16 @@ class TestAFailureAtLoad:
         with pytest.raises(ValueError, match="resolves outside the community's folder"):
             CommunityConfig.from_yaml(path)
 
+    def test_a_looping_symlink_is_a_plain_error(self, folder: Path) -> None:
+        # Path.resolve raises RuntimeError for a loop on Python 3.11 and 3.12 and does not
+        # on 3.14 (the file is then simply not a file), so only the plain ValueError is fixed.
+        path = _write(folder, [_entry()], {})
+        link = folder / "procedures" / "do-the-thing.md"
+        link.parent.mkdir(parents=True)
+        os.symlink(link, link)
+        with pytest.raises(ValueError, match="do-the-thing"):
+            CommunityConfig.from_yaml(path)
+
     def test_a_symlink_to_a_file_inside_the_folder_is_fine(self, folder: Path) -> None:
         path = _write(folder, [_entry()], {"real/document.md": DOCUMENT})
         link = folder / "procedures" / "do-the-thing.md"

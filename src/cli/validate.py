@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from src.core.config.community import CommunityConfig, _read_procedure_documents
+from src.core.config.community import CommunityConfig, read_procedure_documents
 from src.core.services.anthropic_endpoints import API_VERSION, FIRST_PARTY_BASE_URL
 
 console = Console()
@@ -165,7 +165,7 @@ def validate(
             # The schema checks each procedure's shape; the server also reads the files
             # at start and refuses to run if one is missing, so check them here too.
             try:
-                _read_procedure_documents(config.procedures, config_path.parent)
+                read_procedure_documents(config.procedures, config_path.parent)
             except ValueError as e:
                 logger.error("Procedure documents invalid for %s: %s", config_path, e)
                 errors.append(f"Procedure documents: {e}")

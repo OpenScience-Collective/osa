@@ -2231,18 +2231,25 @@ class ProcedureConfig(BaseModel):
         return value
 
 
-def _read_procedure_documents(
+def _why(err: Exception) -> str:
+    """The reason for a read failure: the OS's message when it gave one, else the error's."""
+    return getattr(err, "strerror", None) or str(err)
+
+
+def read_procedure_documents(
     procedures: list[ProcedureConfig], community_dir: Path
 ) -> dict[str, str]:
     """Each procedure's document text, keyed by id, read once from the community folder.
 
     Raises ValueError, in plain words, for a file that is missing, cannot be read, resolves
     outside the folder (a symlink included), is too large, is not UTF-8, or is blank.
+    ``Path.resolve`` raises RuntimeError for a symlink loop on Python 3.11 and 3.12, so that
+    is caught with OSError and reported the same way.
     """
     try:
         root = community_dir.resolve()
-    except OSError as err:
-        raise ValueError(f"the community's folder cannot be read: {err.strerror}") from err
+    except (OSError, RuntimeError) as err:
+        raise ValueError(f"the community's folder cannot be read: {_why(err)}") from err
     texts: dict[str, str] = {}
     for procedure in procedures:
         where = f"procedure {procedure.id!r}: file {procedure.file!r}"
@@ -2256,8 +2263,8 @@ def _read_procedure_documents(
             if path.stat().st_size > 4 * MAX_PROCEDURE_CHARS:
                 raise ValueError(f"{where} is longer than {MAX_PROCEDURE_CHARS:,} characters")
             raw = path.read_bytes()
-        except OSError as err:
-            raise ValueError(f"{where} cannot be read: {err.strerror}") from err
+        except (OSError, RuntimeError) as err:
+            raise ValueError(f"{where} cannot be read: {_why(err)}") from err
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as err:
@@ -3211,7 +3218,7 @@ class CommunityConfig(BaseModel):
 
         config = cls.model_validate(data or {})
         if config.procedures:
-            config._procedure_texts = _read_procedure_documents(config.procedures, path.parent)
+            config._procedure_texts = read_procedure_documents(config.procedures, path.parent)
         return config
 
 
