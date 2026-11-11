@@ -119,53 +119,76 @@ const PLAN_CONFIG = {
   suggested_questions: [],
   dataset_suggested_questions: [],
 };
-const PLAN_CHAT = JSON.stringify({
-  version: 3,
-  activeId: 'chat-plan',
-  conversations: [{
-    id: 'chat-plan',
-    context: { type: 'dataset', id: DATASET.id },
-    title: 'Compare ERPs for famous vs scrambled faces',
-    sessionId: 'session-plan',
-    createdAt: Date.now() - 120_000,
-    updatedAt: Date.now() - 60_000,
-    messages: [
-      { role: 'assistant', content: 'Hello' },
-      { role: 'user', content: 'Compare ERPs for famous vs scrambled faces' },
-      {
-        role: 'assistant',
-        content: 'Steps 1 to 3 are done. Step 4 plots the ERPs.',
-        citations: [],
-        plan: {
-          callId: 'plan-1',
-          findings: 'Three conditions, 18 subjects.',
-          estPeakMb: 300,
-          runMode: 'pause',
-          status: 'approved',
-          steps: PLAN_STEPS.map((title) => ({ title, detail: '' })),
+// The same conversation in three states: `paused` (three of five done, the default), `failed`
+// (two done, step 3 failed with no attempt left) and `stopped` (two done, the plan stopped
+// before step 3). The last two paint the rows the first never does.
+function planChat(variant) {
+  const done = variant === 'paused' ? 3 : 2;
+  const executions = PLAN_STEPS.slice(0, done).map((title, i) => run({
+    callId: `plan-run-${i + 1}`,
+    step: i + 1,
+    attempt: 1,
+    stepTitle: title,
+    elapsedMs: 3400,
+    description: title,
+    code: `print(${i + 1})`,
+    stdout: `${i + 1}\n`,
+  }));
+  if (variant === 'failed') {
+    for (const attempt of [1, 2]) {
+      executions.push(run({
+        callId: `plan-run-3-${attempt}`,
+        step: 3,
+        attempt,
+        stepTitle: PLAN_STEPS[2],
+        elapsedMs: 900,
+        description: PLAN_STEPS[2],
+        code: 'raise ValueError("no epochs")',
+        status: 'error',
+        stderr: 'ValueError: no epochs',
+        traceback: 'ValueError: no epochs',
+      }));
+    }
+  }
+  return JSON.stringify({
+    version: 3,
+    activeId: 'chat-plan',
+    conversations: [{
+      id: 'chat-plan',
+      context: { type: 'dataset', id: DATASET.id },
+      title: 'Compare ERPs for famous vs scrambled faces',
+      sessionId: 'session-plan',
+      createdAt: Date.now() - 120_000,
+      updatedAt: Date.now() - 60_000,
+      messages: [
+        { role: 'assistant', content: 'Hello' },
+        { role: 'user', content: 'Compare ERPs for famous vs scrambled faces' },
+        {
+          role: 'assistant',
+          content: 'The plan is under way.',
+          citations: [],
+          plan: {
+            callId: 'plan-1',
+            findings: 'Three conditions, 18 subjects.',
+            estPeakMb: 300,
+            runMode: 'pause',
+            status: variant === 'stopped' ? 'stopped' : 'approved',
+            steps: PLAN_STEPS.map((title) => ({ title, detail: '' })),
+          },
+          executions,
         },
-        executions: PLAN_STEPS.slice(0, 3).map((title, i) => run({
-          callId: `plan-run-${i + 1}`,
-          step: i + 1,
-          attempt: 1,
-          stepTitle: title,
-          elapsedMs: 3400,
-          description: title,
-          code: `print(${i + 1})`,
-          stdout: `${i + 1}\n`,
-        })),
-      },
-    ],
-  }],
-});
+      ],
+    }],
+  });
+}
 
-function planPage(launcher) {
+function planPage(launcher, variant) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>center plan</title>
 <style>body{margin:0;font-family:system-ui,sans-serif;background:#fff;color:#0f172a}main{padding:24px 80px;min-height:2400px}</style></head>
 <body><main id="host-page"><button id="host-pill" type="button">AI Mode</button></main>
 <script>
   window.__OSA_TEST__ = true;
-  localStorage.setItem(${JSON.stringify(PLAN_STORAGE_KEY)}, ${JSON.stringify(PLAN_CHAT)});
+  localStorage.setItem(${JSON.stringify(PLAN_STORAGE_KEY)}, ${JSON.stringify(planChat(variant))});
   sessionStorage.setItem(${JSON.stringify(`${PLAN_STORAGE_KEY}-session`)}, '1');
 </script>
 <script src="/osa-chat-widget.js" data-no-auto-init></script>
@@ -189,7 +212,9 @@ function startServer() {
       if (pathname === '/osa-runtime.bundle.js') return js(RUNTIME_BUNDLE);
       if (pathname === '/plan') {
         const launcher = new URL(request.url).searchParams.get('launcher') === 'bubble' ? 'bubble' : 'capsule';
-        return new Response(planPage(launcher), { headers: { 'content-type': 'text/html' } });
+        const asked = new URL(request.url).searchParams.get('variant');
+        const variant = asked === 'failed' || asked === 'stopped' ? asked : 'paused';
+        return new Response(planPage(launcher, variant), { headers: { 'content-type': 'text/html' } });
       }
       if (pathname === `/api/${PLAN_COMMUNITY}`) {
         return Response.json({
@@ -201,6 +226,22 @@ function startServer() {
         });
       }
       if (pathname === '/api/health') return Response.json({ status: 'healthy' });
+      if (pathname === `/api/${PLAN_COMMUNITY}/chat`) {
+        const body = await request.json();
+        // Held back, so the page can be read while the step is sent and not yet answered.
+        await Bun.sleep(1500);
+        const events = [
+          { event: 'session', session_id: body.session_id || 'session-plan' },
+          { event: 'content', content: 'Step 4 is next.' },
+          { event: 'done' },
+        ];
+        return new Response(new ReadableStream({
+          start(controller) {
+            for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+            controller.close();
+          },
+        }), { headers: { 'content-type': 'text/event-stream' } });
+      }
       if (pathname === `/api/${COMMUNITY}/chat`) {
         const body = await request.json();
         const events = [
@@ -314,7 +355,7 @@ const GEOMETRY = `(() => {
 // The contrast ratio (WCAG) of an element's text color against what is behind it: its
 // own and its ancestors' backgrounds, composited from the first opaque one up, over
 // white. Text must reach 4.5:1; a graphic (an icon) 3:1.
-const CONTRAST_OF = (selector) => `(() => {
+const CONTRAST_OF = (selector, property = 'color') => `(() => {
   const el = document.querySelector(${JSON.stringify(selector)});
   if (!el) return { ratio: null, why: 'no such element' };
   const parse = (value) => {
@@ -334,8 +375,8 @@ const CONTRAST_OF = (selector) => `(() => {
   }
   let backdrop = { r: 255, g: 255, b: 255, a: 1 };
   for (const layer of layers.reverse()) backdrop = over(layer, backdrop);
-  const fg = parse(getComputedStyle(el).color);
-  if (!fg) return { ratio: null, why: getComputedStyle(el).color };
+  const fg = parse(getComputedStyle(el)[${JSON.stringify(property)}]);
+  if (!fg) return { ratio: null, why: getComputedStyle(el)[${JSON.stringify(property)}] };
   const flat = over(fg, backdrop);
   const lum = (c) => {
     const f = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; };
@@ -573,7 +614,25 @@ const RAIL_CONTRASTS = [
   ['.osa-plan-rail-memory', 4.5, 'the memory budget'],
   ['.osa-plan-rail-change', 4.5, 'the change button'],
   ['.osa-plan-rail-done .osa-plan-rail-icon', 3, 'the check mark'],
+  // The rings, graphics too: the current step's, and a pending step's.
+  ['.osa-plan-rail-dot-current', 3, 'the current ring', 'borderTopColor'],
+  ['.osa-plan-rail-pending .osa-plan-rail-dot', 3, 'a pending ring', 'borderTopColor'],
 ];
+// What only a failed or a stopped plan paints, which the paused fixture never shows.
+const RAIL_STATE_CONTRASTS = {
+  failed: [
+    ['.osa-plan-rail-failed .osa-plan-rail-title', 4.5, 'the failed row'],
+    ['.osa-plan-rail-failed .osa-plan-rail-icon', 3, 'the failed mark'],
+    ['.osa-plan-rail-done .osa-plan-rail-icon', 3, 'the check mark'],
+    ['.osa-plan-rail-pending .osa-plan-rail-dot', 3, 'a pending ring', 'borderTopColor'],
+  ],
+  stopped: [
+    ['.osa-plan-rail-stopped .osa-plan-rail-title', 4.5, 'the stopped row'],
+    ['.osa-plan-rail-stopped .osa-plan-rail-icon', 3, 'the stopped mark'],
+    ['.osa-plan-rail-heading', 4.5, 'the "Plan stopped" heading'],
+    ['.osa-plan-rail-pending .osa-plan-rail-dot', 3, 'a pending ring', 'borderTopColor'],
+  ],
+};
 const RAIL_NOTEBOOK_CONTRAST = ['.osa-center-notebook-btn', 4.5, 'Continue in notebook'];
 
 async function checkPlanRail(cdp, base, screenshotDir, viewport, launcher) {
@@ -644,8 +703,8 @@ async function checkPlanRail(cdp, base, screenshotDir, viewport, launcher) {
   }
   await screenshot(cdp, sessionId, screenshotDir, `center-plan-${name}-${launcher}-light.png`);
 
-  for (const [selector, minimum, what] of launcher === 'capsule' ? [...RAIL_CONTRASTS, RAIL_NOTEBOOK_CONTRAST] : RAIL_CONTRASTS) {
-    const { ratio, why } = await call(CONTRAST_OF(selector));
+  for (const [selector, minimum, what, property] of launcher === 'capsule' ? [...RAIL_CONTRASTS, RAIL_NOTEBOOK_CONTRAST] : RAIL_CONTRASTS) {
+    const { ratio, why } = await call(CONTRAST_OF(selector, property));
     report(ratio !== null && ratio >= minimum, `${label}, light: ${what} reads at ${minimum}:1 or better`, ratio === null ? why : ratio);
   }
 
@@ -699,11 +758,91 @@ async function checkPlanRail(cdp, base, screenshotDir, viewport, launcher) {
   await Bun.sleep(400);
   const dark = await call(RAIL_GEOMETRY);
   report(!dark.sideways && Math.round(dark.rail.width) === 280 && dark.rowHeights.every((h) => h >= 36), `${label}, dark: the rail is 280 px, its rows at least 36 px, nothing scrolls sideways`, dark.rowHeights);
-  for (const [selector, minimum, what] of launcher === 'capsule' ? [...RAIL_CONTRASTS, RAIL_NOTEBOOK_CONTRAST] : RAIL_CONTRASTS) {
-    const { ratio, why } = await call(CONTRAST_OF(selector));
+  for (const [selector, minimum, what, property] of launcher === 'capsule' ? [...RAIL_CONTRASTS, RAIL_NOTEBOOK_CONTRAST] : RAIL_CONTRASTS) {
+    const { ratio, why } = await call(CONTRAST_OF(selector, property));
     report(ratio !== null && ratio >= minimum, `${label}, dark: ${what} reads at ${minimum}:1 or better`, ratio === null ? why : ratio);
   }
   await screenshot(cdp, sessionId, screenshotDir, `center-plan-${name}-${launcher}-dark.png`);
+  await cdp.send('Target.closeTarget', { targetId: page.targetId });
+}
+
+// A failed plan and a stopped one on the laptop rail, which the paused fixture does not
+// paint: the rows say their state, and their colors read in both schemes.
+async function checkPlanRailState(cdp, base, screenshotDir, variant) {
+  const label = `laptop capsule ${variant} plan`;
+  console.log(`--- ${label}: 1280 x 900`);
+  const page = await openPage(cdp, base, { name: 'laptop', width: 1280, height: 900 }, `/plan?launcher=capsule&variant=${variant}`);
+  const { sessionId } = page;
+  const call = (expression, options) => evaluate(cdp, sessionId, expression, options);
+  report(await call(WIDGET_READY), `${label}: the widget has its community config`);
+  await call(`document.getElementById('host-pill').focus()`);
+  await call(`OSAChatWidget.open({ mode: 'center' })`, { userGesture: true });
+  report(
+    await waitFor(cdp, sessionId, `document.querySelector('.osa-chat-window.open.osa-center .osa-plan-rail') !== null && document.querySelector('.osa-chat-messages .osa-run-card') !== null`, 'the dialog and its rail'),
+    `${label}: the dialog opens with the rail`
+  );
+  const g = await call(RAIL_GEOMETRY);
+  const expected = variant === 'failed'
+    ? ['osa-plan-rail-done', 'osa-plan-rail-done', 'osa-plan-rail-failed', 'osa-plan-rail-pending', 'osa-plan-rail-pending']
+    : ['osa-plan-rail-done', 'osa-plan-rail-done', 'osa-plan-rail-stopped', 'osa-plan-rail-pending', 'osa-plan-rail-pending'];
+  report(JSON.stringify(g.rows.map((r) => r.cls)) === JSON.stringify(expected), `${label}: the rows are done, done, ${variant}, pending, pending`, g.rows);
+  report(!g.sideways && g.rowHeights.length === 5 && g.rowHeights.every((h) => h >= 36), `${label}: five rows, at least 36 px tall, nothing scrolls sideways`, g.rowHeights);
+  for (const scheme of ['light', 'dark']) {
+    if (scheme === 'dark') {
+      await call(`OSAChatWidget.setColorScheme('dark')`);
+      await Bun.sleep(400);
+    }
+    for (const [selector, minimum, what, property] of RAIL_STATE_CONTRASTS[variant]) {
+      const { ratio, why } = await call(CONTRAST_OF(selector, property));
+      report(ratio !== null && ratio >= minimum, `${label}, ${scheme}: ${what} reads at ${minimum}:1 or better`, ratio === null ? why : ratio);
+    }
+    await screenshot(cdp, sessionId, screenshotDir, `center-plan-${variant}-${scheme}.png`);
+  }
+  await cdp.send('Target.closeTarget', { targetId: page.targetId });
+}
+
+// Run step N in the bar replaces the button that was pressed, and the strip it used to
+// send focus to is hidden while the rail shows: focus must land in the dialog, on the rail,
+// never fall to the page. happy-dom cannot see this; focus() on a display:none element is
+// only a no-op in a browser.
+async function checkRunStepFocus(cdp, base) {
+  const label = 'laptop capsule plan, Run step 4';
+  console.log(`--- ${label}: 1280 x 900`);
+  const page = await openPage(cdp, base, { name: 'laptop', width: 1280, height: 900 }, '/plan?launcher=capsule');
+  const { sessionId } = page;
+  const call = (expression, options) => evaluate(cdp, sessionId, expression, options);
+  report(await call(WIDGET_READY), `${label}: the widget has its community config`);
+  await call(`document.getElementById('host-pill').focus()`);
+  await call(`OSAChatWidget.open({ mode: 'center' })`, { userGesture: true });
+  report(
+    await waitFor(cdp, sessionId, `document.querySelector('.osa-chat-window.open.osa-center .osa-plan-rail') !== null && document.querySelector('.osa-plan-bar-run') !== null`, 'the rail and the bar'),
+    `${label}: the dialog opens with the rail and the paused bar`
+  );
+  report(await call(`getComputedStyle(document.querySelector('.osa-plan-strip')).display === 'none'`), `${label}: the strip is hidden, so it cannot take focus`);
+  // The click sends "Continue with step 4."; the test server answers it after a pause.
+  await call(`document.querySelector('.osa-plan-bar-run').click()`, { userGesture: true });
+  report(
+    await waitFor(cdp, sessionId, `[...document.querySelectorAll('.osa-chat-messages .osa-message')].some((m) => m.textContent.includes('Continue with step 4.'))`, 'the sent step'),
+    `${label}: the step is sent`
+  );
+  const where = await call(`(() => {
+    const el = document.activeElement;
+    return {
+      tag: el ? el.tagName : null,
+      inDialog: !!el && !!el.closest('.osa-chat-window'),
+      rail: !!el && el.classList.contains('osa-plan-rail'),
+      answered: [...document.querySelectorAll('.osa-chat-messages .osa-message')].some((m) => m.textContent.includes('Step 4 is next.')),
+    };
+  })()`);
+  report(!where.answered, `${label}: read before the answer arrives`, where);
+  report(where.tag !== 'BODY' && where.inDialog, `${label}: focus is inside the dialog, not on the page`, where);
+  report(where.rail, `${label}: on the rail, which says what the hidden strip would`, where);
+  report(
+    await waitFor(cdp, sessionId, `[...document.querySelectorAll('.osa-chat-messages .osa-message')].some((m) => m.textContent.includes('Step 4 is next.'))`, 'the reply'),
+    `${label}: the step is answered`
+  );
+  const after = await call(`(() => { const el = document.activeElement; return { tag: el && el.tagName, inDialog: !!el && !!el.closest('.osa-chat-window') }; })()`);
+  report(after.tag !== 'BODY' && after.inDialog, `${label}: and focus is still in the dialog once it is`, after);
   await cdp.send('Target.closeTarget', { targetId: page.targetId });
 }
 
@@ -739,6 +878,9 @@ async function check(screenshotDir) {
     await checkPlanRail(cdp, base, screenshotDir, { name: 'laptop', width: 1280, height: 900 }, 'capsule');
     await checkPlanRail(cdp, base, screenshotDir, { name: 'laptop', width: 1280, height: 900 }, 'bubble');
     await checkPlanRail(cdp, base, screenshotDir, { name: 'phone', width: 390, height: 844 }, 'capsule');
+    await checkPlanRailState(cdp, base, screenshotDir, 'failed');
+    await checkPlanRailState(cdp, base, screenshotDir, 'stopped');
+    await checkRunStepFocus(cdp, base);
   } finally {
     try { cdp?.close?.(); } catch (error) { /* already gone */ }
     chrome?.kill();
