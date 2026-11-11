@@ -857,7 +857,7 @@ A bar at the bottom says what the plan is waiting for:
 | Done or stopped | none; the strip says `Plan · all M steps done` or `Plan stopped · step N of M` |
 
 A polite live region of its own, outside the conversation, says where the plan stands (`Plan · step 2 of 3. Paused after step 1.`) each time that changes, since the strip and the bar are redrawn with the conversation.
-After Approve, focus moves to the card's heading; after **Run step N**, to the strip.
+After Approve, focus moves to the card's heading; after **Run step N**, to the strip (or, in the center-stage dialog while the rail hides the strip, to the rail, then the thread).
 
 **Stop plan** marks the plan stopped, cancels the run in progress, and the reply answers no further request for code: the request that arrives is left parked, as one past the 20-run cap is, and the next message repairs it.
 A plan is the newest plan in the conversation, so a paused plan continues in the next reply, and a plan proposed after "Change step N" replaces it.
@@ -870,7 +870,7 @@ In the center-stage dialog (see [The host API and the center-stage dialog](#the-
 The logic is `frontend/osa-plan-rail.js`, exposed as `OSARuntime.planRail.planRailOf(messages, {active})`, which reads `currentPlan` and `progressOf` from `osa-plan.js` and adds no progress model of its own; it returns `null` or `{heading, doneCount, total, mode, modeLabel, rows: [{n, title, state, hasCard, label}]}`.
 The rail shows for a proposed plan (`Proposed plan`, every step pending), an approved one (`Plan · 3 of 5 done`), a stopped one (`Plan stopped · 3 of 5 done`) and a finished one, and not for no plan, one the reader asked to change, or one nobody answered.
 A row is `done`, `current` (the step the plan is on or waiting to run, highlighted, `aria-current="step"`), `failed`, `stopped` or `pending`; the icon differs by state (a check, a ringed circle, an empty circle, a circled mark, a circled bar), and every row says its state in words for a screen reader (`Step 3, done`), so color is never the only cue.
-A row whose step has a run card is a button that scrolls to and focuses the newest card of that step (the card has `data-plan-step`); the others are plain text.
+A row whose step has a run card is a button that scrolls to and focuses the newest card of that step (the card has `data-plan-step`); the others are plain text; if a card is not in the thread, the click goes to the newest card, or the thread, so it always does something.
 It uses buttons, not `#` links, so the host page's address and history never change.
 The foot shows the run mode, read-only (the mode goes to the model once, in the decision, and there is no way to change it afterwards), and `Memory budget 512 MB · change`, a button that opens Settings with focus on the memory choice that is on.
 While the rail shows, the progress strip in the thread is hidden (the rail says the same) and the paused bar stays, with **Run step N** and **Change step N**.
