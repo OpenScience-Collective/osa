@@ -378,6 +378,43 @@ try {
   overviewBackend.stop(true);
 }
 
+// The reader's usage-data choice (#706) is a body field the backend reads, so the worker
+// must pass it through untouched: it removes the Turnstile token and nothing else.
+console.log('\nshare_usage in the body reaches the backend on /chat and /chat/resume');
+const usageSeen = [];
+const usageBackend = Bun.serve({
+  port: 0,
+  async fetch(request) {
+    usageSeen.push({ path: new URL(request.url).pathname, body: JSON.parse(await request.text()) });
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  },
+});
+try {
+  const env = { BACKEND_URL: `http://localhost:${usageBackend.port}`, BACKEND_API_KEY: 'test-key' };
+  const post = (path, body) => call(path, { method: 'POST', body, env });
+  const chatBody = { message: 'hi', stream: true, cf_turnstile_response: 'token', share_usage: false };
+  const resumeBody = { session_id: 's', result: { call_id: 'c', status: 'ok' }, share_usage: false };
+
+  assertEqual((await post(`/${COMMUNITY}/chat`, chatBody)).status, 200, '/chat with share_usage false is served');
+  assertEqual(usageSeen.at(-1).path, `/${COMMUNITY}/chat`, 'at the stripped path');
+  assertEqual(usageSeen.at(-1).body.share_usage, false, '/chat carries share_usage: false to the backend');
+  assert(!('cf_turnstile_response' in usageSeen.at(-1).body), 'while the Turnstile token is still removed');
+
+  assertEqual((await post(`/${COMMUNITY}/chat/resume`, resumeBody)).status, 200, '/chat/resume with share_usage false is served');
+  assertEqual(usageSeen.at(-1).path, `/${COMMUNITY}/chat/resume`, 'at the resume path');
+  assertEqual(usageSeen.at(-1).body.share_usage, false, '/chat/resume carries share_usage: false to the backend');
+
+  await post(`/${COMMUNITY}/chat`, { message: 'hi' });
+  assert(!('share_usage' in usageSeen.at(-1).body), 'a /chat without the field forwards none (sharing is the default)');
+  await post(`/${COMMUNITY}/chat/resume`, { session_id: 's', result: { call_id: 'c', status: 'ok' } });
+  assert(!('share_usage' in usageSeen.at(-1).body), 'nor does a /chat/resume');
+} finally {
+  usageBackend.stop(true);
+}
+
 console.log('\nthe runtime route takes a bare wheel name, and GET only');
 // No '..' case: URL parsing resolves it before any route sees the path.
 for (const name of ['config.yaml', 'lock.json', 'tinypkg.whl.txt', 'a/b.whl']) {
