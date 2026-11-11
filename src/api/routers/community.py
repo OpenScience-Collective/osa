@@ -17,12 +17,12 @@ from collections.abc import AsyncGenerator, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal, NamedTuple
+from typing import Annotated, Any, Literal, NamedTuple, Self
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from src.agents.base import (
     CLIENT_TOOLS_NODE,
@@ -164,6 +164,30 @@ class ChatMessage(BaseModel):
     content: str = Field(..., description="Message content")
 
 
+# A dataset id as a host page names it, the widget's own rule (isValidDatasetId).
+DATASET_ID_PATTERN = r"^[A-Za-z0-9._-]{1,64}$"
+
+
+class MovedFrom(BaseModel):
+    """The context a reader left in this conversation: a dataset, or the search page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["dataset", "search"] = Field(..., description="What the reader left")
+    id: str | None = Field(
+        default=None,
+        pattern=DATASET_ID_PATTERN,
+        description="The dataset id; required for a dataset, absent for search",
+    )
+
+    @model_validator(mode="after")
+    def dataset_needs_id(self) -> Self:
+        """A dataset context without an id says nothing."""
+        if self.type == "dataset" and self.id is None:
+            raise ValueError("moved_from of type 'dataset' needs an id")
+        return self
+
+
 class PageContext(BaseModel):
     """Context about the page where the widget is embedded."""
 
@@ -181,6 +205,15 @@ class PageContext(BaseModel):
         default=None,
         description="Per-page instructions for the assistant set by the widget embedder",
         max_length=2000,
+    )
+    dataset_id: str | None = Field(
+        default=None,
+        pattern=DATASET_ID_PATTERN,
+        description="The dataset the page names with setDataset; sent whether or not the reader shares the page URL",
+    )
+    moved_from: MovedFrom | None = Field(
+        default=None,
+        description="Set on the first request after the reader chose to continue a conversation in a new context",
     )
 
     @field_validator("url")
@@ -388,6 +421,13 @@ class WidgetConfigResponse(BaseModel):
         description=(
             "Question templates for a page that names a dataset with setDataset, in place "
             "of suggested_questions; omitted when the community sets none"
+        ),
+    )
+    search_paths: list[str] | None = Field(
+        default=None,
+        description=(
+            "Page paths where the reader is searching; the widget gives the conversation "
+            "the 'search' context there. Omitted when the community sets none"
         ),
     )
     logo_url: str | None = Field(
@@ -2165,6 +2205,12 @@ def create_community_assistant(
             url=page_context.url,
             title=page_context.title,
             widget_instructions=page_context.widget_instructions,
+            dataset_id=page_context.dataset_id,
+            moved_from=(
+                page_context.moved_from.model_dump(exclude_none=True)
+                if page_context.moved_from
+                else None
+            ),
         )
 
     assistant = registry.create_assistant(

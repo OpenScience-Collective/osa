@@ -123,6 +123,62 @@ class TestAskRequestWithPageContext:
         assert "URL must start with http://" in str(exc_info.value)
 
 
+class TestPageContextReaderFields:
+    """dataset_id and moved_from (#656): validated where the request enters."""
+
+    def test_accepts_dataset_id_and_moved_from(self):
+        ctx = PageContext(dataset_id="nm000241", moved_from={"type": "dataset", "id": "on002718"})
+        assert ctx.dataset_id == "nm000241"
+        assert ctx.moved_from is not None
+        assert ctx.moved_from.type == "dataset"
+        assert ctx.moved_from.id == "on002718"
+
+    def test_moved_from_search_needs_no_id(self):
+        ctx = PageContext(moved_from={"type": "search"})
+        assert ctx.moved_from is not None
+        assert ctx.moved_from.id is None
+
+    def test_both_are_optional(self):
+        ctx = PageContext(url="https://example.com")
+        assert ctx.dataset_id is None
+        assert ctx.moved_from is None
+
+    @pytest.mark.parametrize("bad", ["", "a b", "a/b", "x" * 65, "id;drop", "id\n", "\u00e9"])
+    def test_rejects_dataset_id_outside_the_pattern(self, bad):
+        with pytest.raises(ValidationError):
+            PageContext(dataset_id=bad)
+
+    @pytest.mark.parametrize("bad", ["", "a b", "a/b", "x" * 65, "id\n"])
+    def test_rejects_moved_from_id_outside_the_pattern(self, bad):
+        with pytest.raises(ValidationError):
+            PageContext(moved_from={"type": "dataset", "id": bad})
+
+    @pytest.mark.parametrize("bad", ["notebook", "", "Dataset", None])
+    def test_rejects_unknown_moved_from_type(self, bad):
+        with pytest.raises(ValidationError):
+            PageContext(moved_from={"type": bad, "id": "nm000241"})
+
+    def test_rejects_moved_from_dataset_without_id(self):
+        with pytest.raises(ValidationError):
+            PageContext(moved_from={"type": "dataset"})
+
+    def test_rejects_unknown_moved_from_field(self):
+        with pytest.raises(ValidationError):
+            PageContext(moved_from={"type": "search", "extra": "x"})
+
+    def test_chat_request_carries_both(self):
+        req = ChatRequest(
+            message="Compare them",
+            page_context={
+                "dataset_id": "nm000241",
+                "moved_from": {"type": "dataset", "id": "on002718"},
+            },
+        )
+        assert req.page_context is not None
+        assert req.page_context.dataset_id == "nm000241"
+        assert req.page_context.moved_from.id == "on002718"
+
+
 class TestChatRequestWithPageContext:
     """Tests for ChatRequest with page context."""
 

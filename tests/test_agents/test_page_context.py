@@ -748,3 +748,59 @@ class TestCommunityAssistantWithPageContext:
         prompt = assistant.get_system_prompt()
         assert "Widget Page Context" not in prompt
         assert "Page Context" in prompt
+
+
+class TestReaderContextInSystemPrompt:
+    """The dataset the page names, and the move the reader chose to continue across (#656)."""
+
+    @staticmethod
+    def _nemar_prompt(page_context: PageContext) -> str:
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        assistant = registry.create_assistant(
+            "nemar", model=model, preload_docs=False, page_context=page_context
+        )
+        return assistant.get_system_prompt()
+
+    def test_dataset_id_without_page_url(self):
+        """The dataset id is in the prompt when the reader shares no page URL."""
+        prompt = self._nemar_prompt(PageContext(dataset_id="nm000241"))
+        assert "Reader Context" in prompt
+        assert "nm000241" in prompt
+        assert "Page URL" not in prompt
+
+    def test_no_moved_from_note_by_default(self):
+        """Without moved_from the prompt does not say the reader moved."""
+        prompt = self._nemar_prompt(PageContext(dataset_id="nm000241"))
+        assert "moved from" not in prompt
+
+    def test_moved_from_dataset_note(self):
+        """A move between datasets names both."""
+        prompt = self._nemar_prompt(
+            PageContext(dataset_id="nm000241", moved_from={"type": "dataset", "id": "on002718"})
+        )
+        assert "moved from dataset `on002718` to dataset `nm000241`" in prompt
+
+    def test_moved_from_search_note(self):
+        """A move from the search page to a dataset says so."""
+        prompt = self._nemar_prompt(
+            PageContext(dataset_id="nm000241", moved_from={"type": "search"})
+        )
+        assert "moved from the dataset search to dataset `nm000241`" in prompt
+
+    def test_moved_to_search_note(self):
+        """A move from a dataset to the search page has no dataset id to name."""
+        prompt = self._nemar_prompt(PageContext(moved_from={"type": "dataset", "id": "on002718"}))
+        assert "moved from dataset `on002718` to the dataset search" in prompt
+
+    def test_dataset_id_beside_page_url(self):
+        """With a URL as well, both sections are present."""
+        prompt = self._nemar_prompt(
+            PageContext(
+                url="https://nemar.org/dataset/nm000241",
+                title="nm000241",
+                dataset_id="nm000241",
+            )
+        )
+        assert "Reader Context" in prompt
+        assert "https://nemar.org/dataset/nm000241" in prompt

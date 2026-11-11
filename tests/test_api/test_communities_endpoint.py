@@ -113,6 +113,17 @@ class TestCommunitiesEndpoint:
         others = {cid: w.get("user_bubble_color") for cid, w in by_id.items() if cid != "nemar"}
         assert others and all(color is None for color in others.values()), others
 
+    def test_nemar_names_its_search_path_and_no_other_community_does(self) -> None:
+        """NEMAR's /discover is the search context (#656); a community that sets no
+        search_paths sends none."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        assert by_id["nemar"]["search_paths"] == ["/discover"]
+        others = {cid: w.get("search_paths") for cid, w in by_id.items() if cid != "nemar"}
+        assert others and all(paths is None for paths in others.values()), others
+
     def test_only_nemar_sets_its_own_launcher_or_label(self) -> None:
         """NEMAR is the only community on the three-icon capsule launcher (#436); every
         other community stays on the 'bubble' default and sets no launcher_label."""

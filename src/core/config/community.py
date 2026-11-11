@@ -1527,6 +1527,9 @@ LAUNCHER_GEOMETRY_FIELDS = (
 )
 
 
+MAX_WIDGET_SEARCH_PATHS = 5
+
+
 class WidgetConfig(BaseModel):
     """Widget display configuration for frontend embedding.
 
@@ -1557,6 +1560,17 @@ class WidgetConfig(BaseModel):
     ``suggested_questions`` everywhere else. Mid-conversation, a dataset the
     conversation has not been on yet gets up to two, in a compact row above the
     input. Unset, every page shows ``suggested_questions`` as before.
+    """
+
+    search_paths: list[str] = Field(default_factory=list)
+    """Page paths where the reader is searching rather than viewing a dataset (E1.3).
+
+    A page whose ``location.pathname`` is one of these, or below one at a path-segment
+    boundary (``/discover`` matches ``/discover/x`` but not ``/discovery``), gives the
+    conversation the "search" context, as ``setDataset`` gives it a dataset's. A page
+    that names a dataset or matches no path keeps the conversation's context. Each
+    path starts with ``/`` and has no query or fragment; at most
+    ``MAX_WIDGET_SEARCH_PATHS``.
     """
 
     theme_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
@@ -1786,6 +1800,24 @@ class WidgetConfig(BaseModel):
             raise ValueError(msg)
         return v
 
+    @field_validator("search_paths")
+    @classmethod
+    def validate_search_paths(cls, v: list[str]) -> list[str]:
+        """Each path starts with ``/`` and carries no query, fragment or whitespace."""
+        if len(v) > MAX_WIDGET_SEARCH_PATHS:
+            msg = f"Too many search paths ({len(v)}). Maximum is {MAX_WIDGET_SEARCH_PATHS}."
+            raise ValueError(msg)
+        for path in v:
+            if not path.startswith("/"):
+                raise ValueError(f"Search path {path!r} must start with '/'")
+            if any(ch in path for ch in "?#") or any(ch.isspace() for ch in path):
+                raise ValueError(
+                    f"Search path {path!r} must not contain a query, a fragment or whitespace"
+                )
+            if len(path) > 200:
+                raise ValueError(f"Search path {path!r} is longer than 200 characters")
+        return v
+
     def resolve(self, community_name: str, logo_url: str | None = None) -> dict[str, Any]:
         """Return widget config with defaults applied.
 
@@ -1805,6 +1837,8 @@ class WidgetConfig(BaseModel):
             result["dataset_suggested_questions"] = [
                 q.model_dump() for q in self.dataset_suggested_questions
             ]
+        if self.search_paths:
+            result["search_paths"] = list(self.search_paths)
         if self.theme_color:
             result["theme_color"] = self.theme_color
         if self.user_bubble_color:

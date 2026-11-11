@@ -31,6 +31,10 @@ widget:
   title: NEMAR Assistant
   initial_message: "Hi! I'm the NEMAR Assistant. I can help you discover and explore BIDS-formatted EEG, MEG, and iEEG datasets from the NEMAR archive. What are you looking for?"
   placeholder: Search for datasets...
+  # nemar.org's dataset search page (#656): a conversation started there is about the
+  # search, and moving to a dataset page or back starts a new chat on the next message.
+  search_paths:
+    - /discover
   # nemar.org's own brand teal (#5bbad5, its --brand-teal), the exact color of its home
   # page search button. White text on it is only 2.2:1, so unlike the platform default
   # this surface pairs with a dark theme_text_color rather than white.
