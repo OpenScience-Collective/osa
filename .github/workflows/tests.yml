@@ -222,15 +222,22 @@ jobs:
         run: |
           uv sync --frozen --extra dev
 
-      # tests/test_frontend/test_workspace_export.py spawns a small Bun
-      # script (build_workspace_export_fixture.js) that calls the real
-      # frontend/osa-workspace.js; it has no external package dependencies,
-      # so `bun` on PATH is enough here, with no `bun install` needed.
+      # Two kinds of frontend fixture run under Bun here. tests/test_frontend/
+      # test_workspace_export.py spawns build_workspace_export_fixture.js, which calls
+      # the real frontend/osa-workspace.js and has no package dependencies. The plan
+      # tests (test_plan_resume_payload.py, build_plan_payload_fixture.js) load the
+      # widget through frontend/test-support/plan-widget-harness.js, which imports
+      # happy-dom, so the dependencies are installed too. There is no Bun lockfile in
+      # the repo, so this is a plain `bun install`, as in the Frontend job.
       - name: Set up Bun
         if: env.RUN_ALL == 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
+
+      - name: Install frontend test dependencies
+        if: env.RUN_ALL == 'true'
+        run: bun install
 
       # The union of the two old selections: tests.yml ran everything outside
       # tests/test_integration that is not network or llm, test.yml everything
