@@ -873,7 +873,7 @@ class TestTheTopographyAndTimeFrequencyDocuments:
     ) -> None:
         # (The two position fences are byte-identical: the marker test above pins that.)
         band = _fence_with(documents[BAND_TOPOGRAPHY], "positions = {")
-        # The 10-10 table is a fence of about 2.3k characters; the 343-label one was 9k.
+        # The 10-10 table is a fence of about 2.3k characters; the earlier full table was about 9k.
         assert len(band) < 3_000
         for procedure_id in TOPOGRAPHIES:
             assert len(documents[procedure_id]) <= TOPOGRAPHY_SIZE_CAP, procedure_id
