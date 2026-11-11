@@ -681,7 +681,8 @@ Each step has Edit (a title field of at most 120 characters and a detail field o
 A title is kept to one line, as the server keeps it.
 Two radios choose what happens when a step finishes: **Pause so I can look** (the default, `pause`) or **Run all steps** (`run_all`).
 **Approve and run step 1** posts the decision with the steps as they stand; **Ask for changes** opens an optional note of at most 1000 characters and posts `changes_requested`, which runs no code.
-Approve and Ask for changes are at least 44 px tall.
+Approve, Ask for changes, the Edit and Remove buttons and the bar's buttons are at least 44 px tall.
+Limits count code points, as the server's do, so a title with emoji is cut at a character, never in the middle of one.
 While a step is being edited the decision waits, so an unsaved edit is never sent or lost.
 The body is exactly `{session_id, result: {call_id, decision, steps, run_mode, feedback?}, client_tools}` (and `page_context` when the reader shares the page); `feedback` is left out when it is empty.
 The model's findings, titles and details, and the reader's text, are escaped.
@@ -691,10 +692,18 @@ While the card waits, the input is off and the conversation says it is waiting f
 After an approval, a run of `execute_code` that is the plan's next step, or the second attempt of a step that failed, is not asked about; the widget answers the controller's permission gate with Run, so `frontend/osa-controller.js` is unchanged.
 Any other request asks as before: a third attempt at one step, a request after the last step, any request after **Stop plan** or **Ask for changes**, and any code in a plan that is not approved.
 
+**The trust model: consent is by position, not by content.**
+The widget cannot tell whether a request's code is the step the plan describes, so it does not try: once a plan is approved, the next `execute_code` request after the plan, or after an `ok` run, is the next step, in this reply or in any later one.
+In pause mode that includes a request the model makes in answer to an unrelated question typed between steps; it runs without a permission card.
+What approving allows is bounded by the sandbox (Python in the reader's browser, the egress allowlist, the limits on a run), by the plan's own length (a step runs at most twice, and nothing runs after the last step), and by the reader, who can press **Stop plan** at any time and who reads each step's code on its run card.
+A new plan, from "Change step N", must be approved again, and counts only the runs from the reply that proposed it onward.
+A decision that does not reach the server (the post fails, or the parked call has expired) is undone on the page: the plan reads `Not answered`, is read-only and covers no run, so its code asks as before.
+
 **Which step a run is** is decided in the widget, with no change to the server.
-The first run of an approved plan is step 1; a run after an `ok` run is the next step; a run after a run that did not work (`error`, `timeout`, `oom`, or one the reader stopped) is the next attempt of the same step, to two attempts.
+The first run of an approved plan is step 1; a run after an `ok` run is the next step; a run after a run that did not work (`error`, `timeout`, `oom`, `denied`, or one the reader stopped) is the next attempt of the same step, to two attempts.
+`denied` under an approved plan is the runtime's refusal, not the reader's (the gate answers Run), most often a package the runtime does not have (`denied_import: scipy`), so it is a failed step like an error.
 A run that is none of these is not a step.
-Each stored run carries `step`, `attempt`, `stepTitle` and `elapsedMs`, so the run card says `Step 2 · <title>` (or `Step 2 failed · KeyError: 'x'`, or `Step 2 stopped`) with how long it took, a failed step's retry line says which attempt is next, and `OSARuntime.buildConversationNotebook` names the notebook's step by the title.
+Each stored run carries `step`, `attempt`, `stepTitle` and `elapsedMs`, so the run card says `Step 2 · <title>` (or `Step 2 failed · KeyError: 'x'`, `Step 2 failed · denied_import: scipy`, or `Step 2 stopped`) with how long it took, a failed step's retry line says which attempt is next, and `OSARuntime.buildConversationNotebook` names the notebook's step by the title.
 
 **The strip and the bar.**
 A strip at the top of the conversation says `Plan · step N of M`, with a segment for each step and `Pauses after each step` or `Runs all steps`.
@@ -707,6 +716,9 @@ A bar at the bottom says what the plan is waiting for:
 | Paused after a step | **Run step N** (sends the message `Continue with step N.`), **Change step N** (focuses the input with `Change step N: ` typed in; the model must propose a new plan) and **Stop plan** |
 | A step has failed with no attempt left | **Change step N** and **Stop plan** |
 | Done or stopped | none; the strip says `Plan · all M steps done` or `Plan stopped · step N of M` |
+
+A polite live region of its own, outside the conversation, says where the plan stands (`Plan · step 2 of 3. Paused after step 1.`) each time that changes, since the strip and the bar are redrawn with the conversation.
+After Approve, focus moves to the card's heading; after **Run step N**, to the strip.
 
 **Stop plan** marks the plan stopped, cancels the run in progress, and the reply answers no further request for code: the request that arrives is left parked, as one past the 20-run cap is, and the next message repairs it.
 A plan is the newest plan in the conversation, so a paused plan continues in the next reply, and a plan proposed after "Change step N" replaces it.
