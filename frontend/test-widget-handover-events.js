@@ -6,15 +6,17 @@
  * for code or a plot on a NEW session. The stream carries three `handover` events
  * (`summarizing`, `summarized`, `started`), and then the analysis run, which opens with
  * its own `session` event naming the new id and ends with a `done` that carries it again.
- * The handover card that shows those stages is separate work (E8.3); until it lands the
- * contract is that the widget as it is today keeps working:
+ * The handover card that draws those stages is tested in test-widget-handover-card.js;
+ * this file holds the stream contract around it:
  *
- *   - the `handover` events change nothing on the page (no message, no status, no label);
+ *   - each `handover` event moves the page on one step (a card at `summarizing`, its
+ *     summary line at `summarized`, the divider at `started`), and none of them adds a
+ *     reply of its own or ends the loading state;
  *   - the second `session` event is adopted, so the next message goes to the new session;
  *   - the reply the analysis run writes is the reply the reader sees, once, and
  *     `done.session_id` is what the widget keeps;
  *   - a `handover` event with fields the widget has never seen, or a stage it does not
- *     know, is ignored as well.
+ *     know, is ignored.
  *
  * What stands in: `fetch` answers with the SSE the test writes event by event. The widget,
  * its stream handler and its reveal are the real ones, in a happy-dom window.
@@ -138,6 +140,11 @@ function send(loaded, question) {
 
 const settled = (loaded) => !loaded.container.querySelector('.osa-send-btn').disabled;
 
+/** The steps the handover card lists, in order. */
+function cardSteps(container) {
+  return [...container.querySelectorAll('.osa-handover .osa-handover-step')].map((el) => el.textContent.replace(/\s+/g, ' ').trim());
+}
+
 /** What the page shows of a pending reply, as a reader would read it. */
 function view(container) {
   const text = (selector) => {
@@ -165,10 +172,10 @@ async function handled(loaded, stream) {
 }
 
 console.log('='.repeat(60));
-console.log('Widget: the quick-to-analysis handover stream (#670)');
+console.log('Widget: the quick-to-analysis handover stream (#670, #677)');
 console.log('='.repeat(60));
 
-console.log('\nthe handover events change nothing on the page, and the new session is adopted');
+console.log('\neach handover event moves the card on, and the new session is adopted');
 {
   const loaded = loadWidget();
   await loaded.ready();
@@ -178,10 +185,12 @@ console.log('\nthe handover events change nothing on the page, and the new sessi
   stream.send({ event: 'session', session_id: 'old-session' });
   await handled(loaded, stream);
   const before = view(loaded.container);
+  assertEqual(before.cards, 0, 'before the handover there is no card');
 
   stream.send({ event: 'handover', stage: 'summarizing' });
   await handled(loaded, stream);
-  assertEqual(view(loaded.container), before, 'summarizing: the page is as it was');
+  assertEqual(cardSteps(loaded.container), ['Summarizing our conversation\u2026'], 'summarizing: the card says so');
+  assertEqual(view(loaded.container).assistants, before.assistants, 'summarizing: no reply is added');
 
   stream.send({
     event: 'handover',
@@ -191,17 +200,25 @@ console.log('\nthe handover events change nothing on the page, and the new sessi
     summary: 'The reader chose on002718, 18 participants.',
   });
   await handled(loaded, stream);
-  assertEqual(view(loaded.container), before, 'summarized: the page is as it was');
+  assertEqual(cardSteps(loaded.container), ['Summarized our conversation (4 messages, 12 words)'], 'summarized: the card says what was summarized');
+  assertEqual(view(loaded.container).assistants, before.assistants, 'summarized: still no reply');
 
   stream.send({ event: 'handover', stage: 'started', session_id: 'new-session', model: 'claude-sonnet-5-5' });
   await handled(loaded, stream);
-  assertEqual(view(loaded.container), before, 'started: the page is as it was');
+  assertEqual(
+    cardSteps(loaded.container),
+    ['Summarized our conversation (4 messages, 12 words)', 'Handing it to the analysis model with your question'],
+    'started: the hand-off step follows'
+  );
+  assert(!!loaded.container.querySelector('[role="separator"]'), 'started: the divider is drawn');
+  assertEqual(view(loaded.container).cards, 1, 'still one card');
 
-  // A stage and a field this widget has never heard of.
+  // A stage and a field this widget has never heard of change nothing.
+  const cardBefore = loaded.container.querySelector('.osa-handover-group').innerHTML;
   stream.send({ event: 'handover', stage: 'brand-new-stage', whatever: { nested: true } });
-  stream.send({ event: 'handover', stage: 'summarized', degraded: true, summary: 'x', words: 1, messages: 1 });
+  stream.send({ event: 'handover', stage: 'started', model: 'claude-sonnet-5-5', whatever: 'else' });
   await handled(loaded, stream);
-  assertEqual(view(loaded.container), before, 'an unknown stage, and a summary flagged degraded: ignored too');
+  assertEqual(loaded.container.querySelector('.osa-handover-group').innerHTML, cardBefore, 'an unknown stage, and an unknown field on a known one: ignored');
 
   // The analysis run: its own session event names the new id, and done carries it again.
   stream.send({ event: 'session', session_id: 'new-session' });

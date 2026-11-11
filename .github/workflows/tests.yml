@@ -477,9 +477,14 @@ jobs:
         run: bun frontend/test-widget-activity-status.js
 
       # The handover stream (#670): the `handover` events and a second `session`
-      # event, against the widget as it is until the E8.3 card lands.
+      # event, and how the widget takes them.
       - name: Run the handover stream tests on a real DOM
         run: bun frontend/test-widget-handover-events.js
+
+      # The handover card (#677, E8.3): the stages, the divider, the mode label and the
+      # footnote, and all of it back after a reload and from History.
+      - name: Run the handover card tests on a real DOM
+        run: bun frontend/test-widget-handover-card.js
 
       # The run card: consent, running, done with and without a figure, each status,
       # the same card after a reload, and a failed run's error, failing line,
