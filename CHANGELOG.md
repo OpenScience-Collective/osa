@@ -90,7 +90,7 @@ the version being released and start a new `[Unreleased]` section above it.
   A sentence holding a link (a scheme, `www.`, or a bare host on a common suffix) is dropped, and a reply whose summary names no result answers 502 and is not cached; a long first sentence is kept instead of leaving nothing.
   Overviews are cached in memory for 24 hours (500 per community, oldest evicted) under the normalized query, the canonical filters and a hash of the results payload, so a caller cannot plant an overview for other results.
   Identical concurrent requests share one call, and failures are never cached.
-  The request's `request_log` row has the community, tier `quick`, model, tokens and cost (`overview` is now in the metrics middleware's community suffixes); a cache hit adds none.
+  The request's `request_log` row has the community, tier `quick`, model, tokens and cost (`overview` is now in the metrics middleware's community suffixes); a cache hit, or a request that shared another's call, logs a row with zero tokens and zero cost.
   A call whose starting request is cancelled books its own cost once, on a 499 row.
   An error that is not the provider's is a 500 logged with its traceback; a classified provider failure is a 502.
   `create_community_assistant`'s provider block is now `_build_chat_model`, and the summarizer's one-retry call is the public `invoke_with_retry`, both shared with the new route.
