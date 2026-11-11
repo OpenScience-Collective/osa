@@ -89,6 +89,29 @@ plan_first_instructions: |
   Never run code that is not a step of the approved plan. If the work turns out to need a
   step the plan does not have, stop and propose a new plan instead.
 
+# Known analysis procedures (#719): each a Markdown document in procedures/, listed in the
+# prompt by id, title and `when` and fetched by the model (get_procedure) before it proposes
+# a plan, so their text and code cost context only on the turns that use them. They are
+# offered only on a turn that can run code. The Welch block and the filter block in them are
+# run as written by frontend/test-data-lane.js.
+procedures:
+  - id: power-spectrum
+    title: Power spectrum
+    when: A power spectrum or power spectral density (PSD) of a recording, such as "show the power spectrum" or "plot the PSD"
+    file: procedures/power-spectrum.md
+  - id: band-power
+    title: Band power
+    when: The power in frequency bands (delta, theta, alpha, beta, or the reader's own) of a recording, as a bar chart or a table
+    file: procedures/band-power.md
+  - id: erp-by-condition
+    title: ERP by condition
+    when: The average ERP (evoked response) at a channel, one line per condition, such as target against non-target or face against scrambled face
+    file: procedures/erp-by-condition.md
+  - id: erp-image-by-condition
+    title: ERP image by condition
+    when: An ERP image (single-trial epochs as the rows of an image, with the average beneath it) of a channel, one panel per condition
+    file: procedures/erp-image-by-condition.md
+
 # External links for dashboard and discovery
 links:
   homepage: https://nemar.org
@@ -362,77 +385,7 @@ system_prompt: |
     labeled `HEOG_left`, `HEOG_right` and `VEOG_lower`). Leave out every label that
     contains `EOG`, `ECG`, `EKG` or `EMG`, matched in upper case anywhere in the label
     rather than by exact name, and say which you left out and how many EEG channels remain
-    (the block below prints the count and the labels it left out).
-  - **Power spectrum.** Welch's method over a long read (a minute or more, or the
-    whole recording), with 2-second segments, ONE CHANNEL AT A TIME. Read the
-    recording in pieces, give each channel of each piece its own `signal.welch` call,
-    and average the estimates over all the pieces, weighted by their segment counts,
-    which is exactly what one call over the whole channel would return. Replace
-    `DATASET_ID`, `RECORDING_PATH` and `GROUP` as in the snippet above, and `budget_mb` with the reader's budget as your
-    instructions state it; change nothing else:
-
-    ```python
-    import numpy as np
-    from scipy import signal
-    import eegprep_lean
-    index = await eegprep_lean.read_index("DATASET_ID")
-    store = index.store("RECORDING_PATH")
-    group = store.group("GROUP")
-    rate = group.rate
-    nperseg = int(2 * rate)
-    noverlap = nperseg // 2
-    hop = nperseg - noverlap  # welch steps by this many samples from segment to segment
-    budget_mb = 512  # the reader's browser memory budget, as your instructions state it
-    total = (group.n_samples - noverlap) // hop  # segments one welch call over the whole channel would average
-    assert total >= 1, "the recording is shorter than one segment"
-    # Samples in one piece: the most one welch call takes in this runtime, and what a quarter of
-    # the budget holds of the read (every channel, 8 bytes a sample) and welch's working space
-    # for one channel (about 90 bytes a sample; this allows 160). A quarter, since the runtime's
-    # memory comes to about three times the read, plus about 100 MB for the interpreter.
-    piece = min(2**28 // nperseg, budget_mb * 2**20 // 4 // (group.n_channels * 8 + 160))
-    m = max(1, (piece - nperseg) // hop + 1)  # segments in a piece
-    keep, summed, used = None, 0.0, 0
-    for first in range(0, total, m):  # the piece's first segment; it starts at sample first * hop
-        k = min(m, total - first)  # segments in this piece
-        n = (k - 1) * hop + nperseg  # the samples of exactly those k segments
-        window = await eegprep_lean.read_window(
-            index, store, group=group, start_sample=first * hop, n_samples=n,
-        )
-        assert window.data.shape[1] == n, "the read came back short"
-        if keep is None:  # the EEG channels, by label, as the first piece shows them
-            labels = window.labels or [""] * window.data.shape[0]
-            keep = [i for i, label in enumerate(labels)
-                    if not any(tag in label.upper() for tag in ("EOG", "ECG", "EKG", "EMG"))]
-            left_out = [labels[i] for i in range(len(labels)) if i not in keep]
-            summed = np.zeros((len(keep), nperseg // 2 + 1))
-        for row, i in enumerate(keep):  # one channel at a time
-            freqs, p = signal.welch(window.data[i], fs=rate, nperseg=nperseg, noverlap=noverlap)
-            summed[row] += k * p
-        used += k
-    power = summed / used  # channels x frequencies
-    assert used == total, (used, total)
-    covered = (total * hop + noverlap) / rate  # seconds those segments span
-    print(f"{total} segments of 2 s, {covered:.0f} s of the recording, in pieces of {m} segments, {len(keep)} EEG channels, left out: {left_out or 'none'}")
-    ```
-
-    `signal.welch` makes a view of every window at once, and this runtime (32-bit
-    WebAssembly) refuses a view of 2 GiB or more, which is samples x nperseg x 8
-    bytes for one channel and channels times that for an array. So a
-    channels-by-samples array raises "array is too big" even at 33 channels by 30,000
-    samples, and so does one channel past `2**28 // nperseg` samples (about 36 minutes
-    at 250 Hz, 2 at 1000 Hz). Never pass it more than one channel or more than one
-    piece. A piece is also what one read takes, so no read passes the budget however
-    long the recording is; with many channels the budget, not welch, sets the piece.
-    The pieces start every `m * hop` samples and each holds exactly its `k` segments,
-    so together they cover every segment one call over the whole channel would: the
-    spectrum is of the whole recording, and the printed line says how many segments
-    and seconds that was and how many EEG channels it averaged. Say so in your answer.
-    Plot power on a log y-axis over the band that matters (1 to 40 Hz for most EEG).
-    Before drawing, set the y-limits from the median spectrum across channels in that
-    band: a third of its lowest value at the bottom, three times its highest at the top,
-    raised to include any peak you name. That keeps a flat or noisy channel from
-    squashing the rest; say how many channels fall outside, if any. Name any peak you
-    describe with its channel and frequency.
+    (the code in the procedure documents prints the count and the labels it left out).
   - **Events.** Call `nemar_get_events` with `limit: 1` first. Its `columns_summary`
     lists every column and, when a column has few, its values, and that is where the
     conditions are: BIDS names them in `trial_type`, but datasets also use `value` or
@@ -457,47 +410,6 @@ system_prompt: |
     If a call's rows are not all the condition you asked for, the server ignored the
     filter: say so, rather than sorting them yourself. If the recording has no events, or none that name conditions (a resting-state
     recording, for one), say so and offer its power spectrum instead.
-  - **Epochs and ERP images.** Re-reference to the average of the EEG channels
-    (subtract their mean at each sample). Then low-pass at 30 Hz, zero-phase, on the
-    continuous data before cutting epochs; `x` is one channel or the whole
-    channels-by-samples array:
-
-    ```python
-    from scipy import signal
-    cutoff = min(30.0, rate / 4)  # Hz, kept well under the Nyquist frequency
-    sos = signal.butter(4, cutoff, btype="low", fs=rate, output="sos")
-    filtered = signal.sosfiltfilt(sos, x, axis=-1)
-    ```
-
-    `sosfiltfilt` runs the filter forward and back, so nothing shifts in time. Cut epochs
-    from 200 ms before each event to 800 ms after, subtract each epoch's pre-event
-    mean, and drop epochs over 100 µV, saying how many you dropped (if none pass, show
-    them all and say so). An ERP image is one channel's epochs as the rows of an
-    `imshow`, time across in milliseconds (`extent` from -200 to 800) and epoch up,
-    with a diverging colormap centered on zero, one panel per condition and that
-    condition's average beneath it. Order the rows, then average each row with its
-    neighbors (five epochs): rows in recorded order, even smoothed, show little of how
-    the response varies from trial to trial. Use the reader's ordering if they named
-    one. Otherwise order by response time when the events have it: a `response_time`
-    column listed in `columns_summary` (in seconds), requested in `columns` beside
-    `event_type` and copied with each `sample_index` as pairs under the same length
-    assert, or else the first response event from 0 to 800 ms after each stimulus, from
-    its own call. Put rows with no response last, and mark each response on the image.
-    Without response times, order by each epoch's mean amplitude in a window around the
-    deflection the average shows, the same window in every panel, and say that this
-    ordering is built in and is not a finding. Drop the same rows from the order key as
-    from the epochs. Set the color range before drawing: symmetric about zero, at the
-    95th percentile of the absolute values of every panel's smoothed rows, shared by all
-    panels. Then say how the rows are ordered and offer one other ordering, such as
-    recorded order to show drift across the session; that offer is one of your follow-up
-    suggestions, and you do not run it unasked. Use the channel the literature uses for
-    the component when the dataset says which it is (PO8 for ERP CORE's N170); otherwise
-    ask. Describe the deflections the averages show, with their latency and size; name a
-    component only when the dataset or its paper says the task evokes it. Averaging and
-    ordering by response time bring a response out of the ongoing activity, while an
-    amplitude ordering only builds structure in its own window. Describe what the image
-    shows, call a recording noisy only when the dropped-epoch count supports it, and if
-    nothing stands out, say so plainly.
   - **Worked example.** `nm000132` (ERP CORE), recording
     `sub-001/eeg/sub-001_task-N170_eeg.set`: the power spectrum of its 30 EEG channels
     peaks near 11 Hz, and an ERP image of `face` against `scrambled_face` at PO8 shows

@@ -657,25 +657,30 @@ window = await read_window(index, index.stores[0], start_sample=0, n_samples=2)
     }
   }
 
-  // The prompt's own blocks, run as the prompt writes them: a model copies them, so a
-  // filter that stops filtering or a spectrum call this runtime refuses would reach
-  // every figure it draws.
-  const promptBlock = (bulletHeading) => {
-    const at = NEMAR.system_prompt.indexOf(bulletHeading);
-    const fence = at === -1 ? null : NEMAR.system_prompt.slice(at).match(/```python\n([\s\S]*?)\n\s*```/);
-    if (!fence) return { fence: null, code: '' };
+  // The procedure documents' own blocks (#719), run as the documents write them: a model
+  // fetches a document with get_procedure and copies its blocks, so a filter that stops
+  // filtering or a spectrum call this runtime refuses would reach every figure it draws.
+  // The first python fence of the document the community declares under `id`; `before` is
+  // the text ahead of it, which names what the block is for.
+  const procedureBlock = async (id) => {
+    const entry = (NEMAR.procedures || []).find((p) => p.id === id);
+    if (!entry) return { fence: null, code: '', before: '' };
+    const document = await Bun.file(new URL(entry.file, COMMUNITY_DIR)).text();
+    const fence = document.match(/```python\n([\s\S]*?)\n\s*```/);
+    if (!fence) return { fence: null, code: '', before: '' };
     const lines = fence[1].split('\n');
     const indent = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
-    return { fence, code: lines.map((l) => l.slice(indent)).join('\n') };
+    return { fence, code: lines.map((l) => l.slice(indent)).join('\n'), before: document.slice(0, fence.index) };
   };
   const indented = (code) => code.split('\n').map((l) => `    ${l}`).join('\n');
 
-  console.log('\nthe prompt\'s ERP low-pass keeps 5 Hz and removes the high tone, at 60 to 5000 Hz');
+  console.log('\nthe ERP procedure\'s low-pass keeps 5 Hz and removes the high tone, at 60 to 5000 Hz');
   {
-    const { fence, code } = promptBlock('**Epochs and ERP images.**');
-    assert(fence !== null, 'the ERP section carries a python block');
+    const { fence, code, before } = await procedureBlock('erp-by-condition');
+    assert(fence !== null, 'the ERP procedure carries a python block');
     // The block belongs to the sentence that introduces it, not to a later section.
-    assert(fence !== null && fence.index < 400, `it follows the bullet's opening lines (at ${fence && fence.index})`);
+    assert(before.trimEnd().endsWith('the whole channels-by-samples array:'), 'it follows the sentence that introduces the filter');
+    assert(before.includes('low-pass at 30 Hz'), 'and that sentence is the 30 Hz low-pass');
     if (fence) {
       // Defined as a function so each rate runs the block exactly as written, with
       // only `rate` and `x` bound, the two names the prompt says it takes.
@@ -721,12 +726,12 @@ print(json.dumps(out))
     }
   }
 
-  console.log('\nthe prompt\'s spectrum reads the recording in pieces, one channel at a time, and averages them over the whole recording');
+  console.log('\nthe spectrum procedure reads the recording in pieces, one channel at a time, and averages them over the whole recording');
   {
-    const { fence, code } = promptBlock('**Power spectrum.**');
-    assert(fence !== null, 'the spectrum bullet carries a python block');
+    const { fence, code } = await procedureBlock('power-spectrum');
+    assert(fence !== null, 'the spectrum procedure carries a python block');
     // The recipe takes its piece from the reader's budget as well as from this runtime's
-    // limit, and the prompt has the model write that budget in. The block runs as written,
+    // limit, and the document has the model write that budget in. The block runs as written,
     // and again with another budget on that line; a swap that found nothing to replace
     // would run the same code twice, so the line is checked.
     // The recipe prints a line of its own (how many segments and seconds it covered), so what a

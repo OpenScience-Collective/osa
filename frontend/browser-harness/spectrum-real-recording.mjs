@@ -1,7 +1,7 @@
 // The prompt's power-spectrum recipe on a real NEMAR recording, once, by hand (E5.2, #669).
 //
 // frontend/test-data-lane.js runs the recipe as the prompt writes it over synthetic signals held
-// in memory, in CI. This runs the same block, extracted from NEMAR's system prompt, against a
+// in memory, in CI. This runs the same block, extracted from NEMAR's power-spectrum procedure, against a
 // real recording on the production data host, and checks it against a by-hand Welch estimate
 // that shares no code with scipy.signal.welch. It needs the network, so CI does not run it; the
 // figures in docs/community-browser-runtime.md come from it.
@@ -56,11 +56,13 @@ const localPackages = Object.fromEntries(
   Object.entries(OVERLAY).map(([key, entry]) => [key, { ...entry, file_name: WHEELS + entry.file_name }])
 );
 
-// The recipe, as the prompt writes it: the first python block after the Power spectrum heading,
-// dedented, with the group and the budget written in as the prompt tells the model to.
-const bullet = NEMAR.system_prompt.slice(NEMAR.system_prompt.indexOf('**Power spectrum.**'));
-const fence = bullet.match(/```python\n([\s\S]*?)\n\s*```/);
-if (!fence) throw new Error("NEMAR's prompt has no power-spectrum block");
+// The recipe, as the power-spectrum procedure document writes it (#719): its first python
+// block, dedented, with the group and the budget written in as the document tells the model to.
+const SPECTRUM = (NEMAR.procedures || []).find((p) => p.id === 'power-spectrum');
+if (!SPECTRUM) throw new Error('NEMAR declares no power-spectrum procedure');
+const document = await Bun.file(new URL(SPECTRUM.file, COMMUNITY_DIR)).text();
+const fence = document.match(/```python\n([\s\S]*?)\n\s*```/);
+if (!fence) throw new Error("NEMAR's power-spectrum procedure has no python block");
 const lines = fence[1].split('\n');
 const indent = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
 const BLOCK = lines.map((l) => l.slice(indent)).join('\n')
