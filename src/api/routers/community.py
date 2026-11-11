@@ -39,6 +39,7 @@ from src.agents.content import (
 )
 from src.agents.model_routing import (
     QUICK_MODE_INSTRUCTIONS,
+    Summary,
     Tier,
     reader_turn,
     tier_for_turn,
@@ -3815,6 +3816,7 @@ def _log_streaming_metrics(
     cache_creation_tokens: int = 0,
     error_message: str | None = None,
     longest_prompt_tokens: int | None = None,
+    request_id_suffix: str = "",
 ) -> None:
     """Log metrics at the end of a streaming response.
 
@@ -3822,6 +3824,11 @@ def _log_streaming_metrics(
     before streaming completes. Wrapped in try/except to never disrupt
     the SSE stream on failure. ``error_message`` says why a row that is an error
     (status 400 and up) is one.
+
+    ``request_id_suffix`` is for a request that logs a second row: a handover logs the
+    quick model's work (its run and the summary) under ``<request id>:quick``, so the
+    request id the widget's feedback joins on (``done.request_id``) names one row, the
+    analysis run's, and the quick row is found next to it by its prefix.
     """
     try:
         duration_ms = (time.monotonic() - start_time) * 1000
@@ -3830,6 +3837,7 @@ def _log_streaming_metrics(
             request_id = getattr(http_request.state, "request_id", request_id)
             # Mark as logged so middleware doesn't double-log
             http_request.state.metrics_logged = True
+        request_id += request_id_suffix
 
         total_tokens = input_tokens + output_tokens
         has_tokens = total_tokens > 0
@@ -4730,20 +4738,79 @@ async def _stream_chat_response(
                 turn_claimed=True,
             )
 
+        quick_row_logged = False
+
+        def log_quick_row(summary: Summary | None) -> None:
+            """Log what the quick model did for a handover, as its own row, once.
+
+            That is the quick run that called `start_analysis` (none, for a keyword
+            handover) and the summary. The analysis run logs the request's own row
+            under `request_id`; this one is `request_id:quick`, so a feedback vote
+            (`done.request_id`) joins one row, and each row is priced at its own
+            model. Nothing is logged when the quick model did no work to account for.
+            """
+            nonlocal quick_row_logged
+            if quick_row_logged:
+                return
+            quick_row_logged = True
+            input_tokens = total_input_tokens
+            output_tokens = total_output_tokens
+            cache_read = total_cache_read_tokens
+            cache_creation = total_cache_creation_tokens
+            longest = longest_prompt_tokens
+            if summary is not None and summary.response is not None:
+                s_in, s_out, s_read, s_creation = _extract_token_usage({"output": summary.response})
+                input_tokens += s_in
+                output_tokens += s_out
+                cache_read += s_read
+                cache_creation += s_creation
+                longest = max(longest, s_in)
+                model_runs.note(summary.response)
+            if not (model_runs.runs or tools_called):
+                return
+            model_runs.warn_about_usage(
+                community_id=community_id,
+                model=awm.model if awm else None,
+                endpoint=metrics_endpoint,
+                request_id=request_id,
+            )
+            _log_streaming_metrics(
+                http_request=http_request,
+                community_id=community_id,
+                endpoint=metrics_endpoint,
+                awm=awm,
+                tools_called=tools_called,
+                start_time=start_time,
+                status_code=200,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_creation,
+                longest_prompt_tokens=longest,
+                request_id_suffix=":quick",
+            )
+
         async def hand_over() -> AsyncGenerator[str, None]:
             """Summarize this session on the quick model; run the analysis on a new one."""
             analysis_route = _route_request(
                 routing_info, community_id, byok, origin, None, log=False, tier="analysis"
             )
-            async for line in stream_handover(
-                summarizer=awm.assistant.model,
-                history=earlier_messages,
-                reader_message=reader_message,
-                open_session=lambda: get_or_create_session(community_id, None),
-                analysis_model=analysis_route.model,
-                run_analysis=run_on,
-            ):
-                yield line
+            try:
+                async for line in stream_handover(
+                    summarizer=awm.assistant.model,
+                    history=earlier_messages,
+                    reader_message=reader_message,
+                    open_session=lambda: get_or_create_session(community_id, None),
+                    analysis_model=analysis_route.model,
+                    run_analysis=run_on,
+                    summarizer_config=awm.langfuse_config,
+                    record_summary=log_quick_row,
+                ):
+                    yield line
+            finally:
+                # A no-op once the summary has been logged; the row for a request that
+                # ended while the summary was being written.
+                log_quick_row(None)
 
         routing_kwargs: dict[str, Any] = {}
         if tier is not None:
@@ -4922,27 +4989,9 @@ async def _stream_chat_response(
             # The quick model asked for the analysis model. Not a tool_request, because
             # no browser runs anything: the parked call is dropped with the rest of this
             # run's state, so the session never holds a tool call with no result.
+            # Its row is logged by `log_quick_row`, with the summary's tokens, once the
+            # summary is written (a first message has none, and logs it just below).
             tools_called.append(START_ANALYSIS_TOOL_NAME)
-            model_runs.warn_about_usage(
-                community_id=community_id,
-                model=awm.model,
-                endpoint=metrics_endpoint,
-                request_id=request_id,
-            )
-            _log_streaming_metrics(
-                http_request=http_request,
-                community_id=community_id,
-                endpoint=metrics_endpoint,
-                awm=awm,
-                tools_called=tools_called,
-                start_time=start_time,
-                status_code=200,
-                input_tokens=total_input_tokens,
-                output_tokens=total_output_tokens,
-                cache_read_tokens=total_cache_read_tokens,
-                cache_creation_tokens=total_cache_creation_tokens,
-                longest_prompt_tokens=longest_prompt_tokens,
-            )
             if earlier_messages:
                 source = hand_over()
             else:
@@ -4950,6 +4999,7 @@ async def _stream_chat_response(
                 # Its claim is passed on, not released, so no request can take the
                 # session while the run below sends its first event.
                 session.mode = "analysis"
+                log_quick_row(None)
                 source = run_on(session)
             async with contextlib.aclosing(source) as handed_over:
                 async for line in handed_over:

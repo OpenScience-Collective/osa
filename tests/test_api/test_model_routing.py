@@ -42,6 +42,8 @@ from src.core.config.community import (
     RuntimeConfig,
 )
 from src.core.services.anthropic_models import HAIKU, SONNET
+from src.metrics.db import init_metrics_db, metrics_connection
+from src.metrics.middleware import MetricsMiddleware
 from tests.helpers.chat_models import (
     FailingThenSayingChatModel,
     ScriptedChatModel,
@@ -393,6 +395,153 @@ class TestAFailingSummarizer:
         assert summarized["summary"] == SUMMARY
         assert "degraded" not in summarized
         assert quick.attempts == 2
+
+
+def _usage(input_tokens: int, output_tokens: int) -> dict:
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+
+
+def say_with_usage(text: str, input_tokens: int, output_tokens: int) -> list[AIMessageChunk]:
+    return [
+        AIMessageChunk(
+            content=[{"type": "text", "text": text, "index": 0}],
+            usage_metadata=_usage(input_tokens, output_tokens),
+        )
+    ]
+
+
+def call_start_analysis_with_usage(input_tokens: int, output_tokens: int) -> list[AIMessageChunk]:
+    chunk = call_start_analysis()[0]
+    chunk.usage_metadata = _usage(input_tokens, output_tokens)
+    return [chunk]
+
+
+def _request_rows() -> list[dict]:
+    with metrics_connection() as conn:
+        conn.row_factory = lambda cursor, row: dict(
+            zip([c[0] for c in cursor.description], row, strict=True)
+        )
+        # The metrics middleware writes a stub row (no model, no tokens) under the same
+        # request id when a streamed response starts, before the handler's own row (a
+        # pre-existing behavior of every streamed request, tracked in its own issue). Only
+        # the rows the chat path writes are counted here.
+        return conn.execute(
+            "SELECT * FROM request_log WHERE model IS NOT NULL ORDER BY id"
+        ).fetchall()
+
+
+@pytest.fixture
+def metered_client(tmp_path, monkeypatch) -> TestClient:
+    """The app with the metrics middleware, which gives a request the id `done` reports."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    init_metrics_db()
+    app = FastAPI()
+    app.add_middleware(MetricsMiddleware)
+    app.include_router(create_community_router(COMMUNITY))
+    return TestClient(app)
+
+
+class TestHandoverMetrics:
+    """One row per request id, and the quick model's spend is on its own row."""
+
+    def test_a_keyword_handover_logs_the_summary_on_a_quick_row(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+
+        done = _done(_chat(metered_client, "plot the ERP", session_id="sess-quick"))
+
+        rows = _request_rows()
+        by_id = {r["request_id"]: r for r in rows}
+        assert len(by_id) == len(rows), "no two rows share a request id"
+        analysis = by_id[done["request_id"]]
+        quick = by_id[f"{done['request_id']}:quick"]
+        assert analysis["model"] == SONNET
+        assert (analysis["input_tokens"], analysis["output_tokens"]) == (1000, 200)
+        assert quick["model"] == HAIKU
+        assert (quick["input_tokens"], quick["output_tokens"]) == (300, 40)
+        assert quick["estimated_cost"] is not None
+
+    def test_a_start_analysis_handover_adds_the_quick_run_and_the_summary_into_one_row(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[call_start_analysis_with_usage(100, 10), say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+
+        done = _done(
+            _chat(metered_client, "could you look at the alpha band?", session_id="sess-quick")
+        )
+
+        by_id = {r["request_id"]: r for r in _request_rows()}
+        assert set(by_id) == {done["request_id"], f"{done['request_id']}:quick"}
+        quick = by_id[f"{done['request_id']}:quick"]
+        assert (quick["input_tokens"], quick["output_tokens"]) == (400, 50)
+        assert "start_analysis" in quick["tools_called"]
+        assert by_id[done["request_id"]]["model"] == SONNET
+
+    def test_a_first_message_start_analysis_logs_two_rows_with_distinct_ids(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _rig(
+            monkeypatch,
+            quick=[call_start_analysis_with_usage(100, 10)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+
+        done = _done(
+            _chat(metered_client, "could you look at the alpha band?", session_id="s-first")
+        )
+
+        by_id = {r["request_id"]: r for r in _request_rows()}
+        assert set(by_id) == {done["request_id"], f"{done['request_id']}:quick"}
+        assert by_id[f"{done['request_id']}:quick"]["model"] == HAIKU
+        assert by_id[done["request_id"]]["model"] == SONNET
+
+    def test_a_plain_quick_turn_logs_one_row(self, metered_client, monkeypatch) -> None:
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        done = _done(_chat(metered_client, "find datasets with face stimuli"))
+
+        assert [r["request_id"] for r in _request_rows()] == [done["request_id"]]
+
+    def test_a_degraded_summary_logs_no_tokens_for_it(self, metered_client, monkeypatch) -> None:
+        monkeypatch.setattr(model_routing, "SUMMARY_RETRY_DELAY_SECONDS", 0)
+        _earlier_conversation()
+        request = httpx2.Request("POST", "https://api.anthropic.com")
+        failing = FailingThenSayingChatModel(
+            failures=[
+                anthropic.InternalServerError(
+                    "overloaded", response=httpx2.Response(529, request=request), body=None
+                )
+                for _ in range(model_routing.SUMMARY_ATTEMPTS)
+            ],
+            responses=[AIMessage(content=SUMMARY)],
+        )
+        _rig(
+            monkeypatch,
+            quick=[],
+            quick_model=failing,
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+
+        done = _done(_chat(metered_client, "plot the ERP", session_id="sess-quick"))
+
+        by_id = {r["request_id"]: r for r in _request_rows()}
+        assert by_id[done["request_id"]]["input_tokens"] == 1000
+        assert f"{done['request_id']}:quick" not in by_id
 
 
 class TestAFirstMessage:

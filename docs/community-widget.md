@@ -607,6 +607,10 @@ A widget adopts that id from `session` and `done`, as it already does, and an ol
 
 A first message has no earlier turns, so there is nothing to summarize: its own session is flipped to analysis, with no `handover` events.
 
+**Metrics.**
+A handover logs two rows in `request_log`: the analysis run's under the request id `done.request_id` carries (what feedback joins on), and the quick model's work under `<request id>:quick`, which is the quick run that called `start_analysis` (if any) and the summary, priced at the quick model.
+The summary's tokens are counted, and it is traced with the request in LangFuse.
+
 **`done.mode`.**
 On a routed request, `done` carries `mode` (`"quick"` or `"analysis"`) beside `model`.
 It is absent on a request that is not routed.
