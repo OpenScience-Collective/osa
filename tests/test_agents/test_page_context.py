@@ -793,6 +793,37 @@ class TestReaderContextInSystemPrompt:
         prompt = self._nemar_prompt(PageContext(moved_from={"type": "dataset", "id": "on002718"}))
         assert "moved from dataset `on002718` to the dataset search" in prompt
 
+    def test_a_move_back_to_the_start_is_no_move(self):
+        """moved_from equal to where the reader is now says nothing about a move."""
+        same_dataset = self._nemar_prompt(
+            PageContext(dataset_id="nm000241", moved_from={"type": "dataset", "id": "nm000241"})
+        )
+        assert "Reader Context" in same_dataset
+        assert "moved from" not in same_dataset
+        search_to_search = self._nemar_prompt(PageContext(moved_from={"type": "search"}))
+        assert "Reader Context" not in search_to_search
+        assert "moved from" not in search_to_search
+
+    def test_a_community_that_turns_page_context_off_gets_no_reader_context(self):
+        """enable_page_context: false suppresses the dataset and the move too."""
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        assistant = registry.create_assistant(
+            "nemar",
+            model=model,
+            preload_docs=False,
+            page_context=PageContext(
+                dataset_id="nm000241", moved_from={"type": "dataset", "id": "on002718"}
+            ),
+        )
+        assert "nm000241" in assistant.get_system_prompt()
+        assistant.config = assistant.config.model_copy(update={"enable_page_context": False})
+        prompt = assistant.get_system_prompt()
+        assert "Reader Context" not in prompt
+        assert "nm000241" not in prompt
+        assert "on002718" not in prompt
+        assert "moved from" not in prompt
+
     def test_dataset_id_beside_page_url(self):
         """With a URL as well, both sections are present."""
         prompt = self._nemar_prompt(

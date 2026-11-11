@@ -1119,6 +1119,15 @@ class TestWidgetSearchPaths:
         with pytest.raises(ValidationError, match="query, a fragment or whitespace"):
             WidgetConfig(search_paths=[bad])
 
+    def test_the_home_page_is_a_path(self) -> None:
+        assert WidgetConfig(search_paths=["/"]).search_paths == ["/"]
+
+    def test_at_most_200_characters(self) -> None:
+        longest = "/" + "a" * 199
+        assert WidgetConfig(search_paths=[longest]).search_paths == [longest]
+        with pytest.raises(ValidationError, match="longer than 200"):
+            WidgetConfig(search_paths=[longest + "a"])
+
     def test_at_most_five(self) -> None:
         paths = [f"/p{i}" for i in range(6)]
         with pytest.raises(ValidationError, match="Maximum is 5"):

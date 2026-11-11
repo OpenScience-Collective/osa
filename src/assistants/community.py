@@ -576,17 +576,21 @@ class CommunityAssistant(ToolAgent):
                 '"this dataset" mean this one, whether or not the page URL is shared.'
             )
         if page.moved_from:
-            now = (
-                self._describe_context({"type": "dataset", "id": page.dataset_id})
+            now = self._describe_context(
+                {"type": "dataset", "id": page.dataset_id}
                 if page.dataset_id
-                else self._describe_context({"type": "search"})
+                else {"type": "search"}
             )
-            paragraphs.append(
-                f"In this conversation the reader moved from "
-                f"{self._describe_context(page.moved_from)} to {now}, and chose to keep "
-                "talking here. Earlier answers were about the first one; compare or "
-                "continue as they ask."
-            )
+            before = self._describe_context(page.moved_from)
+            # A reader back where the chat started has not moved: say nothing false.
+            if before != now:
+                paragraphs.append(
+                    f"In this conversation the reader moved from {before} to {now}, and "
+                    "chose to keep talking here. Earlier answers were about the first one; "
+                    "compare or continue as they ask."
+                )
+        if not paragraphs:
+            return ""
         return "## Reader Context\n\n" + "\n\n".join(paragraphs)
 
     def _format_page_context_section(self) -> str:

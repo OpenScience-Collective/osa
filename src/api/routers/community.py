@@ -182,9 +182,11 @@ class MovedFrom(BaseModel):
 
     @model_validator(mode="after")
     def dataset_needs_id(self) -> Self:
-        """A dataset context without an id says nothing."""
+        """A dataset context needs an id; the search page has none to give."""
         if self.type == "dataset" and self.id is None:
             raise ValueError("moved_from of type 'dataset' needs an id")
+        if self.type == "search" and self.id is not None:
+            raise ValueError("moved_from of type 'search' takes no id")
         return self
 
 

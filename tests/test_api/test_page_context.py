@@ -162,6 +162,11 @@ class TestPageContextReaderFields:
         with pytest.raises(ValidationError):
             PageContext(moved_from={"type": "dataset"})
 
+    @pytest.mark.parametrize("an_id", ["nm000241", ""])
+    def test_rejects_an_id_on_a_search_move(self, an_id):
+        with pytest.raises(ValidationError):
+            PageContext(moved_from={"type": "search", "id": an_id})
+
     def test_rejects_unknown_moved_from_field(self):
         with pytest.raises(ValidationError):
             PageContext(moved_from={"type": "search", "extra": "x"})
