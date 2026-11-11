@@ -1545,6 +1545,7 @@ MAX_CENTER_START_TEXT = 160
 MAX_CENTER_START_NOTE = 300
 MAX_ANALYSIS_DOCS_TITLE = 80
 MAX_ANALYSIS_DOCS_URL = 500
+MAX_PRIVACY_URL = 500
 
 
 def _plain_text(v: object, field: str) -> object:
@@ -1615,6 +1616,28 @@ class CenterStartConfig(BaseModel):
         return _plain_text(v, "note")
 
 
+def _https_url(v: object, label: str) -> object:
+    """``v`` stripped, if it is an https URL with a host, no credentials and no whitespace.
+
+    Anything that is not a string is returned as it is, for pydantic's own type error.
+    ``label`` names the field in the message.
+    """
+    if not isinstance(v, str):
+        return v
+    v = v.strip()
+    if any(ch.isspace() for ch in v):
+        msg = f"{label} must not contain whitespace"
+        raise ValueError(msg)
+    parsed = urlparse(v)
+    if parsed.scheme != "https" or not parsed.hostname:
+        msg = f"{label} must be an https:// URL with a host"
+        raise ValueError(msg)
+    if parsed.username or parsed.password:
+        msg = f"{label} must not carry credentials"
+        raise ValueError(msg)
+    return v
+
+
 class AnalysisDocsConfig(BaseModel):
     """A docs page about analyzing in the browser, linked from the start screen's footer
     ("How it works") and from the widget's Settings (E6.1)."""
@@ -1637,20 +1660,7 @@ class AnalysisDocsConfig(BaseModel):
     @classmethod
     def validate_url(cls, v: object) -> object:
         """https only, with a host, no credentials and no whitespace."""
-        if not isinstance(v, str):
-            return v
-        v = v.strip()
-        if any(ch.isspace() for ch in v):
-            msg = "analysis_docs url must not contain whitespace"
-            raise ValueError(msg)
-        parsed = urlparse(v)
-        if parsed.scheme != "https" or not parsed.hostname:
-            msg = "analysis_docs url must be an https:// URL with a host"
-            raise ValueError(msg)
-        if parsed.username or parsed.password:
-            msg = "analysis_docs url must not carry credentials"
-            raise ValueError(msg)
-        return v
+        return _https_url(v, "analysis_docs url")
 
 
 # The launcher's limits and defaults, in pixels (#553). The widget carries the same
@@ -1737,6 +1747,16 @@ class WidgetConfig(BaseModel):
     analysis_docs: AnalysisDocsConfig | None = None
     """A docs page linked from the start screen's footer and from the widget's Settings
     (E6.1). Unset, neither shows a link."""
+
+    privacy_url: str | None = Field(default=None, max_length=MAX_PRIVACY_URL)
+    """The privacy page the widget's Privacy choices dialog links to (#706): an https
+    URL. Unset, the widget links to the platform's own privacy page."""
+
+    @field_validator("privacy_url", mode="before")
+    @classmethod
+    def validate_privacy_url(cls, v: object) -> object:
+        """https only, with a host, no credentials and no whitespace."""
+        return _https_url(v, "privacy_url")
 
     theme_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     """Primary theme color as a hex code (e.g., '#008a79').
@@ -2008,6 +2028,8 @@ class WidgetConfig(BaseModel):
             result["center_start"] = self.center_start.model_dump(exclude_none=True)
         if self.analysis_docs:
             result["analysis_docs"] = self.analysis_docs.model_dump()
+        if self.privacy_url:
+            result["privacy_url"] = self.privacy_url
         if self.theme_color:
             result["theme_color"] = self.theme_color
         if self.user_bubble_color:

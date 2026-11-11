@@ -106,6 +106,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                 community_id=community_id,
                 duration_ms=round(duration_ms, 1),
                 status_code=response.status_code,
+                share_usage=getattr(request.state, "share_usage", True),
                 **agent_kwargs,
             )
 

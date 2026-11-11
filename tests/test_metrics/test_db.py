@@ -284,6 +284,49 @@ class TestLogRequest:
         finally:
             conn.close()
 
+    def test_share_usage_false_drops_only_the_linking_fields(self, metrics_db):
+        """An opted-out row has no conversation, tools or trace id; the cost fields stay."""
+        entries = [
+            RequestLogEntry(
+                request_id=f"share-{shared}",
+                timestamp=now_iso(),
+                endpoint="/hed/chat",
+                method="POST",
+                community_id="hed",
+                duration_ms=12.0,
+                status_code=200,
+                model="m",
+                input_tokens=10,
+                output_tokens=5,
+                total_tokens=15,
+                estimated_cost=0.25,
+                tools_called=["search_docs"],
+                tool_call_count=1,
+                langfuse_trace_id="trace-1",
+                tier="quick",
+                conversation_id="conv-1",
+                share_usage=shared,
+            )
+            for shared in (True, False)
+        ]
+        for entry in entries:
+            log_request(entry, db_path=metrics_db)
+
+        conn = get_metrics_connection(metrics_db)
+        try:
+            kept = conn.execute("SELECT * FROM request_log WHERE request_id = 'share-True'")
+            kept = kept.fetchone()
+            dropped = conn.execute("SELECT * FROM request_log WHERE request_id = 'share-False'")
+            dropped = dropped.fetchone()
+        finally:
+            conn.close()
+        assert json.loads(kept["tools_called"]) == ["search_docs"]
+        assert kept["conversation_id"] == "conv-1" and kept["langfuse_trace_id"] == "trace-1"
+        for column in ("conversation_id", "tools_called", "langfuse_trace_id"):
+            assert dropped[column] is None, column
+        for column in ("estimated_cost", "total_tokens", "tier", "tool_call_count", "model"):
+            assert dropped[column] == kept[column], column
+
 
 class TestExtractTokenUsage:
     """Tests for extract_token_usage()."""

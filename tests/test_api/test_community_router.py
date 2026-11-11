@@ -931,6 +931,61 @@ class TestCommunityConfigCenterStage:
         assert checked > 0, "no registered community configures analysis_docs"
 
 
+class TestCommunityConfigPrivacyUrl:
+    """widget.privacy_url reaches the widget through GET /{community} (#706)."""
+
+    COMMUNITY = "privacyurltest"
+    URL = "https://example.org/privacy/"
+
+    def _client(self, widget: dict | None) -> TestClient:
+        from src.assistants import registry
+
+        registry.register_from_config(
+            CommunityConfig(
+                id=self.COMMUNITY,
+                name="Privacy Url Test",
+                description="A community with its own privacy page",
+                widget=widget,
+            )
+        )
+        app = FastAPI()
+        app.include_router(create_community_router(self.COMMUNITY))
+        return TestClient(app)
+
+    @pytest.fixture(autouse=True)
+    def _unregister(self):
+        from src.assistants import registry
+
+        yield
+        registry._assistants.pop(self.COMMUNITY, None)
+
+    def test_sent_when_configured(self) -> None:
+        widget = self._client({"privacy_url": self.URL}).get(f"/{self.COMMUNITY}/").json()["widget"]
+        assert widget["privacy_url"] == self.URL
+
+    def test_a_community_that_sets_none_sends_none(self) -> None:
+        widget = self._client({"title": "Plain"}).get(f"/{self.COMMUNITY}/").json()["widget"]
+        assert widget["privacy_url"] is None
+
+    def test_a_bad_url_is_refused_when_the_config_loads(self) -> None:
+        with pytest.raises(ValidationError, match="https"):
+            self._client({"privacy_url": "http://example.org/privacy"})
+
+    def test_every_registered_community_that_sets_one_serves_an_https_one(self) -> None:
+        """Dynamic over the registry, through the route the widget calls."""
+        from src.assistants import registry
+
+        for info in registry.list_available():
+            config = info.community_config
+            if not (config and config.widget and config.widget.privacy_url):
+                continue
+            app = FastAPI()
+            app.include_router(create_community_router(info.id))
+            served = TestClient(app).get(f"/{info.id}/").json()["widget"]["privacy_url"]
+            assert served == config.widget.privacy_url, info.id
+            assert served.startswith("https://"), info.id
+
+
 class TestDeclaredClientToolsFitOneRequest:
     """The widget declares every configured tool plus the reserved ones.
 

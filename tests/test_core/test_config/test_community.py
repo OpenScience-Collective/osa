@@ -1251,6 +1251,48 @@ class TestWidgetAnalysisDocs:
             WidgetConfig(analysis_docs={"title": self.DOCS["title"]})
 
 
+class TestWidgetPrivacyUrl:
+    """widget.privacy_url (#706): the privacy page the Privacy choices dialog links to."""
+
+    URL = "https://example.org/privacy/"
+
+    def test_default_is_unset_and_not_resolved(self) -> None:
+        widget = WidgetConfig()
+        assert widget.privacy_url is None
+        assert "privacy_url" not in widget.resolve("HED")
+
+    def test_resolved_when_set(self) -> None:
+        assert WidgetConfig(privacy_url=self.URL).resolve("NEMAR")["privacy_url"] == self.URL
+
+    def test_surrounding_whitespace_is_stripped(self) -> None:
+        assert WidgetConfig(privacy_url=f"  {self.URL}\n").privacy_url == self.URL
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://example.org/privacy",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "//example.org/privacy",
+            "/privacy",
+            "example.org/privacy",
+            "https://",
+            "https://user:pass@example.org/privacy",
+            "https://example.org/a b",
+            "ftp://example.org/privacy",
+        ],
+    )
+    def test_only_an_https_url_with_a_host(self, url: str) -> None:
+        with pytest.raises(ValidationError, match="privacy_url"):
+            WidgetConfig(privacy_url=url)
+
+    def test_length_is_bounded(self) -> None:
+        long_url = "https://example.org/" + "a" * (500 - len("https://example.org/"))
+        assert WidgetConfig(privacy_url=long_url).privacy_url == long_url
+        with pytest.raises(ValidationError, match="at most 500"):
+            WidgetConfig(privacy_url=long_url + "a")
+
+
 class TestWidgetConfigLogoUrl:
     """Tests for WidgetConfig.logo_url field and validation."""
 

@@ -292,6 +292,14 @@ class PageContext(BaseModel):
         return url
 
 
+SHARE_USAGE_DESCRIPTION = (
+    'False when the reader turned off "Share usage data" in the widget\'s Privacy choices. '
+    "The usage row for this request is then written without its conversation id and the "
+    "tools it called (tokens, cost, tier and counts are kept, so budgets still add up). "
+    "Feedback is unaffected."
+)
+
+
 class ChatRequest(BaseModel):
     """Request body for chat endpoint."""
 
@@ -338,6 +346,7 @@ class ChatRequest(BaseModel):
             "reseeded session starts on it; ignored otherwise."
         ),
     )
+    share_usage: bool = Field(default=True, description=SHARE_USAGE_DESCRIPTION)
 
 
 class ResumeRequest(BaseModel):
@@ -356,6 +365,7 @@ class ResumeRequest(BaseModel):
     model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
     page_context: PageContext | None = None
     client_tools: list[str] = Field(default_factory=list, max_length=MAX_DECLARED_CLIENT_TOOLS)
+    share_usage: bool = Field(default=True, description=SHARE_USAGE_DESCRIPTION)
 
 
 class AskRequest(BaseModel):
@@ -368,6 +378,7 @@ class AskRequest(BaseModel):
         description="Optional context about the page where the widget is embedded",
     )
     model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
+    share_usage: bool = Field(default=True, description=SHARE_USAGE_DESCRIPTION)
 
 
 class ToolCallInfo(BaseModel):
@@ -556,6 +567,13 @@ class WidgetConfigResponse(BaseModel):
         description=(
             "A docs page linked from the start screen and the widget's Settings, "
             "https only; omitted when the community sets none"
+        ),
+    )
+    privacy_url: str | None = Field(
+        default=None,
+        description=(
+            "The privacy page the widget's Privacy choices dialog links to, https only; "
+            "omitted when the community sets none (the widget then links to the platform's)"
         ),
     )
     logo_url: str | None = Field(
@@ -2839,6 +2857,16 @@ def _usage_for_event(
     return usage.model_dump(mode="json") if usage else None
 
 
+def _shares_usage(http_request: Request | None) -> bool:
+    """Whether the reader lets this request's usage row carry its conversation and tools.
+
+    The handlers record the body's ``share_usage`` on ``request.state`` once it is parsed;
+    a request with none (an overview, a route that has no such field) shares, as before.
+    ``log_request`` does the blanking, so every writer of the row goes through one place.
+    """
+    return getattr(http_request.state, "share_usage", True) if http_request else True
+
+
 def _set_metrics_on_request(
     http_request: Request,
     awm: AssistantWithMetrics,
@@ -3259,6 +3287,8 @@ def create_community_router(community_id: str) -> APIRouter:
         **Cache Optimization:**
         Pass a stable user ID in the `X-User-ID` header for better cache hit rates.
         """
+        # The reader's usage-data choice, read by every writer of this request's row.
+        http_request.state.share_usage = body.share_usage
         # Extract origin for authorization
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
@@ -3497,6 +3527,8 @@ def create_community_router(community_id: str) -> APIRouter:
         **Cache Optimization:**
         Pass a stable user ID in the `X-User-ID` header for better cache hit rates.
         """
+        # The reader's usage-data choice, read by every writer of this request's row.
+        http_request.state.share_usage = body.share_usage
         # Extract origin for authorization
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
@@ -3656,6 +3688,8 @@ def create_community_router(community_id: str) -> APIRouter:
         only ever learns from a `tool_request` on its own stream, and it is accepted at
         most once.
         """
+        # The reader's usage-data choice, read by every writer of this request's row.
+        http_request.state.share_usage = body.share_usage
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
@@ -4583,6 +4617,7 @@ def _log_streaming_metrics(
             error_message=error_message,
             tier=tier,
             conversation_id=conversation_id,
+            share_usage=_shares_usage(http_request),
         )
         log_request(entry)
         if not request_id_suffix and http_request:

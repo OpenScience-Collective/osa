@@ -129,6 +129,12 @@ class RequestLogEntry:
     # Groups the rows of one conversation. A handover opens a new server session for the
     # analysis model, so the session id changes mid-conversation; this id does not.
     conversation_id: str | None = None
+    # The reader's usage-data choice for this request ("Share usage data" in the widget's
+    # Privacy choices). Not a column: ``log_request`` reads it and, when it is False,
+    # writes the row without ``conversation_id``, ``tools_called`` and
+    # ``langfuse_trace_id``, the three fields that link a row to what was asked or done.
+    # The tokens, cost, tier and counts stay, so budgets and the cost report still add up.
+    share_usage: bool = True
 
 
 @dataclass
@@ -268,11 +274,15 @@ def init_metrics_db(db_path: Path | None = None) -> None:
 def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
     """Insert a request log entry into the database.
 
+    A row whose ``share_usage`` is False is written without its conversation id, its
+    tools and its Langfuse trace id; everything else is kept (see ``RequestLogEntry``).
+
     Args:
         entry: The log entry to insert.
         db_path: Optional path override (for testing).
     """
     global _log_request_failures
+    shared = entry.share_usage
     conn = get_metrics_connection(db_path)
     try:
         conn.execute(
@@ -297,14 +307,14 @@ def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
                 entry.output_tokens,
                 entry.total_tokens,
                 entry.estimated_cost,
-                json.dumps(entry.tools_called) if entry.tools_called else None,
+                json.dumps(entry.tools_called) if entry.tools_called and shared else None,
                 entry.key_source,
                 1 if entry.stream else 0,
                 entry.tool_call_count,
                 entry.error_message,
-                entry.langfuse_trace_id,
+                entry.langfuse_trace_id if shared else None,
                 entry.tier,
-                entry.conversation_id,
+                entry.conversation_id if shared else None,
             ),
         )
         conn.commit()
