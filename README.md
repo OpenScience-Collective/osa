@@ -15,7 +15,7 @@ Features:
 - Modular tool system for document retrieval, validation, and code execution
 - Multi-source knowledge bases (GitHub, OpenALEX, Discourse forums, mailing lists)
 - Embeddable chat widget for any website
-- Production-ready observability via LangFuse
+- Optional tracing via LangFuse for self-hosted deployments (off on osc.earth; see [PRIVACY.md](PRIVACY.md))
 
 ## Installation
 
@@ -188,6 +188,10 @@ uv run pytest --cov
 # Format code
 uv run ruff check --fix . && uv run ruff format .
 ```
+
+## Privacy
+
+What the assistant sends, to whom, and what is stored, for the osc.earth deployment: [PRIVACY.md](PRIVACY.md).
 
 ## License
 
