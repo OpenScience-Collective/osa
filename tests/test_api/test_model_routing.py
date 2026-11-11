@@ -754,6 +754,25 @@ class TestHandoverMetrics:
         (row,) = _request_rows()
         assert row["model"] == SONNET
 
+    def test_a_chat_that_is_not_streamed_carries_its_conversation_id(
+        self, metered_client, monkeypatch
+    ) -> None:
+        """The middleware writes this row; it gets the conversation, and no tier (not routed)."""
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+        response = metered_client.post(
+            f"/{COMMUNITY}/chat",
+            json={"message": "find datasets with face stimuli", "stream": False},
+            headers={"Origin": ORIGIN, **BYOK},
+        )
+        assert response.status_code == 200, response.text
+
+        (row,) = _request_rows()
+        assert row["request_id"] == response.json()["request_id"]
+        assert row["conversation_id"] == response.json()["session_id"]
+        assert row["tier"] is None
+        assert row["model"] == HAIKU
+        assert (row["input_tokens"], row["output_tokens"]) == (50, 5)
+
     def test_a_plain_quick_turn_logs_one_row(self, metered_client, monkeypatch) -> None:
         _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
 

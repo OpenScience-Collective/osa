@@ -2622,8 +2622,14 @@ def _set_metrics_on_request(
     http_request: Request,
     awm: AssistantWithMetrics,
     agent_result: AgentResult,
+    *,
+    conversation_id: str | None = None,
 ) -> None:
     """Store agent metrics on request.state for the metrics middleware to log.
+
+    ``conversation_id`` groups the row with the rest of its conversation in
+    ``osa metrics cost-report`` (``/chat``; ``/ask`` has none). A request that is not
+    streamed is never routed between the quick and the analysis model, so it has no tier.
 
     A request whose runs reported no usage is NULL in the row, not zero tokens at no cost,
     as for a streamed one (``_log_streaming_metrics``): a zero would read as a free
@@ -2653,6 +2659,8 @@ def _set_metrics_on_request(
         "tool_call_count": len(agent_result.tools_called),
         "langfuse_trace_id": awm.langfuse_trace_id,
         "stream": False,
+        "tier": None,
+        "conversation_id": conversation_id,
     }
 
 
@@ -3067,7 +3075,7 @@ def create_community_router(community_id: str) -> APIRouter:
             result = await awm.assistant.ainvoke(session.messages, config=awm.langfuse_config)
 
             ar = _extract_agent_result(result)
-            _set_metrics_on_request(http_request, awm, ar)
+            _set_metrics_on_request(http_request, awm, ar, conversation_id=session.conversation_id)
             warnings = _check_unstreamed_reply(
                 http_request, community_id, f"/{community_id}/chat", awm, ar
             )

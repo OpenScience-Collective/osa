@@ -94,6 +94,8 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                     "tool_call_count": agent_data.get("tool_call_count", 0),
                     "error_message": agent_data.get("error_message"),
                     "langfuse_trace_id": agent_data.get("langfuse_trace_id"),
+                    "tier": agent_data.get("tier"),
+                    "conversation_id": agent_data.get("conversation_id"),
                 }
 
             entry = RequestLogEntry(
