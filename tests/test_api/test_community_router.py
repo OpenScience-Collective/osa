@@ -414,6 +414,35 @@ class TestLangfuseTracing:
             "langfuse_session_id": "sess-1",
         }
 
+    def test_an_opted_out_reader_gets_no_trace(self, monkeypatch) -> None:
+        """With "Share usage data" off (#706) no trace is created, so none holds the
+        conversation and no feedback score can be attached to one."""
+        from src.api.routers.community import create_community_assistant
+        from src.api.security import ByokCredential
+        from src.core.services import llm
+
+        asked: list[str | None] = []
+
+        class FakeLLMService:
+            def get_config_with_tracing(self, trace_id=None):
+                asked.append(trace_id)
+                return {"callbacks": [object()]}
+
+        monkeypatch.setattr(llm, "get_llm_service", lambda _settings=None: FakeLLMService())
+
+        awm = create_community_assistant(
+            "hed",
+            byok=ByokCredential(key="sk-or-fake-test-key", provider="openrouter"),
+            user_id="user-1",
+            session_id="sess-1",
+            preload_docs=False,
+            trace=False,
+        )
+
+        assert awm.langfuse_config is None
+        assert awm.langfuse_trace_id is None
+        assert asked == [], "tracing was not even set up"
+
 
 class TestSessionEndpointBehavior:
     """Tests for session endpoint behavior using unit-level functions."""

@@ -256,7 +256,7 @@ class TestOptedOutRow:
 
 
 class TestTheBodyField:
-    def test_it_defaults_to_sharing_and_must_be_a_boolean(self, client, monkeypatch) -> None:
+    def test_share_usage_must_be_a_boolean(self, client, monkeypatch) -> None:
         _serve_scripted(monkeypatch)
         response = client.post(
             f"/{COMMUNITY}/chat",

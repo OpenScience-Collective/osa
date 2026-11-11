@@ -2418,6 +2418,7 @@ def create_community_assistant(
     session_id: str | None = None,
     tier: Tier | None = None,
     additional_instructions: str = "",
+    trace: bool = True,
 ) -> AssistantWithMetrics:
     """Create a community assistant instance with authorization checks.
 
@@ -2440,6 +2441,9 @@ def create_community_assistant(
         page_context: Optional context about the page where the widget is embedded
         session_id: Chat session ID, recorded on the LangFuse trace so a
             conversation's turns can be grouped (chat endpoints only)
+        trace: False when the reader turned "Share usage data" off: no LangFuse config or
+            trace id is attached, so no trace (with its messages and tool calls) is made
+            and the request row has no trace id to link one by
         tier: The model tier of a routed turn (``src.agents.model_routing``), or None for a
             request that is not routed. It picks the community's quick or analysis model
             and decides which client tools are bound. A quick turn also gets the prompt
@@ -2563,34 +2567,35 @@ def create_community_assistant(
         additional_instructions=merged_instructions,
     )
 
-    # Wire LangFuse tracing if configured
+    # Wire LangFuse tracing if configured, unless the reader opted out of usage sharing
     langfuse_config = None
     langfuse_trace_id = None
-    try:
-        from src.core.services.llm import get_llm_service
-    except ImportError:
-        logger.debug("LangFuse tracing not available (module not installed)")
-    else:
+    if trace:
         try:
-            llm_service = get_llm_service(settings)
-            # LangFuse requires a 32-char lowercase hex trace id. It rejects
-            # anything else (such as a community prefix), which leaves the root
-            # span unset: every LLM and tool call then becomes its own trace and
-            # request_log.langfuse_trace_id matches nothing (issue #515). The
-            # community is recorded as a tag instead.
-            trace_id = uuid.uuid4().hex
-            config = llm_service.get_config_with_tracing(trace_id=trace_id)
-            if config.get("callbacks"):
-                config["metadata"] = _langfuse_trace_metadata(community_id, user_id, session_id)
-                langfuse_config = config
-                langfuse_trace_id = trace_id
-        except (AttributeError, ValueError, RuntimeError, OSError, ImportError) as e:
-            logger.warning(
-                "LangFuse tracing setup failed for %s: %s, continuing without it",
-                community_id,
-                e,
-                exc_info=True,
-            )
+            from src.core.services.llm import get_llm_service
+        except ImportError:
+            logger.debug("LangFuse tracing not available (module not installed)")
+        else:
+            try:
+                llm_service = get_llm_service(settings)
+                # LangFuse requires a 32-char lowercase hex trace id. It rejects
+                # anything else (such as a community prefix), which leaves the root
+                # span unset: every LLM and tool call then becomes its own trace and
+                # request_log.langfuse_trace_id matches nothing (issue #515). The
+                # community is recorded as a tag instead.
+                trace_id = uuid.uuid4().hex
+                config = llm_service.get_config_with_tracing(trace_id=trace_id)
+                if config.get("callbacks"):
+                    config["metadata"] = _langfuse_trace_metadata(community_id, user_id, session_id)
+                    langfuse_config = config
+                    langfuse_trace_id = trace_id
+            except (AttributeError, ValueError, RuntimeError, OSError, ImportError) as e:
+                logger.warning(
+                    "LangFuse tracing setup failed for %s: %s, continuing without it",
+                    community_id,
+                    e,
+                    exc_info=True,
+                )
 
     return AssistantWithMetrics(
         assistant=assistant,
@@ -3322,6 +3327,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 user_id=x_user_id,
                 requested_model=body.model,
                 page_context=body.page_context,
+                trace=body.share_usage,
             )
             messages = [HumanMessage(content=body.question)]
             result = await awm.assistant.ainvoke(messages, config=awm.langfuse_config)
@@ -3594,6 +3600,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 requested_model=body.model,
                 page_context=body.page_context,
                 session_id=session.session_id,
+                trace=body.share_usage,
             )
             result = await awm.assistant.ainvoke(session.messages, config=awm.langfuse_config)
 
@@ -4953,6 +4960,7 @@ async def _stream_ask_response(
             requested_model=requested_model,
             preload_docs=True,
             page_context=page_context,
+            trace=_shares_usage(http_request),
         )
         graph = awm.assistant.build_graph()
 
@@ -5624,6 +5632,7 @@ async def _stream_chat_response(
             declared_client_tools=declared_client_tools,
             browser_runs_left=MAX_BROWSER_RUNS_PER_REPLY - browser_runs_answered,
             session_id=session.session_id,
+            trace=_shares_usage(http_request),
             **routing_kwargs,
         )
         if handing_over:

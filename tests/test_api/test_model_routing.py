@@ -940,6 +940,62 @@ class TestConversationAndTierColumns:
         assert unnamed == 0
 
 
+class TestAnOptedOutReaderOnARoutedCommunity:
+    """ "Share usage data" off (#706) keeps a routed row's tier and drops what links it.
+
+    The opt-out tests in `test_usage_opt_out.py` run communities that do not route, so a
+    row's tier is None there. Here the tier is real, on the analysis row and on the
+    `:quick` row a handover adds.
+    """
+
+    def test_a_plain_quick_turn_keeps_its_tier(self, metered_client, monkeypatch) -> None:
+        rig = _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        _chat(metered_client, "find datasets with face stimuli", share_usage=False)
+
+        (row,) = _request_rows()
+        assert row["tier"] == "quick"
+        assert row["conversation_id"] is None and row["tools_called"] is None
+        assert row["langfuse_trace_id"] is None
+        assert [call["trace"] for call in rig.calls] == [False], "no trace is made for the turn"
+
+    def test_a_handover_keeps_the_tier_on_both_rows_and_drops_both_conversations(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        rig = _rig(
+            monkeypatch,
+            quick=[say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+
+        done = _done(
+            _chat(metered_client, "plot the ERP", session_id="sess-quick", share_usage=False)
+        )
+
+        by_id = {r["request_id"]: r for r in _request_rows()}
+        analysis = by_id[done["request_id"]]
+        quick = by_id[f"{done['request_id']}:quick"]
+        assert (analysis["tier"], quick["tier"]) == ("analysis", "quick")
+        for row in (analysis, quick):
+            assert row["conversation_id"] is None, row["request_id"]
+            assert row["tools_called"] is None, row["request_id"]
+            assert row["langfuse_trace_id"] is None, row["request_id"]
+            assert row["estimated_cost"] is not None
+        assert rig.calls and all(call["trace"] is False for call in rig.calls)
+
+    def test_the_default_still_traces_and_links_the_conversation(
+        self, metered_client, monkeypatch
+    ) -> None:
+        rig = _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        done = _done(_chat(metered_client, "find datasets with face stimuli"))
+
+        (row,) = _request_rows()
+        assert row["conversation_id"] == done["session_id"]
+        assert [call["trace"] for call in rig.calls] == [True]
+
+
 class TestAFirstMessage:
     def test_a_keyword_first_message_flips_its_own_session(self, client, monkeypatch) -> None:
         rig = _rig(monkeypatch, quick=[say("unused")])
