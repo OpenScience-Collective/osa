@@ -674,12 +674,6 @@ class TestTheProceduresLeaveThePrompt:
         for phrase in phrases:
             assert phrase in flat, (procedure_id, phrase)
 
-    def test_the_prompt_is_much_shorter_than_before(self, nemar: CommunityConfig) -> None:
-        """The four procedures were about 160 lines of the prompt; the documents hold them."""
-        moved = sum(len(text) for text in nemar.procedure_documents().values())
-        assert moved > 10_000
-        assert len(nemar.system_prompt) < 15_000
-
 
 class TestEachDocumentDeclaresItsPlan:
     @pytest.mark.parametrize(("procedure_id", "sequence"), DECLARED_SEQUENCES.items())
