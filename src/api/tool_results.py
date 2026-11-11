@@ -283,10 +283,11 @@ def build_plan_tool_message(
         "Steps as the reader left them "
         f"({'the same as you proposed' if unchanged else 'DIFFERENT from what you proposed'}):",
     ]
-    lines.extend(
-        f"{number}. {title}: {detail}" if detail else f"{number}. {title}"
-        for number, (title, detail) in enumerate(left, start=1)
-    )
+    # A detail can echo untrusted text and may span lines; one line per step keeps it
+    # from adding a line that reads as part of the message's own structure.
+    for number, (title, detail) in enumerate(left, start=1):
+        one_line = " ".join(detail.split())
+        lines.append(f"{number}. {title}: {one_line}" if one_line else f"{number}. {title}")
     if decision.feedback:
         lines.append(f"Reader feedback: {decision.feedback}")
     if decision.decision == "approved":
