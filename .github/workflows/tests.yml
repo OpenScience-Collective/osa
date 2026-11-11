@@ -457,6 +457,12 @@ jobs:
       - name: Run the activity status tests on a real DOM
         run: bun frontend/test-widget-activity-status.js
 
+      # The run card: consent, running, done with and without a figure, each status,
+      # the same card after a reload, and a failed run's error, failing line,
+      # warnings and cut output, from stderr recorded off real Pyodide.
+      - name: Run the run card tests on a real DOM
+        run: bun frontend/test-widget-run-card.js
+
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a
       # reading pace, the code block whole, and at once with reduced motion emulated.
@@ -470,6 +476,13 @@ jobs:
       # ticking after. Its own server, so no backend and no network.
       - name: Check the activity status in headless Chrome
         run: bun frontend/browser-harness/activity-status-check.mjs
+
+      # The run card in real Chrome, where layout is the browser's own: the card
+      # inside the 400 px panel with no sideways scroll, every button at least 36 px,
+      # the failing line marked, and Show code revealing the code. Its own server,
+      # so no backend and no network; the runner ships Chrome.
+      - name: Check the run card in headless Chrome
+        run: bun frontend/browser-harness/run-card-check.mjs
 
       # What only a browser can check: Pyodide under a real Content-Security-Policy,
       # the egress guard on a real worker global, and NEMAR's lock overlay loaded by

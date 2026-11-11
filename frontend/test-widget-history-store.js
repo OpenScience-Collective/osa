@@ -171,8 +171,11 @@ const RUN = {
   callId: 'call-1', tool: 'execute_code', description: 'Plot the ERP', code: 'print("erp")\n',
   status: 'ok', stdout: 'erp\n', stderr: '', images: [], local: false, workspaceNote: '',
 };
+// The run as the loader returns it: a run saved before runs carried a traceback
+// (the v2 widget's runs) reads back with an empty one.
+const RUN_LOADED = { ...RUN, traceback: '' };
 // The shape the v2 widget wrote (test-widget-dataset-questions.js), with a run and
-// a citation: already in the form the loader returns, so the input is the output.
+// a citation. The loader returns it unchanged except for that empty traceback.
 const V2_MESSAGES = [
   { role: 'assistant', content: 'Hi', citations: [], executions: [] },
   { role: 'user', content: LONG_QUESTION, dataset: 'nm000103' },
@@ -180,6 +183,9 @@ const V2_MESSAGES = [
   { role: 'user', content: 'And the events?', dataset: 'nm000132' },
   { role: 'assistant', content: 'Done.', citations: [], executions: [RUN] },
 ];
+const V2_LOADED = V2_MESSAGES.map((m) => (m.executions
+  ? { ...m, executions: m.executions.map((run) => ({ ...run, traceback: '' })) }
+  : m));
 
 console.log('\na v2 record becomes one conversation, nothing lost');
 {
@@ -190,9 +196,9 @@ console.log('\na v2 record becomes one conversation, nothing lost');
   assertEqual(record.conversations.length, 1, 'with exactly one conversation');
   const only = record.conversations[0];
   assertEqual(record.activeId, only.id, 'which is the active one');
-  assertEqual(only.messages, V2_MESSAGES, 'its messages are the input\'s, runs and citations included');
+  assertEqual(only.messages, V2_LOADED, 'its messages are the input\'s, runs and citations included');
   assertEqual(only.sessionId, 'session-v2', 'its session id is the input\'s');
-  assertEqual(ctx.hooks.getMessages(), V2_MESSAGES, 'and the working copy is the same messages');
+  assertEqual(ctx.hooks.getMessages(), V2_LOADED, 'and the working copy is the same messages');
   assertEqual(ctx.hooks.getSessionId(), 'session-v2', 'and the same session');
   assertEqual(only.title, LONG_QUESTION.slice(0, 60), 'the title is the first user message cut to 60 characters');
   assertEqual(only.title.length, 60, 'which is 60 characters');
@@ -439,12 +445,14 @@ console.log('\nsave then load returns identical messages, with no in-page-only f
     { role: 'user', content: 'plot it', dataset: 'nm000103' },
     { role: 'assistant', content: 'here', citations: [], executions: [{ ...RUN, images: [] }] },
   ];
+  // Loading fills the run's missing traceback with an empty one.
+  const expectedLoaded = [expected[0], expected[1], { ...expected[2], executions: [{ ...RUN_LOADED, images: [] }] }];
   assertEqual(saved.messages, expected, 'what is stored is the input minus its in-page fields, dataset, run code and output kept');
   ctx.hooks.setMessages([]);
   ctx.hooks.setSessionId(null);
   const needsSave = ctx.hooks.loadHistory();
   assert(needsSave === false, 'a clean v3 record needs no re-save');
-  assertEqual(ctx.hooks.getMessages(), expected, 'the messages come back as the expected literal');
+  assertEqual(ctx.hooks.getMessages(), expectedLoaded, 'the messages come back as the expected literal');
   assertEqual(ctx.hooks.getSessionId(), 'session-rt', 'with the session');
   const loaded = ctx.hooks.getMessages();
   assert(!JSON.stringify(loaded).match(/"_[A-Za-z]+"/), 'no transient field comes back');

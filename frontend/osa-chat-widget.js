@@ -1692,7 +1692,8 @@
 
       /* A reply's status line (#538) holds still. Two classes, to outrank the pulse's
          own rule, which comes later in this sheet. */
-      .osa-activity-status .osa-activity-pulse {
+      .osa-activity-status .osa-activity-pulse,
+      .osa-run-card-retry .osa-activity-pulse {
         animation: none;
         opacity: 0.6;
       }
@@ -2979,24 +2980,242 @@
       border-radius: 0;
     }
 
-    /* Browser code execution: the permission gate and what ran. */
-    .osa-tool-panel {
+    /* Browser code execution: one card for the question whether to run, the run, and
+       what came of it (the Run card block in the script). Failure colors are tokens of
+       the card, redefined once for the dark panel below. */
+    .osa-run-card {
+      --osa-run-ok: #15803d;
+      --osa-run-danger: #b91c1c;
+      --osa-run-danger-bg: #fef2f2;
+      position: relative;
       border: 1px solid var(--osa-border);
       border-radius: 12px;
       padding: 10px 12px;
+      margin: 0 0 8px 0;
       background: var(--osa-bg);
+      color: var(--osa-text);
       font-size: 13px;
       display: flex;
       flex-direction: column;
       gap: 8px;
+      min-width: 0;
     }
 
+    .osa-run-card [hidden] {
+      display: none !important;
+    }
+
+    .osa-run-card-failed {
+      border: 1.5px solid var(--osa-run-danger);
+    }
+
+    .osa-run-card-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .osa-run-card-icon {
+      display: inline-flex;
+      flex: none;
+      color: var(--osa-text-light);
+    }
+
+    .osa-run-card-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .osa-run-card-ok .osa-run-card-icon {
+      color: var(--osa-run-ok);
+    }
+
+    .osa-run-card-failed .osa-run-card-icon,
+    .osa-run-card-failed .osa-run-card-title {
+      color: var(--osa-run-danger);
+    }
+
+    .osa-run-card-title,
     .osa-tool-panel-title {
       font-weight: 600;
     }
 
+    .osa-run-card-description,
     .osa-tool-panel-description {
       color: var(--osa-text-light);
+    }
+
+    /* What went wrong, in words, with the failing line marked in the code around it. */
+    .osa-run-card-error {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .osa-run-card-error-text {
+      background: var(--osa-run-danger-bg);
+      color: var(--osa-run-danger);
+      border-radius: 8px;
+      padding: 6px 8px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 160px;
+      overflow: auto;
+    }
+
+    .osa-run-card-error-type {
+      font-weight: 700;
+    }
+
+    .osa-run-card-excerpt {
+      background: #1f2937;
+      color: #f9fafb;
+      border-radius: 8px;
+      padding: 6px 0;
+      font-size: 12px;
+      line-height: 1.6;
+      font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+      overflow: auto;
+    }
+
+    .osa-run-card-line {
+      display: flex;
+      gap: 8px;
+      padding: 0 10px;
+      white-space: pre;
+    }
+
+    .osa-run-card-line-marked {
+      background: #7f1d1d;
+    }
+
+    .osa-run-card-lineno {
+      flex: none;
+      min-width: 2ch;
+      text-align: right;
+      color: #9ca3af;
+    }
+
+    .osa-run-card-line-marked .osa-run-card-lineno {
+      color: #fecaca;
+    }
+
+    .osa-run-card-marker {
+      flex: none;
+      width: 1ch;
+      color: #fecaca;
+      font-weight: 700;
+    }
+
+    .osa-run-card-note {
+      color: var(--osa-text-light);
+      font-size: 12px;
+    }
+
+    .osa-run-card-retry {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--osa-text-light);
+      font-size: 12.5px;
+    }
+
+    .osa-run-card-retry .osa-activity-pulse {
+      background: var(--osa-accent);
+    }
+
+    .osa-run-card-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* A run's buttons: 36px tall, and named in words. Declared against a host page's
+       own button styles the way the gate's are (font: revert). Show code is the one
+       that is prominent: accent-colored, bold, with a border of its own. */
+    .osa-run-card button.osa-run-card-button {
+      font: revert;
+      appearance: auto;
+      box-sizing: border-box;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 36px;
+      padding: 0 10px;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .osa-run-card button.osa-run-card-button:hover {
+      background: rgba(0,0,0,0.04);
+    }
+
+    .osa-run-card .osa-run-card-error-text:focus-visible,
+    .osa-run-card .osa-run-card-excerpt:focus-visible,
+    .osa-run-card .osa-run-card-error-fallback:focus-visible,
+    .osa-run-card button.osa-run-card-button:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-run-card button.osa-run-card-button.osa-run-card-code-toggle {
+      border: 1.5px solid var(--osa-accent);
+      color: var(--osa-accent);
+      font-weight: 600;
+      padding: 0 12px;
+    }
+
+    .osa-run-card button.osa-run-card-button svg {
+      width: 14px;
+      height: 14px;
+      flex: none;
+    }
+
+    .osa-run-card-toggle[aria-expanded="true"] .osa-run-card-chevron {
+      transform: rotate(180deg);
+    }
+
+    .osa-run-card button.osa-run-card-button.osa-run-card-copied {
+      color: var(--osa-run-ok);
+    }
+
+    .osa-run-card-panel {
+      min-width: 0;
+    }
+
+    .osa-run-card-panel .osa-execution-output {
+      margin: 0;
+    }
+
+    /* The fallback line when the page cannot copy ("press Ctrl+C") is plain text under
+       the buttons; "Copied" itself is said by the button, and only announced here. */
+    .osa-run-card .osa-code-status {
+      flex: 1 1 100%;
+      margin: 0;
+      text-align: left;
+    }
+
+    .osa-run-card .osa-code-status:empty {
+      display: none;
+    }
+
+    .osa-run-card .osa-code-status-quiet {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
 
     .osa-tool-code {
@@ -3089,43 +3308,6 @@
       transition: width 0.2s ease;
     }
 
-    .osa-execution {
-      margin: 0 0 8px 0;
-      font-size: 13px;
-    }
-
-    .osa-execution summary {
-      cursor: pointer;
-      color: var(--osa-text-light);
-    }
-
-    /* A run and its code (#491): the run's own disclosure (its output and
-       figures), then its code as a disclosure of its own, so the code opens
-       without the output and the output without the code. A rule down the left
-       ties the two together. Only a reply that ran code has one. */
-    .osa-execution-run {
-      margin: 0 0 8px 0;
-      padding-left: 8px;
-      border-left: 2px solid var(--osa-border);
-    }
-
-    .osa-execution-run .osa-execution {
-      margin: 0 0 4px 0;
-    }
-
-    .osa-execution-code {
-      font-size: 13px;
-    }
-
-    .osa-execution-code summary {
-      cursor: pointer;
-      color: var(--osa-text-light);
-    }
-
-    .osa-execution-code-lines {
-      font-size: 12px;
-    }
-
     /* The bar over a code block: a status line, then Copy and, for a run,
        Download. On the run's code and on the permission gate's. */
     .osa-code-toolbar {
@@ -3200,7 +3382,7 @@
       font-family: 'SF Mono', Monaco, 'Courier New', monospace;
     }
 
-    .osa-execution img {
+    .osa-run-card img {
       display: block;
       max-width: 100%;
       margin-top: 6px;
@@ -3221,7 +3403,7 @@
       margin-top: 6px;
     }
 
-    .osa-execution .osa-execution-figure img {
+    .osa-run-card .osa-execution-figure img {
       margin-top: 0;
     }
 
@@ -3276,11 +3458,6 @@
       font-size: 12px;
     }
 
-    .osa-rerun-actions {
-      margin-top: 6px;
-    }
-
-    .osa-rerun-actions button,
     .osa-rerun-buttons button {
       border: 1px solid var(--osa-border);
       background: var(--osa-bg);
@@ -3489,6 +3666,23 @@
 
     .osa-chat-widget.osa-dark .osa-execution-output {
       background: rgba(255, 255, 255, 0.06);
+    }
+
+    /* A run card on the dark panel: its failure colors lighten to read on it, the
+       failing-line excerpt is the darker code surface, and the hover is a light wash. */
+    .osa-chat-widget.osa-dark .osa-run-card {
+      --osa-run-ok: #4ade80;
+      --osa-run-danger: #fca5a5;
+      --osa-run-danger-bg: rgba(220, 38, 38, 0.15);
+    }
+
+    .osa-chat-widget.osa-dark .osa-run-card-excerpt {
+      background: #030712;
+      box-shadow: inset 0 0 0 1px var(--osa-border);
+    }
+
+    .osa-chat-widget.osa-dark .osa-run-card button.osa-run-card-button:hover {
+      background: rgba(255, 255, 255, 0.08);
     }
   `;
 
@@ -4346,26 +4540,59 @@
   // How long "Copied" shows on a code block's bar.
   const CODE_COPIED_MS = 2000;
 
+  // Where a refused "Copy error" selects: a block holding exactly the text the button
+  // promised (the type, the message and the failing line), since the error as drawn
+  // splits those across two places. Built only when the copy is refused (copyCodeFromButton
+  // calls for it then), and kept until the card redraws.
+  function errorFallbackFor(card, text) {
+    let pre = card.querySelector('.osa-run-card-error-fallback');
+    if (!pre) {
+      pre = document.createElement('pre');
+      pre.className = 'osa-execution-output osa-run-card-error-fallback';
+      pre.tabIndex = 0;
+      pre.setAttribute('aria-label', 'The error, to copy');
+      const actions = card.querySelector('.osa-run-card-actions');
+      if (actions) actions.insertAdjacentElement('afterend', pre);
+      else card.appendChild(pre);
+    }
+    pre.textContent = text;
+    return pre;
+  }
+
   // A code block's Copy (#491): the exact code, never the highlighted page text,
-  // onto the clipboard, and "Copied" beside the button for a moment. Where the
-  // browser allows neither way to copy, the code is opened and selected in place
-  // and the bar names the keys that copy it, since nothing the page can do will.
-  async function copyCodeFromButton(button, code) {
+  // onto the clipboard, and "Copied" beside the button for a moment. A run card's
+  // buttons are worded ("Copy code", "Copy error": data-copy-label) and say "Copied"
+  // themselves; the icon buttons of the gate and of a failed run's code swap to a
+  // check. Either way the block's status line (a live region) says it too. Where the
+  // browser allows neither way to copy, the text is selected in place and the status
+  // names the keys that copy it, since nothing the page can do will: for a run's
+  // code, the code is opened first; `selectable` is what to select instead (an element,
+  // or a function that makes one, called only when the copy is refused).
+  async function copyCodeFromButton(button, code, selectable = null) {
     const block = button.closest('.osa-code-block');
     const status = block && block.querySelector('.osa-code-status');
+    const label = button.getAttribute('data-copy-label');
     if (await writeClipboard(code)) {
       button.classList.add('copied');
-      button.innerHTML = ICONS.check;
+      if (label) {
+        button.classList.add('osa-run-card-copied');
+        button.textContent = 'Copied';
+      } else {
+        button.innerHTML = ICONS.check;
+      }
       if (status) status.textContent = 'Copied';
       setTimeout(() => {
-        button.classList.remove('copied');
-        button.innerHTML = ICONS.copy;
+        button.classList.remove('copied', 'osa-run-card-copied');
+        if (label) button.textContent = label;
+        else button.innerHTML = ICONS.copy;
         if (status && status.textContent === 'Copied') status.textContent = '';
       }, CODE_COPIED_MS);
       return true;
     }
-    if (block && block.tagName === 'DETAILS') block.open = true;
-    const codeElement = block && block.querySelector('pre code');
+    const toggle = block && block.querySelector('.osa-run-card-code-toggle');
+    if (!selectable && toggle && toggle.getAttribute('aria-expanded') !== 'true') toggle.click();
+    const codeElement = (typeof selectable === 'function' ? selectable() : selectable) ||
+      (block && block.querySelector('pre code'));
     if (codeElement && typeof window.getSelection === 'function') {
       const selection = window.getSelection();
       const range = document.createRange();
@@ -4374,7 +4601,8 @@
       selection.addRange(range);
     }
     if (status) {
-      status.textContent = `This page cannot copy for you: the code is selected, so press ${isApplePlatform() ? 'Cmd' : 'Ctrl'}+C`;
+      status.classList.remove('osa-code-status-quiet');
+      status.textContent = `This page cannot copy for you: the ${selectable ? 'text' : 'code'} is selected, so press ${isApplePlatform() ? 'Cmd' : 'Ctrl'}+C`;
     }
     return false;
   }
@@ -4704,6 +4932,7 @@
         status: clipField(run.status, 'status'),
         stdout: clipField(run.stdout, 'stdout'),
         stderr: clipField(run.stderr, 'stderr'),
+        traceback: clipField(run.traceback, 'traceback'),
         images: [],
         // Whether the READER ran this themselves (runLocal), not the
         // assistant: always a real boolean, never left undefined, so a run
@@ -4935,12 +5164,12 @@
         if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
         // Figures are shown for the life of the page and not stored. An open
         // "Edit and run" editor, its draft and its live echo, and an opened
-        // code block (#491), are the same kind of transient, in-page-only state
+        // code or output panel (#491), are the same kind of transient, in-page-only state
         // as the feedback flags above: a reload always starts back at the plain
         // recorded view.
         if (Array.isArray(rest.executions)) {
           rest.executions = rest.executions.map((run) => {
-            const { _editing, _draft, _runningLocal, _localResult, _codeOpen, ...keep } = run;
+            const { _editing, _draft, _runningLocal, _localResult, _codeOpen, _panelsOpen, ...keep } = run;
             return { ...keep, images: [] };
           });
         }
@@ -5599,10 +5828,71 @@
     status: 32,
     stdout: 4000,
     stderr: 4000,
+    // The full Python traceback of a failed run, which the browser keeps for
+    // get_full_output (recordedTraceback). Most of it is the runtime's own frames,
+    // so it is cut like the other output, from the middle.
+    traceback: 4000,
     // A save-failure note (see withWorkspaceNote, osa-controller.js), shown
     // regardless of the run's own status, unlike stderr below.
     workspaceNote: 2000,
   });
+
+  // The streams of a run that are kept from the middle when they are too long:
+  // the worker's own cut (osa-output.js _clip) does the same, for the same reason,
+  // and an error is written at the END of stderr, which a cut from the end loses.
+  const OUTPUT_FIELDS = Object.freeze(['stdout', 'stderr', 'traceback']);
+
+  // The marker the worker's _clip and the widget's own clipOutput leave where text
+  // was cut: "... N characters omitted ...", on a line of its own (its line breaks are
+  // part of the marker, not of the output).
+  const OMITTED_MARKER = /\n?\.\.\. (\d+) characters omitted \.\.\.\n?/g;
+
+  // How many characters of the output are not in `text`, from the markers in it.
+  function omittedCharacters(text) {
+    let total = 0;
+    for (const match of String(text || '').matchAll(OMITTED_MARKER)) total += Number(match[1]);
+    return total;
+  }
+
+  function omittedMarker(count) {
+    return `\n... ${count} characters omitted ...\n`;
+  }
+
+  // `text` held to `limit` characters, keeping both ends (60% and 40%, as the
+  // worker does) and a marker that says how much was dropped. The count is of the
+  // original output, so a worker marker that falls in the dropped middle adds its
+  // own count to ours instead of vanishing, and a marker is never kept in half.
+  function clipOutput(text, limit) {
+    if (text.length <= limit) return text;
+    const markers = Array.from(text.matchAll(OMITTED_MARKER), (match) => ({
+      start: match.index,
+      end: match.index + match[0].length,
+      count: Number(match[1]),
+    }));
+    let markerLength = omittedMarker(text.length).length;
+    let headEnd = 0;
+    let tailStart = text.length;
+    let dropped = text.length;
+    // The marker's own length depends on the digits of the count, which depend on
+    // how much room it leaves: the digits only ever grow, so this settles.
+    for (let pass = 0; pass < 4; pass++) {
+      const room = limit - markerLength;
+      headEnd = Math.floor(room * 0.6);
+      tailStart = text.length - (room - headEnd);
+      for (const marker of markers) {
+        if (marker.start < headEnd && headEnd < marker.end) headEnd = marker.start;
+        if (marker.start < tailStart && tailStart < marker.end) tailStart = marker.end;
+      }
+      dropped = tailStart - headEnd;
+      for (const marker of markers) {
+        if (marker.start >= headEnd && marker.end <= tailStart) dropped += marker.count - (marker.end - marker.start);
+      }
+      const next = omittedMarker(dropped).length;
+      if (next === markerLength) break;
+      markerLength = next;
+    }
+    return (text.slice(0, headEnd) + omittedMarker(dropped) + text.slice(tailStart)).slice(0, limit);
+  }
 
   // The heading of a run's record, by result status.
   const EXECUTION_LABELS = Object.freeze({
@@ -6001,13 +6291,26 @@
   }
 
   function clipField(value, field) {
-    return typeof value === 'string' ? value.slice(0, EXECUTION_FIELD_LIMITS[field]) : '';
+    if (typeof value !== 'string') return '';
+    return OUTPUT_FIELDS.includes(field)
+      ? clipOutput(value, EXECUTION_FIELD_LIMITS[field])
+      : value.slice(0, EXECUTION_FIELD_LIMITS[field]);
+  }
+
+  // The full Python traceback the browser kept for this call (get_full_output's
+  // "traceback" stream), or ''. It is kept in this tab only, and only for the runs
+  // the runtime remembers, so a run it no longer holds simply has none.
+  function recordedTraceback(callId) {
+    const store = browserRuntime && browserRuntime.outputs;
+    if (!store || typeof store.get !== 'function' || typeof callId !== 'string' || !callId) return '';
+    const entry = store.get(callId);
+    return entry && typeof entry.traceback === 'string' ? entry.traceback : '';
   }
 
   // What the reader is shown of a run, kept on the reply. The images are shown
   // now and never stored: three figures can be megabytes, and browser storage
   // for a whole conversation is a few.
-  function executionRecord(request, result) {
+  function executionRecord(request, result, traceback = '') {
     const prompt = requestPrompt(request);
     return {
       callId: clipField(request && request.call_id, 'callId'),
@@ -6017,6 +6320,7 @@
       status: clipField(result && result.status, 'status'),
       stdout: clipField(result && result.stdout, 'stdout'),
       stderr: clipField(result && result.stderr, 'stderr'),
+      traceback: clipField(traceback, 'traceback'),
       images: result && Array.isArray(result.images) ? result.images : [],
       local: false,
       // Non-enumerable on `result` (osa-controller.js's withWorkspaceNote),
@@ -6030,7 +6334,7 @@
   // (ClientToolController#runLocal) rather than one the assistant asked for:
   // no request came from the server, so this is built from the edited code
   // and description directly instead of requestPrompt().
-  function localExecutionRecord(tool, description, code, result) {
+  function localExecutionRecord(tool, description, code, result, traceback = '') {
     return {
       callId: clipField(result && result.call_id, 'callId'),
       tool: clipField(tool, 'tool'),
@@ -6039,6 +6343,7 @@
       status: clipField(result && result.status, 'status'),
       stdout: clipField(result && result.stdout, 'stdout'),
       stderr: clipField(result && result.stderr, 'stderr'),
+      traceback: clipField(traceback, 'traceback'),
       images: result && Array.isArray(result.images) ? result.images : [],
       local: true,
       // The reader's own run never reaches the server at all, so this note
@@ -6098,7 +6403,7 @@
       showError(container, `Could not run this code: ${outcome.reason}`);
       return;
     }
-    const record = localExecutionRecord(run.tool, run.description || '', code, outcome.result);
+    const record = localExecutionRecord(run.tool, run.description || '', code, outcome.result, recordedTraceback(outcome.result && outcome.result.call_id));
     message.executions = message.executions.concat(record);
     run._localResult = {
       callId: record.callId,
@@ -6151,7 +6456,9 @@
     }
     const message = messages[messageIndex];
     if (message && runsCode) {
-      message.executions = (message.executions || []).concat(executionRecord(request, result));
+      message.executions = (message.executions || []).concat(
+        executionRecord(request, result, recordedTraceback(request.call_id))
+      );
     }
     // The result goes back to the model next, which reads it before anything else
     // happens: said until the continuing stream shows what comes of it (#538). The run
@@ -6317,56 +6624,6 @@
     return runtimeApi ? runtimeApi.highlightPython(code) : escapeHtml(code);
   }
 
-  // The panel shown while a tool_request is answered, as HTML.
-  function toolPanelHtml(activity) {
-    if (!activity) return '';
-    const prompt = activity.prompt || {};
-    const description = prompt.description
-      ? `<div class="osa-tool-panel-description">${escapeHtml(prompt.description)}</div>`
-      : '';
-    if (activity.phase === 'asking') {
-      return `
-        <div class="osa-tool-panel" role="group" aria-label="Run code in your browser?">
-          <div class="osa-tool-panel-title">Run this Python in your browser?</div>
-          ${description}
-          <div class="osa-code-block">
-            ${codeToolbarHtml()}
-            <pre class="osa-tool-code"><code>${highlightOrEscape(prompt.code || '')}</code></pre>
-          </div>
-          <div class="osa-tool-actions">
-            <button type="button" class="osa-tool-run">Run</button>
-            <button type="button" class="osa-tool-deny">Don't run</button>
-            <label class="osa-tool-autorun"><input type="checkbox" class="osa-tool-autorun-input"> Run without asking until I reload</label>
-          </div>
-        </div>`;
-    }
-    const progress = activity.progress;
-    const status = progress ? progress.text : 'Running Python in your browser...';
-    // A determinate bar only once the boot reports a step within a known
-    // total; before that (or once the boot is done and code is actually
-    // running) the label stands alone rather than showing a bar frozen at
-    // whatever step last reported.
-    const hasBar = Boolean(progress) && progress.step !== null && progress.steps !== null;
-    const percent = hasBar ? Math.round((progress.step / progress.steps) * 100) : 0;
-    const bar = hasBar
-      ? `<div class="osa-tool-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${progress.steps}" ` +
-        `aria-valuenow="${progress.step}" aria-label="${escapeHtml(status)}">` +
-        `<div class="osa-tool-progress-fill" style="width: ${percent}%"></div></div>`
-      : '';
-    return `
-      <div class="osa-tool-panel" role="status">
-        <div class="osa-tool-panel-title">Running Python</div>
-        ${description}
-        <div class="osa-tool-actions">
-          <div class="osa-tool-progress-row">
-            <span class="osa-tool-status">${escapeHtml(status)}</span>
-            ${bar}
-          </div>
-          <button type="button" class="osa-tool-stop">Stop</button>
-        </div>
-      </div>`;
-  }
-
   // Only a PNG whose data is plain base64 reaches an <img src>: the data is
   // interpolated into an attribute, so anything else could close it.
   function isShowableImage(image) {
@@ -6414,22 +6671,7 @@
     const workspaceNote = run.workspaceNote
       ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
       : '';
-    // Figures are numbered among the ones shown, from 1, as the workspace
-    // numbers a run's figure-K.png; data-image-index is the figure's place in
-    // the record, which the click reads the bytes from.
-    let figureNumber = 0;
-    const images = (Array.isArray(run.images) ? run.images : [])
-      .map((image, imageIndex) => {
-        if (!isShowableImage(image)) return '';
-        figureNumber += 1;
-        const img = `<img alt="Figure ${figureNumber} produced by the code" src="data:image/png;base64,${image.data_base64}">`;
-        if (!located) return img;
-        const filename = figureFileName(located.msgIndex, located.runIndex, figureNumber);
-        return `<div class="osa-execution-figure">${img}<div class="osa-figure-actions">` +
-          `<button type="button" class="osa-figure-download" data-msg-index="${escapeHtml(String(located.msgIndex))}" data-run-index="${escapeHtml(String(located.runIndex))}" data-image-index="${escapeHtml(String(imageIndex))}" ` +
-          `aria-label="Download figure ${figureNumber} as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}<span>Download</span></button></div></div>`;
-      })
-      .join('');
+    const images = runFiguresHtml(run, located);
     return `${stdout}${stderr}${workspaceNote}${images}`;
   }
 
@@ -6498,17 +6740,24 @@
       </div>`;
   }
 
-  // The bar over a code block (#491): a status line for "Copied", Copy, and,
-  // given a file name, Download. `where` names the run the buttons act on, so a
-  // click reads the code from the run's record rather than from the page; the
-  // permission gate's bar has neither, and its Copy reads the gate's own prompt.
-  function codeToolbarHtml({ where = '', filename = '' } = {}) {
+  // The bar over a code block (#491): a status line for "Copied", Copy and, given a
+  // file name, Download. `where` names the run the buttons act on, so a click reads
+  // the code from the run's record rather than from the page; the permission gate's
+  // bar has neither, and its Copy reads the gate's own prompt. A run card has its own
+  // status line and, until the run failed, its own Copy button, so it asks for neither.
+  function codeToolbarHtml({ where = '', filename = '', copy = true, status = true } = {}) {
     const download = filename
       ? `<button type="button" class="osa-code-action osa-code-download"${where} aria-label="Download the code as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}</button>`
       : '';
+    const copyButton = copy
+      ? `<button type="button" class="osa-code-action osa-code-copy"${where} aria-label="Copy the code" title="Copy the code">${ICONS.copy}</button>`
+      : '';
+    const statusLine = status
+      ? '<span class="osa-code-status" role="status" aria-live="polite"></span>'
+      : '';
     return `<div class="osa-code-toolbar">
-        <span class="osa-code-status" role="status" aria-live="polite"></span>
-        <button type="button" class="osa-code-action osa-code-copy"${where} aria-label="Copy the code" title="Copy the code">${ICONS.copy}</button>${download}
+        ${statusLine}
+        ${copyButton}${download}
       </div>`;
   }
 
@@ -6541,79 +6790,493 @@
     return `${prefix}-run-${ordinal}`;
   }
 
-  // A run's code as a disclosure of its own (#491), closed unless the reader
-  // opened it (run._codeOpen, which a re-render keeps and storage does not), with
-  // Copy and Download over it once the reply it belongs to is known.
-  function runCodeHtml(run, msgIndex, runIndex) {
-    const lines = codeLineCount(run.code);
-    const located = typeof msgIndex === 'number';
-    const where = located ? ` data-msg-index="${msgIndex}" data-run-index="${runIndex}"` : '';
-    const toolbar = located ? codeToolbarHtml({ where, filename: `${runFileStem(msgIndex, runIndex)}.py` }) : '';
-    return `
-        <details class="osa-execution-code osa-code-block"${where}${run._codeOpen === true ? ' open' : ''}>
-          <summary>Code <span class="osa-execution-code-lines">· ${lines} ${lines === 1 ? 'line' : 'lines'}</span></summary>
-          ${toolbar}
-          <pre class="osa-tool-code"><code>${highlightOrEscape(run.code)}</code></pre>
-        </details>`;
+  // --- Run card ---
+  //
+  // One card for everything a browser run is: the question whether to run it
+  // (asking), the run itself (running) and what came of it (done, in any status).
+  // The builders here take state and return HTML: they read no page state, so a
+  // card restored from storage renders the same before the runtime bundle has
+  // loaded as after, and a test can render any card from a plain object. Only the
+  // two adapters at the end (toolPanelHtml, executionsHtml) read the widget's own
+  // state, to hand the builders what they need.
+  //
+  // This script is one classic file pinned by SRI, so the card cannot be a module
+  // of its own; this block is that module, kept in one piece.
+  //
+  // Every interpolated value is escaped: the description and the code are the
+  // model's, the output is whatever the code printed, and a stored record is
+  // whatever storage holds.
+
+  // A run that went wrong, as opposed to one the reader declined or stopped.
+  const RUN_FAILED_STATUSES = Object.freeze(['error', 'timeout', 'oom']);
+
+  function runIcon(paths) {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
+      `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
   }
 
-  // What ran for a reply, as HTML: one entry per run, its output and figures
-  // behind one disclosure and its code behind another (#491). Every field is
-  // escaped: the description and the code are the model's, the output is
-  // whatever the code printed, and a stored record is whatever storage holds.
+  const RUN_ICONS = Object.freeze({
+    ok: runIcon('<polyline points="20 6 9 17 4 12"></polyline>'),
+    failed: runIcon('<circle cx="12" cy="12" r="9"></circle><line x1="12" y1="7" x2="12" y2="13"></line><line x1="12" y1="16.5" x2="12" y2="17"></line>'),
+    stopped: runIcon('<circle cx="12" cy="12" r="9"></circle><line x1="9" y1="12" x2="15" y2="12"></line>'),
+    asking: runIcon('<polyline points="8 7 3 12 8 17"></polyline><polyline points="16 7 21 12 16 17"></polyline>'),
+    running: runIcon('<circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline>'),
+    warning: runIcon('<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12" y2="17.5"></line>'),
+    code: runIcon('<polyline points="8 7 3 12 8 17"></polyline><polyline points="16 7 21 12 16 17"></polyline>'),
+    chevron: runIcon('<polyline points="6 9 12 15 18 9"></polyline>').replace('<svg ', '<svg class="osa-run-card-chevron" '),
+  });
+
+  function runFailed(run) {
+    return RUN_FAILED_STATUSES.includes(run.status);
+  }
+
+  // "Ran Python", "Python raised an error" and the rest (EXECUTION_LABELS); a
+  // status nobody named, which includes the names Object.prototype has, reads
+  // "Python". The reader's own runs say so.
+  function runTitle(run) {
+    const label = Object.prototype.hasOwnProperty.call(EXECUTION_LABELS, run.status)
+      ? EXECUTION_LABELS[run.status]
+      : 'Python';
+    return `${run.local === true ? 'Your run: ' : ''}${label}`;
+  }
+
+  function lineCountLabel(count) {
+    return `${count} ${count === 1 ? 'line' : 'lines'}`;
+  }
+
+  function textLineCount(text) {
+    return text === '' ? 0 : codeLineCount(text);
+  }
+
+  // The name of an exception, as osa-output.js _error_text writes it before the
+  // colon: dotted, ending in Error, Exception, Exit, Interrupt or Iteration.
+  const EXCEPTION_NAME = /^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Iteration)$/;
+  // Any capitalized name, for the line directly above an offending-line marker.
+  const ANY_TYPE_LINE = /^([A-Za-z_][\w.]*)(?::[ \t]?(.*))?$/;
+  // "  line 4: erp[name] = ..." (the offending line, which _error_text adds when
+  // the exception came from a line of the run's own code).
+  const MAX_SHOWN_LINE_NUMBER = 1000000;
+  const ERROR_LINE_MARK = /^ {2}line (\d+)(?:: (.*))?$/;
+
+  // The type the exception itself has, read from the full traceback the browser kept:
+  // the first unindented line after the last indented one (a frame's "File" line or its
+  // source), which is where Python starts writing the exception. stderr alone cannot say
+  // this, since a message of several lines may hold a line that reads like "Name: text".
+  // '' when there is no traceback or it ends some other way.
+  function tracebackTypeName(traceback) {
+    const lines = String(traceback || '').replace(/\s+$/, '').split('\n');
+    let lastIndented = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^[ \t]/.test(lines[i])) {
+        lastIndented = i;
+        break;
+      }
+    }
+    const first = lines[lastIndented + 1];
+    const match = first === undefined ? null : ANY_TYPE_LINE.exec(first);
+    return match ? match[1] : '';
+  }
+
+  // What a failed run's stderr says went wrong. The runtime writes "Type: message",
+  // then "  line N: code" when it knows the line (osa-output.js _error_text), after
+  // whatever the code itself wrote to stderr. A run it stopped (timeout, out of
+  // memory) has one "[runtime] ..." sentence instead.
   //
-  // msgIndex names the reply these runs belong to, so the edit/run/cancel
-  // controls and the code's Copy and Download know which record to act on;
-  // omitted, none of them render (canRunLocalCode() still gates "Edit and run"
-  // first).
+  // Returns {type, message, line, lineCode, before, text}: `before` is what stderr
+  // held ahead of the error, `text` the error as written (what "Copy error" copies).
+  // A stderr that does not parse comes back whole as the message, so nothing a
+  // failed run printed is ever hidden for want of a pattern.
+  function runErrorInfo(run) {
+    const stderr = String(run.stderr || '').replace(/\s+$/, '');
+    if (stderr === '') return null;
+    if (run.status !== 'error') {
+      return { type: '', message: stderr.replace(/^\[runtime\] /, ''), line: 0, lineCode: '', before: '', text: stderr };
+    }
+    const lines = stderr.split('\n');
+    let anchor = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (ERROR_LINE_MARK.test(lines[i])) {
+        anchor = i;
+        break;
+      }
+    }
+    const from = anchor >= 0 ? anchor - 1 : lines.length - 1;
+    let typeAt = -1;
+    let typeName = '';
+    let rest = '';
+    // The exception's own type, when the traceback names it, wins over a line of its
+    // message that looks like one: the nearest line above the marker with that name.
+    // The traceback writes a library's exception with its module ("json.decoder.JSONDecodeError"),
+    // stderr without ("JSONDecodeError"), so names are compared by their last segment.
+    const lastSegment = (name) => name.split('.').pop();
+    const known = lastSegment(tracebackTypeName(run.traceback));
+    const findType = (matches) => {
+      for (let i = from; i >= 0; i--) {
+        const match = ANY_TYPE_LINE.exec(lines[i]);
+        if (match && matches(match[1])) {
+          typeAt = i;
+          [, typeName, rest = ''] = match;
+          return;
+        }
+      }
+    };
+    if (known !== '') findType((name) => lastSegment(name) === known);
+    // A traceback that disagrees with stderr never does worse than having none.
+    if (typeAt < 0) findType((name) => EXCEPTION_NAME.test(name));
+    if (typeAt < 0 && anchor > 0) {
+      // A name that does not end like an exception's, directly above the marker.
+      const match = ANY_TYPE_LINE.exec(lines[anchor - 1]);
+      if (match && /^[A-Z]/.test(match[1].split('.').pop())) {
+        typeAt = anchor - 1;
+        [, typeName, rest = ''] = match;
+      }
+    }
+    if (typeAt < 0) {
+      return { type: '', message: stderr, line: 0, lineCode: '', before: '', text: stderr };
+    }
+    const markMatch = anchor >= 0 ? ERROR_LINE_MARK.exec(lines[anchor]) : null;
+    const messageLines = [rest, ...lines.slice(typeAt + 1, anchor >= 0 ? anchor : typeAt + 1)];
+    return {
+      type: typeName,
+      // "(<cell>, line 1)" is a SyntaxError's own suffix; the line is said below it.
+      message: messageLines.join('\n').trim().replace(/ \(<cell>, line \d+\)$/, ''),
+      // A line number no code has (a run's code is bounded far below this) is not drawn.
+      line: markMatch && Number(markMatch[1]) <= MAX_SHOWN_LINE_NUMBER ? Number(markMatch[1]) : 0,
+      lineCode: markMatch && markMatch[2] ? markMatch[2] : '',
+      before: lines.slice(0, typeAt).join('\n').trim(),
+      text: lines.slice(typeAt, anchor >= 0 ? anchor + 1 : typeAt + 1).join('\n'),
+    };
+  }
+
+  // How many warnings stderr holds: each line that says "Warning:" (Python writes
+  // "<cell>:2: UserWarning: ..." for each one).
+  function warningCount(stderr) {
+    return String(stderr || '').split('\n').filter((line) => line.includes('Warning:')).length;
+  }
+
+  // The code around the failing line, with that line marked: a glyph and a hidden
+  // label as well as the color, so it reads without one. Taken from the run's code;
+  // the line the runtime quoted stands in when the code does not reach that far.
+  function runExcerptHtml(run, error) {
+    const source = String(run.code || '').split('\n');
+    const rows = [];
+    if (error.line <= source.length) {
+      for (let n = Math.max(1, error.line - 1); n <= Math.min(source.length, error.line + 1); n++) {
+        rows.push([n, source[n - 1]]);
+      }
+    } else {
+      rows.push([error.line, error.lineCode]);
+    }
+    const lines = rows.map(([number, text]) => {
+      const marked = number === error.line;
+      return `<div class="osa-run-card-line${marked ? ' osa-run-card-line-marked' : ''}">` +
+        `<span class="osa-run-card-marker" aria-hidden="true">${marked ? '&gt;' : ''}</span>` +
+        `<span class="osa-run-card-lineno">${escapeHtml(String(number))}</span>` +
+        `<span class="osa-run-card-linetext">${marked ? '<span class="osa-sr-only">Failing line: </span>' : ''}${escapeHtml(text)}</span></div>`;
+    }).join('');
+    return `<div class="osa-run-card-excerpt" tabindex="0" role="group" aria-label="${escapeHtml(`Code around line ${error.line}`)}">${lines}</div>`;
+  }
+
+  // The failure in words, then the failing line in its place.
+  function runErrorHtml(run, error) {
+    const type = error.type ? `<span class="osa-run-card-error-type">${escapeHtml(error.type)}</span>` : '';
+    const text = `${type}${error.type && error.message ? ': ' : ''}${escapeHtml(error.message)}`;
+    if (text === '') return '';
+    return `<div class="osa-run-card-error"><div class="osa-run-card-error-text" tabindex="0" role="group" aria-label="Error message">${text}</div>` +
+      `${error.line ? runExcerptHtml(run, error) : ''}</div>`;
+  }
+
+  // The figures a run drew, each with its Download once the reply it belongs to is
+  // known (`located`, {msgIndex, runIndex}). Numbered among the ones shown, from 1,
+  // as the workspace numbers a run's figure-K.png; data-image-index is the figure's
+  // place in the record, which the click reads the bytes from.
+  function runFiguresHtml(run, located = null) {
+    let figureNumber = 0;
+    return (Array.isArray(run.images) ? run.images : [])
+      .map((image, imageIndex) => {
+        if (!isShowableImage(image)) return '';
+        figureNumber += 1;
+        const img = `<img alt="Figure ${figureNumber} produced by the code" src="data:image/png;base64,${image.data_base64}">`;
+        if (!located) return img;
+        const filename = figureFileName(located.msgIndex, located.runIndex, figureNumber);
+        return `<div class="osa-execution-figure">${img}<div class="osa-figure-actions">` +
+          `<button type="button" class="osa-figure-download" data-msg-index="${escapeHtml(String(located.msgIndex))}" data-run-index="${escapeHtml(String(located.runIndex))}" data-image-index="${escapeHtml(String(imageIndex))}" ` +
+          `aria-label="Download figure ${figureNumber} as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}<span>Download</span></button></div></div>`;
+      })
+      .join('');
+  }
+
+  // A button that shows and hides a panel of the card: aria-expanded says which,
+  // aria-controls names the panel, and the click handler (see the run listeners in
+  // renderMessages) flips both in place and remembers the choice on the record.
+  // `openLabel`, when given, is what the button says while its panel is open.
+  // The label swap (Show code, Hide code) is a deliberate choice for a reader who can see
+  // it, and aria-expanded carries the state for one who cannot; the accessible name is the
+  // visible text (WCAG 2.5.3, label in name), so it is not held apart in an aria-label.
+  function runToggleHtml({ panel, id, where, label, openLabel = '', open, className = '', icon = '' }) {
+    const labels = openLabel
+      ? ` data-label-closed="${escapeHtml(label)}" data-label-open="${escapeHtml(openLabel)}"`
+      : '';
+    return `<button type="button" class="osa-run-card-button osa-run-card-toggle ${className}"${where} data-panel="${escapeHtml(panel)}" ` +
+      `aria-expanded="${escapeHtml(String(open === true))}" aria-controls="${escapeHtml(id)}"${labels}>` +
+      `${icon}<span class="osa-run-card-label">${escapeHtml(open && openLabel ? openLabel : label)}</span>${RUN_ICONS.chevron}</button>`;
+  }
+
+  function runPanelHtml({ id, open, className = '', inner }) {
+    return `<div class="osa-run-card-panel ${className}" id="${escapeHtml(id)}"${open ? '' : ' hidden'}>${inner}</div>`;
+  }
+
+  // A finished run. `state`: {run, located, retry, editable, editorHtml}.
+  //   run       a stored record (executionRecord's shape; transient _flags may ride on it)
+  //   located   {msgIndex, runIndex} of the reply it belongs to, or null, in which case
+  //             no button that acts on the record is drawn
+  //   retry     {used, of} while the reply is waiting on the assistant after this
+  //             failed run (it may run again, or answer in prose), else null
+  //   editable  whether "Edit and run" is offered
+  //   editorHtml the inline editor, when the reader has it open
+  function runDoneCardHtml({ run, located = null, retry = null, editable = false, editorHtml = '' }) {
+    const failed = runFailed(run);
+    const error = failed ? runErrorInfo(run) : null;
+    const msgIndex = located ? located.msgIndex : '';
+    const runIndex = located ? located.runIndex : '';
+    const where = located ? ` data-msg-index="${msgIndex}" data-run-index="${runIndex}"` : '';
+    const idBase = located ? `osa-run-${msgIndex}-${runIndex}` : 'osa-run';
+    const open = run._panelsOpen && typeof run._panelsOpen === 'object' ? run._panelsOpen : {};
+    const outcome = run.status === 'ok' ? 'ok' : (failed ? 'failed' : 'stopped');
+
+    const output = [run.stdout, error ? error.before : ''].filter(Boolean).join('\n');
+    const outputLines = textLineCount(output);
+    const warnings = run.status === 'ok' ? warningCount(run.stderr) : 0;
+    const cut = omittedCharacters(run.stdout) + omittedCharacters(run.stderr);
+    const codeLines = run.code ? codeLineCount(run.code) : 0;
+    const codeId = `${idBase}-code`;
+    const outputId = `${idBase}-output`;
+    const tracebackId = `${idBase}-traceback`;
+    const warningsId = `${idBase}-warnings`;
+    const codeOpen = run._codeOpen === true;
+    // The reader's own run is the thing they came to see, so its output opens; the
+    // assistant's, which the reply usually sums up, waits to be asked for.
+    const outputOpen = open.output === undefined ? run.local === true : open.output === true;
+
+    const buttons = [];
+    if (run.code) {
+      buttons.push(runToggleHtml({
+        panel: 'code',
+        id: codeId,
+        where,
+        label: `${failed ? 'All code' : 'Show code'} · ${lineCountLabel(codeLines)}`,
+        openLabel: `Hide code · ${lineCountLabel(codeLines)}`,
+        open: codeOpen,
+        className: 'osa-run-card-code-toggle',
+        icon: RUN_ICONS.code,
+      }));
+      if (!failed && located) {
+        buttons.push(`<button type="button" class="osa-run-card-button osa-code-copy"${where} data-copy-label="Copy code">Copy code</button>`);
+      }
+    }
+    if (failed && error && located) {
+      if (run.traceback) {
+        buttons.push(runToggleHtml({ panel: 'traceback', id: tracebackId, where, label: 'Full traceback', open: open.traceback === true }));
+      }
+      buttons.push(`<button type="button" class="osa-run-card-button osa-run-card-copy-error"${where} data-copy-label="Copy error">Copy error</button>`);
+    }
+    if (output) {
+      buttons.push(runToggleHtml({ panel: 'output', id: outputId, where, label: `Output · ${lineCountLabel(outputLines)}`, open: outputOpen }));
+    }
+    if (warnings > 0) {
+      buttons.push(runToggleHtml({
+        panel: 'warnings',
+        id: warningsId,
+        where,
+        label: `${warnings} ${warnings === 1 ? 'warning' : 'warnings'}`,
+        open: open.warnings === true,
+        className: 'osa-run-card-warnings-toggle',
+        icon: RUN_ICONS.warning,
+      }));
+    }
+    if (editable && located && !run._editing) {
+      buttons.push(`<button type="button" class="osa-run-card-button osa-rerun-open"${where}>Edit and run</button>`);
+    }
+
+    const panels = [];
+    if (run.code) {
+      const toolbar = located
+        ? codeToolbarHtml({ where, filename: `${runFileStem(msgIndex, runIndex)}.py`, copy: failed, status: false })
+        : '';
+      panels.push(runPanelHtml({
+        id: codeId,
+        open: codeOpen,
+        className: 'osa-code-panel',
+        inner: `${toolbar}<pre class="osa-tool-code"><code>${highlightOrEscape(run.code)}</code></pre>`,
+      }));
+    }
+    if (output) {
+      panels.push(runPanelHtml({ id: outputId, open: outputOpen, inner: `<pre class="osa-execution-output">${escapeHtml(output)}</pre>` }));
+    }
+    if (failed && run.traceback && located) {
+      panels.push(runPanelHtml({ id: tracebackId, open: open.traceback === true, inner: `<pre class="osa-execution-output osa-run-card-traceback">${escapeHtml(run.traceback)}</pre>` }));
+    }
+    if (warnings > 0) {
+      panels.push(runPanelHtml({ id: warningsId, open: open.warnings === true, inner: `<pre class="osa-execution-output">${escapeHtml(run.stderr)}</pre>` }));
+    }
+
+    const retryLine = retry
+      ? `<div class="osa-run-card-retry"><span class="osa-activity-pulse" aria-hidden="true"></span>` +
+        `<span>The assistant is looking at this error and may run the code again (${escapeHtml(String(retry.used))} of ${escapeHtml(String(retry.of))} runs used)</span></div>`
+      : '';
+    // Shown regardless of status, unlike stderr: a save failure matters most on a
+    // run whose Python succeeded, and for the reader's own runs this is the only
+    // place it is ever visible to anyone, since that call never reaches the server
+    // for the model to mention it from.
+    const workspaceNote = run.workspaceNote
+      ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
+      : '';
+    const noMessage = run.status === 'error' && !error
+      ? '<div class="osa-run-card-note osa-run-card-no-message">No error message was recorded.</div>'
+      : '';
+    const cutNote = cut > 0
+      ? `<div class="osa-run-card-note osa-run-card-cut">Output was cut: ${escapeHtml(String(cut))} characters not shown.</div>`
+      : '';
+    const localNote = run.local === true
+      ? '<div class="osa-execution-local-note">This run is yours. The assistant has not seen it.</div>'
+      : '';
+    const status = buttons.length
+      ? '<span class="osa-code-status osa-code-status-quiet" role="status" aria-live="polite"></span>'
+      : '';
+
+    return `
+        <div class="osa-run-card osa-run-card-done osa-run-card-${outcome} osa-execution-run osa-code-block" data-status="${escapeHtml(run.status)}">
+          <div class="osa-run-card-head">
+            <span class="osa-run-card-icon" aria-hidden="true">${RUN_ICONS[outcome]}</span>
+            <div class="osa-run-card-title">${escapeHtml(runTitle(run))}</div>
+          </div>
+          ${run.description ? `<div class="osa-run-card-description">${escapeHtml(run.description)}</div>` : ''}
+          ${localNote}
+          ${error ? runErrorHtml(run, error) : noMessage}
+          ${runFiguresHtml(run, located)}
+          ${workspaceNote}
+          ${cutNote}
+          ${retryLine}
+          ${buttons.length ? `<div class="osa-run-card-actions">${buttons.join('')}${status}</div>` : ''}
+          ${panels.join('')}
+          ${editorHtml}
+        </div>`;
+  }
+
+  // The question whether to run the code the assistant wrote, with the code in
+  // view: Run, Don't run, and "until I reload".
+  function runAskingCardHtml({ description, code }) {
+    const described = description
+      ? `<div class="osa-run-card-description osa-tool-panel-description">${escapeHtml(description)}</div>`
+      : '';
+    return `
+      <div class="osa-run-card osa-run-card-asking osa-tool-panel" role="group" aria-label="Run code in your browser?">
+        <div class="osa-run-card-head">
+          <span class="osa-run-card-icon" aria-hidden="true">${RUN_ICONS.asking}</span>
+          <div class="osa-run-card-title osa-tool-panel-title">Run this Python in your browser?</div>
+        </div>
+        ${described}
+        <div class="osa-code-block">
+          ${codeToolbarHtml()}
+          <pre class="osa-tool-code"><code>${highlightOrEscape(code || '')}</code></pre>
+        </div>
+        <div class="osa-tool-actions">
+          <button type="button" class="osa-tool-run">Run</button>
+          <button type="button" class="osa-tool-deny">Don't run</button>
+          <label class="osa-tool-autorun"><input type="checkbox" class="osa-tool-autorun-input"> Run without asking until I reload</label>
+        </div>
+      </div>`;
+  }
+
+  // The code running: what the runtime is doing (booting reports steps, then the
+  // label stands alone while the code itself runs) and Stop.
+  function runRunningCardHtml({ description, progress }) {
+    const described = description
+      ? `<div class="osa-run-card-description osa-tool-panel-description">${escapeHtml(description)}</div>`
+      : '';
+    const status = progress ? progress.text : 'Running Python in your browser...';
+    // A determinate bar only once the boot reports a step within a known total;
+    // before that (or once the boot is done and code is actually running) the label
+    // stands alone rather than showing a bar frozen at whatever step last reported.
+    const hasBar = Boolean(progress) && progress.step !== null && progress.steps !== null;
+    const percent = hasBar ? Math.round((progress.step / progress.steps) * 100) : 0;
+    const bar = hasBar
+      ? `<div class="osa-tool-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${progress.steps}" ` +
+        `aria-valuenow="${progress.step}" aria-label="${escapeHtml(status)}">` +
+        `<div class="osa-tool-progress-fill" style="width: ${percent}%"></div></div>`
+      : '';
+    return `
+      <div class="osa-run-card osa-run-card-running osa-tool-panel" role="status">
+        <div class="osa-run-card-head">
+          <span class="osa-run-card-icon" aria-hidden="true">${RUN_ICONS.running}</span>
+          <div class="osa-run-card-title osa-tool-panel-title">Running Python</div>
+        </div>
+        ${described}
+        <div class="osa-tool-actions">
+          <div class="osa-tool-progress-row">
+            <span class="osa-tool-status">${escapeHtml(status)}</span>
+            ${bar}
+          </div>
+          <button type="button" class="osa-tool-stop">Stop</button>
+        </div>
+      </div>`;
+  }
+
+  // The card for `state.phase`: 'asking', 'running' or 'done'.
+  function runCardHtml(state) {
+    if (state.phase === 'asking') return runAskingCardHtml(state);
+    if (state.phase === 'done') return runDoneCardHtml(state);
+    return runRunningCardHtml(state);
+  }
+
+  // The card shown while a tool_request is answered, as HTML.
+  function toolPanelHtml(activity) {
+    if (!activity) return '';
+    const prompt = activity.prompt || {};
+    return runCardHtml({
+      phase: activity.phase === 'asking' ? 'asking' : 'running',
+      description: prompt.description,
+      code: prompt.code,
+      progress: activity.progress,
+    });
+  }
+
+  // What ran for a reply, as HTML: one card per run, in order. msgIndex names the
+  // reply the runs belong to, so a card's buttons know which record to act on;
+  // omitted, none of them render. `pending` is whether the reply is still waiting
+  // on the assistant, which is when a failed last run says it will be run again.
   //
-  // A run whose OWN editor is open and has a live result (run._localResult)
-  // is shown inline under that editor rather than as its own separate
-  // block, even though it is already a real entry in `executions` (kept
-  // there so it survives a reload once the editor closes): the two would
-  // otherwise show the exact same run twice in one render.
-  function executionsHtml(executions, msgIndex) {
+  // A run whose OWN editor is open and has a live result (run._localResult) is shown
+  // inline under that editor rather than as its own separate card, even though it
+  // is already a real entry in `executions` (kept there so it survives a reload
+  // once the editor closes): the two would otherwise show the same run twice.
+  function executionsHtml(executions, msgIndex, { pending = false } = {}) {
     if (!Array.isArray(executions) || executions.length === 0) return '';
     const mirrored = new Set(
       executions
         .filter((run) => run && run._editing === true && run._localResult && typeof run._localResult.callId === 'string')
         .map((run) => run._localResult.callId)
     );
+    const located = typeof msgIndex === 'number';
     const canEdit = canRunLocalCode();
+    const assistantRuns = executions.filter((run) => run && run.local !== true).length;
     return executions.map((run, runIndex) => {
       if (mirrored.has(run.callId)) return '';
-      const isLocal = run.local === true;
-      const label = Object.prototype.hasOwnProperty.call(EXECUTION_LABELS, run.status)
-        ? EXECUTION_LABELS[run.status]
-        : 'Python';
-      const title = `${isLocal ? 'Your run: ' : ''}${label}${run.description ? `: ${run.description}` : ''}`;
-      const code = run.code ? runCodeHtml(run, msgIndex, runIndex) : '';
-      const localNote = isLocal
-        ? '<div class="osa-execution-local-note">This run is yours. The assistant has not seen it.</div>'
-        : '';
-      const output = runOutputHtml(run, typeof msgIndex === 'number' ? { msgIndex, runIndex } : null);
-      const hasImages = Array.isArray(run.images) && run.images.some(isShowableImage);
-      const editing = run._editing === true;
-      let rerun = '';
-      if (canEdit && typeof msgIndex === 'number') {
-        rerun = editing
-          ? rerunEditorHtml(run, msgIndex, runIndex)
-          : `<div class="osa-rerun-actions">
-              <button type="button" class="osa-rerun-open" data-msg-index="${msgIndex}" data-run-index="${runIndex}">Edit and run</button>
-            </div>`;
-      }
-      // Figures, a local run, or an open editor all open by default: each is
-      // the point of looking at that particular run. The code is a disclosure
-      // of its own, after the run's (#491), so it opens without the output.
-      return `
-        <div class="osa-execution-run">
-          <details class="osa-execution"${(isLocal || editing || hasImages) ? ' open' : ''}>
-            <summary>${escapeHtml(title)}</summary>
-            ${localNote}${output}${rerun}
-          </details>${code}
-        </div>`;
+      const last = runIndex === executions.length - 1;
+      const retry = pending && last && runFailed(run) && run.local !== true && assistantRuns < MAX_BROWSER_RUNS_PER_REPLY
+        ? { used: assistantRuns, of: MAX_BROWSER_RUNS_PER_REPLY }
+        : null;
+      return runCardHtml({
+        phase: 'done',
+        run,
+        located: located ? { msgIndex, runIndex } : null,
+        retry,
+        editable: canEdit,
+        editorHtml: located && canEdit && run._editing === true ? rerunEditorHtml(run, msgIndex, runIndex) : '',
+      });
     }).join('');
   }
+  // --- End run card ---
 
   // A malformed value is named here rather than dropped in silence: an embedder's
   // typo through setConfig() (or a hand-edited widget: block) otherwise looks
@@ -8001,6 +8664,16 @@
     if (changed && container) paintStatus(container);
   }
 
+  // Whether this reply is still waiting on the assistant, with no code of its own
+  // being asked about or run right now: after a run's result went back (answerToolRequest
+  // says "analyzing" for the wait) or, before any text, while it has none to show. A
+  // failed run on such a reply is one the assistant is about to answer.
+  function replyWaitingOnAssistant(msgIndex) {
+    if (toolActivity) return false;
+    if (activity) return activity.messageIndex === msgIndex;
+    return isLoading && msgIndex === messages.length - 1;
+  }
+
   // The status the conversation shows, or null. While the reply has no text on screen
   // (`isLoading`) it is the loading bubble's label: the activity, else "Thinking...",
   // else the community's title, as before. Once it has text, only an activity is
@@ -8222,7 +8895,7 @@
           <span class="osa-message-label">${escapeHtml(label)}</span>
           ${copyBtn}
         </div>
-        ${msg.role === 'assistant' ? executionsHtml(msg.executions, msgIndex) : ''}
+        ${msg.role === 'assistant' ? executionsHtml(msg.executions, msgIndex, { pending: replyWaitingOnAssistant(msgIndex) }) : ''}
         <div class="osa-message-content">${content}</div>
         ${status && status.where === 'inline' && status.messageIndex === msgIndex ? statusLineHtml(status) : ''}
         ${sourcesRow}
@@ -8297,9 +8970,8 @@
       });
     });
 
-    // A run's code (#491): Copy and Download read the code from the run's record,
-    // and whether the reader opened it is kept on the record, so a re-render (a
-    // streamed chunk, runtime progress) does not close it again.
+    // A run's code (#491): Copy and Download read the code from the run's record, not
+    // from the page. Whether the reader opened it is kept by the toggle handler below.
     messagesEl.querySelectorAll('.osa-code-copy[data-msg-index]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -8343,10 +9015,44 @@
         }
       });
     });
-    messagesEl.querySelectorAll('details.osa-execution-code[data-msg-index]').forEach((details) => {
-      details.addEventListener('toggle', () => {
-        const run = runAt(details);
-        if (run) run._codeOpen = details.open;
+    // A card's Show code, Output, Full traceback and warnings buttons: flip the panel
+    // in place (aria-expanded, hidden, and the label of a button that has one for
+    // each state) rather than redrawing the conversation, and keep the choice on the
+    // record, so a re-render (a streamed chunk, runtime progress) does not undo it.
+    messagesEl.querySelectorAll('.osa-run-card-toggle[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const run = runAt(btn);
+        // The panel is looked for in this card, not the page, so a second widget (or a
+        // host element) that happens to share an id cannot answer for it.
+        const card = btn.closest('.osa-run-card');
+        const panelId = btn.getAttribute('aria-controls') || '';
+        const panel = card ? [...card.querySelectorAll('[id]')].find((el) => el.id === panelId) : null;
+        if (!run || !panel) return;
+        const open = btn.getAttribute('aria-expanded') !== 'true';
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        panel.hidden = !open;
+        const label = btn.getAttribute(open ? 'data-label-open' : 'data-label-closed');
+        const labelEl = btn.querySelector('.osa-run-card-label');
+        if (label && labelEl) labelEl.textContent = label;
+        const which = btn.getAttribute('data-panel');
+        if (which === 'code') {
+          run._codeOpen = open;
+        } else if (which) {
+          run._panelsOpen = { ...(run._panelsOpen || {}), [which]: open };
+        }
+      });
+    });
+    // A failed run's error, as the card shows it: the type, the message and the
+    // failing line. The full traceback, when there is one, is its own button.
+    messagesEl.querySelectorAll('.osa-run-card-copy-error[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const run = runAt(btn);
+        const error = run && runErrorInfo(run);
+        if (!error) return;
+        const card = btn.closest('.osa-run-card');
+        copyCodeFromButton(btn, error.text, card && (() => errorFallbackFor(card, error.text)));
       });
     });
 
@@ -10499,6 +11205,7 @@
     window.OSAChatWidget.__browser = {
       MAX_BROWSER_RUNS_PER_REPLY,
       EXECUTION_FIELD_LIMITS,
+      EXECUTION_LABELS,
       answerToolRequest,
       composeReply,
       continueBrowserReply,
