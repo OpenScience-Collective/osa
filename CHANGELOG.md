@@ -15,6 +15,14 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **`OSAChatWidget.seed(text, {mode}?)`, a 120 ms open and dock motion, and a bottom-right Move to corner arrow (#730)**: three changes to `frontend/osa-chat-widget.js`.
+  `seed` puts a host page's text at the head of the chat as the assistant's first message (marked `seeded: true`), opens the window in `mode`, and sends nothing: no request, no `send` event, no Turnstile token.
+  The text is Markdown, sanitized as a reply is, at most 2,000 characters, queued before `init()` and refused with a `[OSA] seed:` warning while a reply loads or when it is bad.
+  A chat with no reader message is reused; one with a reader message stays in History and a new chat opens.
+  The reader's first send carries `prior_turns: [{role: "assistant", text}]` (`selectReseedTurns` keeps a seeded message before the first reader message), and the seeded chat counts as content in History, trimming and the empty-chat checks (`chatIsEmpty`), keeps its mark across a reload, and has no thumbs row.
+  The center-stage dialog opens, and the corner window and scrim follow a dock, with 120 ms keyframe animations (state, focus and events unchanged and immediate; classes removed by a 150 ms timer; none under reduced motion), and **Move to corner** shows an arrow to the bottom right.
+  Refs #730; the website's call is nemarOrg/website#525.
+  Tests: new `frontend/test-widget-seed.js` (wired into the frontend-tests job), `frontend/test-widget-reseed.js` extended, and `TestASeededOpeningReply` in `tests/test_api/test_reseed.py` (the server accepts assistant-only `prior_turns`; no `src/` change).
 - **Usage metrics and feedback are deleted after five years (#725)**: `purge_expired_metrics` (`src/metrics/db.py`) deletes the `request_log` rows and `feedback_log` entries whose timestamp is more than `METRICS_RETENTION_YEARS` (5) calendar years old, comparing UTC ISO strings, with 29 February falling back to 28 February.
   It runs at every start, after the metrics database is initialized, because the scheduler only starts with sync enabled; and daily at 03:15 from the scheduler when it runs.
   The rows are erased, not only unlinked, since a feedback comment can hold personal data: the purge sets `secure_delete`, and a purge that deleted rows truncates the write-ahead log with a checkpoint (a checkpoint a reader blocks is logged as a warning).
