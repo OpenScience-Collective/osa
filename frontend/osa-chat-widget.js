@@ -13971,7 +13971,9 @@
         feedback_type: 'general',
         comment,
         session_id: sessionId || null,
-        page_url: (typeof window !== 'undefined' && window.location) ? window.location.href : null,
+        // The page's address goes only when the reader shares it, as with a question.
+        page_url: (CONFIG.allowPageContext && pageContextEnabled
+          && typeof window !== 'undefined' && window.location) ? window.location.href : null,
       });
     } finally {
       if (sendBtn) sendBtn.disabled = false;

@@ -520,6 +520,11 @@ jobs:
       - name: Run the reseed tests on a real DOM
         run: bun frontend/test-widget-reseed.js
 
+      # General feedback carries the page's address only when the reader shares the page,
+      # as a question does.
+      - name: Run the feedback page-address tests on a real DOM
+        run: bun frontend/test-widget-feedback-page-url.js
+
       # The context switch: a page whose dataset or search page differs from the chat's
       # shows a notice and starts a new chat on the next message, or continues with the
       # move told to the assistant; an empty chat switches silently.
