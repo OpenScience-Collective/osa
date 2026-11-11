@@ -721,11 +721,11 @@ print(json.dumps(out))
     }
   }
 
-  console.log('\nthe prompt\'s spectrum averages Welch estimates over chunks, one channel at a time, and covers the whole recording');
+  console.log('\nthe prompt\'s spectrum reads the recording in pieces, one channel at a time, and averages them over the whole recording');
   {
     const { fence, code } = promptBlock('**Power spectrum.**');
     assert(fence !== null, 'the spectrum bullet carries a python block');
-    // The recipe takes its chunk from the reader's budget as well as from this runtime's
+    // The recipe takes its piece from the reader's budget as well as from this runtime's
     // limit, and the prompt has the model write that budget in. The block runs as written,
     // and again with another budget on that line; a swap that found nothing to replace
     // would run the same code twice, so the line is checked.
@@ -735,9 +735,13 @@ print(json.dumps(out))
     const BUDGET_LINE = 'budget_mb = 512';
     assert(code.includes(BUDGET_LINE), `the block names the reader's budget on one line ("${BUDGET_LINE}")`);
     if (fence && code.includes(BUDGET_LINE)) {
-      // The block as a function of `eeg` and `rate`, the two names the prompt binds, and a
-      // by-hand Welch estimate that shares no code with scipy.signal.welch: every segment is
-      // cut, detrended, windowed and transformed with numpy alone.
+      // The block as an async function over a recording held in memory. The only thing that
+      // stands in is its read: `eegprep_lean.read_window` slices an array here (and records
+      // each read), where the shipped runtime reads NEMAR's Zarr store, which the checks
+      // above this one cover. Everything the block does with the data, scipy.signal.welch
+      // included, is real, and a by-hand Welch estimate that shares no code with
+      // scipy.signal.welch is the reference: every segment is cut, detrended, windowed and
+      // transformed with numpy alone.
       const preamble = `import json
 import numpy as np
 from scipy import signal
@@ -745,15 +749,41 @@ from scipy import signal
 BLOCK = ${JSON.stringify(code)}
 BUDGET_LINE = ${JSON.stringify(BUDGET_LINE)}
 
-def spectrum_with(budget=None):
-    # The prompt's block, as a function of eeg and rate; budget swaps the number on its
-    # budget line, and None runs it as written.
+class Window:
+    def __init__(self, data, labels):
+        self.data, self.labels = data, labels
+
+class Group:
+    def __init__(self, rate, n_samples, n_channels):
+        self.rate, self.n_samples, self.n_channels = rate, n_samples, n_channels
+
+class Store:
+    def __init__(self, group):
+        self._group = group
+    def group(self, name):
+        return self._group
+
+class Lib:
+    def __init__(self, eeg, labels):
+        self.eeg, self.labels, self.reads = eeg, labels, []
+    async def read_window(self, index, store, group, start_sample, n_samples):
+        self.reads.append((start_sample, n_samples))
+        return Window(self.eeg[:, start_sample:start_sample + n_samples], self.labels)
+
+async def spectrum_with(eeg, rate, budget=None, labels=None):
+    # The prompt's block, with a budget swapped onto its budget line (None runs it as
+    # written), over eeg as the recording of one channel group.
+    labels = labels or [f"E{i}" for i in range(eeg.shape[0])]
     text = BLOCK if budget is None else BLOCK.replace(BUDGET_LINE, f"budget_mb = {budget}")
     body = "\\n".join("    " + line for line in text.split("\\n"))
     scope = {}
-    exec("def prompt_spectrum(eeg, rate):\\n" + body + "\\n    return freqs, power, total, counts, m, chunk",
+    exec("async def prompt_spectrum(eegprep_lean, index, store):\\n" + body
+         + "\\n    return dict(freqs=freqs, power=power, total=total, used=used, m=m, piece=piece, keep=keep)",
          {"np": np}, scope)
-    return scope["prompt_spectrum"]
+    lib = Lib(eeg, labels)
+    out = await scope["prompt_spectrum"](lib, None, Store(Group(rate, eeg.shape[1], eeg.shape[0])))
+    out["reads"] = lib.reads
+    return out
 
 def by_hand(x, rate):
     # Welch's estimate segment by segment: constant detrend, Hann window, density scaling,
@@ -789,8 +819,9 @@ def relative(a, b):
     return float(np.max(np.abs(a - b) / np.abs(b)))
 `;
 
-      // (a) A signal that fits one welch call: the chunked result is that call's, to 1e-9, at
-      // rates with an even and an odd segment length, with one chunk and with many.
+      // (a) A signal that fits one welch call: the pieces' average is that call's, to 1e-9, at
+      // rates with an even and an odd segment length, with one piece and with many. One channel
+      // of each is an electrooculography channel, which the block leaves out by its label.
       {
         const result = await run(`${preamble}
 out = []
@@ -798,21 +829,26 @@ rng = np.random.default_rng(1)
 for rate, channels, seconds in ((250.0, 4, 150), (128.5, 3, 120), (1000.0, 2, 60)):
     t = np.arange(int(seconds * rate)) / rate
     eeg = rng.standard_normal((channels, t.size)) + 3 * np.sin(2 * np.pi * 10 * t)
+    labels = [f"E{i}" for i in range(channels - 1)] + ["VEOG_lower"]
     nperseg = int(2 * rate)
-    whole = np.array([signal.welch(ch, fs=rate, nperseg=nperseg)[1] for ch in eeg])
+    whole = np.array([signal.welch(ch, fs=rate, nperseg=nperseg)[1] for ch in eeg[:-1]])
     whole_freqs = signal.welch(eeg[0], fs=rate, nperseg=nperseg)[0]
     for budget in (None, 1):
-        # None: the block as written. 1: a 1 MB budget, which cuts the read into chunks.
-        freqs, power, total, counts, m, chunk = spectrum_with(budget)(eeg, rate)
+        # None: the block as written. 1: a 1 MB budget, which cuts the read into pieces.
+        r = await spectrum_with(eeg, rate, budget, labels)
+        hop = nperseg - nperseg // 2
         out.append({
-            "rate": rate, "nperseg": nperseg, "samples": int(t.size), "budget": budget, "m": int(m), "total": int(total),
-            "chunks": -(-int(total) // int(m)), "counts": counts, "channels": channels,
-            "difference": relative(power, whole), "freqs_equal": bool(np.array_equal(freqs, whole_freqs)),
-            "by_hand": max(relative(power[c], by_hand(eeg[c], rate)[0]) for c in range(channels)),
+            "rate": rate, "nperseg": nperseg, "samples": int(t.size), "budget": budget, "m": int(r["m"]), "total": int(r["total"]),
+            "used": int(r["used"]), "pieces": len(r["reads"]), "channels": channels, "rows": int(r["power"].shape[0]),
+            "keep": r["keep"], "difference": relative(r["power"], whole), "freqs_equal": bool(np.array_equal(r["freqs"], whole_freqs)),
+            "by_hand": max(relative(r["power"][c], by_hand(eeg[c], rate)[0]) for c in range(channels - 1)),
+            "starts_on_hops": all(start == i * int(r["m"]) * hop for i, (start, n) in enumerate(r["reads"])),
+            "longest_read": max(n for start, n in r["reads"]),
+            "read_bytes": max(n for start, n in r["reads"]) * channels * 8,
         })
 print(json.dumps(out))
 `);
-        assertEqual(result.status, 'ok', `chunked against one call: it runs (stderr: ${result.stderr.slice(-400)})`);
+        assertEqual(result.status, 'ok', `pieces against one call: it runs (stderr: ${result.stderr.slice(-400)})`);
         const rows = lastJson(result.stdout, '[]');
         assert(rows.length === 6, `six runs: three rates, with and without a small budget (got ${rows.length})`);
         for (const r of rows) {
@@ -820,18 +856,23 @@ print(json.dumps(out))
           assert(r.difference < 1e-9, `${at}: equals one welch call per channel (largest relative difference ${r.difference})`);
           assert(r.freqs_equal, `${at}: the same frequencies`);
           assert(r.by_hand < 1e-9, `${at}: and a by-hand estimate that shares no code with welch (${r.by_hand})`);
-          assertEqual(r.counts, Array(r.channels).fill(r.total), `${at}: every channel averaged all ${r.total} segments`);
+          assertEqual(r.keep, Array.from({ length: r.channels - 1 }, (_, i) => i), `${at}: the electrooculography channel is left out by its label`);
+          assertEqual(r.rows, r.channels - 1, `${at}: one row of power per EEG channel`);
+          assertEqual(r.used, r.total, `${at}: all ${r.total} segments were averaged, on every channel (not the first piece's)`);
+          assert(r.starts_on_hops, `${at}: each piece starts at a multiple of m * hop`);
           if (r.budget === 1) {
-            assert(r.chunks > 1, `${at}: the small budget made ${r.chunks} chunks, so the weighted average was exercised`);
+            assert(r.pieces > 1, `${at}: the small budget made ${r.pieces} pieces, so the carried sums were exercised`);
+            assert(r.read_bytes <= 0.5 * 2 ** 20, `${at}: no read passes half the budget (${r.read_bytes} bytes)`);
           } else {
-            assert(r.chunks === 1, `${at}: this read fits one chunk (${r.chunks})`);
+            assert(r.pieces === 1, `${at}: this read fits one piece (${r.pieces})`);
           }
         }
       }
 
-      // (b) Fifty minutes at 250 Hz, which one welch call refuses: every segment is counted,
-      // and the average is a by-hand estimate over all of them, not over the first `most`
-      // samples the capped recipe took (536,870 of these 750,000).
+      // (b) Fifty minutes at 250 Hz, which one welch call refuses, read in pieces of a small
+      // budget: every segment is counted, and the average is a by-hand estimate over all of
+      // them, not over the first `2**28 // nperseg` samples a capped read would take (536,870 of
+      // these 750,000).
       {
         const MINUTES = 50;
         const result = await run(`${preamble}
@@ -844,19 +885,24 @@ t = np.arange(n) / rate
 tail = (t > 0.9 * t[-1]).astype(float)
 eeg = rng.standard_normal((3, n)) + 4 * np.sin(2 * np.pi * 10 * t) * tail
 nperseg = int(2 * rate)
-freqs, power, total, counts, m, chunk = spectrum_with()(eeg, rate)
+hop = nperseg // 2
+# 64 MB: the recording is read in several pieces, each of which fits the budget.
+r = await spectrum_with(eeg, rate, 64)
+freqs, power, total = r["freqs"], r["power"], r["total"]
 by = [by_hand(eeg[c], rate) for c in range(3)]
-expected_segments = (n - nperseg // 2) // (nperseg - nperseg // 2)
+expected_segments = (n - nperseg // 2) // hop
 most = 2**28 // nperseg
 capped, _ = by_hand(eeg[0, :most], rate)
 peak = int(np.argmax(power[0]))
+reads = r["reads"]
 print(json.dumps({
-    "samples": n, "most": most, "m": int(m), "total": int(total), "expected": expected_segments,
-    "chunks": -(-int(total) // int(m)), "counts": counts, "by_hand_segments": by[0][1],
+    "samples": n, "most": most, "m": int(r["m"]), "total": int(total), "expected": expected_segments, "used": int(r["used"]),
+    "pieces": len(reads), "by_hand_segments": by[0][1], "rows": int(power.shape[0]),
     "difference": max(relative(power[c], by[c][0]) for c in range(3)),
     "tone_hz": float(freqs[peak]), "tone_over_capped": float(power[0][peak] / capped[peak]),
     "whole_call": refused(eeg[0], rate),
-    "covered_seconds": float((total * (nperseg // 2) + nperseg // 2) / rate),
+    "covered_seconds": float((total * hop + hop) / rate),
+    "read_to": max(start + n_ for start, n_ in reads), "longest_read_mb": max(n_ for start, n_ in reads) * 3 * 8 / 2**20,
 }))
 `);
         assertEqual(result.status, 'ok', `fifty minutes at 250 Hz: it runs (stderr: ${result.stderr.slice(-400)})`);
@@ -864,18 +910,20 @@ print(json.dumps({
         assert(r.samples > r.most, `the recording is longer than one welch call takes (${r.samples} > ${r.most})`);
         assert(/array is too big/.test(r.whole_call), `control: one welch call over the channel is refused (${String(r.whole_call).slice(0, 60)})`);
         assertEqual(r.total, r.expected, `every segment one call would average is counted (${r.total} of ${r.expected})`);
-        assertEqual(r.counts, [r.total, r.total, r.total], 'on every channel');
+        assertEqual(r.used, r.total, 'and every one of them was averaged, on every channel');
         assertEqual(r.by_hand_segments, r.total, 'by hand, the same number of segments');
-        assert(r.chunks > 1, `in ${r.chunks} chunks of up to ${r.m} segments`);
+        assert(r.pieces > 1, `in ${r.pieces} pieces of up to ${r.m} segments`);
+        assert(r.longest_read_mb <= 32, `each read fits the 64 MB budget's half (${r.longest_read_mb.toFixed(1)} MB)`);
+        assertEqual(r.read_to, r.samples, 'the last piece ends at the end of the recording');
         assertEqual(r.covered_seconds, MINUTES * 60, `the segments span the whole ${MINUTES} minutes (${r.covered_seconds} s)`);
-        assert(result.stdout.startsWith(`${r.total} segments of 2 s, ${r.covered_seconds} s of the recording`),
+        assert(result.stdout.startsWith(`${r.total} segments of 2 s, ${r.covered_seconds} s of the recording, in pieces of ${r.m} segments, 3 EEG channels`),
           `the recipe says what it covered, for the model to report (${JSON.stringify(result.stdout.split('\n')[0])})`);
         assert(r.difference < 1e-9, `and the average is the by-hand estimate over all of them (${r.difference})`);
         assert(Math.abs(r.tone_hz - 10) < 0.6, `the tone only the last tenth carries is the peak (${r.tone_hz} Hz)`);
         assert(r.tone_over_capped > 2, `a read capped at ${r.most} samples ends before it starts, and its value at that frequency is ${r.tone_over_capped.toFixed(1)} times smaller`);
       }
 
-      // (c) The reasons for the limits, and the budget's part in the chunk.
+      // (c) The reasons for the limits, and the budget's part in the piece.
       {
         const result = await run(`${preamble}
 out = {}
@@ -883,34 +931,40 @@ rng = np.random.default_rng(3)
 # The whole channels-by-samples array, and a channel past one welch call's limit.
 out["whole_array"] = refused(rng.standard_normal((33, 30000)), 250.0)
 long = rng.standard_normal((1, 300000))
-freqs, power, total, counts, m, chunk = spectrum_with()(long, 1000.0)
-out["chunk_1000"] = int(chunk)
-out["one_chunk"] = refused(long[0, :chunk], 1000.0)
-out["twice_chunk"] = refused(long[0, : 2 * chunk], 1000.0)
-# The chunk follows the budget while the budget binds, and never passes the runtime's limit.
+r = await spectrum_with(long, 1000.0)
+out["piece_1000"] = int(r["piece"])
+out["one_piece"] = refused(long[0, :r["piece"]], 1000.0)
+out["twice_piece"] = refused(long[0, : 2 * r["piece"]], 1000.0)
+# The piece follows the budget while the budget binds, and never passes the runtime's limit.
 short = rng.standard_normal((1, 20000))
-out["chunks"] = {
-    f"{int(rate)}:{budget}": int(spectrum_with(budget)(short, rate)[5])
-    for rate in (60.0, 1000.0) for budget in (256, 512, 1024, 2048)
-}
+out["pieces"] = {}
+for rate in (60.0, 1000.0):
+    for budget in (256, 512, 1024, 2048):
+        out["pieces"][f"{int(rate)}:{budget}"] = int((await spectrum_with(short, rate, budget))["piece"])
 out["limits"] = {str(int(rate)): 2**28 // int(2 * rate) for rate in (60.0, 1000.0)}
+# A group of 33 channels at 250 Hz: the budget binds there too, since a piece is every channel's read.
+many = rng.standard_normal((33, 20000))
+out["many"] = {str(budget): int((await spectrum_with(many, 250.0, budget))["piece"]) for budget in (256, 2048)}
+out["many_limit"] = 2**28 // 500
 print(json.dumps(out))
 `);
         assertEqual(result.status, 'ok', `the controls: it runs (stderr: ${result.stderr.slice(-400)})`);
         const r = lastJson(result.stdout, '{}');
         assert(/array is too big/.test(r.whole_array),
           `control: welch on the whole 33-channel array is refused here (${String(r.whole_array).slice(0, 80)})`);
-        assertEqual(r.one_chunk, 'ok', `one chunk (${r.chunk_1000} samples at 1000 Hz) is accepted`);
-        assert(/array is too big/.test(r.twice_chunk),
-          `control: one channel of twice a chunk is refused, so the chunk is not needlessly short (${String(r.twice_chunk).slice(0, 80)})`);
+        assertEqual(r.one_piece, 'ok', `one piece (${r.piece_1000} samples at 1000 Hz) is accepted`);
+        assert(/array is too big/.test(r.twice_piece),
+          `control: one channel of twice a piece is refused, so the piece is not needlessly short (${String(r.twice_piece).slice(0, 80)})`);
         for (const [rate, limit] of Object.entries(r.limits)) {
-          const sizes = [256, 512, 1024, 2048].map((budget) => r.chunks[`${rate}:${budget}`]);
-          assert(sizes.every((size) => size <= limit), `${rate} Hz: no chunk is past the runtime's ${limit} samples (${sizes.join(', ')})`);
-          assert(sizes.every((size, i) => i === 0 || size >= sizes[i - 1]), `${rate} Hz: a larger budget never means a smaller chunk (${sizes.join(', ')})`);
+          const sizes = [256, 512, 1024, 2048].map((budget) => r.pieces[`${rate}:${budget}`]);
+          assert(sizes.every((size) => size <= limit), `${rate} Hz: no piece is past the runtime's ${limit} samples (${sizes.join(', ')})`);
+          assert(sizes.every((size, i) => i === 0 || size >= sizes[i - 1]), `${rate} Hz: a larger budget never means a smaller piece (${sizes.join(', ')})`);
         }
-        assert(r.chunks['60:256'] < r.chunks['60:2048'],
-          `at 60 Hz the budget sets the chunk, so 256 MB is smaller than 2 GB (${r.chunks['60:256']} < ${r.chunks['60:2048']})`);
-        assertEqual(r.chunks['1000:256'], r.limits['1000'], 'at 1000 Hz the runtime\'s limit sets it, for every budget');
+        assert(r.pieces['60:256'] < r.pieces['60:2048'],
+          `at 60 Hz the budget sets the piece, so 256 MB is smaller than 2 GB (${r.pieces['60:256']} < ${r.pieces['60:2048']})`);
+        assertEqual(r.pieces['1000:256'], r.limits['1000'], 'at 1000 Hz the runtime\'s limit sets it, for every budget');
+        assert(r.many['256'] < r.many['2048'] && r.many['256'] < r.many_limit,
+          `at 250 Hz with 33 channels the budget binds: 256 MB gives ${r.many['256']} samples, 2 GB ${r.many['2048']}, the limit ${r.many_limit}`);
       }
     }
   }

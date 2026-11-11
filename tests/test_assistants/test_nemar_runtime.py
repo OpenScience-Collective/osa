@@ -82,24 +82,34 @@ class TestTheShippedConfig:
         # The capped recipe is gone: no read cut at a maximum, and no "on at most".
         assert "on at most" not in flat
 
-    def test_the_spectrum_recipe_averages_chunks_and_covers_the_whole_recording(
+    def test_the_spectrum_recipe_reads_pieces_and_covers_the_whole_recording(
         self, nemar: CommunityConfig
     ) -> None:
-        """The prompt's recipe loops over chunks and weights them by their segment counts,
-        names no `most` cap and no "cut short" sentence (E5.2, #669), and takes its chunk
-        size from the reader's memory budget as well as from the runtime's own limit."""
+        """The prompt's recipe reads the recording in pieces, welches each channel of each
+        piece, weights the pieces by their segment counts, takes its piece from the reader's
+        memory budget as well as from the runtime's own limit, and names no `most` cap and
+        no "cut short" sentence (E5.2, #669). The block's budget line is the one number the
+        model edits besides the group, and the prose says so (the data lane suite runs the
+        block and holds it to one welch call)."""
         prompt = nemar.system_prompt
         assert prompt is not None
         start = prompt.index("**Power spectrum.**")
         bullet = prompt[start : prompt.index("**Events.**", start)]
         flat = " ".join(bullet.split())
-        assert "chunk = min(2**28 // nperseg, budget_mb * 2**20 // 160)" in flat
-        assert "summed = summed + k * p" in flat
-        assert "summed / used" in flat
-        assert "assert counts == [total] * len(eeg)" in flat
+        assert "piece = min(2**28 // nperseg, budget_mb * 2**20 // 2 // (group.n_channels * 8 + 160))" in flat
+        assert "await eegprep_lean.read_window(" in flat
+        assert "summed[row] += k * p" in flat
+        assert "power = summed / used" in flat
+        assert "assert used == total" in flat
+        # The totals come from the recording's length, not from one piece's.
+        assert "total = (group.n_samples - noverlap) // hop" in flat
+        assert "eeg.shape[1]" not in flat
+        assert flat.count("budget_mb = 512") == 1
+        assert "`budget_mb` with the reader's budget" in flat and "change nothing else" in flat
         assert "most =" not in flat and "[:most]" not in flat
         assert "cut the read short" not in flat
         assert "when `most`" not in flat
+        assert "chunk" not in flat.replace("chunks", "")
 
     def test_the_prompt_says_where_each_value_comes_from(self, nemar: CommunityConfig) -> None:
         """index.store matches a store's path only, and nemar_read_window also accepts
