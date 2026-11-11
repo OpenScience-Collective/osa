@@ -207,14 +207,16 @@ widget:
   # with one gets the first three; a dataset without one gets the three with no
   # needs_zarr. The ones that run code stay within the chat runtime (numpy, SciPy,
   # matplotlib, zarr, eegprep-lean), which the prompt's "Spectra, events and ERP images"
-  # section teaches, with ERP CORE (nm000132) as its worked example.
+  # section teaches, with ERP CORE (nm000132) as its worked example. Only the first three
+  # are ever shown on the opening screen (two in the compact row), so the scalp map of the
+  # alpha power (#721) sits third, ahead of the ERP image.
   dataset_suggested_questions:
     - text: "What is {dataset_id} about, and how was it recorded?"
     - text: "Show the power spectrum of the EEG channels in sub-{subject}'s {task} recording from {dataset_id}"
       needs_zarr: true
-    - text: "Plot an ERP image of sub-{subject}'s {task} recording from {dataset_id}, one panel per condition"
-      needs_zarr: true
     - text: "Plot a scalp map of the alpha power of sub-{subject}'s {task} recording from {dataset_id}"
+      needs_zarr: true
+    - text: "Plot an ERP image of sub-{subject}'s {task} recording from {dataset_id}, one panel per condition"
       needs_zarr: true
     - text: "Plot 10 seconds of sub-{subject}'s {task} recording from {dataset_id}"
       needs_zarr: true
