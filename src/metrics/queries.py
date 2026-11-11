@@ -7,6 +7,7 @@ for both per-community and cross-community metrics.
 import json
 import logging
 import sqlite3
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -756,3 +757,106 @@ def _fetch_latency_percentiles(
     ).fetchall()
     values = [d["duration_ms"] for d in durations]
     return _percentile(values, 0.5), _percentile(values, 0.95)
+
+
+# ---------------------------------------------------------------------------
+# Cost per conversation, quick against analysis (E8.4)
+# ---------------------------------------------------------------------------
+
+_TIERS = ("quick", "analysis")
+_SIDES = (*_TIERS, "other")
+
+
+def _empty_bucket() -> dict[str, Any]:
+    return {"turns": 0, "input_tokens": 0, "output_tokens": 0, "cost": 0.0}
+
+
+def _add_to_bucket(bucket: dict[str, Any], row: sqlite3.Row) -> None:
+    bucket["turns"] += 1
+    bucket["input_tokens"] += row["input_tokens"] or 0
+    bucket["output_tokens"] += row["output_tokens"] or 0
+    bucket["cost"] += row["estimated_cost"] or 0.0
+
+
+def get_conversation_costs(
+    conn: sqlite3.Connection,
+    community_id: str,
+    since: str | datetime,
+) -> dict[str, Any]:
+    """Price each conversation of a community, the quick model against the analysis model.
+
+    Rows are grouped by ``conversation_id``, which a handover keeps across the change of
+    server session, and each row's stored ``estimated_cost`` is added to the side its
+    ``tier`` names. A request that hands over writes two rows, the quick model's (the
+    summary and any quick run) and the analysis run's, so it counts as one turn on each
+    side: a turn here is one model's work on one request.
+
+    The metrics middleware's stub rows (no model, no tokens) are ignored. Rows written
+    before ``conversation_id`` existed, and ``/ask`` rows, which belong to no conversation,
+    are listed apart, by model. A database written before the two columns exist is read as
+    one with none of them set, so the report runs on an old copy without migrating it.
+
+    Args:
+        conn: SQLite connection with ``row_factory = sqlite3.Row``; only read from.
+        community_id: The community to report on.
+        since: Only rows logged at or after this time (an ISO 8601 string or a datetime;
+            a naive datetime is taken as UTC).
+
+    Returns:
+        A dict with ``conversations`` (oldest first; each has ``conversation_id``,
+        ``started``, the ``quick``, ``analysis`` and ``other`` buckets of ``turns``,
+        ``input_tokens``, ``output_tokens`` and ``cost``, and ``total_cost``), ``totals``
+        (the same buckets over every conversation, and ``total_cost``) and ``unassigned``
+        (per model: ``model``, ``turns``, ``input_tokens``, ``output_tokens``, ``cost``).
+        ``other`` holds the rows of a conversation that carry no tier (a request that was
+        not routed).
+    """
+    if isinstance(since, datetime):
+        since = (since if since.tzinfo else since.replace(tzinfo=UTC)).isoformat()
+    present = {r["name"] for r in conn.execute("PRAGMA table_info(request_log)")}
+    tier_column = "tier" if "tier" in present else "NULL AS tier"
+    conversation_column = (
+        "conversation_id" if "conversation_id" in present else "NULL AS conversation_id"
+    )
+    rows = conn.execute(
+        f"""
+        SELECT timestamp, model, {tier_column}, {conversation_column},
+               input_tokens, output_tokens, estimated_cost
+        FROM request_log
+        WHERE community_id = ? AND timestamp >= ? AND model IS NOT NULL
+        ORDER BY timestamp, id
+        """,
+        (community_id, since),
+    ).fetchall()
+
+    conversations: dict[str, dict[str, Any]] = {}
+    unassigned: dict[str, dict[str, Any]] = {}
+    totals: dict[str, Any] = {side: _empty_bucket() for side in _SIDES}
+    for row in rows:
+        conversation_id = row["conversation_id"]
+        if conversation_id is None:
+            bucket = unassigned.setdefault(row["model"], {"model": row["model"], **_empty_bucket()})
+            _add_to_bucket(bucket, row)
+            continue
+        conversation = conversations.setdefault(
+            conversation_id,
+            {
+                "conversation_id": conversation_id,
+                "started": row["timestamp"],
+                **{side: _empty_bucket() for side in _SIDES},
+            },
+        )
+        side = row["tier"] if row["tier"] in _TIERS else "other"
+        _add_to_bucket(conversation[side], row)
+        _add_to_bucket(totals[side], row)
+
+    for conversation in conversations.values():
+        conversation["total_cost"] = sum(conversation[side]["cost"] for side in _SIDES)
+    totals["total_cost"] = sum(totals[side]["cost"] for side in _SIDES)
+    return {
+        "community_id": community_id,
+        "since": since,
+        "conversations": list(conversations.values()),
+        "totals": totals,
+        "unassigned": sorted(unassigned.values(), key=lambda b: b["cost"], reverse=True),
+    }
