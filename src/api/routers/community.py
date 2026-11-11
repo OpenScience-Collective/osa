@@ -4534,6 +4534,7 @@ async def _stream_chat_response(
     carried_citations: Sequence[CitationMark] = (),
     browser_runs_answered: int = 0,
     code_runs_answered: int = 0,
+    turn_claimed: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -4617,6 +4618,12 @@ async def _stream_chat_response(
     `code_runs_answered` is how many of those were runs of code the widget keeps on the
     reply (`PendingClientCall.runs_code`): a reply with one is shown even when it ends
     with no text, so it is what decides whether an empty ending is an error.
+
+    `turn_claimed` is True when the caller already holds `session`'s turn (`begin_turn`):
+    a handover claims the session it opens, and a first message that calls
+    `start_analysis` keeps its own claim, because releasing and re-claiming across this
+    function's first `yield` would leave the session open to a second request in between.
+    The turn is released in this function's `finally` either way.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -4648,7 +4655,7 @@ async def _stream_chat_response(
     sse_event = {"event": "session", "session_id": session.session_id}
     yield f"data: {json.dumps(sse_event)}\n\n"
 
-    if not session.begin_turn():
+    if not turn_claimed and not session.begin_turn():
         # Refusing is the honest answer. Running anyway means both turns write the
         # whole message list back and the later one silently discards the earlier,
         # including any browser call it had parked.
@@ -4719,6 +4726,7 @@ async def _stream_chat_response(
                 http_request=http_request,
                 declared_client_tools=declared_client_tools,
                 endpoint=endpoint,
+                turn_claimed=True,
             )
 
         async def hand_over() -> AsyncGenerator[str, None]:
@@ -4755,8 +4763,9 @@ async def _stream_chat_response(
             **routing_kwargs,
         )
         if handing_over:
-            async for line in hand_over():
-                yield line
+            async with contextlib.aclosing(hand_over()) as handed_over:
+                async for line in handed_over:
+                    yield line
             return
         graph = awm.assistant.build_graph()
 
@@ -4937,12 +4946,13 @@ async def _stream_chat_response(
                 source = hand_over()
             else:
                 # A first message: no summary, and the same session runs the analysis.
-                # Its turn is released first, because the run below claims it again.
+                # Its claim is passed on, not released, so no request can take the
+                # session while the run below sends its first event.
                 session.mode = "analysis"
-                session.end_turn()
                 source = run_on(session)
-            async for line in source:
-                yield line
+            async with contextlib.aclosing(source) as handed_over:
+                async for line in handed_over:
+                    yield line
             return
 
         if pending_payload:

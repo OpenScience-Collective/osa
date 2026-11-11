@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -70,7 +71,7 @@ async def stream_handover(
         open_session: Makes the new session (`get_or_create_session(community_id, None)`).
         analysis_model: The model the analysis run uses, for the `started` event.
         run_analysis: Streams the analysis turn on the new session, which already holds
-            its one seeded message.
+            its one seeded message and whose turn is already claimed.
     """
     yield handover_sse("summarizing")
 
@@ -85,7 +86,16 @@ async def stream_handover(
     session = open_session()
     session.mode = "analysis"
     session.messages = [HumanMessage(content=seeded_message(summary, reader_message))]
-    yield handover_sse("started", session_id=session.session_id, model=analysis_model)
-
-    async for line in run_analysis(session):
-        yield line
+    # The new session's turn is claimed here, before its id is sent, and handed to the
+    # analysis run, which does not claim again: it sends its own `session` event first,
+    # and a claim made after that would leave the session open to a second request for as
+    # long as the client takes to read the event. Released however this ends, including
+    # a client that leaves before the run starts.
+    session.begin_turn()
+    try:
+        yield handover_sse("started", session_id=session.session_id, model=analysis_model)
+        async with aclosing(run_analysis(session)) as stream:
+            async for line in stream:
+                yield line
+    finally:
+        session.end_turn()

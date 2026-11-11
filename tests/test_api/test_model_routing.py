@@ -13,15 +13,17 @@ The companion test closer to the wire is `tests/test_integration/test_model_rout
 which runs the same turns against the real models.
 """
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 import src.api.routers.community as community_module
+from src.api.handover import stream_handover
 from src.api.routers.community import (
     ChatSession,
     _get_session_store,
@@ -38,6 +40,7 @@ from src.core.config.community import (
 )
 from src.core.services.anthropic_models import HAIKU, SONNET
 from tests.helpers.chat_models import (
+    ScriptedChatModel,
     StreamingScriptedChatModel,
     tool_call_response,
 )
@@ -404,6 +407,147 @@ class TestStartAnalysis:
         assert done["mode"] == "analysis"
         assert _get_session_store(COMMUNITY)["s-1"].mode == "analysis"
         assert rig.tiers == ["quick", "analysis"]
+
+
+class TestTurnClaims:
+    """A handover never leaves a session claimed, and never leaves one unclaimed in a window."""
+
+    def _claims(self, *session_ids: str) -> dict[str, object]:
+        store = _get_session_store(COMMUNITY)
+        return {sid: store[sid].turn_started_at for sid in session_ids}
+
+    def test_a_keyword_handover_releases_both_sessions_and_a_follow_up_succeeds(
+        self, client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        rig = _rig(monkeypatch, quick=[say(SUMMARY), say("Still here.")])
+        events = _chat(client, "plot the ERP for famous faces", session_id="sess-quick")
+        new_id = _done(events)["session_id"]
+
+        assert self._claims("sess-quick", new_id) == {"sess-quick": None, new_id: None}
+
+        on_new = _chat(client, "which dataset were we discussing?", session_id=new_id)
+        assert "error" not in _names(on_new)
+        assert _done(on_new)["session_id"] == new_id
+        on_old = _chat(client, "what else is there?", session_id="sess-quick")
+        assert "error" not in _names(on_old)
+        assert _done(on_old)["mode"] == "quick"
+        assert rig.tiers[-1] == "quick"
+        assert self._claims("sess-quick", new_id) == {"sess-quick": None, new_id: None}
+
+    def test_a_start_analysis_handover_releases_both_sessions(self, client, monkeypatch) -> None:
+        _earlier_conversation()
+        _rig(monkeypatch, quick=[call_start_analysis(), say(SUMMARY)])
+
+        events = _chat(client, "could you look at the alpha band instead?", session_id="sess-quick")
+        new_id = _done(events)["session_id"]
+
+        assert new_id != "sess-quick"
+        assert self._claims("sess-quick", new_id) == {"sess-quick": None, new_id: None}
+        followup = _chat(client, "and the beta band?", session_id=new_id)
+        assert "error" not in _names(followup)
+        assert _done(followup)["session_id"] == new_id
+
+    def test_a_first_message_start_analysis_releases_its_session_and_a_follow_up_succeeds(
+        self, client, monkeypatch
+    ) -> None:
+        _rig(monkeypatch, quick=[call_start_analysis()], analysis=[say("One."), say("Two.")])
+
+        events = _chat(client, "could you look at the alpha band instead?", session_id="s-1")
+
+        assert _done(events)["session_id"] == "s-1"
+        assert _names(events).count("error") == 0
+        assert self._claims("s-1") == {"s-1": None}
+        followup = _chat(client, "and the beta band?", session_id="s-1")
+        assert "error" not in _names(followup)
+        assert _done(followup)["mode"] == "analysis"
+        assert self._claims("s-1") == {"s-1": None}
+
+    def test_a_failed_analysis_run_still_releases_the_new_session(
+        self, client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        rig = _rig(monkeypatch, quick=[say(SUMMARY)])
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("the analysis model is down")
+
+        monkeypatch.setattr(rig.analysis, "_stream", fail)
+        monkeypatch.setattr(rig.analysis, "_generate", fail)
+        events = _chat(client, "plot the ERP for famous faces", session_id="sess-quick")
+
+        assert "error" in _names(events)
+        started = next(e for e in events if e.get("stage") == "started")
+        assert self._claims("sess-quick", started["session_id"]) == {
+            "sess-quick": None,
+            started["session_id"]: None,
+        }
+
+    def test_the_new_session_is_claimed_before_its_id_is_sent_and_until_the_run_ends(self) -> None:
+        """stream_handover hands the analysis run a session that is already claimed."""
+        opened: list[ChatSession] = []
+        claimed_when_started: list[bool] = []
+
+        def open_session() -> ChatSession:
+            opened.append(ChatSession("sess-new", COMMUNITY))
+            return opened[0]
+
+        async def run_analysis(target: ChatSession):
+            claimed_when_started.append(target.turn_started_at is not None)
+            # The window the finding is about: the run's first event goes out here.
+            yield "data: first\n\n"
+            claimed_when_started.append(target.turn_started_at is not None)
+            yield "data: second\n\n"
+
+        async def drive() -> list[str]:
+            lines = []
+            async for line in stream_handover(
+                summarizer=ScriptedChatModel(responses=[AIMessage(content=SUMMARY)]),
+                history=[HumanMessage(content="hi")],
+                reader_message="plot it",
+                open_session=open_session,
+                analysis_model=SONNET,
+                run_analysis=run_analysis,
+            ):
+                lines.append(line)
+                if '"started"' in line:
+                    claimed_when_started.append(opened[0].turn_started_at is not None)
+            return lines
+
+        lines = asyncio.run(drive())
+
+        assert claimed_when_started == [True, True, True]
+        assert lines[-2:] == ["data: first\n\n", "data: second\n\n"]
+        assert opened[0].turn_started_at is None
+
+    def test_a_client_that_leaves_mid_handover_still_releases_the_new_session(self) -> None:
+        opened: list[ChatSession] = []
+
+        def open_session() -> ChatSession:
+            opened.append(ChatSession("sess-new", COMMUNITY))
+            return opened[0]
+
+        async def run_analysis(_target: ChatSession):
+            yield "data: first\n\n"
+            yield "data: second\n\n"
+
+        async def drive() -> None:
+            stream = stream_handover(
+                summarizer=ScriptedChatModel(responses=[AIMessage(content=SUMMARY)]),
+                history=[HumanMessage(content="hi")],
+                reader_message="plot it",
+                open_session=open_session,
+                analysis_model=SONNET,
+                run_analysis=run_analysis,
+            )
+            async for line in stream:
+                if '"started"' in line:
+                    break
+            await stream.aclose()
+
+        asyncio.run(drive())
+
+        assert opened[0].turn_started_at is None
 
 
 def _parked_analysis_session(mode: str) -> ChatSession:
