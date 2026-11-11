@@ -6,6 +6,7 @@
 // widget carries. Everything the widget needs is reached through one global.
 import { ClientToolController, FULL_OUTPUT_TOOL_NAME, GATE_DECISION } from './osa-controller.js';
 import { highlightPython } from './osa-highlight.js';
+import { buildConversationNotebook } from './osa-notebook-builder.js';
 import { buildWorkerConfig, buildWorkerSource, PyodideRuntime, RUNTIME_STATE } from './osa-runtime.js';
 import { createWorkerRuntime } from './osa-worker-core.js';
 import {
@@ -40,4 +41,6 @@ globalThis.OSARuntime = Object.freeze({
   buildWorkspaceZip,
   validateWorkspacePath,
   WORKSPACE_LIMITS,
+  // A chat's successful runs as a notebook and a percent-format script (E4.1, #667).
+  buildConversationNotebook,
 });
