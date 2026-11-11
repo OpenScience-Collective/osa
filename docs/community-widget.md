@@ -638,10 +638,12 @@ A first message has no earlier turns, so there is nothing to summarize: its own 
 **Metrics.**
 A handover logs two rows in `request_log`: the analysis run's under the request id `done.request_id` carries (what feedback joins on), and the quick model's work under `<request id>:quick`, which is the quick run that called `start_analysis` (if any) and the summary, priced at the quick model.
 The summary's tokens are counted, and it is traced with the request in LangFuse.
-Every row a chat request writes also carries `tier` (`quick` or `analysis` for a routed request, empty otherwise) and `conversation_id`.
+Every row a chat request writes also carries `tier` (`quick` or `analysis` for a routed request, empty otherwise, and always empty for a request that is not streamed, which is never routed) and `conversation_id` (a non-streamed `/chat` carries its session's too; `/ask` has none).
 A conversation's id is its first session's id, and the analysis session a handover opens inherits it, so both models' rows, and every later turn on the new session (including `/chat/resume`), group as one conversation.
 An analysis session that expired, or was lost when the server restarted, is recreated by the next request with its own id as the conversation id, so the report shows it as a new conversation.
-The metrics middleware's stub row for a streamed request (no model, no tokens) stays as it was, and so do rows written before the two columns existed (they are empty).
+A streamed request writes one row, its generator's, under the request id: the metrics middleware no longer adds a stub row (no model, no tokens) beside it (#687), and when the reader disconnects before the reply ends, the generator still writes the row, with status 499 and the error message `client disconnected` (and the tokens counted so far; `500` and the exception's type when something raised past the stream's own handlers).
+A request that is refused because the session is already working on a reply is a row with status 409.
+Rows written before this change may also have a stub, which the cost report ignores, and rows written before the two columns existed have them empty.
 `osa metrics cost-report` prices them, as below.
 
 **`done.mode`.**
@@ -695,12 +697,14 @@ osa metrics cost-report --community nemar --since 7d --db ./metrics-copy.db
 
 (`VACUUM INTO` fails if the target file exists; remove `/tmp/metrics-copy.db` in the container before a second snapshot.)
 Alternatively, copy `metrics.db` together with `metrics.db-wal` and `metrics.db-shm` into one directory.
-When the file it is given is in WAL mode with no `-wal` beside it, the command prints a note to stderr (and adds a `note` field to `--json`) saying that rows still in a `-wal` file that was not copied are not included; a `VACUUM INTO` snapshot never triggers it.
-Only an "unable to open" failure makes it read the file as an immutable snapshot; a locked database is an error.
+When the file it is given is in WAL mode with no `-wal` beside it, the command opens it as an immutable snapshot (which creates no `-wal` or `-shm` file beside the copy, so the warning repeats on every run) and prints a note to stderr, and adds a `note` field to `--json`, saying that rows still in a `-wal` file that was not copied are not included; a `VACUUM INTO` snapshot never triggers it.
+A symlinked database is judged by the `-wal` beside the real file.
+If SQLite cannot open a file read-only although its `-wal` is there (for example a read-only directory, where no `-shm` can be created), the command falls back to an immutable snapshot too and says, in a second note, that the rows in the `-wal` file are not included.
+Only an "unable to open" failure makes it fall back; a locked database is an error.
 
 The table has one row per conversation: its short id, start, turns by tier (`quick/analysis`), the quick cost, the analysis cost and the total, followed by totals by tier.
 A turn here is one model's work on one request, so a handover counts once on each side.
-A request that failed (an error status or an error message) is not a turn: it is counted under `errors` (a "Failed" column in the totals when there are any), so retries after a failure do not inflate the turns or the quick/analysis ratio; any cost it did log is still added.
+A request that failed (an error status or an error message, which includes a reader's disconnect, status 499) is not a turn: it is counted under `errors` (a "Failed" column in the totals when there are any), so retries after a failure do not inflate the turns or the quick/analysis ratio; any cost it did log is still added.
 Cost is each row's own estimate (`estimate_cost`, at the rates of the time it was logged).
 Requests that belong to no conversation (everything logged before this change, and `/ask`) are listed apart, by model, and the middleware's stub rows (no model) are left out.
 `--json` prints the same report as JSON.
