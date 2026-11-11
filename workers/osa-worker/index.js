@@ -21,6 +21,10 @@ export const ROUTE_PATTERNS = {
   // /:communityId/chat/resume -- three segments, so it can never be matched
   // by communityAction above (which is anchored to exactly two segments).
   communityChatResume: /^\/([^\/]+)\/chat\/resume$/,
+  // /:communityId/overview -- the search overview the Discover panel asks for.
+  // Its own matcher rather than a third action on communityAction, because the
+  // handler differs: rate limit only, no Turnstile (see handleOverview).
+  communityOverview: /^\/([^\/]+)\/overview$/,
   // /:communityId/runtime/:file -- a wheel the browser runtime loads (#431).
   // A coarse filter: anything that is not a bare wheel name never reaches the
   // backend. The backend owns the exact rule (pure-Python -py3-none-any wheels,
@@ -112,6 +116,8 @@ function getConfig(env) {
     // Separate, more generous hourly budget for /chat/resume chains. See
     // checkResumeChainLimit for why a distinct counter exists and why 5x.
     RESUME_LIMIT_PER_HOUR: isDev ? 500 : 100,
+    // The search overview's own hourly budget. See handleOverview.
+    OVERVIEW_LIMIT_PER_HOUR: isDev ? 500 : 100,
     REQUEST_TIMEOUT: 120000, // 2 minutes for LLM responses
     IS_DEV: isDev,
   };
@@ -284,6 +290,24 @@ async function rateLimitOrReject(request, env, corsHeaders, CONFIG, options = {}
  * unbounded ~30x the per-minute limiter alone would allow.
  */
 async function checkResumeChainLimit(request, env, CONFIG) {
+  return checkSeparateHourlyLimit(request, env, {
+    keyPrefix: 'rl:resume:hour',
+    limit: CONFIG.RESUME_LIMIT_PER_HOUR,
+    reason: 'Too many resume requests per hour',
+  });
+}
+
+/**
+ * A per-IP hourly counter kept apart from the /chat one (`rl:hour:`), for a
+ * route that is exempt from that counter (countHourly: false) and bounded by
+ * its own budget instead. Fails open for KV errors, as checkRateLimit does.
+ *
+ * @param {object} options
+ * @param {string} options.keyPrefix - KV key prefix; the IP and hour follow.
+ * @param {number} options.limit - Requests allowed per IP per hour.
+ * @param {string} options.reason - The 429 `details` when the limit is reached.
+ */
+async function checkSeparateHourlyLimit(request, env, { keyPrefix, limit, reason }) {
   if (!env.RATE_LIMITER_KV) {
     return { allowed: true };
   }
@@ -292,16 +316,16 @@ async function checkResumeChainLimit(request, env, CONFIG) {
 
   try {
     const now = Math.floor(Date.now() / 1000);
-    const hourKey = `rl:resume:hour:${ip}:${Math.floor(now / 3600)}`;
+    const hourKey = `${keyPrefix}:${ip}:${Math.floor(now / 3600)}`;
 
     const count = parseInt(await env.RATE_LIMITER_KV.get(hourKey) || '0', 10);
-    if (count >= CONFIG.RESUME_LIMIT_PER_HOUR) {
-      return { allowed: false, reason: 'Too many resume requests per hour' };
+    if (count >= limit) {
+      return { allowed: false, reason };
     }
 
     await env.RATE_LIMITER_KV.put(hourKey, (count + 1).toString(), { expirationTtl: 7200 });
   } catch (error) {
-    console.error('Resume chain limit check error:', error);
+    console.error(`Hourly limit check error (${keyPrefix}):`, error);
     // Fail open for KV errors, consistent with checkRateLimit above.
   }
 
@@ -314,6 +338,25 @@ async function checkResumeChainLimit(request, env, CONFIG) {
  */
 async function resumeChainLimitOrReject(request, env, corsHeaders, CONFIG) {
   const rl = await checkResumeChainLimit(request, env, CONFIG);
+  if (!rl.allowed) {
+    return new Response(
+      JSON.stringify({ error: 'Rate limit exceeded', details: rl.reason }),
+      { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+  return null;
+}
+
+/**
+ * Check the search overview's own hourly limit and return a 429 response if
+ * exceeded, or null if allowed. See handleOverview.
+ */
+async function overviewLimitOrReject(request, env, corsHeaders, CONFIG) {
+  const rl = await checkSeparateHourlyLimit(request, env, {
+    keyPrefix: 'rl:overview:hour',
+    limit: CONFIG.OVERVIEW_LIMIT_PER_HOUR,
+    reason: 'Too many overview requests per hour',
+  });
   if (!rl.allowed) {
     return new Response(
       JSON.stringify({ error: 'Rate limit exceeded', details: rl.reason }),
@@ -783,6 +826,17 @@ export default {
         return await handleChatResume(request, env, communityId, corsHeaders, CONFIG);
       }
 
+      // Community endpoint: /:communityId/overview (POST only)
+      const communityOverviewMatch = pathname.match(ROUTE_PATTERNS.communityOverview);
+      if (communityOverviewMatch && request.method === 'POST') {
+        const [, communityId] = communityOverviewMatch;
+
+        const invalid = validateCommunityId(communityId, corsHeaders);
+        if (invalid) return invalid;
+
+        return await handleOverview(request, env, communityId, corsHeaders, CONFIG);
+      }
+
       // Community endpoints: /:communityId/ask and /:communityId/chat
       const communityActionMatch = pathname.match(ROUTE_PATTERNS.communityAction);
       if (communityActionMatch && request.method === 'POST') {
@@ -981,6 +1035,48 @@ async function handleFeedback(request, env, corsHeaders, CONFIG) {
     });
   }
   return await proxyToBackend(request, env, '/feedback', body, corsHeaders, CONFIG);
+}
+
+/**
+ * Handle the search overview endpoint (POST /:communityId/overview): rate
+ * limited, no Turnstile, with its own hourly budget.
+ *
+ * No Turnstile: tokens are single-use and come from the widget's composer,
+ * and the readers of the Discover panel hold none (the panel is not the
+ * widget). The backend still authorizes the request (an allowed Origin or a
+ * caller's own key), caches the overview for a day, and keeps its spend in the
+ * community's budget.
+ *
+ * Trust model: an Origin header is enforced by browsers only. A non-browser
+ * caller can send any Origin, so the per-IP limits here are the only enforced
+ * control on the quick model's spend. The community's daily and monthly budget
+ * is monitored and opens an alert issue when crossed; it does not refuse a
+ * request.
+ *
+ * Own hourly budget, exempt from the /chat counter (countHourly: false): the
+ * Discover panel asks for one overview per search that is not cached, which a
+ * reader browsing makes often, and charging each against the 20/hour /chat
+ * budget would let a few searches use up the reader's chat questions (shared
+ * across a NAT'd lab) or lock them out of Discover. The per-minute limiter
+ * still applies. OVERVIEW_LIMIT_PER_HOUR (100 in production, 500 in
+ * development) bounds the route itself, the same size as the resume budget.
+ */
+async function handleOverview(request, env, communityId, corsHeaders, CONFIG) {
+  const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG, { countHourly: false });
+  if (rejected) return rejected;
+  const capped = await overviewLimitOrReject(request, env, corsHeaders, CONFIG);
+  if (capped) return capped;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON in request body' }), {
+      status: 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+  return await proxyToBackend(request, env, `/${communityId}/overview`, body, corsHeaders, CONFIG);
 }
 
 /**

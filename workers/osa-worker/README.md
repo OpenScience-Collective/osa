@@ -115,6 +115,7 @@ wrangler deploy --env dev
 | `/hed/ask` | POST | Single question | Turnstile + Rate limit |
 | `/hed/chat` | POST | Multi-turn chat | Turnstile + Rate limit |
 | `/hed/chat/resume` | POST | Resume chat after a client-executed tool call | Rate limit only (per-minute, plus its own resume-chain hourly cap; exempt from the `/chat` per-hour counter) |
+| `/nemar/overview` | POST | Search overview for the Discover panel (quick model, cached 24 h) | Rate limit only (no Turnstile: Discover readers hold no token): the per-minute limiter plus its own overview hourly cap, exempt from the `/chat` per-hour counter. Deploy the worker (`wrangler deploy`) before the website calls it |
 | `/feedback` | POST | Submit feedback | Rate limit only |
 
 ## Rate Limits
@@ -170,6 +171,28 @@ execution were its own chat turn, while still capping the worst-case
 amplification at 5x instead of the unbounded ~30x the per-minute limiter
 alone would allow. Exceeding it returns 429 with `Too many resume requests
 per hour`, distinct from the `/chat` hourly rejection reason.
+
+### `/overview` and its own hourly budget
+
+`/overview` is the Discover panel's search overview: one call per search whose
+overview is not already cached. A reader browsing makes many, so charging each
+against the 20/hour `/chat` budget would let a few searches use up their chat
+questions (shared across a NAT'd lab) or lock them out of Discover. Like
+`/chat/resume`, it is exempt from the `/chat` hourly counter, still goes through
+the per-minute limiter, and keeps its own KV counter (`rl:overview:hour:`):
+
+| Environment | Overview Budget (Per Hour) |
+|-------------|----------------------------|
+| Production | 100 |
+| Development | 500 |
+
+Exceeding it returns 429 with `Too many overview requests per hour`.
+
+There is no Turnstile on this route, and the backend authorizes it by the
+`Origin` header, which only browsers enforce: a non-browser caller can send any
+Origin. So these per-IP limits are the only enforced control on the route's
+spend. The backend's per-community daily and monthly budget is monitored and
+opens an alert issue when crossed; it does not block requests.
 
 ## BYOK Mode
 
