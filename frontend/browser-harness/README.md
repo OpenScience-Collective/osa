@@ -382,7 +382,9 @@ see ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) and `.context/notebook-su
 `paced-reveal-check.mjs` runs the widget's paced reveal of streamed text in headless Chrome,
 against its own local server (the widget, a community config and a `/chat` stream shaped like GPT-6 Luna's:
 1.5 s of silence, then about 900 characters with a code block in about 40 ms).
-It samples what the reader sees every 25 ms and compares it with when the stream's chunks arrived.
+It records what the reader sees at every redraw of the conversation (a MutationObserver in the page, whose callback runs right after the redraw and before any timer, so a starved main thread cannot make it miss one)
+and compares it with when the stream's chunks arrived.
+A 25 ms timer remains only to say how late a timer ran (`stall`, which stretches the time bounds) and when the reply stopped changing.
 It needs no backend and no network, and runs in the Frontend Tests job.
 
 ```bash
@@ -397,6 +399,21 @@ Measured 2026-09-29 in Chrome 154: the first words are drawn within about 20 ms 
 the reply grows through about 7 lengths and is fully on screen about 0.5 s after the last chunk
 (a reveal that took about 2 s before #538), and the code block is drawn once, whole.
 With the widget's pacing removed, or with the first text waiting for a tick, the check fails and exits 1.
+
+Run on a starved runner (#691), the widget itself draws fewer steps: its reveal is a deadline, so a tick that runs late draws a bigger slice
+(five 300 ms stalls in the reveal window turned the 7 lengths above into 3, with 5 redraws, and the check failed with a timer sampler and with the observer alike; the exact stall pattern of the CI runner that first failed is not known, and five 150 ms stalls did not reproduce it).
+So the widget's clock, in this check only, does not count how late its own timers fired: it sees each tick on time, as on a quiet machine,
+while the timers stay the browser's and the widget's code is untouched; the lateness (`lateTicks` in the printed line) is added to the time bounds.
+The threshold of 4 distinct lengths is unchanged.
+The widget's coalescing of late ticks into larger steps is therefore intentionally not tested here; the check still fails with the widget's pacing forced off, with or without a stall.
+`PACED_REVEAL_STALL_MS=<ms>` blocks the page's main thread for that long, five times, 240 ms apart, starting 90 ms after the first text arrives.
+To see the failure, run with the clock left alone and the page starved on purpose:
+
+```bash
+PACED_REVEAL_REAL_CLOCK=1 PACED_REVEAL_STALL_MS=300 bun frontend/browser-harness/paced-reveal-check.mjs   # fails: 3 different lengths
+PACED_REVEAL_STALL_MS=300 bun frontend/browser-harness/paced-reveal-check.mjs                              # passes
+PACED_REVEAL_CPU_THROTTLE=50 bun frontend/browser-harness/paced-reveal-check.mjs                           # CDP CPU throttling, rate 50; with PACED_REVEAL_REAL_CLOCK=1 the check fails some runs at this rate
+```
 
 ## The activity status (#538)
 
