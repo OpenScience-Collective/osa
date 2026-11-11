@@ -271,6 +271,78 @@ def init_metrics_db(db_path: Path | None = None) -> None:
         conn.close()
 
 
+# Usage metrics (request_log) and feedback (feedback_log) are kept for this many calendar
+# years, then deleted (#725). PRIVACY.md states it; change both together.
+METRICS_RETENTION_YEARS = 5
+
+
+class PurgeCounts(NamedTuple):
+    """How many rows ``purge_expired_metrics`` deleted from each table."""
+
+    requests: int
+    feedback: int
+
+
+def retention_cutoff(now: datetime | None = None) -> str:
+    """The UTC ISO timestamp before which rows are deleted.
+
+    ``METRICS_RETENTION_YEARS`` calendar years before ``now``; 29 February falls back to
+    28 February in a year without it. Every writer stores ``datetime.now(UTC).isoformat()``,
+    so rows compare against this as strings.
+    """
+    now = (now or datetime.now(UTC)).astimezone(UTC)
+    year = now.year - METRICS_RETENTION_YEARS
+    try:
+        cutoff = now.replace(year=year)
+    except ValueError:  # 29 February, and the cutoff year has none
+        cutoff = now.replace(year=year, day=28)
+    return cutoff.isoformat()
+
+
+def purge_expired_metrics(db_path: Path | None = None, now: datetime | None = None) -> PurgeCounts:
+    """Delete the usage-metrics rows and feedback older than the retention period.
+
+    Runs at startup and daily from the scheduler. Both deletes commit together.
+
+    A feedback comment can hold personal data, so the rows are erased, not only unlinked:
+    ``secure_delete`` makes SQLite overwrite the freed content with zeros, and a checkpoint
+    that truncates the write-ahead log removes the older copies of those pages from it.
+    A checkpoint that a concurrent reader blocks is logged: the older copies then stay in
+    the log until SQLite reuses those frames, which is not bounded in time.
+
+    Args:
+        db_path: Optional path override (for testing).
+        now: The current time (for testing); defaults to now in UTC.
+    """
+    cutoff = retention_cutoff(now)
+    conn = get_metrics_connection(db_path)
+    try:
+        conn.execute("PRAGMA secure_delete=ON")
+        requests = conn.execute("DELETE FROM request_log WHERE timestamp < ?", (cutoff,)).rowcount
+        feedback = conn.execute("DELETE FROM feedback_log WHERE timestamp < ?", (cutoff,)).rowcount
+        conn.commit()
+        if requests or feedback:
+            busy, _, _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if busy:
+                logger.warning(
+                    "Deleted expired metrics, but a reader blocked the checkpoint, so older "
+                    "copies of those rows stay in the write-ahead log until SQLite reuses "
+                    "those frames"
+                )
+    finally:
+        conn.close()
+    if requests or feedback:
+        logger.info(
+            "Deleted %d usage-metrics rows and %d feedback entries older than %s "
+            "(kept for %d years)",
+            requests,
+            feedback,
+            cutoff,
+            METRICS_RETENTION_YEARS,
+        )
+    return PurgeCounts(requests, feedback)
+
+
 def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
     """Insert a request log entry into the database.
 
