@@ -3583,6 +3583,9 @@ def create_community_router(community_id: str) -> APIRouter:
                 body.session_id,
                 extra={"community_id": community_id, "reason": SESSION_UNKNOWN_CODE},
             )
+            # An expected recovery (a restart or an eviction), not a failed request: the
+            # middleware writes no stub row for it, so it is not counted as an error.
+            http_request.state.metrics_logged = True
             return JSONResponse(
                 status_code=409,
                 content={"detail": SESSION_UNKNOWN_DETAIL, "code": SESSION_UNKNOWN_CODE},

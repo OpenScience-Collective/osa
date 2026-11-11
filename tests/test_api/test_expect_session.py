@@ -27,6 +27,8 @@ from src.api.routers.community import (
 )
 from src.assistants.registry import registry
 from src.core.config.community import CommunityConfig
+from src.metrics.db import init_metrics_db, metrics_connection
+from src.metrics.middleware import MetricsMiddleware
 from tests.helpers.chat_models import StreamingScriptedChatModel
 from tests.helpers.provider_replies import text_chunk
 
@@ -74,9 +76,16 @@ def _model(monkeypatch) -> FixedReply:
     return model
 
 
+@pytest.fixture(autouse=True)
+def _metrics_db(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    init_metrics_db()
+
+
 @pytest.fixture
 def client() -> TestClient:
     app = FastAPI()
+    app.add_middleware(MetricsMiddleware)
     app.include_router(create_community_router(COMMUNITY))
     return TestClient(app)
 
@@ -99,6 +108,12 @@ def keep_session(store: dict, session_id: str, community_id: str = COMMUNITY) ->
     return session
 
 
+def logged_statuses() -> list[int]:
+    """The status of every row the metrics middleware and the handlers wrote."""
+    with metrics_connection() as conn:
+        return [r[0] for r in conn.execute("SELECT status_code FROM request_log ORDER BY id")]
+
+
 def contract() -> dict:
     return json.loads(FIXTURE.read_text())
 
@@ -116,6 +131,19 @@ class TestAnUnknownSession:
 
         assert "gone" not in store
         assert not store
+
+    def test_never_calls_the_model(self, client, _model) -> None:
+        post(client, session_id="gone", expect_session=True)
+        post(client, session_id="gone", expect_session=True, stream=False)
+
+        assert _model.calls == 0
+
+    def test_writes_no_usage_row_so_it_is_not_counted_as_an_error(self, client) -> None:
+        """A lost session is an expected recovery; no stub row of status 409 lands."""
+        post(client, session_id="gone", expect_session=True)
+        post(client, session_id="gone", expect_session=True, stream=False)
+
+        assert logged_statuses() == []
 
     def test_detail_stays_a_plain_string(self, client) -> None:
         detail = post(client, session_id="gone", expect_session=True).json()["detail"]
