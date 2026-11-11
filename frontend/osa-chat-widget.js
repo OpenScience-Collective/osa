@@ -6881,6 +6881,12 @@
     return 'osa-code-' + (++codeBlockId);
   }
 
+  // Render inline markdown (code, bold, italic, links, image references, plain URLs,
+  // citation markers)
+  // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
+  // When provided, a bare "[1]" (not followed by "(", so it never collides
+  // with a real markdown link) whose number is a known marker renders as a
+  // superscript link to its source; any other "[n]" is left as plain text.
   // options.figureAbove (#666): true when the reply's message has a run figure, so an
   // image reference can point to it ("figure above"); otherwise it shows its alt text only.
   function renderInlineMarkdown(text, citationsByMarker, options) {
@@ -6892,13 +6898,6 @@
     // badge "[![alt](img)](link)"; its text may hold plain characters and those references.
     const IMAGE_REFERENCE = /!\[([^\]]*)\]\(((?:[^()]|\([^()]*\))+)\)/;
     const LINK_WITH_IMAGES = /\[((?:[^\[\]]|!\[[^\]]*\]\((?:[^()]|\([^()]*\))+\))+)\]\(([^)]+)\)/;
-
-    // Render inline markdown (code, bold, italic, links, image references, plain URLs,
-    // citation markers)
-    // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
-    // When provided, a bare "[1]" (not followed by "(", so it never collides
-    // with a real markdown link) whose number is a known marker renders as a
-    // superscript link to its source; any other "[n]" is left as plain text.
 
     // Code spans are lifted out before anything else is matched, so what is inside
     // one is never read as markup and an italic, bold or link match that starts
@@ -7005,6 +7004,19 @@
           // figure when the message has one.
           result += imageReference(imageMatch[1], true);
           remaining = remaining.substring(imageIndex + imageMatch[0].length);
+        } else if (minIndex === linkIndex && linkMatch && linkIndex > 0 && remaining[linkIndex - 1] === '!') {
+          // An image reference IMAGE_REFERENCE could not parse (an address nested deeper than
+          // one level of parentheses): still never a link and never a "!". Drop the "!", show
+          // the alt text, and skip the whole address by balancing its parentheses.
+          result += escapeRun(remaining.substring(0, linkIndex - 1));
+          result += imageReference(linkMatch[1], true);
+          let end = linkIndex + linkMatch[0].length;
+          let depth = 1;
+          for (let i = linkIndex + linkMatch[1].length + 3; i < remaining.length; i++) {
+            if (remaining[i] === '(') depth++;
+            else if (remaining[i] === ')' && --depth === 0) { end = i + 1; break; }
+          }
+          remaining = remaining.substring(end);
         } else if (minIndex === linkIndex && linkMatch) {
           if (linkIndex > 0) result += escapeRun(remaining.substring(0, linkIndex));
           // Validate URL to prevent javascript: XSS

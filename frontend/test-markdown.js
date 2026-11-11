@@ -326,6 +326,12 @@ console.log('\nImage references point to the figure above, never load one (#666)
   assert(parens === '<p><span class="osa-image-reference">a</span> after</p>', 'an image address with parentheses is read whole, none of it leaks as text');
   const parensBadge = markdownToHtml('[![a](https://x/y_(1).png)](https://link)');
   assert(!parensBadge.includes('.png') && parensBadge.includes('href="https://link"'), 'and so is one inside a linked image');
+  const deep = markdownToHtml('![a](https://x/y_((1)).png) tail');
+  assert(
+    deep === '<p><span class="osa-image-reference">a</span> tail</p>',
+    'an image address nested too deep to parse still shows the alt text only: no "!", no link, no stray address'
+  );
+  assert(!markdownToHtml('![a](https://x/y_((1)).png)').includes('<a '), 'and builds no link from the address');
   assert(markdownToHtml('wow! [x](https://y) ok').includes('wow! ' + SAFE_LINK('x', 'https://y')), 'a "!" ending a sentence before a link stays text beside the link');
 }
 
