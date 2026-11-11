@@ -862,7 +862,7 @@ print(json.dumps(out))
           assert(r.starts_on_hops, `${at}: each piece starts at a multiple of m * hop`);
           if (r.budget === 1) {
             assert(r.pieces > 1, `${at}: the small budget made ${r.pieces} pieces, so the carried sums were exercised`);
-            assert(r.read_bytes <= 0.5 * 2 ** 20, `${at}: no read passes half the budget (${r.read_bytes} bytes)`);
+            assert(r.read_bytes <= 0.25 * 2 ** 20, `${at}: no read passes a quarter of the budget (${r.read_bytes} bytes)`);
           } else {
             assert(r.pieces === 1, `${at}: this read fits one piece (${r.pieces})`);
           }
@@ -913,7 +913,7 @@ print(json.dumps({
         assertEqual(r.used, r.total, 'and every one of them was averaged, on every channel');
         assertEqual(r.by_hand_segments, r.total, 'by hand, the same number of segments');
         assert(r.pieces > 1, `in ${r.pieces} pieces of up to ${r.m} segments`);
-        assert(r.longest_read_mb <= 32, `each read fits the 64 MB budget's half (${r.longest_read_mb.toFixed(1)} MB)`);
+        assert(r.longest_read_mb <= 16, `each read fits a quarter of the 64 MB budget (${r.longest_read_mb.toFixed(1)} MB)`);
         assertEqual(r.read_to, r.samples, 'the last piece ends at the end of the recording');
         assertEqual(r.covered_seconds, MINUTES * 60, `the segments span the whole ${MINUTES} minutes (${r.covered_seconds} s)`);
         assert(result.stdout.startsWith(`${r.total} segments of 2 s, ${r.covered_seconds} s of the recording, in pieces of ${r.m} segments, 3 EEG channels`),

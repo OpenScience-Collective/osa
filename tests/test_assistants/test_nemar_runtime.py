@@ -96,7 +96,10 @@ class TestTheShippedConfig:
         start = prompt.index("**Power spectrum.**")
         bullet = prompt[start : prompt.index("**Events.**", start)]
         flat = " ".join(bullet.split())
-        assert "piece = min(2**28 // nperseg, budget_mb * 2**20 // 2 // (group.n_channels * 8 + 160))" in flat
+        assert (
+            "piece = min(2**28 // nperseg, budget_mb * 2**20 // 4 // (group.n_channels * 8 + 160))"
+            in flat
+        )
         assert "await eegprep_lean.read_window(" in flat
         assert "summed[row] += k * p" in flat
         assert "power = summed / used" in flat

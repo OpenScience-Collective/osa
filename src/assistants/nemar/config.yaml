@@ -343,10 +343,11 @@ system_prompt: |
     budget_mb = 512  # the reader's browser memory budget, as your instructions state it
     total = (group.n_samples - noverlap) // hop  # segments one welch call over the whole channel would average
     assert total >= 1, "the recording is shorter than one segment"
-    # Samples in one piece: the most one welch call takes in this runtime, and what half the
-    # budget leaves for the read (every channel, 8 bytes a sample) and welch's working space
-    # for one channel (about 90 bytes a sample; this allows 160).
-    piece = min(2**28 // nperseg, budget_mb * 2**20 // 2 // (group.n_channels * 8 + 160))
+    # Samples in one piece: the most one welch call takes in this runtime, and what a quarter of
+    # the budget holds of the read (every channel, 8 bytes a sample) and welch's working space
+    # for one channel (about 90 bytes a sample; this allows 160). A quarter, since the runtime's
+    # memory comes to about three times the read, plus about 100 MB for the interpreter.
+    piece = min(2**28 // nperseg, budget_mb * 2**20 // 4 // (group.n_channels * 8 + 160))
     m = max(1, (piece - nperseg) // hop + 1)  # segments in a piece
     keep, summed, used = None, 0.0, 0
     for first in range(0, total, m):  # the piece's first segment; it starts at sample first * hop
