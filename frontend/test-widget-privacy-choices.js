@@ -238,6 +238,9 @@ console.log('\nthe privacy page comes from the community config, checked again h
 {
   const fromCommunity = await opened({ widget: { privacy_url: 'https://example.org/privacy/' } });
   assertEqual(fromCommunity.q('.osa-privacy-link').getAttribute('href'), 'https://example.org/privacy/', 'the community\'s https page is used');
+  const NEMAR_POLICY = 'https://docs.nemar.org/policies/privacy/#the-open-science-assistant';
+  const withFragment = await opened({ widget: { privacy_url: NEMAR_POLICY } });
+  assertEqual(withFragment.q('.osa-privacy-link').getAttribute('href'), NEMAR_POLICY, 'a section link keeps its #fragment');
   for (const bad of ['http://example.org/privacy', 'javascript:alert(1)', 'https://user:pass@example.org/p', '/privacy', 'https://example.org/a b', 'https://', `https://example.org/${'a'.repeat(500)}`]) {
     const ctx = await opened({ widget: { privacy_url: bad } });
     assertEqual(ctx.q('.osa-privacy-link').getAttribute('href'), DEFAULT_PRIVACY_URL, `${bad.slice(0, 40)} falls back to the default`);

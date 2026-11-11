@@ -26,7 +26,7 @@ the version being released and start a new `[Unreleased]` section above it.
   The widget re-reads both saved choices when it builds a request, so a choice made in another tab applies without a reload, and the dialog says so when the browser will not save a choice.
   `PRIVACY.md` now describes the dialog and both choices.
   `RequestLogEntry` gets a non-persisted `share_usage` that `log_request` honors, so every writer of the row goes through one place.
-  The new `widget.privacy_url` (an `https://` URL, validated like `analysis_docs`, at most 500 characters; widget key `privacyUrl`) sets the link, which defaults to the platform's `PRIVACY.md` and is validated again in the widget.
+  The new `widget.privacy_url` (an `https://` URL, validated like `analysis_docs`, at most 500 characters; widget key `privacyUrl`) sets the link, which defaults to the platform's privacy page, `https://docs.osc.earth/osa/privacy/` (the docs-site copy of `PRIVACY.md`), and is validated again in the widget. NEMAR sets it to the assistant section of its own privacy policy, `https://docs.nemar.org/policies/privacy/#the-open-science-assistant`, which links on to the OSA page.
   The `pageContextLabel` setting is gone (nothing uses it).
   Tested by `frontend/test-widget-privacy-choices.js`, `tests/test_api/test_usage_opt_out.py` (the real app and middleware for streaming and plain `/chat`, `/chat/resume` and `/ask`), the worker's `test-routing.js`, the config and router tests, and `frontend/browser-harness/privacy-choices-check.mjs` (real Chrome, both sizes, both schemes, corner and center).
   See `docs/community-widget.md`.
@@ -73,7 +73,6 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
-- **The Privacy choices link opens a page written for readers (#706)**: with no `widget.privacy_url`, the dialog's link now goes to `https://docs.osc.earth/osa/privacy/` instead of `PRIVACY.md` on GitHub, and NEMAR sets `privacy_url` to the assistant section of its own privacy policy (`https://docs.nemar.org/policies/privacy/#the-open-science-assistant`), which links on to the OSA page. Tested by `frontend/test-widget-privacy-choices.js` and the registry checks in `tests/test_api/test_community_router.py`.
 - **NEMAR's vendored eegprep-lean is 0.5.0**: the wheel is the eegprep 0.5.0 release (tag `v0.5.0`, commit `13c79837`). eegprep and eegprep-lean now share one version number, which is why this jumps from 0.1.0.dev3. The only package code change since `50c50879` is `help()` and `dir()` (sccn/eegprep#440). The names the chat and the notebook call are unchanged.
 - **`osa-demo.pages.dev` is no longer an allowed origin**: backend CORS, the widget authorization check, the worker's `isAllowedOrigin` (and the `sync_worker_cors.py` template that writes it) and the notebook `frame-ancestors` no longer list `osa-demo.pages.dev` or `*.osa-demo.pages.dev`. Those hosts redirect to the custom domains before any API call, and the names are account-scoped. The dashboard's `osa-dash.pages.dev` origins are unchanged, since its pull-request previews call the API from there.
 - **HED has no forum**: NeuroStars (tag `hed`, three topics) is removed from HED's sources, with its `search_hed_forum` tool. It had never been synced.
