@@ -204,7 +204,7 @@ class TestTheFramingOfTheSeed:
     def test_it_says_the_browser_restored_the_conversation_automatically(self) -> None:
         framing = framing_of_the_seed()
 
-        assert "restored" in framing
+        assert "browser restored" in framing
         assert "automatically" in framing
 
     def test_it_asks_for_the_conversation_to_be_continued_as_the_assistants_own(self) -> None:
