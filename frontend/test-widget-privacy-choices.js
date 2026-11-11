@@ -66,7 +66,7 @@ const KEY = 'osa-test-privacy';
 const PAGE_KEY = 'osa-page-context-enabled';
 const USAGE_KEY = 'osa-share-usage-enabled';
 const DATASET = 'xx099904';
-const DEFAULT_PRIVACY_URL = 'https://github.com/OpenScience-Collective/osa/blob/develop/PRIVACY.md';
+const DEFAULT_PRIVACY_URL = 'https://docs.osc.earth/osa/privacy/';
 
 // The community config, answered at once, and a chat reply of one line. `sent` records the
 // body of every /chat and /chat/resume request, in order, with the path it went to.
@@ -238,6 +238,9 @@ console.log('\nthe privacy page comes from the community config, checked again h
 {
   const fromCommunity = await opened({ widget: { privacy_url: 'https://example.org/privacy/' } });
   assertEqual(fromCommunity.q('.osa-privacy-link').getAttribute('href'), 'https://example.org/privacy/', 'the community\'s https page is used');
+  const NEMAR_POLICY = 'https://docs.nemar.org/policies/privacy/#the-open-science-assistant';
+  const withFragment = await opened({ widget: { privacy_url: NEMAR_POLICY } });
+  assertEqual(withFragment.q('.osa-privacy-link').getAttribute('href'), NEMAR_POLICY, 'a section link keeps its #fragment');
   for (const bad of ['http://example.org/privacy', 'javascript:alert(1)', 'https://user:pass@example.org/p', '/privacy', 'https://example.org/a b', 'https://', `https://example.org/${'a'.repeat(500)}`]) {
     const ctx = await opened({ widget: { privacy_url: bad } });
     assertEqual(ctx.q('.osa-privacy-link').getAttribute('href'), DEFAULT_PRIVACY_URL, `${bad.slice(0, 40)} falls back to the default`);

@@ -98,6 +98,9 @@ widget:
   # platform's blue-with-white-text.
   user_bubble_color: "#5bbad5"
   user_bubble_text_color: "#04121f"
+  # The Privacy choices dialog links here: NEMAR's own policy, whose assistant section
+  # covers the widget on nemar.org and links on to the OSA privacy page.
+  privacy_url: https://docs.nemar.org/policies/privacy/#the-open-science-assistant
   # theme_color used as a FOREGROUND on the widget's white panel (links, borders, focus
   # rings) reads poorly at brand-teal lightness, so this names a separate, darker step of
   # the same 193-degree hue for that use: nemar.org's brand teal darkened in lightness
