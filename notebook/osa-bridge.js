@@ -290,6 +290,9 @@
   // running, so Python state survives) and opens the next one in its place.
 
   const NOTEBOOK_OPEN_TIMEOUT_MS = 30_000;
+  // Shorter than the widget's own 180 s wait for a reply, so the answer is an error it reads.
+  const SETUP_WAIT_TIMEOUT_MS = 120_000;
+  const SETUP_WAIT_EXPIRED = Symbol('setup wait expired');
 
   const resultMessage = (requestId, outcome) => ({
     type: 'result',
@@ -435,9 +438,18 @@
     }
 
     // Shows `path`: the one panel the page holds is replaced. Waits for the
-    // starter's setup first, which runs on the panel that is on screen.
+    // starter's setup first, which runs on the panel that is on screen, but not
+    // for ever: the widget gives up on a request after 180 s, and a setup that
+    // hangs must not hold the queue (every later tab request) behind it.
     async function show(path) {
-      await setupRun;
+      if (setupRun) {
+        let timer;
+        const expired = new Promise((resolve) => {
+          timer = setTimeout(() => resolve(SETUP_WAIT_EXPIRED), SETUP_WAIT_TIMEOUT_MS);
+        });
+        const outcome = await Promise.race([setupRun, expired]).finally(() => clearTimeout(timer));
+        if (outcome === SETUP_WAIT_EXPIRED) throw new Error('the starter notebook is still setting up; try again in a moment');
+      }
       const current = app.shell.currentWidget;
       if (current?.context?.path === path) return current;
       if (current) await retire(current);
@@ -470,7 +482,13 @@
       await writeNotebook(path, content, 'chat');
       lastImport = { path, signature: files.sourceSignature(content) };
       addOpen(path);
-      await show(path);
+      try {
+        await show(path);
+      } catch (err) {
+        // The file is written and listed; only showing it failed.
+        warn('the imported notebook was saved but not opened', err);
+        return { ok: false, path, error: `it was saved as a tab, but not opened: ${err.message || err}` };
+      }
       return { ok: true, path };
     }
 
