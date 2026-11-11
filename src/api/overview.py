@@ -48,9 +48,9 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 MAX_QUERY_CHARS = 300
-# An overview needs a search of at least this many words (#728): one- and two-word searches
-# such as "EEG" give the model too little to write a cited reading, and nemar.org shows a
-# note instead of calling. The website counts words the same way (query_word_count).
+# The maintainer's rule (#728): an overview needs a search of at least this many words, and a
+# shorter one is refused before the model is called. nemar.org's Discover panel counts words
+# the same way (query_word_count) and shows a note instead of calling.
 MIN_QUERY_WORDS = 3
 MAX_RESULTS = 10
 MAX_FILTERS = 20

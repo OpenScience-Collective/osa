@@ -55,9 +55,9 @@ when crossed; it does not block requests.
 | `results` | 1 to 10 rows; `id` unique, up to 64 characters of letters, digits, `.`, `_`, `-`; `title` up to 200 characters; `description` up to 500; `modalities` an optional string |
 | `total_count` | optional, the number of matches in all |
 
-A search under three words gives the model too little to write a cited reading
-("EEG" alone came back with no citation, a 502; #728), so the route refuses it with a 422
-before any model call.
+An overview needs a search of at least three words;
+a shorter search is refused with a 422 before any model call.
+(A one-word search, "EEG", had come back as a 502; #728.)
 nemar.org's Discover panel counts words the same way and shows a note instead of calling.
 
 ## What comes back
