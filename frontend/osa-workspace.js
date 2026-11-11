@@ -844,20 +844,30 @@ export class WorkspaceStore {
    * counter that starts over with each page load, so across loads that name is
    * not unique, and the figures of the wrong run are worse than none.
    *
+   * The call ids left out for being shared are on the returned map's
+   * `ambiguous` Set, so a caller can tell "this run's figure is gone" (a call
+   * id that is not in the map) from "which run this is cannot be told".
+   *
+   * `limit` caps how many figures are read for each run (a thumbnail wants
+   * only figure 1); it defaults to the most a run saves.
+   *
    * Like `manifests()`, bounded by the operation deadline and throws on
    * failure (an unavailable IndexedDB, a deadline), which the caller turns
    * into "figures not available".
    *
    * @param {string[]} callIds
-   * @returns {Promise<Map<string, Uint8Array[]>>}
+   * @param {{limit?: number}} [options]
+   * @returns {Promise<Map<string, Uint8Array[]> & {ambiguous: Set<string>}>}
    */
-  async figuresForCalls(callIds) {
-    return raceDeadline(this._figuresForCalls(callIds), 'figuresForCalls', this._operationTimeoutMs);
+  async figuresForCalls(callIds, options = {}) {
+    return raceDeadline(this._figuresForCalls(callIds, options), 'figuresForCalls', this._operationTimeoutMs);
   }
 
-  async _figuresForCalls(callIds) {
+  async _figuresForCalls(callIds, { limit = MAX_FIGURES_READ } = {}) {
+    const perRun = Number.isInteger(limit) && limit > 0 ? Math.min(limit, MAX_FIGURES_READ) : MAX_FIGURES_READ;
     const wanted = new Set((Array.isArray(callIds) ? callIds : []).filter((id) => typeof id === 'string' && id !== ''));
     const found = new Map();
+    found.ambiguous = new Set();
     if (wanted.size === 0) return found;
     const runs = (await this._allRuns()).filter((run) => run.status !== RESERVED_RUN_STATUS && wanted.has(run.callId));
     const seen = new Set();
@@ -866,11 +876,12 @@ export class WorkspaceStore {
       if (seen.has(run.callId)) ambiguous.add(run.callId);
       seen.add(run.callId);
     }
+    found.ambiguous = ambiguous;
     const db = await this._open();
     for (const run of runs) {
       if (ambiguous.has(run.callId)) continue;
       const figures = [];
-      for (let k = 1; k <= MAX_FIGURES_READ; k++) {
+      for (let k = 1; k <= perRun; k++) {
         const tx = db.transaction(FILES_STORE, 'readonly');
         const row = await requestToPromise(tx.objectStore(FILES_STORE).get(this._fileKey(run.session, autoFigurePath(run.ordinal, k))));
         if (!row || !row.data) break;

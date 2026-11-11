@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildStoredZip } from './osa-zip.js';
+import { memoryIndexedDB } from './test-support/memory-indexeddb.js';
 import {
   autoFigurePath,
   autoResultDir,
@@ -305,63 +306,44 @@ console.log('\na rejected open() does not poison later calls: _dbPromise is rese
 
 console.log('\nfiguresForCalls reads a run\'s figures by call id, through the real read path');
 {
-  // A real, test-controlled dbFactory, as above: the smallest in-memory stand-in for
-  // IndexedDB's get/getAll over two object stores. What runs against it is the store's
-  // own code (its keys, the ordinal tags, the ambiguity rule); only the database is
-  // stood in for. The real IndexedDB read, after a reload, is the Chrome harness's.
+  // The real store over the shared in-memory IndexedDB (test-support/memory-indexeddb.js),
+  // the same stand-in the panel suite uses: runs and figures are written by recordRun,
+  // as the controller records them, and only the cases recordRun cannot produce (a
+  // figure gap, a reservation that never became a run, a call id two runs share) are
+  // written as rows by hand. The real IndexedDB, after a reload, is the Chrome harness's.
   const COMMUNITY = 'figures-test';
   const SEP = '\u0000';
-  const stores = { files: new Map(), runs: new Map() };
-  globalThis.IDBKeyRange = { bound: (lower, upper) => ({ lower, upper }) };
-  const done = (result) => {
-    const request = {};
-    queueMicrotask(() => {
-      request.result = result;
-      request.onsuccess?.();
-    });
-    return request;
-  };
-  const factory = {
-    open() {
-      const db = {
-        objectStoreNames: { contains: () => true },
-        transaction: (name) => ({
-          objectStore: () => ({
-            get: (key) => done(stores[name].get(key)),
-            getAll: (range) => done([...stores[name].entries()]
-              .filter(([key]) => key >= range.lower && key <= range.upper).map(([, row]) => row)),
-          }),
-        }),
-      };
-      const request = {};
-      queueMicrotask(() => {
-        request.result = db;
-        request.onsuccess?.();
-      });
-      return request;
-    },
-  };
+  const realKeyRange = globalThis.IDBKeyRange;
+  const store = new WorkspaceStore({ community: COMMUNITY, dbFactory: memoryIndexedDB(), operationTimeoutMs: 5000 });
   const png = (n) => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, n]);
-  const addRun = (session, ordinal, callId, status = 'ok', figures = 0) => {
-    const key = `${COMMUNITY}${SEP}${session}${SEP}${String(ordinal).padStart(6, '0')}`;
-    stores.runs.set(key, { key, community: COMMUNITY, session, ordinal, callId, status });
-    for (let k = 1; k <= figures; k++) {
-      const path = autoFigurePath(ordinal, k);
-      const fileKey = `${COMMUNITY}${SEP}${session}${SEP}${path}`;
-      stores.files.set(fileKey, { key: fileKey, session, path, data: png(ordinal * 10 + k), size: 9 });
-    }
+  const base64 = (bytes) => btoa(String.fromCharCode(...bytes));
+  const record = async (session, callId, figures) => {
+    const result = await store.recordRun({
+      session, callId, status: 'ok', description: 'plot', code: 'plot()', stdout: '', stderr: '', summary: '',
+      images: figures.map((n) => ({ data_base64: base64(png(n)) })), explicitFiles: [],
+    });
+    if (result.failures.length > 0) throw new Error(`could not record ${callId}: ${JSON.stringify(result.failures)}`);
+    return result.ordinal;
   };
-  addRun('s1', 1, 'call-two-figures', 'ok', 2);
-  addRun('s1', 2, 'call-no-figure');
-  addRun('s2', 1, 'call-other-session', 'ok', 1);
-  addRun('s1', 3, 'call-gap', 'ok', 1);
+  const put = async (name, row) => {
+    const db = await store._open();
+    const tx = db.transaction(name, 'readwrite');
+    tx.objectStore(name).put(row);
+    await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+  };
+  await record('s1', 'call-two-figures', [11, 12]);
+  await record('s1', 'call-no-figure', []);
+  await record('s2', 'call-other-session', [11]);
+  const gapOrdinal = await record('s1', 'call-gap', [31]);
   // Figure 3 without figure 2: the list ends at the first one missing.
-  const gapKey = `${COMMUNITY}${SEP}s1${SEP}${autoFigurePath(3, 3)}`;
-  stores.files.set(gapKey, { key: gapKey, session: 's1', path: autoFigurePath(3, 3), data: png(99), size: 9 });
-  addRun('s1', 4, 'person-run-1', 'ok', 1);
-  addRun('s2', 2, 'person-run-1', 'ok', 1);
-  addRun('s1', 5, 'call-reserved', 'reserved', 1);
-  const store = new WorkspaceStore({ community: COMMUNITY, dbFactory: factory, operationTimeoutMs: 5000 });
+  const gapPath = autoFigurePath(gapOrdinal, 3);
+  await put('files', { key: `${COMMUNITY}${SEP}s1${SEP}${gapPath}`, session: 's1', path: gapPath, data: png(99), size: 9 });
+  await record('s1', 'person-run-1', [41]);
+  await record('s2', 'person-run-1', [42]);
+  await put('runs', {
+    key: `${COMMUNITY}${SEP}s1${SEP}${String(90).padStart(6, '0')}`, community: COMMUNITY, session: 's1', ordinal: 90,
+    callId: 'call-reserved', status: 'reserved', description: '', files: [], timestamp: new Date().toISOString(),
+  });
   const ids = ['call-two-figures', 'call-no-figure', 'call-other-session', 'call-gap', 'person-run-1', 'call-reserved', 'call-unknown'];
   const figures = await store.figuresForCalls(ids);
   assert(figures instanceof Map, 'it returns a Map');
@@ -371,12 +353,17 @@ console.log('\nfiguresForCalls reads a run\'s figures by call id, through the re
   assert(!figures.has('call-no-figure'), 'a run that saved no figure is left out');
   assertEqual(figures.get('call-gap').map((b) => b[8]), [31], 'the list ends at the first missing figure');
   assert(!figures.has('person-run-1'), 'a call id two runs share is left out rather than answered with the wrong run\'s figures');
+  assertEqual([...figures.ambiguous], ['person-run-1'], 'and named on `ambiguous`, so it is not taken for a figure that is gone');
   assert(!figures.has('call-reserved'), 'a reservation that never became a run is left out');
   assert(!figures.has('call-unknown'), 'a call id with no run is left out');
+  assert(!figures.ambiguous.has('call-unknown') && !figures.ambiguous.has('call-no-figure'), 'which is not ambiguity');
   assertEqual([...(await store.figuresForCalls(['call-two-figures']))].length, 1, 'only the call ids asked for are read');
+  assertEqual((await store.figuresForCalls(['call-two-figures'], { limit: 1 })).get('call-two-figures').map((b) => b[8]), [11], 'a limit of 1 reads only figure 1');
+  assertEqual((await store.figuresForCalls(['call-two-figures'], { limit: 0 })).get('call-two-figures').length, 2, 'a limit that is not a positive whole number is ignored');
   assertEqual((await store.figuresForCalls([])).size, 0, 'no call ids, no figures');
   assertEqual((await store.figuresForCalls([null, '', 7])).size, 0, 'a call id that is not a string is ignored');
-  delete globalThis.IDBKeyRange;
+  if (realKeyRange === undefined) delete globalThis.IDBKeyRange;
+  else globalThis.IDBKeyRange = realKeyRange;
 
   const unavailable = new WorkspaceStore({ community: 'figures-test-none' });
   let rejected = null;
