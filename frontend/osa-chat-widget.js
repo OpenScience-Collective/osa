@@ -8625,6 +8625,11 @@
   // nothing between here and END may use the rest of the widget.
   const RESEED_MAX_TURNS = 12;
   const RESEED_TURN_MAX_CHARS = 2000;
+  // What the server keeps of a transcript (its SUMMARY_INPUT_MAX_CHARS). Whole oldest
+  // turns are left out to stay within it, so nothing is sent that it would cut, and
+  // each turn is counted with the speaker label and separator the server adds to it.
+  const RESEED_TOTAL_CHARS = 12000;
+  const RESEED_TURN_OVERHEAD = 14;
 
   // `text` cut from the middle to at most `limit` characters, an ellipsis where the
   // cut is, so the start (what was asked) and the end (what was concluded) both stay.
@@ -8641,7 +8646,7 @@
 
   // The turns to carry: the user's and the assistant's text, nothing else (a reply's
   // code runs, tool results and figures are other fields of the message, never read
-  // here), each bounded, and the newest RESEED_MAX_TURNS. The assistant's greeting,
+  // here), each bounded, and the newest RESEED_MAX_TURNS that fit RESEED_TOTAL_CHARS. The assistant's greeting,
   // which comes before the reader has said anything, is not a turn.
   function selectReseedTurns(list) {
     const turns = [];
@@ -8654,7 +8659,12 @@
       const text = message.content.trim();
       if (text) turns.push({ role: message.role, text: clipTurnMiddle(text) });
     }
-    return turns.slice(-RESEED_MAX_TURNS);
+    const newest = turns.slice(-RESEED_MAX_TURNS);
+    let total = newest.reduce((sum, turn) => sum + turn.text.length + RESEED_TURN_OVERHEAD, 0);
+    while (newest.length > 1 && total > RESEED_TOTAL_CHARS) {
+      total -= newest.shift().text.length + RESEED_TURN_OVERHEAD;
+    }
+    return newest;
   }
 
   // The tier the conversation was last on: the newest assistant message that says one.

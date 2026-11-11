@@ -73,7 +73,7 @@ const SESSION_TTL_MS = SESSION_TTL_HOURS * HOUR_MS;
 const BLOCK = /\/\/ BEGIN reseed[^\n]*\n(?:\s*\/\/[^\n]*\n)*([\s\S]*?)\/\/ END reseed/.exec(SOURCE);
 assert(!!BLOCK, 'the widget has a delimited reseed block');
 const pure = new Function(`${BLOCK[1]}
-  return { RESEED_MAX_TURNS, RESEED_TURN_MAX_CHARS, clipTurnMiddle, selectReseedTurns, lastReplyMode, reseedFields };`)();
+  return { RESEED_MAX_TURNS, RESEED_TURN_MAX_CHARS, RESEED_TOTAL_CHARS, RESEED_TURN_OVERHEAD, clipTurnMiddle, selectReseedTurns, lastReplyMode, reseedFields };`)();
 
 // A server that answers like the real one: a `session` event first, then the reply. `plan`
 // says how it answers the Nth request: 'ok' (default) or 'fail' (a 500 before any event).
@@ -185,6 +185,7 @@ console.log('\nthe widget mirrors the server\'s lifetime, and the bounds are the
   assertEqual(SESSION_TTL_HOURS, 24, 'a session lasts a day');
   assertEqual(pure.RESEED_MAX_TURNS, 12, 'at most 12 turns');
   assertEqual(pure.RESEED_TURN_MAX_CHARS, 2000, 'of at most 2,000 characters');
+  assertEqual(pure.RESEED_TOTAL_CHARS, 12000, 'and 12,000 characters in all, which is what the server keeps');
 }
 
 console.log('\nthe first request of a restored conversation carries it');
@@ -310,6 +311,21 @@ console.log('\nthe newest 12 turns, each cut from the middle');
   const emoji = '\u{1F9E0}'.repeat(2000);
   const cut = pure.clipTurnMiddle(emoji);
   assert(cut.length <= 2000 && !/[\uD800-\uDBFF]$/.test(cut.slice(0, cut.indexOf('…'))) && !/^[\uDC00-\uDFFF]/.test(cut.slice(cut.indexOf('…') + 1)), 'a cut never splits a surrogate pair');
+}
+
+console.log('\nthe total is bounded by whole turns, oldest first');
+{
+  const exchanges = [];
+  for (let i = 1; i <= 6; i += 1) exchanges.push([`question ${i}`, `${i}:${'a'.repeat(1990)}`, 'quick']);
+  const ctx = start({ storage: { [KEY]: envelope([conversation('c1', exchanges)], 'c1') } });
+  const body = await send(ctx, 'last');
+  const counted = body.prior_turns.reduce((sum, turn) => sum + turn.text.length + pure.RESEED_TURN_OVERHEAD, 0);
+  assert(counted <= pure.RESEED_TOTAL_CHARS, 'what is sent fits what the server keeps');
+  assert(body.prior_turns.length < 12, 'so older turns went');
+  assertEqual(body.prior_turns.at(-1).text.slice(0, 2), '6:', 'the newest reply is kept');
+  assert(body.prior_turns.every((turn) => turn.text.length === 1992 || turn.text.startsWith('question')), 'and each turn that stayed is whole');
+  const one = pure.selectReseedTurns([{ role: 'user', content: 'q' }, { role: 'assistant', content: 'z'.repeat(5000) }]);
+  assertEqual(one.map((turn) => turn.text.length), [1, 2000], 'a turn is bounded by its own limit first');
 }
 
 console.log('\nonly text is carried');
