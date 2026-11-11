@@ -15,6 +15,7 @@ from src.api.overview import (
     CACHE_MAX_ENTRIES,
     CACHE_TTL_SECONDS,
     MAX_PICKS,
+    MIN_QUERY_WORDS,
     SUMMARY_MAX_WORDS,
     DatasetSegment,
     OverviewCache,
@@ -33,6 +34,7 @@ from src.api.overview import (
     cited_ids_of,
     normalize_query,
     parse_reply,
+    query_word_count,
     results_digest,
     split_sentences,
 )
@@ -52,7 +54,7 @@ def _row(dataset_id: str, **overrides) -> dict:
 
 def _request(**overrides) -> OverviewRequest:
     body = {
-        "query": "face recognition",
+        "query": "face recognition EEG",
         "filters": {"modality": ["eeg"]},
         "results": [_row(i) for i in IDS],
         **overrides,
@@ -117,8 +119,8 @@ class TestCanonicalFilters:
 
 class TestCacheKey:
     def test_spelling_of_the_query_and_order_of_filters_share_a_key(self) -> None:
-        a = _request(query="Face  Recognition ", filters={"a": ["x", "y"], "b": 1})
-        b = _request(query="face recognition", filters={"b": 1, "a": ["y", "x"]})
+        a = _request(query="Face  Recognition  EEG ", filters={"a": ["x", "y"], "b": 1})
+        b = _request(query="face recognition eeg", filters={"b": 1, "a": ["y", "x"]})
         assert cache_key(a) == cache_key(b)
 
     def test_different_results_make_a_different_key(self) -> None:
@@ -139,16 +141,41 @@ class TestCacheKey:
         assert cache_key(base) != cache_key(with_modalities)
 
     def test_a_different_query_makes_a_different_key(self) -> None:
-        assert cache_key(_request(query="faces")) != cache_key(_request(query="places"))
+        assert cache_key(_request(query="faces in EEG")) != cache_key(
+            _request(query="places in EEG")
+        )
 
     def test_the_digest_covers_the_payload_not_the_query(self) -> None:
-        a, b = _request(query="one"), _request(query="two")
+        a, b = _request(query="query number one"), _request(query="query number two")
         assert results_digest(a.results, a.total_count) == results_digest(b.results, b.total_count)
+
+
+class TestQueryWords:
+    @pytest.mark.parametrize(
+        ("query", "words"),
+        [
+            ("EEG", 1),
+            ("P300 speller", 2),
+            ("face recognition EEG", 3),
+            ("  sleep   spindles  in children ", 4),
+            ("EEG - MEG", 2),
+            ("α-band power", 2),
+            ("naïve viewers watch films", 4),
+        ],
+    )
+    def test_a_word_holds_a_letter_or_digit(self, query: str, words: int) -> None:
+        assert query_word_count(query) == words
+
+    def test_three_words_is_the_minimum(self) -> None:
+        assert MIN_QUERY_WORDS == 3
+        assert _request(query="face recognition EEG").query == "face recognition EEG"
+        with pytest.raises(ValidationError, match="at least 3 words"):
+            _request(query="face recognition")
 
 
 class TestRequestBounds:
     def test_a_minimal_valid_request(self) -> None:
-        request = OverviewRequest.model_validate({"query": "q", "results": [_row("xx099901")]})
+        request = OverviewRequest.model_validate({"query": "a b c", "results": [_row("xx099901")]})
         assert request.filters == {}
         assert request.total_count is None
 
@@ -157,7 +184,10 @@ class TestRequestBounds:
         [
             {"query": ""},
             {"query": "   "},
-            {"query": "q" * 301},
+            {"query": "q" * 99 + " " + "q" * 99 + " " + "q" * 101},
+            {"query": "EEG"},
+            {"query": "P300 speller"},
+            {"query": "EEG - MEG"},
             {"results": []},
             {"results": [_row(f"xx0999{n:02d}") for n in range(11)]},
             {"results": [_row("xx099901", title="t" * 201)]},
@@ -178,7 +208,7 @@ class TestRequestBounds:
 
     def test_the_bounds_themselves_are_accepted(self) -> None:
         request = _request(
-            query="q" * 300,
+            query="q" * 99 + " " + "q" * 99 + " " + "q" * 100,
             filters={f"k{n}": "v" for n in range(20)},
             results=[
                 _row(f"xx0999{n:02d}", title="t" * 200, description="d" * 500) for n in range(10)
