@@ -617,6 +617,7 @@ A handover logs two rows in `request_log`: the analysis run's under the request 
 The summary's tokens are counted, and it is traced with the request in LangFuse.
 Every row a chat request writes also carries `tier` (`quick` or `analysis` for a routed request, empty otherwise) and `conversation_id`.
 A conversation's id is its first session's id, and the analysis session a handover opens inherits it, so both models' rows, and every later turn on the new session (including `/chat/resume`), group as one conversation.
+An analysis session that expired, or was lost when the server restarted, is recreated by the next request with its own id as the conversation id, so the report shows it as a new conversation.
 The metrics middleware's stub row for a streamed request (no model, no tokens) stays as it was, and so do rows written before the two columns existed (they are empty).
 `osa metrics cost-report` prices them, as below.
 
@@ -631,11 +632,29 @@ osa metrics cost-report --community nemar --since 7d [--db PATH] [--json]
 ```
 
 Prices each conversation of a community, the quick model against the analysis model (issue #678, plan E8.4), from the `request_log` the server already writes.
-`--since` is an age (`7d`, `12h`, `2w`) or a date; `--db` defaults to this machine's own metrics database, and a copy pulled from a server works.
+`--since` is an age (`7d`, `12h`, `2w`) or a date, optionally with a UTC offset (`2026-11-01T00:00-08:00`; it is converted to UTC, and a date with no offset is UTC).
+`--db` defaults to this machine's own metrics database (the command never creates its directory), and a copy pulled from a server works.
 The database is opened read-only (SQLite `mode=ro`), and one from before `tier` and `conversation_id` existed is read without being migrated.
+
+**Getting a copy of a server's database.**
+The server's database is in WAL mode, and rows that are not yet checkpointed live in `metrics.db-wal`, so copying `metrics.db` alone can leave recent rows out.
+Take a consistent snapshot on the server instead (the container has no `sqlite3` command, so use Python; `VACUUM INTO` works on a read-only connection and writes a file that is not in WAL mode):
+
+```bash
+ssh -o "RequestTTY=no" -J hallu hedtools "docker exec osa-dev python3 -c 'import sqlite3; sqlite3.connect(\"file:/app/data/metrics.db?mode=ro\", uri=True).execute(\"VACUUM INTO ?\", (\"/tmp/metrics-copy.db\",))'"
+ssh -o "RequestTTY=no" -J hallu hedtools "docker cp osa-dev:/tmp/metrics-copy.db /tmp/metrics-copy.db"
+scp -J hallu hedtools:/tmp/metrics-copy.db ./metrics-copy.db
+osa metrics cost-report --community nemar --since 7d --db ./metrics-copy.db
+```
+
+(`VACUUM INTO` fails if the target file exists; remove `/tmp/metrics-copy.db` in the container before a second snapshot.)
+Alternatively, copy `metrics.db` together with `metrics.db-wal` and `metrics.db-shm` into one directory.
+When the file it is given is in WAL mode with no `-wal` beside it, the command prints a note to stderr (and adds a `note` field to `--json`) saying that rows still in a `-wal` file that was not copied are not included; a `VACUUM INTO` snapshot never triggers it.
+Only an "unable to open" failure makes it read the file as an immutable snapshot; a locked database is an error.
 
 The table has one row per conversation: its short id, start, turns by tier (`quick/analysis`), the quick cost, the analysis cost and the total, followed by totals by tier.
 A turn here is one model's work on one request, so a handover counts once on each side.
+A request that failed (an error status or an error message) is not a turn: it is counted under `errors` (a "Failed" column in the totals when there are any), so retries after a failure do not inflate the turns or the quick/analysis ratio; any cost it did log is still added.
 Cost is each row's own estimate (`estimate_cost`, at the rates of the time it was logged).
 Requests that belong to no conversation (everything logged before this change, and `/ask`) are listed apart, by model, and the middleware's stub rows (no model) are left out.
 `--json` prints the same report as JSON.
