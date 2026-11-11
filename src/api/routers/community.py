@@ -299,6 +299,21 @@ SHARE_USAGE_DESCRIPTION = (
     "Feedback is unaffected."
 )
 
+# The `code` of the 409 a /chat answers when the client expected a live session and the
+# server holds none. A sibling of the string `detail`, so a client that reads only
+# `detail` still gets text it can show.
+SESSION_UNKNOWN_CODE = "session_unknown"
+SESSION_UNKNOWN_DETAIL = "The server no longer holds this conversation, so the message was not run."
+
+EXPECT_SESSION_DESCRIPTION = (
+    "True from a client that holds the conversation's earlier turns and has stopped "
+    "sending them as `prior_turns` because the server confirmed the session. If the server "
+    "then holds no live session for `session_id` (restarted, evicted or expired) and the "
+    "request has no `prior_turns`, it answers 409 with code `session_unknown` and creates "
+    "nothing, instead of silently starting an empty conversation. Needs `session_id`; "
+    "`prior_turns` present reseeds as usual. Off by default, so other clients are unaffected."
+)
+
 
 class ChatRequest(BaseModel):
     """Request body for chat endpoint."""
@@ -347,6 +362,14 @@ class ChatRequest(BaseModel):
         ),
     )
     share_usage: bool = Field(default=True, description=SHARE_USAGE_DESCRIPTION)
+    expect_session: bool = Field(default=False, description=EXPECT_SESSION_DESCRIPTION)
+
+    @model_validator(mode="after")
+    def expectation_needs_a_session(self) -> Self:
+        """There is nothing to expect without an id to look up."""
+        if self.expect_session and not self.session_id:
+            raise ValueError("expect_session needs a session_id")
+        return self
 
 
 class ResumeRequest(BaseModel):
@@ -3496,6 +3519,13 @@ def create_community_router(community_id: str) -> APIRouter:
         responses={
             200: {"description": "Successful response"},
             400: {"description": "Invalid request"},
+            409: {
+                "description": (
+                    "`expect_session` was set, no `prior_turns` came with it, and the server "
+                    "holds no live session for `session_id`. Body: `detail` (text) and "
+                    f"`code` ({SESSION_UNKNOWN_CODE!r}). Nothing was created or run."
+                ),
+            },
             500: {"description": "Internal server error"},
             502: {
                 "model": UnansweredReplyResponse,
@@ -3538,6 +3568,25 @@ def create_community_router(community_id: str) -> APIRouter:
         # Extract origin for authorization
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
+
+        # A client that stopped sending its turns because the server confirmed the session
+        # asks to be told when the server has lost it. Checked before anything is created
+        # or claimed, so a refused request leaves no session, no usage row and no stream.
+        if (
+            body.expect_session
+            and body.session_id
+            and not body.prior_turns
+            and get_session(community_id, body.session_id) is None
+        ):
+            logger.info(
+                "Refused /chat for session %s: expected a live session, the server holds none",
+                body.session_id,
+                extra={"community_id": community_id, "reason": SESSION_UNKNOWN_CODE},
+            )
+            return JSONResponse(
+                status_code=409,
+                content={"detail": SESSION_UNKNOWN_DETAIL, "code": SESSION_UNKNOWN_CODE},
+            )
 
         session = get_or_create_session(community_id, body.session_id)
         user_id = x_user_id or session.session_id
