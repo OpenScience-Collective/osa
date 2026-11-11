@@ -21,9 +21,17 @@ How plans are compared. Each plan step is mapped to one operation of a small fix
 vocabulary by the keyword rules in ``RULES`` (the title first, then the detail, the first
 rule in priority order that matches wins), and two plans agree when their sequences of
 operations are equal. Wording does not matter, order does. A request passes when its most
-common sequence occurs in at least 3 of 4 repeats. A run that proposed no plan
-(``('no_plan',)``) or failed (``('error',)``) never counts as agreement. The report prints
-the raw step titles beside the operations so a reviewer can audit the rules.
+common sequence occurs in at least 3 of 4 repeats (the same share for another
+``--repeats``, rounded up). A run that proposed no plan (``('no_plan',)``) or failed
+(``('error',)``) never counts as agreement. The report prints the raw step titles beside
+the operations so a reviewer can audit the rules.
+
+Limits of the comparison, which the report repeats. A step no rule matches is ``other``,
+and two ``other`` steps compare equal, so unlike steps can agree; a plan of one step
+agrees with itself trivially. The rules were tuned against the first live run (see
+``RULES``), so a share measured with the tuned table is not an independent measurement.
+Each repeat also has an overall time limit (``MAX_RUN_SECONDS``), because the read timeout
+alone is never hit by a stream that keeps sending events.
 
 Before any repeat the script asks the same deployment for ``nemar_search_datasets`` and
 aborts, naming the id, if a dataset a request names is not in the result: the develop
@@ -36,8 +44,9 @@ import argparse
 import json
 import re
 import sys
+import time
 from collections import Counter
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
@@ -56,6 +65,9 @@ SEARCH_TOOL = "nemar_search_datasets"
 PLAN_TOOL = "propose_plan"
 
 REPEATS = 4
+# The read timeout is per read, so a stream that keeps sending events never hits it; this
+# is the limit on the whole stream of one repeat (or one search).
+MAX_RUN_SECONDS = 600.0
 # A request passes when its top sequence covers at least this share of the repeats.
 PASS_NUMERATOR, PASS_DENOMINATOR = 3, 4
 
@@ -213,6 +225,11 @@ def consistency(sequences: Iterable[tuple[str, ...]]) -> tuple[tuple[str, ...], 
     return counts.most_common(1)[0]
 
 
+def needed(repeats: int) -> int:
+    """How many of ``repeats`` runs must agree: 3 of 4, or the same share rounded up."""
+    return -(-repeats * PASS_NUMERATOR // PASS_DENOMINATOR)
+
+
 def passes(count: int, repeats: int) -> bool:
     """Whether ``count`` of ``repeats`` runs agreeing is enough: 3 of 4, or the same share."""
     return repeats > 0 and count * PASS_DENOMINATOR >= repeats * PASS_NUMERATOR
@@ -221,13 +238,17 @@ def passes(count: int, repeats: int) -> bool:
 # --- The SSE stream ----------------------------------------------------------------------
 
 
-def iter_events(lines: Iterable[str]) -> Iterator[dict[str, Any]]:
+def iter_events(lines: Iterable[str], deadline: float | None = None) -> Iterator[dict[str, Any]]:
     """The JSON objects of an SSE stream's ``data:`` lines, lazily and in order.
 
     Lazy on purpose: a caller that returns at the event it wants stops reading, and
     closing the response then ends the connection. A line that is not JSON is skipped.
+    Past ``deadline`` (a ``time.monotonic()`` value), the next line raises TimeoutError,
+    even a keep-alive line, so a stream that never ends cannot hold a repeat forever.
     """
     for raw in lines:
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError("overall time limit for one stream exceeded")
         line = raw.strip()
         if not line.startswith("data:"):
             continue
@@ -252,47 +273,74 @@ class RunRecord:
     note: str = ""
 
 
-def parse_plan_stream(lines: Iterable[str]) -> RunRecord:
+def coerce_steps(raw_steps: Any) -> tuple[list[dict[str, Any]], int]:
+    """The plan's steps as dicts, and how many entries could not be one.
+
+    A string is a step with that title (``normalize_step`` reads strings too); a dict is
+    kept; anything else is dropped and counted, so the caller can say so in the report.
+    """
+    steps: list[dict[str, Any]] = []
+    dropped = 0
+    for step in raw_steps if isinstance(raw_steps, list) else []:
+        if isinstance(step, dict):
+            steps.append(step)
+        elif isinstance(step, str):
+            steps.append({"title": step})
+        else:
+            dropped += 1
+    return steps, dropped
+
+
+def parse_plan_stream(lines: Iterable[str], deadline: float | None = None) -> RunRecord:
     """Read a ``/chat`` stream up to the first outcome and stop there.
 
     A ``tool_request`` for ``propose_plan`` is the plan (its args are returned and nothing
     after it is read). A ``tool_request`` for another tool or a ``done`` is no plan; an
-    ``error`` event, or a stream that ends with no outcome, is an error.
+    ``error`` event, a stream that ends with no outcome, or one still open at ``deadline``
+    is an error.
     """
     session_id = ""
-    for event in iter_events(lines):
-        kind = event.get("event")
-        if kind == "session":
-            session_id = str(event.get("session_id", ""))
-        elif kind == "tool_request":
-            tool = event.get("tool")
-            if tool != PLAN_TOOL:
+    try:
+        for event in iter_events(lines, deadline):
+            kind = event.get("event")
+            if kind == "session":
+                session_id = str(event.get("session_id", ""))
+            elif kind == "tool_request":
+                tool = event.get("tool")
+                if tool != PLAN_TOOL:
+                    return RunRecord(
+                        "no_plan", NO_PLAN, session_id=session_id, note=f"tool_request for {tool}"
+                    )
+                args = event.get("args") if isinstance(event.get("args"), dict) else {}
+                steps, dropped = coerce_steps(args.get("steps"))
+                peak = args.get("est_peak_mb")
+                notes = []
+                if not steps:
+                    notes.append("propose_plan with no steps")
+                if dropped:
+                    notes.append(f"{dropped} step(s) dropped: neither an object nor a string")
                 return RunRecord(
-                    "no_plan", NO_PLAN, session_id=session_id, note=f"tool_request for {tool}"
+                    "plan" if steps else "no_plan",
+                    normalize_plan(steps),
+                    steps=steps,
+                    findings=str(args.get("findings", "")),
+                    est_peak_mb=peak if isinstance(peak, int) else None,
+                    session_id=session_id,
+                    note="; ".join(notes),
                 )
-            args = event.get("args") if isinstance(event.get("args"), dict) else {}
-            steps = [s for s in args.get("steps") or [] if isinstance(s, dict)]
-            peak = args.get("est_peak_mb")
-            return RunRecord(
-                "plan" if steps else "no_plan",
-                normalize_plan(steps),
-                steps=steps,
-                findings=str(args.get("findings", "")),
-                est_peak_mb=peak if isinstance(peak, int) else None,
-                session_id=session_id,
-                note="" if steps else "propose_plan with no steps",
-            )
-        elif kind == "done":
-            return RunRecord(
-                "no_plan", NO_PLAN, session_id=session_id, note="done before propose_plan"
-            )
-        elif kind == "error":
-            return RunRecord(
-                "error",
-                ERROR,
-                session_id=session_id,
-                note=f"error event: {event.get('message', '')}",
-            )
+            elif kind == "done":
+                return RunRecord(
+                    "no_plan", NO_PLAN, session_id=session_id, note="done before propose_plan"
+                )
+            elif kind == "error":
+                return RunRecord(
+                    "error",
+                    ERROR,
+                    session_id=session_id,
+                    note=f"error event: {event.get('message', '')}",
+                )
+    except TimeoutError as exc:
+        return RunRecord("error", ERROR, session_id=session_id, note=str(exc))
     return RunRecord("error", ERROR, session_id=session_id, note="stream ended with no outcome")
 
 
@@ -301,14 +349,14 @@ def parse_plan_stream(lines: Iterable[str]) -> RunRecord:
 _DATASET_ID = re.compile(r'dataset_id\\*"\s*:\s*\\*"([^"\\]+)')
 
 
-def parse_search_stream(lines: Iterable[str]) -> set[str] | None:
+def parse_search_stream(lines: Iterable[str], deadline: float | None = None) -> set[str] | None:
     """The dataset ids of the first ``nemar_search_datasets`` result in a stream.
 
     Stops reading at that result. None when the stream has no such result (the model did
     not call the tool, or the stream failed first), which is not the same as an empty
-    catalog, so the caller can tell them apart.
+    catalog, so the caller can tell them apart. Past ``deadline`` it raises TimeoutError.
     """
-    for event in iter_events(lines):
+    for event in iter_events(lines, deadline):
         if event.get("event") == "tool_end" and event.get("name") == SEARCH_TOOL:
             return set(_DATASET_ID.findall(str(event.get("output", ""))))
         if event.get("event") in ("done", "error"):
@@ -339,7 +387,7 @@ def _chat(base_url: str, body: dict[str, Any], origin: str, parse: Any, timeout:
         if response.status_code != 200:
             response.read()
             raise RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
-        return parse(response.iter_lines())
+        return parse(response.iter_lines(), time.monotonic() + MAX_RUN_SECONDS)
 
 
 def run_once(base_url: str, request: PlanRequest, origin: str, timeout: float = 300.0) -> RunRecord:
@@ -371,19 +419,32 @@ def search_catalog(
 
 
 def confirm_datasets(
-    base_url: str, requests: Sequence[PlanRequest], query: str, origin: str, attempts: int = 2
+    base_url: str,
+    requests: Sequence[PlanRequest],
+    query: str,
+    origin: str,
+    attempts: int = 2,
+    search: Callable[[str, str, str], set[str] | None] = search_catalog,
 ) -> None:
-    """Abort (SystemExit) unless every dataset a request names is in the deployment's search."""
+    """Abort (SystemExit) unless every dataset a request names is in the deployment's search.
+
+    ``search(base_url, query, origin)`` returns the ids, or None when the model made no
+    ``nemar_search_datasets`` call; it is a parameter so a test can feed it a recorded
+    stream. A None result and an exception are both retried, up to ``attempts`` times.
+    """
     found: set[str] | None = None
+    failure = f"no {SEARCH_TOOL} result"
     for _ in range(attempts):
         try:
-            found = search_catalog(base_url, query, origin)
+            found = search(base_url, query, origin)
         except Exception as exc:
-            raise SystemExit(f"abort: the dataset search failed on {base_url}: {exc}") from exc
+            failure = f"the dataset search failed ({type(exc).__name__}: {exc})"
+            continue
         if found is not None:
             break
+        failure = f"no {SEARCH_TOOL} result"
     if found is None:
-        raise SystemExit(f"abort: no {SEARCH_TOOL} result from {base_url} after {attempts} tries")
+        raise SystemExit(f"abort: {failure} from {base_url} after {attempts} tries")
     if missing := missing_dataset_ids(requests, found):
         raise SystemExit(
             f"abort: dataset id(s) {', '.join(missing)} not in {SEARCH_TOOL} "
@@ -402,6 +463,28 @@ def _seq(sequence: tuple[str, ...]) -> str:
     return " > ".join(sequence) if sequence else "none"
 
 
+def caveats(results: dict[PlanRequest, list[RunRecord]]) -> list[str]:
+    """What a reader must know before trusting the shares, derived from these runs."""
+    lines = [
+        "The normalization rules were tuned once against the first live run, so shares "
+        "measured with the tuned table are post hoc, not an independent measurement.",
+        "A step no rule matches is `other`, and two `other` steps compare equal.",
+    ]
+    for request, runs in results.items():
+        top, _ = consistency(run.sequence for run in runs)
+        if len(top) == 1:
+            lines.append(
+                f"{request.kind}: the top sequence is a single step ({top[0]}), "
+                "so its agreement is weak evidence."
+            )
+        others = sum(run.sequence.count("other") for run in runs)
+        if others:
+            lines.append(f"{request.kind}: {others} step(s) across the runs are `other`.")
+        notes = sorted({run.note for run in runs if run.kind == "plan" and run.note})
+        lines += [f"{request.kind}: {note}." for note in notes]
+    return lines
+
+
 def render_report(
     base_url: str, repeats: int, results: dict[PlanRequest, list[RunRecord]], today: str
 ) -> str:
@@ -410,7 +493,8 @@ def render_report(
         "# NEMAR plan consistency (E2.5, #663)",
         "",
         f"Deployment: `{base_url}`; date: {today}; repeats per request: {repeats}; "
-        f"pass: top sequence in at least {PASS_NUMERATOR} of {PASS_DENOMINATOR} repeats.",
+        f"pass: top sequence in at least {needed(repeats)} of {repeats} repeats "
+        f"({PASS_NUMERATOR} of {PASS_DENOMINATOR}, rounded up).",
         "",
         "| Request | Dataset | Sequences (count) | Top share | Pass |",
         "|---|---|---|---|---|",
@@ -423,6 +507,8 @@ def render_report(
         out.append(
             f"| {_cell(request.kind)} | {request.dataset_id} | {distinct} | {top}/{repeats} | {verdict} |"
         )
+    out += ["", "## Caveats", ""]
+    out += [f"- {line}" for line in caveats(results)]
     out += ["", "## Plans, run by run", ""]
     for request, runs in results.items():
         out += [f"### {request.kind} ({request.dataset_id})", "", f"> {request.message}", ""]
@@ -448,17 +534,46 @@ def render_report(
     return "\n".join(out)
 
 
+def raw_payload(
+    base_url: str, today: str, results: dict[PlanRequest, list[RunRecord]]
+) -> dict[str, Any]:
+    """What ``--raw-out`` saves: the runs, plus the requests they answered."""
+    return {
+        "base_url": base_url,
+        "date": today,
+        "requests": {r.key: {"message": r.message, "dataset_id": r.dataset_id} for r in results},
+        "runs": {r.key: [asdict(run) for run in runs] for r, runs in results.items()},
+    }
+
+
 def records_from_raw(raw: dict[str, Any]) -> dict[PlanRequest, list[RunRecord]]:
-    """Rebuild the runs a ``--raw-out`` file saved, normalizing the steps with today's rules."""
+    """Rebuild the runs a ``--raw-out`` file saved, normalizing the steps with today's rules.
+
+    Raises ValueError when a request is missing from the file, when the file's request
+    text or dataset id differs from ``REQUESTS`` (the plans would be shown beside a
+    request they did not answer), or when the requests have different repeat counts. A
+    file from before the requests were saved has no ``requests`` key and is not checked.
+    """
+    saved_requests = raw.get("requests", {})
     results: dict[PlanRequest, list[RunRecord]] = {}
     for request in REQUESTS:
+        if request.key not in raw["runs"]:
+            raise ValueError(f"the raw file has no runs for request {request.key!r}")
+        saved = saved_requests.get(request.key)
+        if saved and saved != {"message": request.message, "dataset_id": request.dataset_id}:
+            raise ValueError(
+                f"request {request.key!r} in the raw file differs from REQUESTS "
+                f"(saved: {saved}); the plans answered a different request"
+            )
         runs: list[RunRecord] = []
-        for saved in raw["runs"][request.key]:
-            run = RunRecord(**{**saved, "sequence": tuple(saved["sequence"])})
+        for entry in raw["runs"][request.key]:
+            run = RunRecord(**{**entry, "sequence": tuple(entry["sequence"])})
             if run.kind == "plan":
                 run.sequence = normalize_plan(run.steps)
             runs.append(run)
         results[request] = runs
+    if len({len(runs) for runs in results.values()}) > 1:
+        raise ValueError("the requests in the raw file have different numbers of repeats")
     return results
 
 
@@ -495,7 +610,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.from_raw:
         raw = json.loads(args.from_raw.read_text())
         base_url, today = raw["base_url"], raw["date"]
-        results = records_from_raw(raw)
+        try:
+            results = records_from_raw(raw)
+        except ValueError as exc:
+            raise SystemExit(f"abort: {exc}") from exc
     else:
         base_url, today = args.base_url, date.today().isoformat()
         confirm_datasets(base_url, REQUESTS, args.search_query, args.origin)
@@ -519,10 +637,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print(report)
     if args.raw_out:
-        runs_raw = {r.key: [asdict(run) for run in runs] for r, runs in results.items()}
-        args.raw_out.write_text(
-            json.dumps({"base_url": base_url, "date": today, "runs": runs_raw}, indent=2)
-        )
+        args.raw_out.write_text(json.dumps(raw_payload(base_url, today, results), indent=2))
     return 0
 
 

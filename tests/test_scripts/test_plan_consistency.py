@@ -9,7 +9,11 @@ The script itself makes paid LLM calls and is run by hand.
 from __future__ import annotations
 
 import ast
+import itertools
+import json
+import os
 import re
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -25,6 +29,25 @@ SEARCH_STREAM = FIXTURES / "search_datasets_stream.sse"
 
 def _steps(*titles: str, detail: str = "") -> list[dict[str, str]]:
     return [{"title": t, "detail": detail} for t in titles]
+
+
+def _recorded_catalog() -> set[str]:
+    found = pc.parse_search_stream(SEARCH_STREAM.read_text().splitlines())
+    assert found
+    return found
+
+
+def _staging_prefix() -> str:
+    prefix = os.path.commonprefix(sorted(_recorded_catalog()))
+    assert prefix, "the recorded catalog's ids share no prefix"
+    return prefix
+
+
+def _recorded_plan_args() -> dict:
+    for line in PLAN_STREAM.read_text().splitlines():
+        if line.startswith("data:") and '"event": "tool_request"' in line:
+            return json.loads(line[len("data:") :])["args"]
+    raise AssertionError("no tool_request in the recorded plan stream")
 
 
 def _top_level_imports() -> set[str]:
@@ -106,7 +129,8 @@ def test_every_request_names_one_dataset_and_trips_the_analysis_router():
     for request in pc.REQUESTS:
         assert wants_analysis(request.message), request.key
         assert request.dataset_id in request.message
-        assert request.dataset_id.startswith("xx0999")  # develop reads staging, never nm-ids
+        # develop reads staging: every id shares the prefix of the recorded catalog's ids
+        assert request.dataset_id.startswith(_staging_prefix()), request.key
     assert len({r.key for r in pc.REQUESTS}) == len(pc.REQUESTS)
 
 
@@ -116,7 +140,10 @@ def test_parse_plan_stream_returns_the_plan_of_a_real_recording():
     assert record.session_id
     assert 1 <= len(record.steps) <= 8
     assert all(step["title"] and step["detail"] for step in record.steps)
-    assert record.findings
+    args = _recorded_plan_args()
+    assert record.steps == args["steps"]  # none dropped, none reordered
+    assert record.findings == args["findings"]
+    assert record.est_peak_mb == args["est_peak_mb"]
     assert isinstance(record.est_peak_mb, int)
     assert record.sequence == pc.normalize_plan(record.steps)
 
@@ -219,6 +246,156 @@ def test_raw_runs_round_trip_and_are_renormalized_with_the_current_rules():
 )
 def test_wording_variants_of_one_operation_agree(operation, titles):
     assert {pc.normalize_step({"title": t}) for t in titles} == {operation}
+
+
+def _plan_line(steps) -> str:
+    event = {"event": "tool_request", "tool": "propose_plan", "args": {"steps": steps}}
+    return f"data: {json.dumps(event)}"
+
+
+def test_string_steps_are_kept_as_titles():
+    record = pc.parse_plan_stream([_plan_line(["Load the data", "Plot the ERP"])])
+    assert record.kind == "plan"
+    assert record.steps == [{"title": "Load the data"}, {"title": "Plot the ERP"}]
+    assert record.sequence == ("load", "plot")
+    assert record.note == ""
+
+
+def test_steps_that_are_neither_objects_nor_strings_are_dropped_and_reported():
+    record = pc.parse_plan_stream([_plan_line([{"title": "Load it"}, 7, None, "Plot it"])])
+    assert record.sequence == ("load", "plot")
+    assert "2 step(s) dropped" in record.note
+    only_bad = pc.parse_plan_stream([_plan_line([7, None])])
+    assert only_bad.kind == "no_plan"
+    assert "no steps" in only_bad.note
+    assert "2 step(s) dropped" in only_bad.note
+
+
+def test_a_stream_past_its_deadline_is_an_error_record():
+    lines = PLAN_STREAM.read_text().splitlines()
+    record = pc.parse_plan_stream(lines, deadline=time.monotonic() - 1)
+    assert record.kind == "error"
+    assert "time limit" in record.note
+
+
+def test_a_stream_that_only_trickles_keep_alives_hits_the_deadline():
+    keep_alive = itertools.repeat(": keep-alive")  # never ends, never an event
+    start = time.monotonic()
+    record = pc.parse_plan_stream(keep_alive, deadline=start + 0.05)
+    assert record.kind == "error"
+    assert time.monotonic() - start < 5
+
+
+def test_the_search_parser_raises_past_its_deadline():
+    lines = SEARCH_STREAM.read_text().splitlines()
+    with pytest.raises(TimeoutError):
+        pc.parse_search_stream(lines, deadline=time.monotonic() - 1)
+
+
+def _recorded_search(*_: str) -> set[str] | None:
+    return pc.parse_search_stream(SEARCH_STREAM.read_text().splitlines())
+
+
+def test_confirm_datasets_passes_when_the_recorded_catalog_has_every_id():
+    pc.confirm_datasets("https://x.test", pc.REQUESTS, "q", "o", search=_recorded_search)
+
+
+def test_confirm_datasets_aborts_naming_the_missing_id():
+    absent = pc.PlanRequest("k", "Kind", "xx0999zz", "Plot dataset xx0999zz")
+    with pytest.raises(SystemExit) as exc:
+        pc.confirm_datasets(
+            "https://x.test", [*pc.REQUESTS, absent], "q", "o", search=_recorded_search
+        )
+    assert "xx0999zz" in str(exc.value)
+    assert "https://x.test" in str(exc.value)
+
+
+def test_confirm_datasets_retries_a_missing_result_and_an_exception():
+    calls: list[int] = []
+
+    def flaky(base_url: str, query: str, origin: str) -> set[str] | None:
+        calls.append(1)
+        if len(calls) == 1:
+            return None  # the model did not call the tool
+        if len(calls) == 2:
+            raise RuntimeError("HTTP 502")
+        return _recorded_search(base_url, query, origin)
+
+    pc.confirm_datasets("https://x.test", pc.REQUESTS, "q", "o", attempts=3, search=flaky)
+    assert len(calls) == 3
+
+
+def test_confirm_datasets_aborts_when_every_attempt_fails():
+    def broken(*_: str) -> set[str] | None:
+        raise RuntimeError("HTTP 502")
+
+    with pytest.raises(SystemExit, match="HTTP 502"):
+        pc.confirm_datasets("https://x.test", pc.REQUESTS, "q", "o", search=broken)
+    with pytest.raises(SystemExit, match="no nemar_search_datasets result"):
+        pc.confirm_datasets("https://x.test", pc.REQUESTS, "q", "o", search=lambda *_: None)
+
+
+@pytest.mark.parametrize(("repeats", "expected"), [(1, 1), (4, 3), (5, 4), (8, 6)])
+def test_needed_is_three_quarters_rounded_up(repeats, expected):
+    assert pc.needed(repeats) == expected
+    assert pc.passes(expected, repeats)
+    assert not pc.passes(expected - 1, repeats)
+
+
+def test_the_report_header_uses_the_real_repeat_count():
+    record = pc.parse_plan_stream(PLAN_STREAM.read_text().splitlines())
+    report = pc.render_report("https://x.test", 8, {pc.REQUESTS[0]: [record] * 8}, "2026-01-01")
+    assert "at least 6 of 8 repeats" in report
+    assert "| 8/8 | pass |" in report
+
+
+def test_the_report_says_what_the_shares_cannot_show():
+    one_step = pc.parse_plan_stream([_plan_line(["Read and plot 10 s"])])
+    vague = pc.parse_plan_stream([_plan_line(["Select Pz", "Plot"])])
+    runs = {pc.REQUESTS[3]: [one_step] * 4, pc.REQUESTS[0]: [vague] * 4}
+    report = pc.render_report("https://x.test", 4, runs, "2026-01-01")
+    assert "## Caveats" in report
+    assert "tuned once" in report
+    assert f"{pc.REQUESTS[3].kind}: the top sequence is a single step" in report
+    assert f"{pc.REQUESTS[0].kind}: 4 step(s) across the runs are `other`" in report
+
+
+def test_raw_files_keep_their_requests_and_check_them_on_load():
+    record = pc.parse_plan_stream(PLAN_STREAM.read_text().splitlines())
+    results = {r: [record, record] for r in pc.REQUESTS}
+    raw = json.loads(json.dumps(pc.raw_payload("https://x.test", "2026-01-01", results)))
+    assert raw["requests"][pc.REQUESTS[0].key] == {
+        "message": pc.REQUESTS[0].message,
+        "dataset_id": pc.REQUESTS[0].dataset_id,
+    }
+    assert set(pc.records_from_raw(raw)) == set(pc.REQUESTS)
+
+    key = pc.REQUESTS[1].key
+    edited = json.loads(json.dumps(raw))
+    edited["requests"][key]["message"] = "A different request."
+    with pytest.raises(ValueError, match=key):
+        pc.records_from_raw(edited)
+
+    edited = json.loads(json.dumps(raw))
+    edited["requests"][key]["dataset_id"] = "xx0999zz"
+    with pytest.raises(ValueError, match="differs"):
+        pc.records_from_raw(edited)
+
+
+def test_raw_files_with_a_missing_request_or_uneven_repeats_are_refused():
+    record = pc.parse_plan_stream(PLAN_STREAM.read_text().splitlines())
+    results = {r: [record, record] for r in pc.REQUESTS}
+    raw = json.loads(json.dumps(pc.raw_payload("https://x.test", "2026-01-01", results)))
+
+    missing = json.loads(json.dumps(raw))
+    del missing["runs"][pc.REQUESTS[2].key]
+    with pytest.raises(ValueError, match=pc.REQUESTS[2].key):
+        pc.records_from_raw(missing)
+
+    uneven = json.loads(json.dumps(raw))
+    uneven["runs"][pc.REQUESTS[0].key].pop()
+    with pytest.raises(ValueError, match="different numbers of repeats"):
+        pc.records_from_raw(uneven)
 
 
 def test_titles_audited_after_the_first_live_run_keep_their_operation():
