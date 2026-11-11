@@ -101,7 +101,7 @@ function serverFetch(widget) {
 
 // A page load. `storage` seeds localStorage; `widget` is the community config's widget
 // block; `config` is what the embedding page passes to setConfig.
-async function start({ storage = {}, widget = {}, config = {}, dataset = { id: DATASET } } = {}) {
+async function start({ storage = {}, widget = {}, config = {}, dataset = { id: DATASET }, saves = true } = {}) {
   const window = new Window({
     url: 'http://localhost/dataset/x',
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
@@ -121,7 +121,12 @@ async function start({ storage = {}, widget = {}, config = {}, dataset = { id: D
     'window', 'document', 'localStorage', 'fetch', 'navigator', 'AbortSignal', 'URL',
     'TextDecoder', 'setTimeout', 'clearTimeout', 'console', SOURCE
   );
-  run(window, window.document, window.localStorage, server.fetch, window.navigator, AbortSignal, URL,
+  // `saves` false is a browser that reads storage but will not write it (a quota, a policy).
+  const localStorage = saves ? window.localStorage : {
+    getItem: (key) => window.localStorage.getItem(key),
+    setItem: () => { throw new Error('QuotaExceededError'); },
+  };
+  run(window, window.document, localStorage, server.fetch, window.navigator, AbortSignal, URL,
     TextDecoder, setTimeout, clearTimeout, console);
   const api = window.OSAChatWidget;
   if (dataset) api.setDataset(dataset);
@@ -378,7 +383,7 @@ for (const mode of ['corner', 'center']) {
     }
   }
 
-    if (mode === 'center') {
+  if (mode === 'center') {
     console.log('\nEscape with focus outside the dialog still closes it first (center)');
     const ctx = await opened({}, mode);
     ctx.q('.osa-privacy-overlay').focus();
@@ -399,6 +404,66 @@ for (const mode of ['corner', 'center']) {
     ctx.q('.osa-privacy-modal').dispatchEvent(new ctx.window.MouseEvent('click', { bubbles: true }));
     assert(ctx.isDialogOpen(), 'a click inside the dialog does not');
   }
+}
+
+console.log('\nTab wraps inside the dialog when the page row is hidden (allowPageContext: false)');
+{
+  const ctx = await opened({ config: { allowPageContext: false } });
+  const order = ['.osa-privacy-close-btn', '#osa-privacy-usage', '.osa-privacy-link'];
+  const list = order.map((selector) => ctx.q(selector));
+  list.at(-1).focus();
+  const forward = ctx.key('Tab');
+  ctx.active().dispatchEvent(forward);
+  assert(forward.defaultPrevented && ctx.active() === list[0], 'Tab on the last control goes to the first, not into the hidden row');
+  const back = ctx.key('Tab', { shiftKey: true });
+  ctx.active().dispatchEvent(back);
+  assert(back.defaultPrevented && ctx.active() === list.at(-1), 'Shift+Tab on the first goes to the last');
+  ctx.usage().focus();
+  const middle = ctx.key('Tab');
+  ctx.active().dispatchEvent(middle);
+  assert(!middle.defaultPrevented, 'and Tab on the usage choice is left to the browser');
+}
+
+console.log('\na choice made in another tab applies here without a reload');
+{
+  const ctx = await start();
+  assert(!('share_usage' in (await send(ctx, 'Before')).body), 'sanity: sharing, as it starts');
+  // Another tab, pop-out or notebook tab saves its choice to the same storage.
+  ctx.window.localStorage.setItem(USAGE_KEY, 'false');
+  ctx.window.localStorage.setItem(PAGE_KEY, 'false');
+  const body = (await send(ctx, 'After')).body;
+  assertEqual(body.share_usage, false, 'the next request carries the other tab\'s usage choice');
+  assertEqual(body.page_context, { dataset_id: DATASET }, 'and its page choice');
+  ctx.window.localStorage.setItem(USAGE_KEY, 'true');
+  assert(!('share_usage' in (await send(ctx, 'Back on'))).body, 'turning it back on elsewhere is picked up too');
+  ctx.window.localStorage.setItem(USAGE_KEY, 'false');
+  ctx.api.open();
+  await waitUntil(() => ctx.q('.osa-chat-window').classList.contains('open'), 'the window opens');
+  ctx.button().click();
+  assert(!ctx.usage().checked, 'a dialog opened afterwards shows the choice that holds');
+}
+
+console.log('\na choice the browser will not save is said so, and still holds until reload');
+{
+  const ctx = await opened({ saves: false, storage: { [USAGE_KEY]: 'true' } });
+  assertEqual(ctx.q('.osa-privacy-save-note').textContent, '', 'no note before any choice');
+  const warn = console.warn;
+  console.warn = () => {};
+  choose(ctx, ctx.usage(), false);
+  console.warn = warn;
+  const note = ctx.q('.osa-privacy-save-note');
+  assert(note.textContent.includes('could not be saved'), 'the dialog says the choice could not be saved');
+  assertEqual(note.getAttribute('role'), 'status', 'in a status region, so a screen reader hears it');
+  // Storage still holds the older answer (sharing); the reader's newer choice outranks it.
+  assertEqual((await send(ctx, 'After a failed save')).body.share_usage, false, 'the request still follows the choice the reader made');
+}
+
+console.log('\na choice that saves leaves no note');
+{
+  const ctx = await opened();
+  choose(ctx, ctx.usage(), false);
+  choose(ctx, ctx.page(), false);
+  assertEqual(ctx.q('.osa-privacy-save-note').textContent, '', 'the note stays empty');
 }
 
 console.log('\nclosing the window closes the dialog, and it opens fresh');

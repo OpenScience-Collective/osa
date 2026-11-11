@@ -3929,6 +3929,9 @@
       line-height: 1.4;
     }
 
+    .osa-privacy-save-note:empty {
+      display: none;
+    }
     .osa-privacy-links {
       display: flex;
     }
@@ -10128,6 +10131,7 @@
     // Widget instructions are always sent if configured, even if page context is off
     const hasWidgetInstructions = typeof CONFIG.widgetInstructions === 'string'
       && CONFIG.widgetInstructions.trim() !== '';
+    syncPrivacyChoices();
     const hasPageContext = CONFIG.allowPageContext && pageContextEnabled;
     // The dataset on screen and a move the reader chose are about the chat itself, so,
     // like the widget instructions, they are sent whether or not the reader shares the
@@ -10173,24 +10177,20 @@
       pageContextEnabled = false;
       return;
     }
-    try {
-      const saved = localStorage.getItem(CONFIG.pageContextStorageKey);
-      if (saved !== null) {
-        pageContextEnabled = saved === 'true';
-      } else {
-        pageContextEnabled = CONFIG.pageContextDefaultEnabled;
-      }
-    } catch (e) {
-      pageContextEnabled = CONFIG.pageContextDefaultEnabled;
-    }
+    pageContextEnabled = CONFIG.pageContextDefaultEnabled;
+    syncPrivacyChoices();
   }
 
-  // Save page context preference to localStorage
+  // Save page context preference to localStorage; false when the browser would not keep it.
   function savePageContextPreference() {
     try {
       localStorage.setItem(CONFIG.pageContextStorageKey, pageContextEnabled.toString());
+      unsavedChoices.delete(CONFIG.pageContextStorageKey);
+      return true;
     } catch (e) {
       console.warn('Could not save page context preference:', e);
+      unsavedChoices.add(CONFIG.pageContextStorageKey);
+      return false;
     }
   }
 
@@ -13822,6 +13822,7 @@
     }
 
     let ok = false;
+    syncPrivacyChoices();
     try {
       ok = await postFeedback({
         feedback_type: 'general',
@@ -17466,6 +17467,8 @@
   const PRIVACY_URL_MAX = 500;
   // Runtime state of "Share usage data". True until the reader says otherwise.
   let shareUsageEnabled = true;
+  // Storage keys whose last save failed, so the in-memory choice outranks what is stored.
+  const unsavedChoices = new Set();
 
   // nemar.org's opt-out symbol (PrivacyChoicesIcon.astro), copied as it is: the 30:14
   // proportions and the fixed #fff and #06f are what make it recognizable, so it is
@@ -17507,9 +17510,10 @@
                 <label for="osa-privacy-usage">Share usage data</label>
               </div>
               <span class="osa-settings-hint" id="osa-privacy-usage-hint">
-                Lets the maintainers group your requests into conversations and see which tools ran. Off, only counts and costs are kept. Feedback you send is not affected.
+                Lets the maintainers group your requests into conversations and see which tools ran. Off, the usage log keeps only counts and costs, and your conversation is not traced. Feedback you send is still received, but is not attached to a trace.
               </span>
             </div>
+            <p class="osa-settings-hint osa-privacy-save-note" role="status"></p>
             <div class="osa-privacy-links"></div>
           </div>
         </div>
@@ -17534,26 +17538,62 @@
 
   function loadShareUsagePreference() {
     shareUsageEnabled = CONFIG.shareUsageDefaultEnabled;
-    try {
-      const saved = localStorage.getItem(CONFIG.shareUsageStorageKey);
-      if (saved !== null) shareUsageEnabled = saved === 'true';
-    } catch (e) {
-      shareUsageEnabled = CONFIG.shareUsageDefaultEnabled;
-    }
+    syncPrivacyChoices();
   }
 
+  // Save the choice; false when the browser would not keep it.
   function saveShareUsagePreference() {
     try {
       localStorage.setItem(CONFIG.shareUsageStorageKey, shareUsageEnabled.toString());
+      unsavedChoices.delete(CONFIG.shareUsageStorageKey);
+      return true;
     } catch (e) {
       console.warn('Could not save usage sharing preference:', e);
+      unsavedChoices.add(CONFIG.shareUsageStorageKey);
+      return false;
+    }
+  }
+
+  // The stored value of a boolean choice, or null when there is none or storage will not
+  // answer (the choice already in memory then stands).
+  function storedChoice(key) {
+    try {
+      const saved = localStorage.getItem(key);
+      return saved === null ? null : saved === 'true';
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Take the saved choices as the truth, so a choice made in another tab, a pop-out or a
+  // notebook tab applies to this widget too, and not only after it reloads. Called when a
+  // request or feedback is built and when the dialog opens; it returns nothing and changes
+  // only what storage actually holds.
+  function syncPrivacyChoices() {
+    // A choice whose last save failed is this page's own, newer than anything stored.
+    const usage = unsavedChoices.has(CONFIG.shareUsageStorageKey) ? null : storedChoice(CONFIG.shareUsageStorageKey);
+    if (usage !== null) shareUsageEnabled = usage;
+    if (CONFIG.allowPageContext && !unsavedChoices.has(CONFIG.pageContextStorageKey)) {
+      const page = storedChoice(CONFIG.pageContextStorageKey);
+      if (page !== null) pageContextEnabled = page;
     }
   }
 
   // What a request says about the choice: nothing while usage is shared (the default, and
   // what an older server expects), `share_usage: false` once it is not.
   function usageRequestFields() {
+    syncPrivacyChoices();
     return shareUsageEnabled ? {} : { share_usage: false };
+  }
+
+  // Say so in the dialog when a choice could not be saved: it holds until the page reloads
+  // and then goes back to the default, which for usage sharing is sharing.
+  function showPrivacySaveNote(container, saved) {
+    const note = privacyOverlay(container)?.querySelector('.osa-privacy-save-note');
+    if (!note) return;
+    note.textContent = saved
+      ? ''
+      : 'Your choice could not be saved in this browser. It applies until you reload this page, then goes back to the default.';
   }
 
   function privacyOverlay(container) {
@@ -17565,8 +17605,10 @@
     if (!isOpen) return;
     const overlay = privacyOverlay(container);
     if (!overlay || overlay.classList.contains('open')) return;
+    syncPrivacyChoices();
     const pageBox = overlay.querySelector('#osa-privacy-page');
     const usageBox = overlay.querySelector('#osa-privacy-usage');
+    showPrivacySaveNote(container, true);
     pageBox.checked = CONFIG.allowPageContext && pageContextEnabled;
     usageBox.checked = shareUsageEnabled;
     // A community that turns page context off has no choice to make about it.
@@ -17627,11 +17669,11 @@
     overlay.addEventListener('keydown', (event) => privacyKeydown(container, event));
     overlay.querySelector('#osa-privacy-page')?.addEventListener('change', (event) => {
       pageContextEnabled = event.target.checked;
-      savePageContextPreference();
+      showPrivacySaveNote(container, savePageContextPreference());
     });
     overlay.querySelector('#osa-privacy-usage')?.addEventListener('change', (event) => {
       shareUsageEnabled = event.target.checked;
-      saveShareUsagePreference();
+      showPrivacySaveNote(container, saveShareUsagePreference());
     });
   }
   // END privacy-choices
