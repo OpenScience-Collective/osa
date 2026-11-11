@@ -110,11 +110,19 @@
     repoUrl: 'https://osc.earth/osa/',
     repoName: 'Open Science Assistant',
     // Page context awareness - sends current page URL/title to help the assistant
-    // provide more contextually relevant answers
-    allowPageContext: true,  // Show the checkbox option
-    pageContextDefaultEnabled: true,  // Default state of checkbox
+    // provide more contextually relevant answers. The reader's choice is "Use this page
+    // for answers" in the Privacy choices dialog (#706).
+    allowPageContext: true,  // Show the choice in Privacy choices
+    pageContextDefaultEnabled: true,  // Default state of the choice
     pageContextStorageKey: 'osa-page-context-enabled',
-    pageContextLabel: 'Share page URL to help answer questions',
+    // The reader's other privacy choice: "Share usage data" (#706). Off, a request says
+    // `share_usage: false` and the server keeps its usage row without the conversation
+    // and the tools it ran.
+    shareUsageDefaultEnabled: true,
+    shareUsageStorageKey: 'osa-share-usage-enabled',
+    // The privacy page the dialog links to. From the community config; validated again
+    // where it is drawn (validPrivacyUrl), with DEFAULT_PRIVACY_URL as the fallback.
+    privacyUrl: null,
     // AI disclaimer shown above the footer
     disclaimerEnabled: true,
     disclaimerText: 'This is an AI assistant and may make mistakes.',
@@ -404,7 +412,7 @@
   // when nothing was remembered.
   let displayDefaults = null;
   const DISPLAY_KEYS = ['title', 'initialMessage', 'placeholder', 'suggestedQuestions',
-    'datasetSuggestedQuestions', 'searchPaths', 'centerStart', 'analysisDocs', 'themeColor',
+    'datasetSuggestedQuestions', 'searchPaths', 'centerStart', 'analysisDocs', 'privacyUrl', 'themeColor',
     'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor', 'logo', 'launcher',
     'launcherLabel', 'colorScheme', ...LAUNCHER_GEOMETRY_KEYS.map(([, key]) => key)];
   // The header avatar as createWidget draws it, for a config that drops its logo.
@@ -3837,33 +3845,112 @@
       gap: 8px;
     }
 
-    .osa-combined-footer .osa-page-context-toggle {
-      display: flex;
+    /* Privacy choices (#706): the footer's button and the dialog it opens. The button is
+       text in the footer's own color beside nemar.org's opt-out symbol, which keeps its
+       own fixed colors (it is only recognized if it never changes), and it is at least
+       24px tall to hit. */
+    .osa-combined-footer .osa-privacy-btn {
+      display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
+      min-height: 24px;
+      margin: 0 0 0 -4px;
+      padding: 0 4px;
+      background: none;
+      border: 0;
+      border-radius: 4px;
+      font: inherit;
+      color: inherit;
+      cursor: pointer;
       flex-shrink: 0;
     }
 
-    .osa-combined-footer .osa-page-context-toggle::after {
-      content: '|';
-      color: var(--osa-text-light);
-      opacity: 0.5;
-      margin-left: 3px;
+    .osa-combined-footer .osa-privacy-btn:hover {
+      color: var(--osa-text);
+      text-decoration: underline;
     }
 
-    .osa-combined-footer input[type="checkbox"] {
-      width: 11px;
-      height: 11px;
+    .osa-combined-footer .osa-privacy-btn:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    .osa-privacy-icon {
+      display: block;
+      flex-shrink: 0;
+    }
+
+    .osa-privacy-body {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .osa-privacy-field {
+      margin: 0;
+    }
+
+    .osa-privacy-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 44px;
+    }
+
+    .osa-privacy-row input[type="checkbox"] {
+      flex-shrink: 0;
+      width: 24px;
+      height: 24px;
       margin: 0;
       cursor: pointer;
       accent-color: var(--osa-accent);
     }
 
-    .osa-combined-footer label {
+    .osa-privacy-row input[type="checkbox"]:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-privacy-row label {
+      display: flex;
+      align-items: center;
+      flex: 1;
+      min-height: 44px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--osa-text);
       cursor: pointer;
       user-select: none;
     }
 
+    .osa-privacy-field .osa-settings-hint {
+      margin: 0 0 0 36px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .osa-privacy-save-note:empty {
+      display: none;
+    }
+    .osa-privacy-links {
+      display: flex;
+    }
+
+    .osa-privacy-link {
+      display: inline-flex;
+      align-items: center;
+      min-height: 44px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--osa-accent);
+      text-decoration: underline;
+    }
+
+    .osa-privacy-link:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+      border-radius: 2px;
+    }
     .osa-combined-footer .osa-footer-powered {
       text-align: right;
       white-space: nowrap;
@@ -10272,6 +10359,7 @@
     // Widget instructions are always sent if configured, even if page context is off
     const hasWidgetInstructions = typeof CONFIG.widgetInstructions === 'string'
       && CONFIG.widgetInstructions.trim() !== '';
+    syncPrivacyChoices();
     const hasPageContext = CONFIG.allowPageContext && pageContextEnabled;
     // The dataset on screen and a move the reader chose are about the chat itself, so,
     // like the widget instructions, they are sent whether or not the reader shares the
@@ -10317,24 +10405,20 @@
       pageContextEnabled = false;
       return;
     }
-    try {
-      const saved = localStorage.getItem(CONFIG.pageContextStorageKey);
-      if (saved !== null) {
-        pageContextEnabled = saved === 'true';
-      } else {
-        pageContextEnabled = CONFIG.pageContextDefaultEnabled;
-      }
-    } catch (e) {
-      pageContextEnabled = CONFIG.pageContextDefaultEnabled;
-    }
+    pageContextEnabled = CONFIG.pageContextDefaultEnabled;
+    syncPrivacyChoices();
   }
 
-  // Save page context preference to localStorage
+  // Save page context preference to localStorage; false when the browser would not keep it.
   function savePageContextPreference() {
     try {
       localStorage.setItem(CONFIG.pageContextStorageKey, pageContextEnabled.toString());
+      unsavedChoices.delete(CONFIG.pageContextStorageKey);
+      return true;
     } catch (e) {
       console.warn('Could not save page context preference:', e);
+      unsavedChoices.add(CONFIG.pageContextStorageKey);
+      return false;
     }
   }
 
@@ -10513,6 +10597,10 @@
     }
     if (w.analysis_docs != null && !_userSetKeys.has('analysisDocs')) {
       CONFIG.analysisDocs = w.analysis_docs;
+      changed = true;
+    }
+    if (w.privacy_url != null && !_userSetKeys.has('privacyUrl')) {
+      CONFIG.privacyUrl = w.privacy_url;
       changed = true;
     }
     if (w.theme_color != null && !_userSetKeys.has('themeColor')) {
@@ -11659,6 +11747,7 @@
       session_id: request.session_id || sessionId,
       result,
       client_tools: browserTools ? withPlanTool(browserTools.declared) : [],
+      ...usageRequestFields(),
     };
     const carried = carriedMove();
     const pageContext = getPageContext(true);
@@ -13984,6 +14073,7 @@
     }
 
     let ok = false;
+    syncPrivacyChoices();
     try {
       ok = await postFeedback({
         feedback_type: 'general',
@@ -14249,10 +14339,7 @@
           <button type="button" class="osa-feedback-link">Send feedback</button>
         </div>
         <div class="osa-combined-footer">
-          <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
-            <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
-            <label for="osa-page-context-checkbox">${escapeHtml(CONFIG.pageContextLabel)}</label>
-          </div>
+          ${privacyChoicesButtonHtml()}
           <div class="osa-footer-powered">
             Powered by <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">OSA</a><span class="osa-version"></span>
           </div>
@@ -14382,6 +14469,7 @@
           </div>
         </div>
       </div>
+        ${privacyOverlayHtml()}
       ${historySheetHtml()}
       </div>
     `;
@@ -16343,6 +16431,9 @@
         body.stream = true;
       }
 
+      // "Share usage data" off: said on every request, left out while it is on.
+      Object.assign(body, usageRequestFields());
+
       if (!isValidCommunityId(CONFIG.communityId)) {
         throw new Error('Invalid community configuration. Please reload the page.');
       }
@@ -16651,6 +16742,7 @@
       // Commit any open thumbs-down comment box on close.
       flushPendingResponseFeedback(container);
       closeHistory(container, { restoreFocus: false });
+      closePrivacy(container, { restoreFocus: false });
       chatWindow.classList.remove('open');
       container.classList.remove('chat-open');
       if (!capsule) {
@@ -16874,6 +16966,7 @@
     if (launcherWaiting) setTimeout(revealLauncher, LAUNCHER_WAIT_MS);
 
     loadPageContextPreference();
+    loadShareUsagePreference();
     loadUserSettings();
     const historyNeedsSave = loadHistory();
     startFreshChatOnReturn();
@@ -16953,12 +17046,8 @@
       }
     });
 
-    // Page context toggle
-    const pageContextCheckbox = container.querySelector('#osa-page-context-checkbox');
-    pageContextCheckbox?.addEventListener('change', (e) => {
-      pageContextEnabled = e.target.checked;
-      savePageContextPreference();
-    });
+    // Privacy choices: the footer button and its dialog (#706).
+    bindPrivacyChoices(container);
 
     // Settings modal event listeners
     settingsCloseBtn?.addEventListener('click', () => closeSettings(container));
@@ -17207,6 +17296,7 @@
     closeHistory(container, { restoreFocus: false });
     closeSettings(container);
     closeFeedback(container);
+    closePrivacy(container, { restoreFocus: false });
     const changed = mode !== undefined && applyHostMode(container, mode);
     if (!isOpen) toggleChat(container);
     else focusChatField(container, true);
@@ -17431,7 +17521,8 @@
     const overlays = [...container.querySelectorAll('.osa-settings-overlay.open')];
     if (overlays.length) {
       const top = overlays[overlays.length - 1];
-      if (top.classList.contains('osa-feedback-overlay')) closeFeedback(container);
+      if (top.classList.contains('osa-privacy-overlay')) closePrivacy(container);
+      else if (top.classList.contains('osa-feedback-overlay')) closeFeedback(container);
       else closeSettings(container);
       return;
     }
@@ -17619,6 +17710,234 @@
     });
   }
   // END host-api
+
+  // BEGIN privacy-choices (#706). The footer's "Privacy choices" button and the small
+  // dialog it opens: "Use this page for answers" (what the footer's checkbox was, under
+  // the same storage key, so a reader's earlier choice carries over) and "Share usage
+  // data" (new, on by default), and a link to the privacy page.
+  //
+  // The dialog is one more .osa-settings-overlay (so the center dialog's Tab trap already
+  // scopes to it, and Escape closes it first, see handleCenterKey) with its own keydown,
+  // because Settings and Feedback have no trap in the corner and this one is a modal there
+  // as well: Tab and Shift+Tab wrap inside it, and Escape closes only it.
+  const DEFAULT_PRIVACY_URL = 'https://github.com/OpenScience-Collective/osa/blob/develop/PRIVACY.md';
+  const PRIVACY_URL_MAX = 500;
+  // Runtime state of "Share usage data". True until the reader says otherwise.
+  let shareUsageEnabled = true;
+  // Storage keys whose last save failed, so the in-memory choice outranks what is stored.
+  const unsavedChoices = new Set();
+
+  // nemar.org's opt-out symbol (PrivacyChoicesIcon.astro), copied as it is: the 30:14
+  // proportions and the fixed #fff and #06f are what make it recognizable, so it is
+  // never themed. Decorative: the text beside it names the control.
+  const PRIVACY_ICON_HTML = '<svg class="osa-privacy-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 14" width="30" height="14" aria-hidden="true" focusable="false">'
+    + '<path fill="#fff" fill-rule="evenodd" clip-rule="evenodd" d="M7.4 12.8h6.8l3.1-11.6H7.4C4.2 1.2 1.6 3.8 1.6 7s2.6 5.8 5.8 5.8z"></path>'
+    + '<path fill="#06f" fill-rule="evenodd" clip-rule="evenodd" d="M22.6 0H7.4C3.5 0 .4 3.1.4 7s3.1 7 7 7h15.2c3.9 0 7-3.1 7-7s-3.1-7-7-7zM1.6 7c0-3.2 2.6-5.8 5.8-5.8h9.9l-3.1 11.6H7.4C4.2 12.8 1.6 10.2 1.6 7z"></path>'
+    + '<path fill="#fff" d="M24.6 4c.2.2.2.6 0 .8L22.5 7l2.2 2.2c.2.2.2.6 0 .8-.2.2-.6.2-.8 0l-2.2-2.2L19.5 10c-.2.2-.6.2-.8 0-.2-.2-.2-.6 0-.8L20.8 7l-2.2-2.2c-.2-.2-.2-.6 0-.8.2-.2.6-.2.8 0l2.2 2.2L23.8 4c.2-.2.6-.2.8 0z"></path>'
+    + '<path fill="#06f" d="M12.7 4.1c.2.2.3.6.1.8L8.6 9.8c-.1.1-.2.2-.3.2-.2.1-.5.1-.7-.1L5.4 7.7c-.2-.2-.2-.6 0-.8.2-.2.6-.2.8 0L8 8.6l3.8-4.5c.2-.2.6-.2.9 0z"></path>'
+    + '</svg>';
+
+  function privacyChoicesButtonHtml() {
+    return `<button type="button" class="osa-privacy-btn" aria-haspopup="dialog">${PRIVACY_ICON_HTML}<span>Privacy choices</span></button>`;
+  }
+
+  function privacyOverlayHtml() {
+    return `
+        <div class="osa-settings-overlay osa-privacy-overlay" tabindex="-1">
+        <div class="osa-settings-modal osa-privacy-modal" role="dialog" aria-modal="true" aria-labelledby="osa-privacy-title">
+          <div class="osa-settings-header">
+            <h3 class="osa-settings-title" id="osa-privacy-title">Privacy choices</h3>
+            <button type="button" class="osa-settings-close-btn osa-privacy-close-btn" aria-label="Close privacy choices">
+              ${ICONS.close}
+            </button>
+          </div>
+          <div class="osa-settings-body osa-privacy-body">
+            <div class="osa-privacy-field osa-privacy-page-field">
+              <div class="osa-privacy-row">
+                <input type="checkbox" id="osa-privacy-page" aria-describedby="osa-privacy-page-hint" />
+                <label for="osa-privacy-page">Use this page for answers</label>
+              </div>
+              <span class="osa-settings-hint" id="osa-privacy-page-hint">
+                Sends this page's address and title, so answers can be about what you are viewing. The dataset a page names is still sent.
+              </span>
+            </div>
+            <div class="osa-privacy-field osa-privacy-usage-field">
+              <div class="osa-privacy-row">
+                <input type="checkbox" id="osa-privacy-usage" aria-describedby="osa-privacy-usage-hint" />
+                <label for="osa-privacy-usage">Share usage data</label>
+              </div>
+              <span class="osa-settings-hint" id="osa-privacy-usage-hint">
+                Lets the maintainers group your requests into conversations and see which tools ran. Off, the usage log keeps only counts and costs, and your conversation is not traced. Feedback you send is still received, but is not attached to a trace.
+              </span>
+            </div>
+            <p class="osa-settings-hint osa-privacy-save-note" role="status"></p>
+            <div class="osa-privacy-links"></div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // The privacy page's address: an https URL with a host and no credentials, or the
+  // platform's own page. It goes into an anchor on someone else's page, so whatever the
+  // community config (or a page's setConfig) sent is checked here too.
+  function validPrivacyUrl(raw) {
+    if (typeof raw !== 'string') return DEFAULT_PRIVACY_URL;
+    const address = raw.trim();
+    if (!address || address.length > PRIVACY_URL_MAX || /\s/.test(address)) return DEFAULT_PRIVACY_URL;
+    try {
+      const url = new URL(address);
+      if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) return DEFAULT_PRIVACY_URL;
+      return url.href;
+    } catch (e) {
+      return DEFAULT_PRIVACY_URL;
+    }
+  }
+
+  function loadShareUsagePreference() {
+    shareUsageEnabled = CONFIG.shareUsageDefaultEnabled;
+    syncPrivacyChoices();
+  }
+
+  // Save the choice; false when the browser would not keep it.
+  function saveShareUsagePreference() {
+    try {
+      localStorage.setItem(CONFIG.shareUsageStorageKey, shareUsageEnabled.toString());
+      unsavedChoices.delete(CONFIG.shareUsageStorageKey);
+      return true;
+    } catch (e) {
+      console.warn('Could not save usage sharing preference:', e);
+      unsavedChoices.add(CONFIG.shareUsageStorageKey);
+      return false;
+    }
+  }
+
+  // The stored value of a boolean choice, or null when there is none or storage will not
+  // answer (the choice already in memory then stands).
+  function storedChoice(key) {
+    try {
+      const saved = localStorage.getItem(key);
+      return saved === null ? null : saved === 'true';
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Take the saved choices as the truth, so a choice made in another tab, a pop-out or a
+  // notebook tab applies to this widget too, and not only after it reloads. Called when a
+  // request or feedback is built and when the dialog opens; it returns nothing and changes
+  // only what storage actually holds.
+  function syncPrivacyChoices() {
+    // A choice whose last save failed is this page's own, newer than anything stored.
+    const usage = unsavedChoices.has(CONFIG.shareUsageStorageKey) ? null : storedChoice(CONFIG.shareUsageStorageKey);
+    if (usage !== null) shareUsageEnabled = usage;
+    if (CONFIG.allowPageContext && !unsavedChoices.has(CONFIG.pageContextStorageKey)) {
+      const page = storedChoice(CONFIG.pageContextStorageKey);
+      if (page !== null) pageContextEnabled = page;
+    }
+  }
+
+  // What a request says about the choice: nothing while usage is shared (the default, and
+  // what an older server expects), `share_usage: false` once it is not.
+  function usageRequestFields() {
+    syncPrivacyChoices();
+    return shareUsageEnabled ? {} : { share_usage: false };
+  }
+
+  // Say so in the dialog while any choice could not be saved: it holds until the page
+  // reloads and then goes back to the default, which for usage sharing is sharing. The note
+  // follows every unsaved choice, not the last save, so one choice saving cleanly does not
+  // hide another that did not.
+  function showPrivacySaveNote(container) {
+    const note = privacyOverlay(container)?.querySelector('.osa-privacy-save-note');
+    if (!note) return;
+    note.textContent = unsavedChoices.size === 0
+      ? ''
+      : 'Your choice could not be saved in this browser. It applies until you reload this page, then goes back to the default.';
+  }
+
+  function privacyOverlay(container) {
+    return container.querySelector('.osa-privacy-overlay');
+  }
+
+  function openPrivacy(container) {
+    // Not from a closed window, and not twice.
+    if (!isOpen) return;
+    const overlay = privacyOverlay(container);
+    if (!overlay || overlay.classList.contains('open')) return;
+    syncPrivacyChoices();
+    const pageBox = overlay.querySelector('#osa-privacy-page');
+    const usageBox = overlay.querySelector('#osa-privacy-usage');
+    showPrivacySaveNote(container);
+    pageBox.checked = CONFIG.allowPageContext && pageContextEnabled;
+    usageBox.checked = shareUsageEnabled;
+    // A community that turns page context off has no choice to make about it.
+    overlay.querySelector('.osa-privacy-page-field').hidden = !CONFIG.allowPageContext;
+    const links = overlay.querySelector('.osa-privacy-links');
+    links.textContent = '';
+    links.appendChild(docsAnchor('osa-privacy-link', { url: validPrivacyUrl(CONFIG.privacyUrl) }, 'Privacy policy'));
+    overlay.classList.add('open');
+    (CONFIG.allowPageContext ? pageBox : usageBox).focus();
+  }
+
+  // Close the dialog; focus goes back to the button that opened it, unless the caller is
+  // closing the whole window (`restoreFocus` false).
+  function closePrivacy(container, { restoreFocus = true } = {}) {
+    const overlay = privacyOverlay(container);
+    if (!overlay || !overlay.classList.contains('open')) return;
+    overlay.classList.remove('open');
+    if (!restoreFocus) return;
+    const button = container.querySelector('.osa-privacy-btn');
+    if (button) button.focus();
+  }
+
+  // Tab and Shift+Tab stay inside the dialog, and Escape closes it and nothing else: the
+  // key stops here, so neither the center dialog's handler nor a host page's sees it.
+  function privacyKeydown(container, event) {
+    const overlay = privacyOverlay(container);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closePrivacy(container);
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const list = focusablesIn(overlay);
+    if (list.length === 0) {
+      event.preventDefault();
+      overlay.focus();
+      return;
+    }
+    const at = list.indexOf(document.activeElement);
+    if (event.shiftKey && at <= 0) {
+      event.preventDefault();
+      list[list.length - 1].focus();
+    } else if (!event.shiftKey && (at === -1 || at === list.length - 1)) {
+      event.preventDefault();
+      list[0].focus();
+    }
+  }
+
+  function bindPrivacyChoices(container) {
+    const overlay = privacyOverlay(container);
+    if (!overlay) return;
+    container.querySelector('.osa-privacy-btn')?.addEventListener('click', () => openPrivacy(container));
+    overlay.querySelector('.osa-privacy-close-btn')?.addEventListener('click', () => closePrivacy(container));
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) closePrivacy(container);
+    });
+    overlay.addEventListener('keydown', (event) => privacyKeydown(container, event));
+    overlay.querySelector('#osa-privacy-page')?.addEventListener('change', (event) => {
+      pageContextEnabled = event.target.checked;
+      savePageContextPreference();
+      showPrivacySaveNote(container);
+    });
+    overlay.querySelector('#osa-privacy-usage')?.addEventListener('change', (event) => {
+      shareUsageEnabled = event.target.checked;
+      saveShareUsagePreference();
+      showPrivacySaveNote(container);
+    });
+  }
+  // END privacy-choices
 
   // BEGIN plan-rail (E6.1, #701; board C3). What the center-stage dialog adds beside the
   // conversation: the plan rail, and "Continue in notebook" in its header. Both read the

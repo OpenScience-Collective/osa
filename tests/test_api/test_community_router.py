@@ -414,6 +414,35 @@ class TestLangfuseTracing:
             "langfuse_session_id": "sess-1",
         }
 
+    def test_an_opted_out_reader_gets_no_trace(self, monkeypatch) -> None:
+        """With "Share usage data" off (#706) no trace is created, so none holds the
+        conversation and no feedback score can be attached to one."""
+        from src.api.routers.community import create_community_assistant
+        from src.api.security import ByokCredential
+        from src.core.services import llm
+
+        asked: list[str | None] = []
+
+        class FakeLLMService:
+            def get_config_with_tracing(self, trace_id=None):
+                asked.append(trace_id)
+                return {"callbacks": [object()]}
+
+        monkeypatch.setattr(llm, "get_llm_service", lambda _settings=None: FakeLLMService())
+
+        awm = create_community_assistant(
+            "hed",
+            byok=ByokCredential(key="sk-or-fake-test-key", provider="openrouter"),
+            user_id="user-1",
+            session_id="sess-1",
+            preload_docs=False,
+            trace=False,
+        )
+
+        assert awm.langfuse_config is None
+        assert awm.langfuse_trace_id is None
+        assert asked == [], "tracing was not even set up"
+
 
 class TestSessionEndpointBehavior:
     """Tests for session endpoint behavior using unit-level functions."""
@@ -929,6 +958,71 @@ class TestCommunityConfigCenterStage:
             assert docs["url"].startswith("https://"), info.id
             assert docs["title"], info.id
         assert checked > 0, "no registered community configures analysis_docs"
+
+
+class TestCommunityConfigPrivacyUrl:
+    """widget.privacy_url reaches the widget through GET /{community} (#706)."""
+
+    COMMUNITY = "privacyurltest"
+    URL = "https://example.org/privacy/"
+
+    def _client(self, widget: dict | None) -> TestClient:
+        from src.assistants import registry
+
+        registry.register_from_config(
+            CommunityConfig(
+                id=self.COMMUNITY,
+                name="Privacy Url Test",
+                description="A community with its own privacy page",
+                widget=widget,
+            )
+        )
+        app = FastAPI()
+        app.include_router(create_community_router(self.COMMUNITY))
+        return TestClient(app)
+
+    @pytest.fixture(autouse=True)
+    def _unregister(self):
+        from src.assistants import registry
+
+        yield
+        registry._assistants.pop(self.COMMUNITY, None)
+
+    def test_sent_when_configured(self) -> None:
+        widget = self._client({"privacy_url": self.URL}).get(f"/{self.COMMUNITY}/").json()["widget"]
+        assert widget["privacy_url"] == self.URL
+
+    def test_a_community_that_sets_none_sends_none(self) -> None:
+        widget = self._client({"title": "Plain"}).get(f"/{self.COMMUNITY}/").json()["widget"]
+        assert widget["privacy_url"] is None
+
+    def test_a_bad_url_is_refused_when_the_config_loads(self) -> None:
+        with pytest.raises(ValidationError, match="https"):
+            self._client({"privacy_url": "http://example.org/privacy"})
+
+    def test_every_registered_community_serves_what_its_config_sets(self) -> None:
+        """Dynamic over the registry, through the route the widget calls.
+
+        No registered community sets one today (every widget then falls back to the
+        platform's page), so this asserts for each that the route serves exactly its
+        config's value, `None` included, and that a value that is set is an https URL.
+        """
+        from src.assistants import registry
+
+        checked = 0
+        for info in registry.list_available():
+            config = info.community_config
+            if not config:
+                continue
+            app = FastAPI()
+            app.include_router(create_community_router(info.id))
+            served = TestClient(app).get(f"/{info.id}/").json()["widget"]
+            expected = config.widget.privacy_url if config.widget else None
+            assert (served or {}).get("privacy_url") == expected, info.id
+            if expected:
+                assert expected.startswith("https://"), info.id
+            checked += 1
+        assert checked > 0, "no registered community has a config"
 
 
 class TestDeclaredClientToolsFitOneRequest:

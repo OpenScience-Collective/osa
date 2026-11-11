@@ -292,6 +292,14 @@ class PageContext(BaseModel):
         return url
 
 
+SHARE_USAGE_DESCRIPTION = (
+    'False when the reader turned off "Share usage data" in the widget\'s Privacy choices. '
+    "The usage row for this request is then written without its conversation id and the "
+    "tools it called (tokens, cost, tier and counts are kept, so budgets still add up). "
+    "Feedback is unaffected."
+)
+
+
 class ChatRequest(BaseModel):
     """Request body for chat endpoint."""
 
@@ -338,6 +346,7 @@ class ChatRequest(BaseModel):
             "reseeded session starts on it; ignored otherwise."
         ),
     )
+    share_usage: bool = Field(default=True, description=SHARE_USAGE_DESCRIPTION)
 
 
 class ResumeRequest(BaseModel):
@@ -356,6 +365,7 @@ class ResumeRequest(BaseModel):
     model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
     page_context: PageContext | None = None
     client_tools: list[str] = Field(default_factory=list, max_length=MAX_DECLARED_CLIENT_TOOLS)
+    share_usage: bool = Field(default=True, description=SHARE_USAGE_DESCRIPTION)
 
 
 class AskRequest(BaseModel):
@@ -368,6 +378,7 @@ class AskRequest(BaseModel):
         description="Optional context about the page where the widget is embedded",
     )
     model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
+    share_usage: bool = Field(default=True, description=SHARE_USAGE_DESCRIPTION)
 
 
 class ToolCallInfo(BaseModel):
@@ -556,6 +567,13 @@ class WidgetConfigResponse(BaseModel):
         description=(
             "A docs page linked from the start screen and the widget's Settings, "
             "https only; omitted when the community sets none"
+        ),
+    )
+    privacy_url: str | None = Field(
+        default=None,
+        description=(
+            "The privacy page the widget's Privacy choices dialog links to, https only; "
+            "omitted when the community sets none (the widget then links to the platform's)"
         ),
     )
     logo_url: str | None = Field(
@@ -2400,6 +2418,7 @@ def create_community_assistant(
     session_id: str | None = None,
     tier: Tier | None = None,
     additional_instructions: str = "",
+    trace: bool = True,
 ) -> AssistantWithMetrics:
     """Create a community assistant instance with authorization checks.
 
@@ -2422,6 +2441,9 @@ def create_community_assistant(
         page_context: Optional context about the page where the widget is embedded
         session_id: Chat session ID, recorded on the LangFuse trace so a
             conversation's turns can be grouped (chat endpoints only)
+        trace: False when the reader turned "Share usage data" off: no LangFuse config or
+            trace id is attached, so no trace (with its messages and tool calls) is made
+            and the request row has no trace id to link one by
         tier: The model tier of a routed turn (``src.agents.model_routing``), or None for a
             request that is not routed. It picks the community's quick or analysis model
             and decides which client tools are bound. A quick turn also gets the prompt
@@ -2545,34 +2567,35 @@ def create_community_assistant(
         additional_instructions=merged_instructions,
     )
 
-    # Wire LangFuse tracing if configured
+    # Wire LangFuse tracing if configured, unless the reader opted out of usage sharing
     langfuse_config = None
     langfuse_trace_id = None
-    try:
-        from src.core.services.llm import get_llm_service
-    except ImportError:
-        logger.debug("LangFuse tracing not available (module not installed)")
-    else:
+    if trace:
         try:
-            llm_service = get_llm_service(settings)
-            # LangFuse requires a 32-char lowercase hex trace id. It rejects
-            # anything else (such as a community prefix), which leaves the root
-            # span unset: every LLM and tool call then becomes its own trace and
-            # request_log.langfuse_trace_id matches nothing (issue #515). The
-            # community is recorded as a tag instead.
-            trace_id = uuid.uuid4().hex
-            config = llm_service.get_config_with_tracing(trace_id=trace_id)
-            if config.get("callbacks"):
-                config["metadata"] = _langfuse_trace_metadata(community_id, user_id, session_id)
-                langfuse_config = config
-                langfuse_trace_id = trace_id
-        except (AttributeError, ValueError, RuntimeError, OSError, ImportError) as e:
-            logger.warning(
-                "LangFuse tracing setup failed for %s: %s, continuing without it",
-                community_id,
-                e,
-                exc_info=True,
-            )
+            from src.core.services.llm import get_llm_service
+        except ImportError:
+            logger.debug("LangFuse tracing not available (module not installed)")
+        else:
+            try:
+                llm_service = get_llm_service(settings)
+                # LangFuse requires a 32-char lowercase hex trace id. It rejects
+                # anything else (such as a community prefix), which leaves the root
+                # span unset: every LLM and tool call then becomes its own trace and
+                # request_log.langfuse_trace_id matches nothing (issue #515). The
+                # community is recorded as a tag instead.
+                trace_id = uuid.uuid4().hex
+                config = llm_service.get_config_with_tracing(trace_id=trace_id)
+                if config.get("callbacks"):
+                    config["metadata"] = _langfuse_trace_metadata(community_id, user_id, session_id)
+                    langfuse_config = config
+                    langfuse_trace_id = trace_id
+            except (AttributeError, ValueError, RuntimeError, OSError, ImportError) as e:
+                logger.warning(
+                    "LangFuse tracing setup failed for %s: %s, continuing without it",
+                    community_id,
+                    e,
+                    exc_info=True,
+                )
 
     return AssistantWithMetrics(
         assistant=assistant,
@@ -2837,6 +2860,16 @@ def _usage_for_event(
         request_id=request_id,
     )
     return usage.model_dump(mode="json") if usage else None
+
+
+def _shares_usage(http_request: Request | None) -> bool:
+    """Whether the reader lets this request's usage row carry its conversation and tools.
+
+    The handlers record the body's ``share_usage`` on ``request.state`` once it is parsed;
+    a request with none (an overview, a route that has no such field) shares, as before.
+    ``log_request`` does the blanking, so every writer of the row goes through one place.
+    """
+    return getattr(http_request.state, "share_usage", True) if http_request else True
 
 
 def _set_metrics_on_request(
@@ -3259,6 +3292,8 @@ def create_community_router(community_id: str) -> APIRouter:
         **Cache Optimization:**
         Pass a stable user ID in the `X-User-ID` header for better cache hit rates.
         """
+        # The reader's usage-data choice, read by every writer of this request's row.
+        http_request.state.share_usage = body.share_usage
         # Extract origin for authorization
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
@@ -3292,6 +3327,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 user_id=x_user_id,
                 requested_model=body.model,
                 page_context=body.page_context,
+                trace=body.share_usage,
             )
             messages = [HumanMessage(content=body.question)]
             result = await awm.assistant.ainvoke(messages, config=awm.langfuse_config)
@@ -3497,6 +3533,8 @@ def create_community_router(community_id: str) -> APIRouter:
         **Cache Optimization:**
         Pass a stable user ID in the `X-User-ID` header for better cache hit rates.
         """
+        # The reader's usage-data choice, read by every writer of this request's row.
+        http_request.state.share_usage = body.share_usage
         # Extract origin for authorization
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
@@ -3562,6 +3600,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 requested_model=body.model,
                 page_context=body.page_context,
                 session_id=session.session_id,
+                trace=body.share_usage,
             )
             result = await awm.assistant.ainvoke(session.messages, config=awm.langfuse_config)
 
@@ -3656,6 +3695,8 @@ def create_community_router(community_id: str) -> APIRouter:
         only ever learns from a `tool_request` on its own stream, and it is accepted at
         most once.
         """
+        # The reader's usage-data choice, read by every writer of this request's row.
+        http_request.state.share_usage = body.share_usage
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
@@ -4583,6 +4624,7 @@ def _log_streaming_metrics(
             error_message=error_message,
             tier=tier,
             conversation_id=conversation_id,
+            share_usage=_shares_usage(http_request),
         )
         log_request(entry)
         if not request_id_suffix and http_request:
@@ -4918,6 +4960,7 @@ async def _stream_ask_response(
             requested_model=requested_model,
             preload_docs=True,
             page_context=page_context,
+            trace=_shares_usage(http_request),
         )
         graph = awm.assistant.build_graph()
 
@@ -5589,6 +5632,7 @@ async def _stream_chat_response(
             declared_client_tools=declared_client_tools,
             browser_runs_left=MAX_BROWSER_RUNS_PER_REPLY - browser_runs_answered,
             session_id=session.session_id,
+            trace=_shares_usage(http_request),
             **routing_kwargs,
         )
         if handing_over:

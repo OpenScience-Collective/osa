@@ -25,6 +25,7 @@ this page is about the widget's appearance and copy.
 | `search_paths` | list of paths, at most 5, each starting with `/`, at most 200 characters, with no query, fragment or whitespace | empty list | Pages where the reader is searching for datasets rather than viewing one: a page whose path is one of these, or below one at a path-segment boundary, gives the chat the search context (`/` is the home page alone); see [A context change starts a new chat](#a-context-change-starts-a-new-chat). |
 | `center_start` | `{capabilities, note}` | none | The center-stage dialog's start screen: up to three `{title, text}` cards and a footer note; see [The start screen](#the-start-screen). |
 | `analysis_docs` | `{title, url}`, an `https://` address | none | A docs page linked from the start screen's footer and from Settings; see [The start screen](#the-start-screen). |
+| `privacy_url` | string, an `https://` address of at most 500 characters | the platform's own privacy page | The page the **Privacy choices** dialog links to; see [Privacy choices](#privacy-choices). |
 | `logo_url` | string: an `http://`/`https://` URL, or a path starting with `/` | none | A custom logo/icon for the widget header avatar. When unset, the API looks for a `logo.*` file (SVG, PNG, JPG, JPEG, WEBP) in the community's own folder; failing that, the widget falls back to a default brain icon. |
 
 ```yaml
@@ -1029,7 +1030,7 @@ What the request carries (`page_context`, beside `url`, `title` and `widget_inst
 
 | Field | Value |
 |---|---|
-| `dataset_id` | The dataset `setDataset` named, matching `[A-Za-z0-9._-]{1,64}`. **Sent whether or not the reader shares the page URL** (the "Share page URL" toggle): like `widget_instructions`, it is about the chat, not about the reader's browsing, so a reader who keeps the URL private still gets answers about the dataset on screen. |
+| `dataset_id` | The dataset `setDataset` named, matching `[A-Za-z0-9._-]{1,64}`. **Sent whether or not the reader shares the page URL** ("Use this page for answers" in [Privacy choices](#privacy-choices)): like `widget_instructions`, it is about the chat, not about the reader's browsing, so a reader who keeps the URL private still gets answers about the dataset on screen. |
 | `moved_from` | `{type: 'dataset', id}` or `{type: 'search'}`: where the reader was before choosing to continue. Present only on the first request after "Continue". A `dataset` needs an `id`; `search` takes none, and the API refuses one. |
 | `memory_budget_mb` | The reader's browser memory budget per step, one of 256, 512, 1024 or 2048 ("Browser memory" in Settings). **Sent whether or not the reader shares the page URL**, but only by a page whose browser runtime has loaded and that declares its client tools on the request; a page with no runtime sends none. |
 
@@ -1037,6 +1038,42 @@ The backend renders the dataset and the move in the system prompt's page context
 A community with `enable_page_context: false` gets none of the three.
 
 Testing: `frontend/test-widget-context-switch.js` (the widget), `tests/test_api/test_page_context.py` (the validated fields), `tests/test_agents/test_page_context.py` (the prompt), and the `search_paths` cases in `tests/test_core/test_config/test_community.py` and `tests/test_api/test_communities_endpoint.py`.
+
+## Privacy choices
+
+The footer has a **Privacy choices** button: nemar.org's opt-out symbol (30:14, 14 px tall, in its own fixed colors in both schemes, never themed) beside the text.
+It replaces the footer checkbox "Share page URL to help answer questions", and opens a small modal dialog with two choices, both on by default, and a link to the privacy page.
+
+| Choice | What it does | Stored in `localStorage` as |
+|---|---|---|
+| **Use this page for answers** | Sends the page's address and title as `page_context.url` and `page_context.title`. Off, neither is sent. The dataset a page names (`page_context.dataset_id`), the community's `widget_instructions` and the memory budget are about the chat, so they are still sent; the helper text under the choice says so. | `osa-page-context-enabled`, the key the footer checkbox used, so a reader's earlier choice carries over |
+| **Share usage data** | Off, `POST /{community}/chat` and `POST /{community}/chat/resume` carry a top-level `share_usage: false`, and the server writes the request's usage row without its `conversation_id`, `tools_called` and `langfuse_trace_id`, and makes no Langfuse trace for the request. On, the field is left out. | `osa-share-usage-enabled` |
+
+The dialog is another `.osa-settings-overlay` (also `.osa-privacy-overlay`) with `role="dialog"`, `aria-modal="true"` and `aria-labelledby`.
+Each choice is a labelled checkbox in a 44 px row, with its helper text tied by `aria-describedby`.
+Tab and Shift+Tab wrap inside it, in the corner as well as in the center dialog; Escape closes only it (the center dialog behind it stays, and a second Escape docks it), and focus goes back to the **Privacy choices** button.
+A community whose embedder sets `allowPageContext: false` has no "Use this page" row; the button and the usage choice stay.
+
+What `share_usage: false` changes on the server, and what it leaves:
+
+- The request still runs, and its `request_log` row keeps the timestamp, community, endpoint, model, tokens, cost, tier, key source, status, duration, `tool_call_count` and `request_id`, so the community's budget and `osa metrics cost-report` still add up.
+- The row has no `conversation_id` (so it cannot be grouped into a conversation), no `tools_called` and no Langfuse trace id.
+- No Langfuse trace is made for the request (`create_community_assistant(trace=False)`), so no trace holds its messages and tool calls.
+- Feedback (thumbs and free text) is still received and stored, but a thumb on an opted-out answer is not attached to a Langfuse trace as a score, because the answer has none.
+- The server's in-memory conversation (the 24 hours that let a follow-up have its context), the search overview and the stored metrics already written are not changed by the choice.
+- The widget re-reads the two saved choices when it builds a request, so a choice made in another tab, a pop-out or a notebook tab applies without a reload. When the browser will not save a choice, the dialog says so and the choice holds until the page reloads.
+
+`POST /{community}/ask` and `/chat/resume` accept the same `share_usage` field (default `true`).
+The Cloudflare worker forwards the JSON body unchanged, so the field needs no header or allowlist entry.
+
+The link goes to `privacy_url` from the community's `widget` block, or, when that is unset or not valid, to `https://github.com/OpenScience-Collective/osa/blob/develop/PRIVACY.md`.
+It is validated twice, as `analysis_docs` is: `WidgetConfig` refuses a value that is not an `https://` URL with a host, no credentials and no whitespace (at most 500 characters) when the config loads, and the widget checks again before drawing, falling back to the default.
+It opens in a new tab (`target="_blank"`, `rel="noopener noreferrer"`, with a visually hidden "(opens in a new tab)").
+
+```yaml
+widget:
+  privacy_url: https://nemar.org/privacy/
+```
 
 ## The first paint: remembering the community's look
 
@@ -1212,6 +1249,7 @@ field: once an embedder sets `themeColor`, no community config value for
 | `search_paths` | `searchPaths` (a list of paths) |
 | `center_start` | `centerStart` (the same `{capabilities, note}`) |
 | `analysis_docs` | `analysisDocs` (the same `{title, url}`) |
+| `privacy_url` | `privacyUrl` (an `https://` address) |
 | `logo_url` | `logo` |
 | `theme_color` | `themeColor` |
 | `theme_text_color` | `themeTextColor` |

@@ -1,7 +1,7 @@
 /**
  * General feedback carries the page's address only when the reader shares it.
  *
- * The footer's page-context choice ("Share page URL to help answer questions") decides
+ * The Privacy choices dialog's "Use this page for answers" choice decides
  * whether a question carries the page's address; the "Send feedback" form used to send
  * `page_url` regardless. This runs the real widget source in happy-dom windows, with the
  * choice saved on and off, sends general feedback through the form, and reads the body
@@ -116,10 +116,13 @@ console.log('\nGeneral feedback and the page-context choice');
 }
 
 {
-  // The choice changed in this page, not only a saved one: unticking the footer box.
+  // The choice changed in this page, not only a saved one: unticking "Use this page for answers"
+  // in the Privacy choices dialog.
   const ctx = start({ shared: true });
-  const box = ctx.container.querySelector('#osa-page-context-checkbox');
-  assert(box && box.checked, 'the footer box starts ticked when sharing was saved on');
+  ctx.window.OSAChatWidget.open();
+  ctx.container.querySelector('.osa-privacy-btn').click();
+  const box = ctx.container.querySelector('#osa-privacy-page');
+  assert(box && box.checked, 'the dialog box starts ticked when sharing was saved on');
   box.checked = false;
   box.dispatchEvent(new ctx.window.Event('change', { bubbles: true }));
   const body = await sendGeneralFeedback(ctx, 'Unticked now');

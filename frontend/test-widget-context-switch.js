@@ -522,14 +522,17 @@ console.log('\nthe dataset rides every request, with the page URL or without');
   await send(ctx, 'With the URL shared');
   assertEqual(lastBody(ctx).page_context.dataset_id, A, 'the dataset is sent');
   assert(typeof lastBody(ctx).page_context.url === 'string', 'beside the URL, which the reader shares by default');
-  const toggle = ctx.q('#osa-page-context-checkbox');
+  // The reader's choice is "Use this page for answers" in the Privacy choices dialog.
+  ctx.api.open();
+  ctx.q('.osa-privacy-btn').click();
+  const toggle = ctx.q('#osa-privacy-page');
   toggle.checked = false;
   toggle.dispatchEvent(new ctx.window.Event('change'));
   await send(ctx, 'With the URL not shared');
-  assertEqual(lastBody(ctx).page_context, { dataset_id: A }, 'with the toggle off, only the dataset is sent');
+  assertEqual(lastBody(ctx).page_context, { dataset_id: A }, 'with the choice off, only the dataset is sent');
   ctx.api.setDataset(null);
   await send(ctx, 'On a page with no dataset');
-  assert(lastBody(ctx).page_context === undefined, 'with the toggle off and no dataset, no page_context at all');
+  assert(lastBody(ctx).page_context === undefined, 'with the choice off and no dataset, no page_context at all');
 }
 
 console.log('\na pop-out never asks');
