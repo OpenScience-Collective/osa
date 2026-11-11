@@ -26,7 +26,7 @@ the version being released and start a new `[Unreleased]` section above it.
   The widget re-reads both saved choices when it builds a request, so a choice made in another tab applies without a reload, and the dialog says so when the browser will not save a choice.
   `PRIVACY.md` now describes the dialog and both choices.
   `RequestLogEntry` gets a non-persisted `share_usage` that `log_request` honors, so every writer of the row goes through one place.
-  The new `widget.privacy_url` (an `https://` URL, validated like `analysis_docs`, at most 500 characters; widget key `privacyUrl`) sets the link, which defaults to the platform's `PRIVACY.md` and is validated again in the widget.
+  The new `widget.privacy_url` (an `https://` URL, validated like `analysis_docs`, at most 500 characters; widget key `privacyUrl`) sets the link, which defaults to the platform's privacy page, `https://docs.osc.earth/osa/privacy/` (the docs-site copy of `PRIVACY.md`), and is validated again in the widget. NEMAR sets it to the assistant section of its own privacy policy, `https://docs.nemar.org/policies/privacy/#the-open-science-assistant`, which links on to the OSA page.
   The `pageContextLabel` setting is gone (nothing uses it).
   Tested by `frontend/test-widget-privacy-choices.js`, `tests/test_api/test_usage_opt_out.py` (the real app and middleware for streaming and plain `/chat`, `/chat/resume` and `/ask`), the worker's `test-routing.js`, the config and router tests, and `frontend/browser-harness/privacy-choices-check.mjs` (real Chrome, both sizes, both schemes, corner and center).
   See `docs/community-widget.md`.
