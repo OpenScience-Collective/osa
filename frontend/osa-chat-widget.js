@@ -434,9 +434,18 @@
   //   setup: the notebook's last setup status: null (none yet), 'running',
   //          'done', 'error' or 'none' (a starter with no setup cell)
   //   failure: why it failed, for the fallback's text: 'startup' or 'timeout'
+  // The notebook tabs and the import (#673, #676), all of it reset with the frame:
+  //   outbox:   messages waiting for the notebook to report ready
+  //   requests: requestId -> {type, resolve, timer} for a message awaiting its result
+  //   tabs:     the notebooks the notebook page last listed, {items, active}
+  //   import:   the banner's import, or null (see importNotebookToTab)
+  //   renaming: the path being renamed in the strip, or null; renameDraft its text
+  //   menuOpen: whether the strip's "+" menu is open
   const notebookEmbed = {
     frame: null, datasetId: null, state: 'idle', setup: null, failure: null,
-    loadTimer: null, readyTimer: null, sentScheme: null
+    loadTimer: null, readyTimer: null, sentScheme: null,
+    outbox: [], requests: new Map(), tabs: { items: [], active: null },
+    import: null, renaming: null, renameDraft: '', menuOpen: false
   };
   // --- Conversation store ---
   // The saved chats (#654): one record per community and origin, under
@@ -1572,6 +1581,218 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    /* The notebooks strip and the import banner (#673, #676), above the notebook's
+       frame. Every color is a token, so the dark appearance needs no rules of its
+       own: the strip sits on the assistant's surface, the open tab on the panel's,
+       and the banner on the notice's. */
+    .osa-nb-bar {
+      position: relative;
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      flex: 0 0 auto;
+      padding: 6px 10px 0;
+      background: var(--osa-assistant-bg);
+      border-bottom: 1px solid var(--osa-border);
+    }
+
+    .osa-nb-bar[hidden],
+    .osa-nb-menu[hidden],
+    .osa-notebook-banner[hidden] {
+      display: none;
+    }
+
+    .osa-nb-strip {
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    .osa-nb-tab {
+      display: flex;
+      align-items: center;
+      flex: 0 0 auto;
+      border: 1px solid transparent;
+      border-bottom: 0;
+      border-radius: 6px 6px 0 0;
+    }
+
+    .osa-nb-tab-on {
+      background: var(--osa-bg);
+      border-color: var(--osa-border);
+    }
+
+    .osa-nb-tab-label {
+      font: inherit;
+      font-size: 12.5px;
+      max-width: 180px;
+      padding: 7px 10px;
+      border: 0;
+      border-radius: 6px 6px 0 0;
+      background: transparent;
+      color: var(--osa-text);
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .osa-nb-tab-label:hover {
+      color: var(--osa-text);
+    }
+
+    .osa-nb-tab-on .osa-nb-tab-label {
+      padding-right: 4px;
+      font-weight: 500;
+      color: var(--osa-text);
+    }
+
+    .osa-nb-action,
+    .osa-nb-add {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--osa-text-light);
+      cursor: pointer;
+    }
+
+    .osa-nb-action {
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+    }
+
+    .osa-nb-action:hover {
+      background: var(--osa-assistant-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-nb-add {
+      width: 30px;
+      height: 30px;
+      margin-bottom: 2px;
+      border: 1px dashed var(--osa-text-light);
+      border-radius: 6px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-nb-rename {
+      width: 160px;
+      margin: 3px 4px;
+      padding: 3px 8px;
+      font: inherit;
+      font-size: 12.5px;
+      border: 1px solid var(--osa-accent);
+      border-radius: 6px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-nb-menu {
+      position: absolute;
+      top: calc(100% + 4px);
+      right: 10px;
+      z-index: 5;
+      min-width: 200px;
+      max-width: calc(100% - 20px);
+      max-height: 240px;
+      overflow-y: auto;
+      padding: 6px;
+      border: 1px solid var(--osa-border);
+      border-radius: 10px;
+      background: var(--osa-bg);
+      box-shadow: var(--osa-shadow);
+    }
+
+    .osa-nb-menu-item {
+      display: block;
+      width: 100%;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--osa-text);
+      font: inherit;
+      font-size: 13px;
+      text-align: left;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .osa-nb-menu-item:hover,
+    .osa-nb-menu-item:focus-visible {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-nb-menu-heading {
+      padding: 8px 10px 2px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--osa-text-light);
+    }
+
+    .osa-nb-bar button:focus-visible,
+    .osa-nb-rename:focus-visible,
+    .osa-notebook-banner button:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    .osa-notebook-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 0 0 auto;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: var(--osa-notice-text);
+      background: var(--osa-notice-bg);
+      border-bottom: 1px solid var(--osa-notice-border);
+    }
+
+    .osa-notebook-banner-text {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .osa-notebook-banner button {
+      flex: 0 0 auto;
+      min-height: 30px;
+      padding: 4px 12px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--osa-notice-text);
+      text-decoration: underline;
+      cursor: pointer;
+    }
+
+    .osa-notebook-banner .osa-notebook-run-all {
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      text-decoration: none;
+    }
+
+    .osa-notebook-banner button:disabled {
+      opacity: 0.55;
+      cursor: default;
     }
 
     /* The chat's own header buttons have nothing to do on the notebook tab.
@@ -4651,7 +4872,10 @@
       }
     });
     notebookEmbed.readyTimer = setTimeout(() => failNotebook(container, frame, 'timeout'), NOTEBOOK_TOTAL_MS);
-    view.insertBefore(frame, view.firstChild);
+    // Under the notebooks strip and the import banner, which are the view's first two children.
+    const banner = view.querySelector('.osa-notebook-banner');
+    if (banner) banner.after(frame);
+    else view.insertBefore(frame, view.firstChild);
     frame.src = notebookUrlFor(datasetId);
     renderNotebookStatus(container);
   }
@@ -4666,6 +4890,7 @@
     notebookEmbed.setup = null;
     notebookEmbed.failure = null;
     notebookEmbed.sentScheme = null;
+    resetNotebookTabs('The notebook was replaced before it answered.');
   }
 
   function failNotebook(container, frame, failure) {
@@ -4674,6 +4899,7 @@
     clearTimeout(notebookEmbed.readyTimer);
     notebookEmbed.state = 'failed';
     notebookEmbed.failure = failure;
+    failNotebookRequests('The notebook did not open here.');
     console.warn(`[OSA] The notebook for ${notebookEmbed.datasetId} did not ${failure === 'startup' ? 'start' : 'load in time'}; offering it in a tab of its own.`);
     renderNotebookStatus(container);
     renderLauncherIcons(container);
@@ -4712,6 +4938,13 @@
       notebookEmbed.state = 'ready';
       notebookEmbed.failure = null;
       postNotebookTheme(true);
+      flushNotebookOutbox();
+    } else if (data.type === 'result') {
+      settleNotebookRequest(data);
+      return;
+    } else if (data.type === 'notebooks') {
+      applyNotebookList(container, data);
+      return;
     } else if (data.type === 'setup' && ['running', 'done', 'error', 'none'].includes(data.status)) {
       notebookEmbed.setup = data.status;
     } else if (data.type === 'error' && data.phase === 'startup') {
@@ -4730,6 +4963,527 @@
     }
     renderNotebookStatus(container);
     renderLauncherIcons(container);
+  }
+
+  // --- Notebook tabs ---
+  // The Notebook surface's strip of named notebooks (#676) and the import of a
+  // chat's notebook into one of them (#673), both over the notebook page's
+  // bridge (notebook/osa-bridge.js, docs/adr/0017-notebook-import-and-tabs.md).
+  // The widget cannot write the notebook's storage itself, since the frame is
+  // another origin, so everything here is a request to the page and its answer:
+  //   to the page:   {target: 'osa-notebook', type, requestId, ...}
+  //                  import-notebook, run-all, undo-import, new-notebook,
+  //                  open-notebook, rename-notebook, close-notebook
+  //   from the page: {source: 'osa-notebook', type: 'result', requestId, ok, path?, error?}
+  //                  {source: 'osa-notebook', type: 'notebooks', items, active}
+  // The strip is drawn from the last `notebooks` message and from nothing else,
+  // so it shows what the page has, including a notebook the reader opened there.
+  // A request is posted once, to the notebook's own origin, and only after the
+  // notebook has reported ready; until then it waits in the outbox.
+
+  const NOTEBOOK_ICONS = {
+    plus: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>',
+    pencil: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path></svg>',
+    close: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>'
+  };
+  const NOTEBOOK_KINDS = ['playground', 'chat', 'blank'];
+  // Longest wait for the notebook's answer to one request. An import waits for
+  // the starter's setup first (the page bounds that wait at 150 s), then opens
+  // the notebook (30 s), so this is longer than the two together.
+  let NOTEBOOK_REQUEST_MS = 240000;
+  // Run all waits for the setup too, then runs the cells one at a time, and a
+  // cell can take as long as the reader's analysis does. The ordinary wait
+  // would settle it as unanswered while the cells still ran, and the real
+  // outcome would then be dropped. This one only catches a page that went away
+  // without its frame being replaced (which settles the request on its own).
+  let NOTEBOOK_RUN_ALL_MS = 1800000;
+  const notebookRequestMs = (type) => (type === 'run-all' ? NOTEBOOK_RUN_ALL_MS : NOTEBOOK_REQUEST_MS);
+  let notebookRequestCounter = 0;
+
+  // The frame was replaced or failed: nothing posted to it will be answered.
+  function failNotebookRequests(reason) {
+    const waiting = [...notebookEmbed.requests.keys()];
+    notebookEmbed.outbox = [];
+    for (const requestId of waiting) finishNotebookRequest(requestId, { ok: false, error: reason });
+  }
+
+  // Settles one request: its callback first (the banner and the strip update
+  // in the same turn as the message that answered it), then its promise.
+  function finishNotebookRequest(requestId, result) {
+    const request = notebookEmbed.requests.get(requestId);
+    if (!request) return;
+    notebookEmbed.requests.delete(requestId);
+    clearTimeout(request.timer);
+    if (request.onResult) request.onResult(result);
+    request.resolve(result);
+  }
+
+  // The tabs and import go with the frame they belong to.
+  function resetNotebookTabs(reason) {
+    failNotebookRequests(reason);
+    notebookEmbed.tabs = { items: [], active: null };
+    notebookEmbed.import = null;
+    notebookEmbed.renaming = null;
+    notebookEmbed.renameDraft = '';
+    notebookEmbed.menuOpen = false;
+    const container = document.querySelector('.osa-chat-widget');
+    if (container) {
+      renderNotebookTabs(container);
+      renderNotebookBanner(container);
+    }
+  }
+
+  function postNotebookMessage(message) {
+    const frame = notebookEmbed.frame;
+    if (!frame || !frame.contentWindow) return false;
+    try {
+      frame.contentWindow.postMessage(message, notebookOrigin());
+      return true;
+    } catch (e) {
+      console.warn('[OSA] Could not send a message to the notebook:', e);
+      return false;
+    }
+  }
+
+  // Posts once the notebook has reported ready, and queues until then.
+  function flushNotebookOutbox() {
+    const waiting = notebookEmbed.outbox;
+    notebookEmbed.outbox = [];
+    for (const message of waiting) {
+      if (postNotebookMessage(message)) continue;
+      finishNotebookRequest(message.requestId, { ok: false, error: 'The message could not be sent to the notebook.' });
+    }
+  }
+
+  // Sends one request and resolves with the notebook's answer, {ok, path?, error?};
+  // `onResult`, if given, runs with it first, in the turn the answer arrives.
+  function sendNotebookRequest(type, fields, onResult) {
+    return new Promise((resolve) => {
+      notebookRequestCounter += 1;
+      const requestId = `osa-${notebookRequestCounter}-${Math.random().toString(36).slice(2, 8)}`;
+      const timer = setTimeout(() => {
+        notebookEmbed.outbox = notebookEmbed.outbox.filter((message) => message.requestId !== requestId);
+        finishNotebookRequest(requestId, { ok: false, error: 'The notebook did not answer.' });
+      }, notebookRequestMs(type));
+      notebookEmbed.requests.set(requestId, { type, resolve, timer, onResult });
+      const message = { target: 'osa-notebook', type, requestId, ...fields };
+      notebookEmbed.outbox.push(message);
+      if (notebookEmbed.state === 'ready') flushNotebookOutbox();
+    });
+  }
+
+  // The notebook's answer to a request; one for a request this widget did not
+  // make, or already settled, is not acted on.
+  function settleNotebookRequest(data) {
+    if (typeof data.requestId !== 'string') return;
+    finishNotebookRequest(data.requestId, {
+      ok: data.ok === true,
+      path: typeof data.path === 'string' ? data.path : undefined,
+      error: typeof data.error === 'string' ? data.error : undefined
+    });
+  }
+
+  // The list of notebooks the page reported. Anything malformed is dropped, so
+  // the strip never shows a tab the page did not list.
+  function applyNotebookList(container, data) {
+    if (!Array.isArray(data.items)) {
+      console.warn('[OSA] Ignoring a list of notebooks that is not a list:', data);
+      return;
+    }
+    const items = [];
+    for (const item of data.items) {
+      if (!item || typeof item.path !== 'string' || typeof item.title !== 'string' ||
+          !NOTEBOOK_KINDS.includes(item.kind) || typeof item.open !== 'boolean') continue;
+      items.push({
+        path: item.path, title: item.title, kind: item.kind, open: item.open,
+        undoable: item.undoable === true
+      });
+    }
+    const active = typeof data.active === 'string' && items.some((item) => item.path === data.active) ? data.active : null;
+    notebookEmbed.tabs = { items, active };
+    const current = notebookEmbed.import;
+    if (current && current.path) {
+      const item = items.find((candidate) => candidate.path === current.path);
+      current.undoable = !!item && item.undoable;
+    }
+    if (notebookEmbed.renaming && !items.some((item) => item.path === notebookEmbed.renaming)) {
+      notebookEmbed.renaming = null;
+    }
+    renderNotebookTabs(container);
+    renderNotebookBanner(container);
+  }
+
+  function pluralize(count, one, other) {
+    return `${count} ${count === 1 ? one : other}`;
+  }
+
+  // Hands a chat's notebook to the notebook page, which writes it as
+  // `<community>/<dataset> · <title>.ipynb`, opens it as a tab, and offers Run all
+  // and Undo here. The caller (the "Continue in notebook" card, E4.3) passes what
+  // buildConversationNotebook returned: {datasetId, title, notebook, stats}.
+  // Opens the notebook tab, and the panel, and waits for the notebook to be ready;
+  // resolves with the page's answer {ok, path?, error?}. Never throws.
+  function importNotebookToTab(input) {
+    const refuse = (reason) => {
+      console.warn(`[OSA] importNotebookToTab: ${reason}`);
+      return Promise.resolve({ ok: false, error: reason });
+    };
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container || !container.classList.contains('osa-capsule')) return refuse('this widget has no notebook tab');
+    if (!input || typeof input !== 'object') return refuse('nothing to import');
+    const { datasetId, title, notebook, stats } = input;
+    if (typeof datasetId !== 'string' || datasetId === '') return refuse('no dataset id');
+    if (typeof title !== 'string') return refuse('no title');
+    if (!notebook || typeof notebook !== 'object' || Array.isArray(notebook)) return refuse('no notebook');
+    if (!isNotebookAvailable() || currentDataset.id !== datasetId) {
+      return refuse(`the notebook on screen is not the one for ${datasetId}`);
+    }
+    setTab(container, 'notebook');
+    if (!isOpen) toggleChat(container);
+    if (notebookEmbed.state === 'failed' || !notebookEmbed.frame) return refuse('the notebook did not open here');
+    const steps = Number.isFinite(stats && stats.steps) ? stats.steps : 0;
+    const leftOut = Array.isArray(stats && stats.leftOut) ? stats.leftOut.length : 0;
+    const record = { state: 'importing', title, steps, leftOut, path: null, undoable: false, error: null };
+    notebookEmbed.import = record;
+    renderNotebookBanner(container);
+    return sendNotebookRequest('import-notebook', { datasetId, title, notebook }, (result) => {
+      if (notebookEmbed.import !== record || record.state !== 'importing') return;
+      // An answer that is not ok but names a path means the file was saved and
+      // only showing it failed: the notebook is there, so Run all and Undo are
+      // offered, with what went wrong beside them.
+      if (result.ok || result.path) {
+        record.state = 'imported';
+        record.path = result.path || null;
+        record.undoable = true;
+        if (!result.ok) record.notice = result.error || 'It was saved, but not opened.';
+      } else {
+        record.state = 'error';
+        record.error = result.error || 'The notebook could not be imported.';
+      }
+      renderNotebookBanner(container);
+    });
+  }
+
+  // Run all and Undo: the banner's two buttons.
+  function runImportedNotebook(container) {
+    const record = notebookEmbed.import;
+    if (!record || !['imported', 'ran', 'failed'].includes(record.state) || !record.path) return;
+    record.state = 'running';
+    record.notice = null;
+    renderNotebookBanner(container);
+    sendNotebookRequest('run-all', { path: record.path }, (result) => {
+      // Only the run that started this state may end it.
+      if (notebookEmbed.import !== record || record.state !== 'running') return;
+      record.state = result.ok ? 'ran' : 'failed';
+      record.error = result.ok ? null : (result.error || 'The cells did not all run.');
+      renderNotebookBanner(container);
+    });
+  }
+
+  function undoImportedNotebook(container) {
+    const record = notebookEmbed.import;
+    if (!record || !record.path || !record.undoable || record.state === 'running') return;
+    const before = record.state;
+    record.state = 'undoing';
+    renderNotebookBanner(container);
+    sendNotebookRequest('undo-import', { path: record.path }, (result) => {
+      if (notebookEmbed.import !== record || record.state !== 'undoing') return;
+      if (result.ok) {
+        record.state = 'undone';
+        record.undoable = false;
+      } else {
+        // Most often: the reader edited it, so it was kept.
+        record.state = before;
+        record.undoable = false;
+        record.notice = result.error || 'It could not be undone.';
+      }
+      renderNotebookBanner(container);
+    });
+  }
+
+  // The banner under the strip, for the notebook the import made.
+  function renderNotebookBanner(container) {
+    const banner = container.querySelector('.osa-notebook-banner');
+    if (!banner) return;
+    const record = notebookEmbed.import;
+    const showing = !!record && (record.state === 'importing' || !record.path ||
+      notebookEmbed.tabs.active === null || notebookEmbed.tabs.active === record.path);
+    banner.hidden = !showing;
+    banner.textContent = '';
+    if (!showing) return;
+    const steps = pluralize(record.steps, 'step', 'steps');
+    const left = record.leftOut > 0
+      ? ` ${record.leftOut} ${record.leftOut === 1 ? 'run was' : 'runs were'} left out.`
+      : '';
+    const text = {
+      importing: `Importing ${steps} from your chat…`,
+      imported: `Imported ${steps} from your chat.${left} Python is starting; run all cells when it is ready.`,
+      running: 'Running the cells one at a time…',
+      ran: `All cells ran.${left}`,
+      undoing: 'Removing the imported notebook…',
+      undone: 'The imported notebook was removed.',
+      failed: record.error,
+      error: record.error
+    }[record.state] || '';
+    const message = document.createElement('span');
+    message.className = 'osa-notebook-banner-text';
+    message.textContent = record.notice ? `${text} ${record.notice}` : text;
+    banner.appendChild(message);
+    const addButton = (label, className, onClick, disabled = false) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = className;
+      button.textContent = label;
+      button.disabled = disabled;
+      button.addEventListener('click', onClick);
+      banner.appendChild(button);
+    };
+    const live = ['imported', 'running', 'ran', 'failed'].includes(record.state);
+    if (live) {
+      addButton('Run all', 'osa-notebook-run-all', () => runImportedNotebook(container), record.state === 'running');
+    }
+    // Not while the cells run: removing the file under a run would fail it.
+    if (live && record.undoable && record.state !== 'running') {
+      addButton('Undo', 'osa-notebook-undo', () => undoImportedNotebook(container));
+    }
+    if (['ran', 'failed', 'undone', 'error'].includes(record.state)) {
+      addButton('Dismiss', 'osa-notebook-dismiss', () => {
+        if (notebookEmbed.import === record) notebookEmbed.import = null;
+        renderNotebookBanner(container);
+      });
+    }
+  }
+
+  // The strip: the open notebooks as tabs, then the "+" button and its menu.
+  // Rebuilt from notebookEmbed.tabs each time; a rename in progress keeps its
+  // text and its focus across the rebuild.
+  function renderNotebookTabs(container) {
+    const bar = container.querySelector('.osa-nb-bar');
+    if (!bar) return;
+    const strip = bar.querySelector('.osa-nb-strip');
+    const menu = bar.querySelector('.osa-nb-menu');
+    const add = bar.querySelector('.osa-nb-add');
+    const open = notebookEmbed.tabs.items.filter((item) => item.open);
+    const closed = notebookEmbed.tabs.items.filter((item) => !item.open);
+    bar.hidden = notebookEmbed.tabs.items.length === 0;
+    const editing = strip.querySelector('.osa-nb-rename');
+    if (editing) notebookEmbed.renameDraft = editing.value;
+    const hadFocus = !!editing && document.activeElement === editing;
+    if (editing) editing.dataset.rebuilding = '1';
+    // What has focus in the strip, so it can be given back to the same control
+    // once the strip is rebuilt: a tab by its path, Rename or Close by the
+    // notebook they belong to.
+    const focused = document.activeElement && strip.contains(document.activeElement) ? document.activeElement : null;
+    const focusedGroup = focused ? focused.closest('.osa-nb-tab') : null;
+    const focusedPath = focusedGroup ? (focusedGroup.querySelector('.osa-nb-tab-label') || {}).dataset?.path : undefined;
+    const focusedAction = focused && focused.classList.contains('osa-nb-action')
+      ? (focused.classList.contains('osa-nb-rename-btn') ? 'osa-nb-rename-btn' : 'osa-nb-close-btn')
+      : null;
+    strip.textContent = '';
+    open.forEach((item) => {
+      const selected = item.path === notebookEmbed.tabs.active;
+      const group = document.createElement('div');
+      group.className = `osa-nb-tab${selected ? ' osa-nb-tab-on' : ''}`;
+      if (notebookEmbed.renaming === item.path) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'osa-nb-rename';
+        input.value = notebookEmbed.renameDraft || item.title;
+        input.setAttribute('aria-label', 'Notebook name');
+        input.maxLength = 64;
+        let finished = false;
+        const finish = (commit) => {
+          if (finished) return;
+          finished = true;
+          notebookEmbed.renaming = null;
+          const title = input.value.trim();
+          notebookEmbed.renameDraft = '';
+          if (commit && title !== '' && title !== item.title) {
+            sendNotebookRequest('rename-notebook', { path: item.path, title }, (result) => {
+              if (!result.ok) console.warn(`[OSA] The notebook was not renamed: ${result.error}`);
+              else if (notebookEmbed.import && notebookEmbed.import.path === item.path && result.path) {
+                notebookEmbed.import.path = result.path;
+              }
+            });
+          }
+          renderNotebookTabs(container);
+        };
+        input.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            finish(true);
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            finish(false);
+          }
+        });
+        // Not while the strip is rebuilt around it: removing a focused input blurs it.
+        input.addEventListener('blur', () => {
+          if (!input.dataset.rebuilding) finish(true);
+        });
+        group.appendChild(input);
+        strip.appendChild(group);
+        if (hadFocus) input.focus();
+        return;
+      }
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'osa-nb-tab-label';
+      if (selected) tab.setAttribute('aria-current', 'true');
+      tab.title = item.title;
+      tab.textContent = item.title;
+      tab.dataset.path = item.path;
+      tab.addEventListener('click', () => {
+        if (!selected) sendNotebookRequest('open-notebook', { path: item.path });
+      });
+      tab.addEventListener('keydown', (event) => {
+        const tabs = [...strip.querySelectorAll('.osa-nb-tab-label')];
+        const at = tabs.indexOf(tab);
+        const target = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: tabs.length - 1 }[event.key];
+        if (target === undefined || tabs.length === 0) return;
+        event.preventDefault();
+        const next = tabs[(target + tabs.length) % tabs.length];
+        next.focus();
+      });
+      group.appendChild(tab);
+      if (selected && item.kind !== 'playground') {
+        const rename = document.createElement('button');
+        rename.type = 'button';
+        rename.className = 'osa-nb-action osa-nb-rename-btn';
+        rename.setAttribute('aria-label', `Rename ${item.title}`);
+        rename.innerHTML = NOTEBOOK_ICONS.pencil;
+        rename.addEventListener('click', () => {
+          notebookEmbed.renaming = item.path;
+          notebookEmbed.renameDraft = item.title;
+          renderNotebookTabs(container);
+          const input = container.querySelector('.osa-nb-rename');
+          if (input) {
+            input.focus();
+            input.select();
+          }
+        });
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'osa-nb-action osa-nb-close-btn';
+        close.setAttribute('aria-label', `Close ${item.title}`);
+        close.innerHTML = NOTEBOOK_ICONS.close;
+        close.addEventListener('click', () => {
+          sendNotebookRequest('close-notebook', { path: item.path });
+        });
+        group.append(rename, close);
+      }
+      strip.appendChild(group);
+    });
+
+    // Focus goes back where it was. A control that is gone (its notebook was
+    // closed or renamed, or its Rename and Close went with the selection) hands
+    // it to the tab of the same notebook, or else to the notebook now on screen.
+    if (focused && !strip.contains(document.activeElement)) {
+      const labels = [...strip.querySelectorAll('.osa-nb-tab-label')];
+      const byPath = labels.find((label) => label.dataset.path === focusedPath);
+      const action = focusedAction && byPath ? byPath.closest('.osa-nb-tab').querySelector(`.${focusedAction}`) : null;
+      const next = action || byPath || labels.find((label) => label.hasAttribute('aria-current')) || labels[0];
+      if (next) {
+        next.focus();
+      }
+    }
+
+    add.setAttribute('aria-expanded', notebookEmbed.menuOpen ? 'true' : 'false');
+    menu.hidden = !notebookEmbed.menuOpen;
+    // The same goes for the menu: a list that arrives while an entry has focus
+    // gives focus to the entry at that place in the rebuilt menu.
+    const focusedEntry = [...menu.querySelectorAll('.osa-nb-menu-item')].indexOf(document.activeElement);
+    menu.textContent = '';
+    const entry = (label, onClick) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'osa-nb-menu-item';
+      button.setAttribute('role', 'menuitem');
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        closeNotebookMenu(container, true);
+        onClick();
+      });
+      menu.appendChild(button);
+    };
+    entry('Blank notebook', () => { sendNotebookRequest('new-notebook', {}); });
+    if (closed.length > 0) {
+      const heading = document.createElement('div');
+      heading.className = 'osa-nb-menu-heading';
+      heading.setAttribute('role', 'presentation');
+      heading.textContent = 'Reopen';
+      menu.appendChild(heading);
+      for (const item of closed) {
+        entry(item.title, () => { sendNotebookRequest('open-notebook', { path: item.path }); });
+      }
+    }
+    if (focusedEntry >= 0 && notebookEmbed.menuOpen) {
+      const entries = menu.querySelectorAll('.osa-nb-menu-item');
+      entries[Math.min(focusedEntry, entries.length - 1)].focus();
+    }
+  }
+
+  function closeNotebookMenu(container, restoreFocus = false) {
+    if (!notebookEmbed.menuOpen) return;
+    notebookEmbed.menuOpen = false;
+    renderNotebookTabs(container);
+    if (restoreFocus) container.querySelector('.osa-nb-add')?.focus();
+  }
+
+  // The strip's "+" button and its menu: opens on click, closes on Escape, on a
+  // click anywhere else in the widget, and when an entry is chosen.
+  function wireNotebookTabs(view) {
+    const add = view.querySelector('.osa-nb-add');
+    const menu = view.querySelector('.osa-nb-menu');
+    add.addEventListener('click', () => {
+      const container = view.closest('.osa-chat-widget');
+      if (!container) return;
+      notebookEmbed.menuOpen = !notebookEmbed.menuOpen;
+      renderNotebookTabs(container);
+      if (notebookEmbed.menuOpen) menu.querySelector('.osa-nb-menu-item')?.focus();
+    });
+    view.addEventListener('keydown', (event) => {
+      const container = view.closest('.osa-chat-widget');
+      if (!container || !notebookEmbed.menuOpen) return;
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        closeNotebookMenu(container, true);
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const items = [...menu.querySelectorAll('.osa-nb-menu-item')];
+        const at = items.indexOf(document.activeElement);
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        if (items.length > 0) {
+          event.preventDefault();
+          items[(at + step + items.length) % items.length].focus();
+        }
+      }
+    });
+    view.addEventListener('click', (event) => {
+      const container = view.closest('.osa-chat-widget');
+      if (container && notebookEmbed.menuOpen && !event.target.closest('.osa-nb-add, .osa-nb-menu')) {
+        closeNotebookMenu(container);
+      }
+    });
+    // Focus moving to something else in the widget closes the menu (Tab away).
+    // A target of null is no evidence: some browsers do not focus a button on
+    // click, so that case is left to the click handler above.
+    view.addEventListener('focusout', (event) => {
+      const container = view.closest('.osa-chat-widget');
+      const to = event.relatedTarget;
+      if (container && notebookEmbed.menuOpen && to && !to.closest('.osa-nb-add, .osa-nb-menu')) {
+        closeNotebookMenu(container);
+      }
+    });
+    // A click in the cross-origin frame is no event the widget can see, but it
+    // moves focus there and so blurs this window.
+    window.addEventListener('blur', () => {
+      const container = view.closest('.osa-chat-widget');
+      // An entry that has focus when the window loses it would be removed with
+      // the menu; focus goes to the "+" button instead. A click into the frame
+      // leaves focus on the frame, which this must not take back.
+      if (container && notebookEmbed.menuOpen) closeNotebookMenu(container, menu.contains(document.activeElement));
+    });
   }
 
   // The notebook tab's header line and its loading and fallback overlays.
@@ -4769,6 +5523,12 @@
     view.className = 'osa-view osa-view-notebook osa-view-off';
     view.setAttribute('inert', '');
     view.innerHTML = `
+      <div class="osa-nb-bar" hidden>
+        <div class="osa-nb-strip" role="group" aria-label="Notebooks"></div>
+        <button type="button" class="osa-nb-add" aria-label="New notebook" aria-haspopup="menu" aria-expanded="false">${NOTEBOOK_ICONS.plus}</button>
+        <div class="osa-nb-menu" role="menu" aria-label="New notebook" hidden></div>
+      </div>
+      <div class="osa-notebook-banner" role="status" hidden></div>
       <div class="osa-notebook-overlay osa-notebook-loading osa-overlay-hidden" role="status">
         <div class="osa-notebook-overlay-title">Opening the notebook</div>
         <div class="osa-notebook-bar-track"><div class="osa-notebook-bar"></div></div>
@@ -4782,6 +5542,7 @@
           <a class="osa-notebook-open-tab" target="_blank" rel="noopener">Open in a new tab</a>
         </div>
       </div>`;
+    wireNotebookTabs(view);
     view.querySelector('.osa-notebook-retry').addEventListener('click', () => {
       const container = view.closest('.osa-chat-widget');
       if (!container) return;
@@ -12778,10 +13539,20 @@
     window.OSAChatWidget.__isSameResponseMessage = isSameResponseMessage;
     window.OSAChatWidget.__notebook = {
       // The notebook tab's own state (#470), read-only, and its two timeouts.
-      state: () => ({ ...notebookEmbed, frame: undefined, loadTimer: undefined, readyTimer: undefined }),
+      state: () => ({
+        ...notebookEmbed, frame: undefined, loadTimer: undefined, readyTimer: undefined,
+        outbox: [...notebookEmbed.outbox], requests: notebookEmbed.requests.size
+      }),
+      // What E4.3's "Continue in notebook" card calls.
+      importNotebookToTab,
       setTimeouts: (afterLoadMs, totalMs) => {
         NOTEBOOK_AFTER_LOAD_MS = afterLoadMs;
         NOTEBOOK_TOTAL_MS = totalMs;
+      },
+      // How long a request waits for its answer: most of them, and Run all.
+      setRequestTimeouts: (requestMs, runAllMs) => {
+        NOTEBOOK_REQUEST_MS = requestMs;
+        NOTEBOOK_RUN_ALL_MS = runAllMs;
       },
     };
     window.OSAChatWidget.__browser = {

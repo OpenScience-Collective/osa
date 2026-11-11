@@ -26,6 +26,8 @@
   Cache-Control: no-cache
 /osa-bridge.js
   Cache-Control: no-cache
+/osa-notebook-files.js
+  Cache-Control: no-cache
 /starters/*
   Cache-Control: no-cache
 /lock/*

@@ -559,6 +559,20 @@ class TestCopyBootstrapFiles:
         ).read_bytes()
         assert "_headers" not in site.BOOTSTRAP_FILES  # generated separately; see write_headers
 
+    def test_the_bridge_and_its_pure_half_ship_together(self, tmp_path: Path) -> None:
+        """osa-bridge.js loads osa-notebook-files.js with import(), which imports
+        open.js: a build that dropped either would break the tabs in a reader's
+        browser and nowhere else."""
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        site.copy_bootstrap_files(output_dir)
+
+        assert {"osa-bridge.js", "osa-notebook-files.js", "open.js"} <= set(site.BOOTSTRAP_FILES)
+        files_module = (output_dir / "osa-notebook-files.js").read_text()
+        assert "from './open.js'" in files_module
+        assert "import(FILES_URL)" in (output_dir / "osa-bridge.js").read_text()
+
 
 class TestSiteSubdir:
     """OSC's naming rule: a subdomain is a plane, the project is the path."""
@@ -632,7 +646,12 @@ class TestWriteHeaders:
         site.write_headers(publish_root, "osa", [])
 
         lines = (publish_root / "_headers").read_text().splitlines()
-        for path in ("/osa/open", "/osa/open.html", "/osa/osa-bridge.js"):
+        for path in (
+            "/osa/open",
+            "/osa/open.html",
+            "/osa/osa-bridge.js",
+            "/osa/osa-notebook-files.js",
+        ):
             assert path in lines
             assert lines[lines.index(path) + 1].strip() == "Cache-Control: no-cache"
 

@@ -16,11 +16,22 @@
  *    embeds it: it reports when the notebook is ready and how setup went, and
  *    applies the light or dark theme the widget sends.
  *
+ * 4. When embedded, keeps the notebooks of the dataset (the starter, notebooks
+ *    imported from a chat, blank ones) as named tabs and writes an import to
+ *    storage: the page is cross-origin to the widget, so only this script can
+ *    (#673, #676, docs/adr/0017-notebook-import-and-tabs.md; the pure rules are
+ *    in osa-notebook-files.js).
+ *
  * Messages from this page:   { source: 'osa-notebook', type: 'ready' }
  *                            { source: 'osa-notebook', type: 'setup', status: 'running' | 'done' | 'error' | 'none' }
  *                            { source: 'osa-notebook', type: 'theme', scheme: 'light' | 'dark', applied: boolean }
  *                            { source: 'osa-notebook', type: 'error', phase: 'startup' }
+ *                            { source: 'osa-notebook', type: 'result', requestId, ok, path?, error? }
+ *                            { source: 'osa-notebook', type: 'notebooks', items: [{path, title, kind, open, undoable?}], active }
  * Messages to this page:     { target: 'osa-notebook', type: 'theme', scheme: 'light' | 'dark' }
+ *                            { target: 'osa-notebook', type: 'import-notebook' | 'run-all' | 'undo-import' | 'new-notebook'
+ *                              | 'open-notebook' | 'rename-notebook' | 'close-notebook', requestId, ... }
+ *                            (the fields of each are in notebook/README.md)
  *
  * Only the embedding page itself is listened to (event.source === window.parent).
  * The site's frame-ancestors policy already limits which pages can be that
@@ -31,6 +42,9 @@
   const AUTORUN_TAG = 'osa-autorun';
   const THEMES = { light: 'JupyterLab Light', dark: 'JupyterLab Dark' };
   const embedded = window.parent !== window;
+  // Where osa-notebook-files.js is, resolved now: document.currentScript is
+  // only set while this script first runs.
+  const FILES_URL = new URL('./osa-notebook-files.js', document.currentScript?.src || window.location.href).href;
 
   function post(message) {
     if (embedded) window.parent.postMessage({ source: 'osa-notebook', ...message }, '*');
@@ -232,17 +246,471 @@
     return themeQueue;
   }
 
+  // A restart, or a new kernel, is a fresh Python, so setup runs again. Called
+  // for every notebook the page shows, since a tab switch shows another panel.
+  function watchKernel(app, panel) {
+    let restarting = false;
+    panel.sessionContext.statusChanged.connect((_, status) => {
+      if (status === 'restarting' || status === 'autorestarting') restarting = true;
+      else if (restarting && status === 'idle') {
+        restarting = false;
+        runSetup(app, panel);
+      }
+    });
+    panel.sessionContext.kernelChanged.connect((_, change) => {
+      if (change.oldValue && change.newValue) runSetup(app, panel);
+    });
+  }
+
+  // Each panel's guard, and its setup if it has setup cells that have not run
+  // in this page yet, as a promise a caller can wait on. Setup runs once per
+  // path: the kernel of a notebook the reader tabbed away from keeps running,
+  // and the panel that comes back reconnects to it.
+  const adopted = new WeakMap();
+  const setupPaths = new Set();
+
+  function adoptPanel(app, panel) {
+    watchKernel(app, panel);
+    const guard = sendRejectionGuard(panel).catch(guardMissing);
+    const path = panel.context.path;
+    let ready = guard;
+    if (autorunIndices(panel.content.model).length > 0 && !setupPaths.has(path)) {
+      setupPaths.add(path);
+      ready = runSetup(app, panel, guard);
+    }
+    adopted.set(panel, ready);
+    return ready;
+  }
+
+  // --- Notebook tabs and import (#673, #676; docs/adr/0017-notebook-import-and-tabs.md) ---
+  //
+  // JupyterLite's notebooks page is a single-document shell: it shows one
+  // notebook, and `docmanager:open` would put another in a browser tab of its
+  // own. A tab switch therefore closes the panel on screen (its kernel keeps
+  // running, so Python state survives) and opens the next one in its place.
+
+  const NOTEBOOK_OPEN_TIMEOUT_MS = 30_000;
+  // A healthy cold setup takes up to 120 s (notebook/e2e-check.js allows that),
+  // so this is longer, so as not to fail a request that is only waiting. It is
+  // shorter than the widget's own 240 s wait for a reply (this plus the 30 s to
+  // open the notebook), so the answer is an error the widget reads.
+  const SETUP_WAIT_TIMEOUT_MS = 150_000;
+  const SETUP_WAIT_EXPIRED = Symbol('setup wait expired');
+
+  const resultMessage = (requestId, outcome) => ({
+    type: 'result',
+    requestId,
+    ok: outcome.ok,
+    ...(outcome.path === undefined ? {} : { path: outcome.path }),
+    ...(outcome.error === undefined ? {} : { error: outcome.error }),
+  });
+
+  async function createTabs(app, files, firstPanel) {
+    const response = await fetch(new URL('./starters/index.json', FILES_URL), { cache: 'no-store' });
+    const context = files.tabContext(firstPanel.context.path, await response.json());
+    if (!context.ok) throw new Error(`no tabs for ${firstPanel.context.path}: ${context.error}`);
+    const { community, datasetId, datasetPattern } = context;
+    const playground = firstPanel.context.path;
+    const contents = app.serviceManager.contents;
+    const storageKey = `osa-notebook-tabs:${community}:${datasetId}`;
+
+    // The open tabs, in order; the starter is always first. Kept in this
+    // browser's storage so a reload brings them back; a closed notebook is
+    // still a file, so it is listed (open: false) and can be reopened.
+    const readOpen = () => {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(storageKey));
+        return Array.isArray(saved?.open) ? saved.open.filter((path) => typeof path === 'string') : [];
+      } catch {
+        return [];
+      }
+    };
+    let openList = [playground, ...readOpen().filter((path) => path !== playground)];
+    const writeOpen = () => {
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify({ open: openList }));
+      } catch (err) {
+        warn('the open notebooks were not remembered', err);
+      }
+    };
+    const addOpen = (path) => {
+      if (openList.includes(path)) return;
+      openList = [...openList, path];
+      writeOpen();
+    };
+
+    const kinds = new Map([[playground, 'playground']]);
+    // The latest import and what its source was, so Undo is offered only until
+    // the reader edits it.
+    let lastImport = null;
+    let runningAll = null;
+
+    const activePath = () => app.shell.currentWidget?.context?.path ?? null;
+
+    async function listFiles() {
+      const directory = await contents.get(community, { content: true });
+      return (directory.content || [])
+        .filter((model) => files.belongsToDataset(model.name, datasetId))
+        .map((model) => ({ path: model.path || `${community}/${model.name}`, lastModified: model.last_modified || '' }));
+    }
+
+    async function kindOf(path) {
+      if (kinds.has(path)) return kinds.get(path);
+      let kind = 'blank';
+      try {
+        kind = files.kindOf((await contents.get(path, { content: true })).content);
+      } catch (err) {
+        warn(`could not read the kind of ${path}`, err);
+      }
+      kinds.set(path, kind);
+      return kind;
+    }
+
+    async function isEdited(record) {
+      const panel = app.shell.currentWidget;
+      const content =
+        panel?.context?.path === record.path && panel.context.model
+          ? panel.context.model.toJSON()
+          : (await contents.get(record.path, { content: true })).content;
+      return files.sourceSignature(content) !== record.signature;
+    }
+
+    // The notebooks of this dataset: the open ones in tab order, then the
+    // closed ones, newest first.
+    async function listNotebooks() {
+      const present = await listFiles();
+      const exists = new Set(present.map((file) => file.path));
+      const active = activePath();
+      if (active && exists.has(active)) addOpen(active);
+      const closed = present
+        .filter((file) => !openList.includes(file.path))
+        .sort((a, b) => (a.lastModified < b.lastModified ? 1 : a.lastModified > b.lastModified ? -1 : 0))
+        .map((file) => file.path);
+      const order = [...openList.filter((path) => exists.has(path)), ...closed];
+      const items = [];
+      for (const path of order) {
+        items.push({
+          path,
+          title: files.titleFromPath(path, datasetId),
+          kind: await kindOf(path),
+          open: openList.includes(path),
+        });
+      }
+      if (lastImport) {
+        const item = items.find((candidate) => candidate.path === lastImport.path);
+        if (item) item.undoable = !(await isEdited(lastImport));
+        else lastImport = null;
+      }
+      return items;
+    }
+
+    let lastPosted = '';
+    let postChain = Promise.resolve();
+    // One list at a time, and not again when nothing changed: an autosave moves
+    // nothing the widget shows.
+    function postNotebooks(force = false) {
+      postChain = postChain
+        .then(async () => {
+          const items = await listNotebooks();
+          const active = activePath();
+          const message = { type: 'notebooks', items, active: items.some((item) => item.path === active) ? active : null };
+          const serialized = JSON.stringify(message);
+          if (!force && serialized === lastPosted) return;
+          lastPosted = serialized;
+          post(message);
+        })
+        .catch((err) => warn('the list of notebooks was not sent', err));
+      return postChain;
+    }
+
+    let scheduled = null;
+    function scheduleNotebooks() {
+      clearTimeout(scheduled);
+      scheduled = setTimeout(() => postNotebooks(), 150);
+    }
+
+    // The panel on screen goes: what it holds unsaved is saved first, and a
+    // file nobody changed is left as it is.
+    async function retire(panel) {
+      try {
+        if (panel.context.model?.dirty) await panel.context.save();
+      } catch (err) {
+        warn('the notebook was not saved before it closed', err);
+      }
+      panel.dispose();
+    }
+
+    // Shows `path`: the one panel the page holds is replaced. Waits for the
+    // starter's setup first, which runs on the panel that is on screen, but not
+    // for ever: the widget gives up on a request after 180 s, and a setup that
+    // hangs must not hold the queue (every later tab request) behind it.
+    async function show(path) {
+      if (setupRun) {
+        let timer;
+        const expired = new Promise((resolve) => {
+          timer = setTimeout(() => resolve(SETUP_WAIT_EXPIRED), SETUP_WAIT_TIMEOUT_MS);
+        });
+        const outcome = await Promise.race([setupRun, expired]).finally(() => clearTimeout(timer));
+        if (outcome === SETUP_WAIT_EXPIRED) throw new Error('the starter notebook is still setting up; try again in a moment');
+      }
+      const current = app.shell.currentWidget;
+      if (current?.context?.path === path) return current;
+      if (current) await retire(current);
+      await app.commands.execute('docmanager:open', { path, factory: 'Notebook', options: { ref: '_noref' } });
+      const panel = await waitFor(
+        () => {
+          const widget = app.shell.currentWidget;
+          return widget?.context?.path === path && widget.content?.model && widget.sessionContext ? widget : null;
+        },
+        NOTEBOOK_OPEN_TIMEOUT_MS,
+        `the notebook ${path}`
+      );
+      await panel.context.ready;
+      adoptPanel(app, panel);
+      return panel;
+    }
+
+    async function writeNotebook(path, content, kind) {
+      await contents.save(path, { type: 'notebook', format: 'json', content: files.withKind(content, kind) });
+      kinds.set(path, kind);
+    }
+
+    async function importNotebook(request) {
+      if (request.datasetId !== datasetId) {
+        return { ok: false, error: `this notebook is for ${datasetId}, not ${request.datasetId}` };
+      }
+      const taken = (await listFiles()).map((file) => file.path);
+      const path = files.importedPath(community, datasetId, request.title, taken);
+      const content = files.withKind(request.notebook, 'chat');
+      await writeNotebook(path, content, 'chat');
+      lastImport = { path, signature: files.sourceSignature(content) };
+      addOpen(path);
+      try {
+        await show(path);
+      } catch (err) {
+        // The file is written and listed; only showing it failed.
+        warn('the imported notebook was saved but not opened', err);
+        return { ok: false, path, error: `it was saved as a tab, but not opened: ${err.message || err}` };
+      }
+      return { ok: true, path };
+    }
+
+    async function newNotebook() {
+      const taken = (await listFiles()).map((file) => file.path);
+      const path = files.importedPath(community, datasetId, files.BLANK_TITLE, taken);
+      await writeNotebook(path, files.blankNotebook(), 'blank');
+      addOpen(path);
+      try {
+        await show(path);
+      } catch (err) {
+        // As for an import: the file is written and listed, so the answer names
+        // it and the strip shows it; a bare error would hide that it exists.
+        warn('the new notebook was saved but not opened', err);
+        return { ok: false, path, error: `it was saved as a tab, but not opened: ${err.message || err}` };
+      }
+      return { ok: true, path };
+    }
+
+    async function openNotebook(request) {
+      addOpen(request.path);
+      await show(request.path);
+      return { ok: true, path: request.path };
+    }
+
+    async function renameNotebook(request) {
+      const taken = (await listFiles()).map((file) => file.path);
+      const next = files.renamedPath(request.path, request.title, taken);
+      if (next === request.path) return { ok: true, path: next };
+      await contents.rename(request.path, next);
+      openList = openList.map((path) => (path === request.path ? next : path));
+      writeOpen();
+      if (kinds.has(request.path)) {
+        kinds.set(next, kinds.get(request.path));
+        kinds.delete(request.path);
+      }
+      if (lastImport?.path === request.path) lastImport = { ...lastImport, path: next };
+      return { ok: true, path: next };
+    }
+
+    // The tab to land on when `path` goes: the one before it.
+    const neighbour = (path) => openList[Math.max(0, openList.indexOf(path) - 1)] ?? playground;
+
+    async function closeNotebook(request) {
+      if (activePath() === request.path) await show(neighbour(request.path));
+      openList = openList.filter((path) => path !== request.path);
+      writeOpen();
+      return { ok: true, path: request.path };
+    }
+
+    async function undoImport(request) {
+      // Removing the file under a run would fail it: "closed before every cell ran".
+      if (runningAll === request.path) return { ok: false, path: request.path, error: 'the cells are running' };
+      if (lastImport?.path !== request.path) return { ok: false, error: 'only the latest import can be undone' };
+      if (await isEdited(lastImport)) return { ok: false, error: 'it has been edited, so it was kept' };
+      if (activePath() === request.path) await show(neighbour(request.path));
+      openList = openList.filter((path) => path !== request.path);
+      writeOpen();
+      await contents.delete(request.path);
+      kinds.delete(request.path);
+      lastImport = null;
+      return { ok: true, path: request.path };
+    }
+
+    // Runs the notebook's cells one at a time, as setup does: run-all-cells
+    // never settles (docs/adr/0012). Stops at the first cell that fails.
+    async function runAll(request) {
+      if (runningAll) return { ok: false, path: request.path, error: 'the cells are already running' };
+      runningAll = request.path;
+      try {
+        const panel = await show(request.path);
+        await panel.sessionContext.ready;
+        await adopted.get(panel);
+        const notebook = panel.content;
+        const model = notebook.model;
+        for (let index = 0; index < model.cells.length; index++) {
+          if (app.shell.currentWidget !== panel) throw new Error('the notebook was closed before every cell ran');
+          const cell = model.cells.get(index);
+          const isCode = cell.type === 'code';
+          if (isCode && cell.sharedModel.getSource().trim() === '') continue;
+          if (isCode) cell.executionCount = null;
+          notebook.activeCellIndex = index;
+          await app.commands.execute('notebook:run-cell');
+          if (isCode && (cell.executionCount === null || hasError(cell))) {
+            return { ok: false, path: request.path, error: `cell ${index + 1} did not finish without an error` };
+          }
+        }
+        return { ok: true, path: request.path };
+      } finally {
+        runningAll = null;
+      }
+    }
+
+    // What each request does; Run all is the one that is not waited for.
+    const HANDLERS = {
+      'import-notebook': importNotebook,
+      'new-notebook': newNotebook,
+      'open-notebook': openNotebook,
+      'rename-notebook': renameNotebook,
+      'close-notebook': closeNotebook,
+      'undo-import': undoImport,
+    };
+
+    async function handle(data) {
+      let checked;
+      try {
+        checked = files.validateTabMessage(data, { community, datasetPattern, items: await listNotebooks() });
+      } catch (err) {
+        // The listing the check needs (the contents, or a read of a file's
+        // edits) failed: a request that is one gets an answer, not a wait.
+        warn('a request from the widget could not be checked', err);
+        const requestId = files.tabRequestId(data);
+        if (requestId !== null) post(resultMessage(requestId, { ok: false, error: err.message || String(err) }));
+        return;
+      }
+      if (!checked.ok) {
+        if (checked.ignored) warn('a message from the widget was ignored', checked.error || data?.type);
+        else post(resultMessage(checked.requestId, checked));
+        return;
+      }
+      const { request } = checked;
+      if (request.type === 'run-all') {
+        runAll(request)
+          .catch((err) => ({ ok: false, path: request.path, error: err.message }))
+          .then((outcome) => {
+            post(resultMessage(request.requestId, outcome));
+            return postNotebooks();
+          });
+        return;
+      }
+      let outcome;
+      try {
+        const handler = HANDLERS[request.type];
+        outcome = handler ? await handler(request) : { ok: false, error: `${request.type} is not supported here` };
+      } catch (err) {
+        warn(`${request.type} failed`, err);
+        outcome = { ok: false, error: err.message || String(err) };
+      }
+      post(resultMessage(request.requestId, outcome));
+      await postNotebooks();
+    }
+
+    // Anything that changes the list: a save, a rename, another panel on screen.
+    contents.fileChanged.connect(scheduleNotebooks);
+    app.shell.currentChanged?.connect(scheduleNotebooks);
+    await postNotebooks(true);
+    return { handle };
+  }
+
   let appReady = null;
   let pendingScheme = null;
+  // Requests from the widget wait here until the tabs have started (or failed
+  // to), and then run one at a time, in the order they came.
+  let tabs = null;
+  let releaseTabs = () => {};
+  let tabQueue = new Promise((resolve) => {
+    releaseTabs = resolve;
+  });
+
+  // The id a reply goes under, or null for a message that gets none: the same
+  // rule as validateTabMessage (osa-notebook-files.js). If that module did not
+  // load there is no list of types to check, so any message of this target
+  // with a well-formed id is answered, so the widget does not wait on it.
+  async function answerableId(data) {
+    const files = await filesModule;
+    if (files) return files.tabRequestId(data);
+    const id = data.requestId;
+    return typeof id === 'string' && /^[A-Za-z0-9._:-]{1,64}$/.test(id) ? id : null;
+  }
+
+  function queueTabRequest(data) {
+    tabQueue = tabQueue.then(async () => {
+      if (tabs) {
+        try {
+          await tabs.handle(data);
+        } catch (err) {
+          warn('a request from the widget failed', err);
+        }
+        return;
+      }
+      const requestId = await answerableId(data);
+      if (requestId !== null) post({ type: 'result', requestId, ok: false, error: 'the notebook tabs are not available' });
+    });
+  }
 
   window.addEventListener('message', (event) => {
     if (!embedded || event.source !== window.parent) return;
     const data = event.data;
-    if (!data || data.target !== 'osa-notebook' || data.type !== 'theme') return;
-    if (!Object.hasOwn(THEMES, data.scheme)) return;
-    if (appReady) queueTheme(appReady, data.scheme);
-    else pendingScheme = data.scheme;
+    if (!data || data.target !== 'osa-notebook') return;
+    if (data.type === 'theme') {
+      if (!Object.hasOwn(THEMES, data.scheme)) return;
+      if (appReady) queueTheme(appReady, data.scheme);
+      else pendingScheme = data.scheme;
+      return;
+    }
+    // Tab and import requests; osa-notebook-files.js says which types it knows.
+    queueTabRequest(data);
   });
+
+  // Never throws: a page whose tabs cannot start still runs its notebook.
+  async function startTabs(app, panel) {
+    try {
+      const files = await filesModule;
+      if (!files) throw new Error('osa-notebook-files.js did not load');
+      tabs = await createTabs(app, files, panel);
+    } catch (err) {
+      warn('the notebook tabs did not start', err);
+    } finally {
+      releaseTabs();
+    }
+  }
+
+  // Started now, in parallel with JupyterLite: it is needed only once the notebook is on screen.
+  const filesModule = embedded
+    ? import(FILES_URL).catch((err) => {
+        warn('osa-notebook-files.js did not load', err);
+        return null;
+      })
+    : Promise.resolve(null);
 
   (async () => {
     const app = await waitFor(() => window.jupyterapp, 60_000, 'window.jupyterapp');
@@ -263,19 +731,12 @@
     if (pendingScheme) await queueTheme(app, pendingScheme);
     post({ type: 'ready' });
 
-    // A restart, or a new kernel, is a fresh Python, so setup runs again.
-    let restarting = false;
-    panel.sessionContext.statusChanged.connect((_, status) => {
-      if (status === 'restarting' || status === 'autorestarting') restarting = true;
-      else if (restarting && status === 'idle') {
-        restarting = false;
-        runSetup(app, panel);
-      }
-    });
-    panel.sessionContext.kernelChanged.connect((_, change) => {
-      if (change.oldValue && change.newValue) runSetup(app, panel);
-    });
-    await runSetup(app, panel, firstGuard);
+    watchKernel(app, panel);
+    setupPaths.add(panel.context.path);
+    const firstSetup = runSetup(app, panel, firstGuard);
+    adopted.set(panel, firstSetup);
+    if (embedded) await startTabs(app, panel);
+    await firstSetup;
   })().catch((err) => {
     warn('the notebook bridge did not start', err);
     post({ type: 'error', phase: 'startup' });
