@@ -1089,7 +1089,7 @@ OSAChatWidget.close();
 | `open({mode}?)` | Shows the window, in `mode` when one is given (`'corner'` or `'center'`), on the chat tab, with History and Settings closed. An open window stays open; the mode, if given, changes. |
 | `close()` | Closes the window, as the Close button does. |
 | `ask(text, {mode}?)` | Opens the window (in `mode` if given), then sends `text` through the same path as a typed question: it is in the saved conversation and History, the page-context reset of [A context change starts a new chat](#a-context-change-starts-a-new-chat) applies, and the browser runtime is preloaded as for any first message. `text` must be a non-empty string; a reply that is still loading refuses it. What the reader had typed in the chat's input and not sent is theirs: it stays there (and in the start screen's field) after `ask`. |
-| `setMode(mode)` | `'center'` makes the window the dialog; `'corner'` docks it. On a closed window the mode is kept for the next open. The dialog is the chat's: a capsule community's window that is on the notebook tab is taken to the chat tab when it becomes the dialog. |
+| `setMode(mode)` | `'center'` makes the window the dialog; `'corner'` docks it. On a closed window the mode is kept for the next open. The dialog is the chat's: a capsule community's window that is on the notebook tab is taken to the chat tab when it becomes the dialog, and the dialog docks to the corner (with a `modechange` event) when the notebook tab is opened from it, for example by the **Continue in notebook** or **Open notebook** button under a reply. |
 | `on(event, handler)` | Listens for an event, below, and returns a function that stops listening. |
 
 - **Before `init()`.**

@@ -928,6 +928,44 @@ console.log('\nan import that another one replaced still opens the notebook it m
   assertEqual(opens.map((p) => p.message.path), [IMPORT_PATH], 'Open notebook asks for the path the answer named, not a record that never finished');
 }
 
+console.log('\nthe card in the host API\'s dialog docks the window before the notebook opens');
+{
+  const modes = [];
+  const dialog = async () => {
+    const ctx = await start({ storage: record('chat-erp', [erpChat()]) });
+    ctx.say({ type: 'ready' });
+    ctx.api.on('modechange', ({ mode }) => modes.push(mode));
+    ctx.api.setMode('center');
+    const win = () => ctx.q('.osa-chat-window');
+    assert(win().classList.contains('osa-center') && ctx.activeTab() === 'chat', 'set up: the dialog is up on the chat tab');
+    assert(ctx.window.document.querySelectorAll('[inert]').length > 0, 'set up: the page behind it is inert');
+    return { ctx, win };
+  };
+  const docked = (ctx, win, what) => {
+    assert(ctx.activeTab() === 'notebook', `${what}: the notebook tab is open`);
+    assert(!win().classList.contains('osa-center') && win().getAttribute('role') === null, `${what}: the window is docked, not a modal dialog`);
+    assert(ctx.window.document.querySelectorAll('[inert]').length === ctx.qa('.osa-view-off[inert]').length,
+      `${what}: the page is no longer inert`);
+  };
+
+  const first = await dialog();
+  first.ctx.click(first.ctx.button('continue'));
+  docked(first.ctx, first.win, 'Continue in notebook');
+  assertEqual(modes, ['center', 'corner'], 'and the page hears the modechange to corner');
+  assertEqual(first.ctx.importPosts().length, 1, 'the import still goes ahead');
+
+  const second = await dialog();
+  second.ctx.click(second.ctx.button('continue'));
+  const [sent] = second.ctx.importPosts();
+  second.ctx.say({ type: 'result', requestId: sent.message.requestId, ok: true, path: IMPORT_PATH });
+  await waitUntil(() => second.ctx.button('open') !== null, 'the card becomes Open notebook');
+  second.ctx.click(second.ctx.q('.osa-launcher-capsule .osa-chat-button'));
+  second.ctx.api.setMode('center');
+  assert(second.win().classList.contains('osa-center'), 'set up: the dialog again, on the chat');
+  second.ctx.click(second.ctx.button('open'));
+  docked(second.ctx, second.win, 'Open notebook');
+}
+
 console.log(`\n${'='.repeat(60)}`);
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 console.log('='.repeat(60));

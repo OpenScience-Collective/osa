@@ -6207,6 +6207,13 @@
   function setTab(container, tab) {
     if (!container.classList.contains('osa-capsule')) return;
     if (tab === 'notebook' && !isNotebookAvailable()) tab = 'chat';
+    // The dialog is the chat's (see engageCenter): the notebook opens in the corner, so
+    // the page is live again and the notebook's frame is never inside a modal. The
+    // "Keep going in a notebook" card and a host-driven import reach here with the
+    // dialog up.
+    if (tab === 'notebook' && hostMode === 'center' && applyHostMode(container, 'corner')) {
+      emitHostEvent('modechange', { mode: 'corner' });
+    }
     activeTab = tab;
     if (tab === 'notebook') closeHistory(container, { restoreFocus: false });
     container.classList.toggle('osa-tab-notebook', tab === 'notebook');
@@ -17085,7 +17092,7 @@
 
   // An iframe is a stop like any control; once focus is inside one, its keys stay in
   // the frame and never reach the dialog's handler, so the notebook's frame is the one
-  // place Tab can leave (the dialog never lays over that tab, see engageCenter).
+  // place Tab can leave (the dialog docks before that tab opens, see setTab).
   const FOCUSABLE_SELECTOR = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, iframe, [contenteditable]:not([contenteditable="false"]), [tabindex]';
 
   // Whether `node` can be seen: neither it nor an ancestor up to `scope` is hidden or not
