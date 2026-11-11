@@ -22,7 +22,7 @@ import os
 from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.core.config.community import (
     EXECUTE_CODE_TOOL_NAME,
@@ -182,6 +182,21 @@ class PlanStep(BaseModel):
         max_length=MAX_PLAN_STEP_DETAIL_CHARS,
         description="What the step's one code run does and what it produces.",
     )
+
+    @field_validator("title")
+    @classmethod
+    def _one_line_title(cls, value: str) -> str:
+        """Collapse every run of whitespace, newlines included, to one space.
+
+        The title is a heading on the card and one line of the tool message that answers
+        the call, so it may be neither blank nor span lines: a newline in it would add a
+        line of its own to that message. Applied to the decision's steps as well as the
+        proposal's (both are `PlanStep`), so an edited step stays comparable.
+        """
+        collapsed = " ".join(value.split())
+        if not collapsed:
+            raise ValueError("title must not be blank")
+        return collapsed
 
 
 class ProposePlanArgs(BaseModel):
