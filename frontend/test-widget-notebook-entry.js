@@ -674,6 +674,11 @@ console.log('\nthe existing menu still closes on Escape and keeps focus in the s
   escape();
   assert(row.querySelector('.osa-history-menu').hidden && ctx.hooks.history.isOpen(), 'Escape closes the menu and leaves the sheet');
   assert(ctx.window.document.activeElement === row.querySelector('.osa-history-more'), 'with focus back on the row\'s button');
+  assert(row.querySelector('.osa-history-save-choices').hidden, 'the unfolded Download code choices are folded again');
+  assert(row.querySelector('.osa-history-menu-download').getAttribute('aria-expanded') === 'false', 'with the toggle collapsed');
+  ctx.click(row.querySelector('.osa-history-more'));
+  assert(row.querySelector('.osa-history-save-choices').hidden, 'and a reopened menu starts folded');
+  escape();
   escape();
   assert(!ctx.hooks.history.isOpen(), 'a second Escape closes the sheet');
 }

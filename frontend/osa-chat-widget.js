@@ -7113,7 +7113,13 @@
   // reply, once it is whole, when a run succeeded and the builder found a step.
   function notebookEntryCard(msgIndex) {
     if (!runtimeApi || isLoading || !activeConversation || msgIndex === revealingIndex) return null;
-    if (msgIndex !== messages.map((message) => message && message.role).lastIndexOf('assistant')) return null;
+    // Scan back from the end and stop at the first assistant reply: O(1) for the
+    // usual transcript, and no array built per rendered message.
+    let lastAssistant = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i] && messages[i].role === 'assistant') { lastAssistant = i; break; }
+    }
+    if (msgIndex !== lastAssistant) return null;
     const conversation = activeConversationRecord();
     if (!hasSuccessfulRun(conversation)) return null;
     const built = cachedConversationCode(conversation);
@@ -7755,6 +7761,11 @@
   function closeHistoryMenus(sheet) {
     sheet.querySelectorAll('.osa-history-menu').forEach((menu) => { menu.hidden = true; });
     sheet.querySelectorAll('.osa-history-more[aria-expanded="true"]').forEach((button) => button.setAttribute('aria-expanded', 'false'));
+    // Fold the Download code choices and drop the cap revealHistoryMenu set, so a
+    // reopened menu starts as it did the first time.
+    sheet.querySelectorAll('.osa-history-save-choices').forEach((choices) => { choices.hidden = true; });
+    sheet.querySelectorAll('.osa-history-menu-download[aria-expanded="true"]').forEach((button) => button.setAttribute('aria-expanded', 'false'));
+    sheet.querySelectorAll('.osa-history-menu').forEach((menu) => { menu.style.maxHeight = ''; });
   }
 
   function openHistoryConversation(container, id) {
