@@ -1139,6 +1139,118 @@ class TestWidgetSearchPaths:
             WidgetConfig(search_paths="/discover")
 
 
+class TestWidgetCenterStart:
+    """widget.center_start (E6.1, #701): the center-stage start screen's copy."""
+
+    CARD = {"title": "Describe", "text": "Summaries, methods and citations."}
+
+    def test_default_is_unset_and_not_resolved(self) -> None:
+        widget = WidgetConfig()
+        assert widget.center_start is None
+        assert "center_start" not in widget.resolve("HED")
+
+    def test_resolved_when_set(self) -> None:
+        widget = WidgetConfig(center_start={"capabilities": [self.CARD], "note": "A note."})
+        assert widget.resolve("NEMAR")["center_start"] == {
+            "capabilities": [self.CARD],
+            "note": "A note.",
+        }
+
+    def test_a_note_alone_or_cards_alone_is_enough(self) -> None:
+        note_only = WidgetConfig(center_start={"note": "Only a note."}).resolve("X")
+        assert note_only["center_start"] == {"capabilities": [], "note": "Only a note."}
+        cards_only = WidgetConfig(center_start={"capabilities": [self.CARD]}).resolve("X")
+        assert "note" not in cards_only["center_start"]
+
+    def test_at_most_three_cards(self) -> None:
+        cards = [{"title": f"T{i}", "text": f"Text {i}."} for i in range(4)]
+        three = WidgetConfig(center_start={"capabilities": cards[:3]})
+        assert len(three.center_start.capabilities) == 3
+        with pytest.raises(ValidationError, match="Maximum is 3"):
+            WidgetConfig(center_start={"capabilities": cards})
+
+    def test_lengths_are_bounded(self) -> None:
+        title, text, note = 40, 160, 300
+        card = {"title": "t" * title, "text": "x" * text}
+        assert WidgetConfig(center_start={"capabilities": [card], "note": "n" * note})
+        for bad in (
+            {"capabilities": [{**card, "title": "t" * (title + 1)}]},
+            {"capabilities": [{**card, "text": "x" * (text + 1)}]},
+            {"note": "n" * (note + 1)},
+        ):
+            with pytest.raises(ValidationError, match="at most"):
+                WidgetConfig(center_start=bad)
+
+    @pytest.mark.parametrize("bad", ["", "   ", "<b>bold</b>"])
+    def test_a_card_is_plain_text_and_not_empty(self, bad: str) -> None:
+        for field in ("title", "text"):
+            with pytest.raises(ValidationError):
+                WidgetConfig(center_start={"capabilities": [{**self.CARD, field: bad}]})
+
+    def test_a_note_refuses_markup_and_an_empty_note_is_none(self) -> None:
+        with pytest.raises(ValidationError, match="plain text"):
+            WidgetConfig(center_start={"note": "see <a href='x'>this</a>"})
+        assert WidgetConfig(center_start={"note": "  "}).center_start.note is None
+
+    def test_unknown_keys_are_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            WidgetConfig(center_start={"cards": []})
+        with pytest.raises(ValidationError):
+            WidgetConfig(center_start={"capabilities": [{**self.CARD, "icon": "x"}]})
+
+
+class TestWidgetAnalysisDocs:
+    """widget.analysis_docs (E6.1, #701): the docs page the widget links to."""
+
+    DOCS = {"title": "Analyze data in your browser", "url": "https://docs.nemar.org/web/x/"}
+
+    def test_default_is_unset_and_not_resolved(self) -> None:
+        widget = WidgetConfig()
+        assert widget.analysis_docs is None
+        assert "analysis_docs" not in widget.resolve("HED")
+
+    def test_resolved_when_set(self) -> None:
+        assert WidgetConfig(analysis_docs=self.DOCS).resolve("NEMAR")["analysis_docs"] == self.DOCS
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://docs.nemar.org/x",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "//docs.nemar.org/x",
+            "/web/analyze",
+            "docs.nemar.org/x",
+            "https://",
+            "https://user:pass@docs.nemar.org/x",
+            "https://docs.nemar.org/a b",
+            "ftp://docs.nemar.org/x",
+        ],
+    )
+    def test_only_an_https_url_with_a_host(self, url: str) -> None:
+        with pytest.raises(ValidationError, match="analysis_docs url"):
+            WidgetConfig(analysis_docs={**self.DOCS, "url": url})
+
+    def test_lengths_are_bounded(self) -> None:
+        long_url = "https://docs.nemar.org/" + "a" * (500 - len("https://docs.nemar.org/"))
+        assert WidgetConfig(analysis_docs={**self.DOCS, "url": long_url})
+        with pytest.raises(ValidationError, match="at most 500"):
+            WidgetConfig(analysis_docs={**self.DOCS, "url": long_url + "a"})
+        with pytest.raises(ValidationError, match="at most 80"):
+            WidgetConfig(analysis_docs={**self.DOCS, "title": "t" * 81})
+
+    @pytest.mark.parametrize("bad", ["", "  ", "<i>x</i>"])
+    def test_the_title_is_plain_text(self, bad: str) -> None:
+        with pytest.raises(ValidationError):
+            WidgetConfig(analysis_docs={**self.DOCS, "title": bad})
+
+    def test_both_keys_are_required(self) -> None:
+        with pytest.raises(ValidationError):
+            WidgetConfig(analysis_docs={"url": self.DOCS["url"]})
+        with pytest.raises(ValidationError):
+            WidgetConfig(analysis_docs={"title": self.DOCS["title"]})
+
+
 class TestWidgetConfigLogoUrl:
     """Tests for WidgetConfig.logo_url field and validation."""
 

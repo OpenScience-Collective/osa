@@ -1536,6 +1536,123 @@ class DatasetSuggestedQuestion(BaseModel):
         return v
 
 
+# The center-stage dialog's start screen and docs link (E6.1, #701). The widget draws the
+# copy as plain text, so each string is bounded and refuses markup; the docs link is
+# https only, since the widget puts it in an anchor on a host page.
+MAX_CENTER_START_CAPABILITIES = 3
+MAX_CENTER_START_TITLE = 40
+MAX_CENTER_START_TEXT = 160
+MAX_CENTER_START_NOTE = 300
+MAX_ANALYSIS_DOCS_TITLE = 80
+MAX_ANALYSIS_DOCS_URL = 500
+
+
+def _plain_text(v: object, field: str) -> object:
+    """Strip whitespace, refuse an empty string and refuse markup."""
+    if not isinstance(v, str):
+        return v
+    v = v.strip()
+    if not v:
+        msg = f"{field} must not be empty"
+        raise ValueError(msg)
+    if "<" in v or ">" in v:
+        msg = f"{field} must be plain text (no '<' or '>')"
+        raise ValueError(msg)
+    return v
+
+
+class CenterStartCapability(BaseModel):
+    """One card on the center-stage dialog's start screen: what the assistant can do."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(..., max_length=MAX_CENTER_START_TITLE)
+    """The card's heading, for example "Describe"."""
+
+    text: str = Field(..., max_length=MAX_CENTER_START_TEXT)
+    """One or two sentences under the heading."""
+
+    @field_validator("title", "text", mode="before")
+    @classmethod
+    def validate_plain_text(cls, v: object, info: ValidationInfo) -> object:
+        """Plain text only."""
+        return _plain_text(v, f"a capability's {info.field_name}")
+
+
+class CenterStartConfig(BaseModel):
+    """What the center-stage dialog's start screen says about the assistant (E6.1).
+
+    The widget keeps no copy of its own about a community's tools: the cards and the
+    footer note come from here, and a community that sets nothing gets a start screen
+    of the question field and the suggestions alone.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    capabilities: list[CenterStartCapability] = Field(default_factory=list)
+    """Up to ``MAX_CENTER_START_CAPABILITIES`` cards, in this order."""
+
+    note: str | None = Field(default=None, max_length=MAX_CENTER_START_NOTE)
+    """A line in the start screen's footer, for example what runs where."""
+
+    @field_validator("capabilities")
+    @classmethod
+    def validate_capabilities(cls, v: list[CenterStartCapability]) -> list[CenterStartCapability]:
+        """At most three cards: the start screen lays them in one row."""
+        if len(v) > MAX_CENTER_START_CAPABILITIES:
+            msg = (
+                f"Too many capability cards ({len(v)}). Maximum is {MAX_CENTER_START_CAPABILITIES}."
+            )
+            raise ValueError(msg)
+        return v
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def validate_note(cls, v: object) -> object:
+        """Plain text; an empty note is no note."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return _plain_text(v, "note")
+
+
+class AnalysisDocsConfig(BaseModel):
+    """A docs page about analyzing in the browser, linked from the start screen's footer
+    ("How it works") and from the widget's Settings (E6.1)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(..., max_length=MAX_ANALYSIS_DOCS_TITLE)
+    """The link's text in Settings, for example "Analyze data in your browser"."""
+
+    url: str = Field(..., max_length=MAX_ANALYSIS_DOCS_URL)
+    """An https URL; the widget opens it in a new tab with no opener."""
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def validate_title(cls, v: object) -> object:
+        """Plain text only."""
+        return _plain_text(v, "analysis_docs title")
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def validate_url(cls, v: object) -> object:
+        """https only, with a host, no credentials and no whitespace."""
+        if not isinstance(v, str):
+            return v
+        v = v.strip()
+        if any(ch.isspace() for ch in v):
+            msg = "analysis_docs url must not contain whitespace"
+            raise ValueError(msg)
+        parsed = urlparse(v)
+        if parsed.scheme != "https" or not parsed.hostname:
+            msg = "analysis_docs url must be an https:// URL with a host"
+            raise ValueError(msg)
+        if parsed.username or parsed.password:
+            msg = "analysis_docs url must not carry credentials"
+            raise ValueError(msg)
+        return v
+
+
 # The launcher's limits and defaults, in pixels (#553). The widget carries the same
 # numbers (LAUNCHER_LIMITS in osa-chat-widget.js, and the fallbacks in its stylesheet);
 # tests/test_frontend/test_widget_drift.py keeps them from drifting. The floor is WCAG
@@ -1611,6 +1728,15 @@ class WidgetConfig(BaseModel):
     path starts with ``/`` and has no query or fragment; at most
     ``MAX_WIDGET_SEARCH_PATHS``.
     """
+
+    center_start: CenterStartConfig | None = None
+    """The center-stage dialog's start screen copy (E6.1): up to three capability cards
+    and a footer note. Unset, the start screen shows only the question field and the
+    suggestions."""
+
+    analysis_docs: AnalysisDocsConfig | None = None
+    """A docs page linked from the start screen's footer and from the widget's Settings
+    (E6.1). Unset, neither shows a link."""
 
     theme_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     """Primary theme color as a hex code (e.g., '#008a79').
@@ -1878,6 +2004,10 @@ class WidgetConfig(BaseModel):
             ]
         if self.search_paths:
             result["search_paths"] = list(self.search_paths)
+        if self.center_start:
+            result["center_start"] = self.center_start.model_dump(exclude_none=True)
+        if self.analysis_docs:
+            result["analysis_docs"] = self.analysis_docs.model_dump()
         if self.theme_color:
             result["theme_color"] = self.theme_color
         if self.user_bubble_color:

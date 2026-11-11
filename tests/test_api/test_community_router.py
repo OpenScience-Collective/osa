@@ -851,6 +851,82 @@ class TestModelOverrideDescription:
             assert model_cls.model_fields["model"].description == MODEL_OVERRIDE_DESCRIPTION
 
 
+class TestCommunityConfigCenterStage:
+    """widget.center_start and widget.analysis_docs reach the widget through GET /{community}
+    (E6.1, #701)."""
+
+    COMMUNITY = "centerstagetest"
+    CARD = {"title": "Describe", "text": "Summaries and citations."}
+    DOCS = {"title": "Analyze data in your browser", "url": "https://docs.example.org/analyze/"}
+
+    def _client(self, widget: dict | None) -> TestClient:
+        from src.assistants import registry
+
+        registry.register_from_config(
+            CommunityConfig(
+                id=self.COMMUNITY,
+                name="Center Stage Test",
+                description="A community with a center-stage start screen",
+                widget=widget,
+            )
+        )
+        app = FastAPI()
+        app.include_router(create_community_router(self.COMMUNITY))
+        return TestClient(app)
+
+    @pytest.fixture(autouse=True)
+    def _unregister(self):
+        from src.assistants import registry
+
+        yield
+        registry._assistants.pop(self.COMMUNITY, None)
+
+    def test_both_are_sent_when_configured(self) -> None:
+        client = self._client(
+            {
+                "center_start": {"capabilities": [self.CARD], "note": "Runs in your browser."},
+                "analysis_docs": self.DOCS,
+            }
+        )
+        widget = client.get(f"/{self.COMMUNITY}/").json()["widget"]
+        assert widget["center_start"] == {
+            "capabilities": [self.CARD],
+            "note": "Runs in your browser.",
+        }
+        assert widget["analysis_docs"] == self.DOCS
+
+    def test_a_community_that_sets_neither_sends_neither(self) -> None:
+        widget = self._client({"title": "Plain"}).get(f"/{self.COMMUNITY}/").json()["widget"]
+        assert widget["center_start"] is None
+        assert widget["analysis_docs"] is None
+
+    def test_a_note_alone_sends_no_cards(self) -> None:
+        client = self._client({"center_start": {"note": "Just a note."}})
+        widget = client.get(f"/{self.COMMUNITY}/").json()["widget"]
+        assert widget["center_start"] == {"capabilities": [], "note": "Just a note."}
+
+    def test_a_bad_url_is_refused_when_the_config_loads(self) -> None:
+        with pytest.raises(ValidationError, match="https"):
+            self._client({"analysis_docs": {**self.DOCS, "url": "http://docs.example.org/"}})
+
+    def test_every_registered_community_that_sets_a_docs_link_sets_an_https_one(self) -> None:
+        """Dynamic over the registry: no community id is named here."""
+        from src.assistants import registry
+
+        checked = 0
+        for info in registry.list_available():
+            config = info.community_config
+            if not (config and config.widget and config.widget.analysis_docs):
+                continue
+            checked += 1
+            resolved = config.widget.resolve(info.name)["analysis_docs"]
+            assert resolved["url"].startswith("https://"), info.id
+            assert 0 < len(resolved["title"]) <= 80, info.id
+            start = config.widget.center_start
+            assert len(start.capabilities if start else []) <= 3, info.id
+        assert checked > 0, "no registered community configures analysis_docs"
+
+
 class TestDeclaredClientToolsFitOneRequest:
     """The widget declares every configured tool plus the reserved ones.
 
