@@ -173,8 +173,8 @@ class FeedbackEntry:
             raise ValueError("general feedback must not carry a sentiment")
 
 
-def get_metrics_db_path() -> Path:
-    """Return path to the metrics SQLite database.
+def resolve_metrics_db_path() -> Path:
+    """Return where the metrics SQLite database is, without creating anything.
 
     Uses DATA_DIR environment variable if set (Docker deployments),
     otherwise falls back to platform-specific user data directory.
@@ -185,8 +185,14 @@ def get_metrics_db_path() -> Path:
 
     data_dir_env = os.environ.get("DATA_DIR")
     base = Path(data_dir_env) if data_dir_env else Path(user_data_dir("osa", "osc"))
-    base.mkdir(parents=True, exist_ok=True)
     return base / "metrics.db"
+
+
+def get_metrics_db_path() -> Path:
+    """Return path to the metrics SQLite database, creating its directory if needed."""
+    path = resolve_metrics_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def get_metrics_connection(db_path: Path | None = None) -> sqlite3.Connection:

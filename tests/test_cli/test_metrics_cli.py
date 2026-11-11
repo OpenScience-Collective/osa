@@ -10,7 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from src.cli.main import cli
-from src.cli.metrics import open_read_only, parse_since
+from src.cli.metrics import SNAPSHOT_NOTE, open_read_only, parse_since
 from src.core.services.anthropic_models import HAIKU, SONNET
 from src.metrics.cost import estimate_cost
 from src.metrics.db import RequestLogEntry, init_metrics_db, log_request
@@ -72,7 +72,7 @@ class TestCostReport:
         )
 
         assert result.exit_code == 0, result.output
-        report = json.loads(result.output)
+        report = json.loads(result.stdout)
         (conversation,) = report["conversations"]
         assert conversation["conversation_id"] == "11111111-aaaa"
         assert conversation["quick"]["turns"] == 2
@@ -86,7 +86,7 @@ class TestCostReport:
             ["metrics", "cost-report", "-c", "nemar", "--since", "12h", "--db", str(db), "--json"],
         )
 
-        assert json.loads(result.output)["conversations"] == []
+        assert json.loads(result.stdout)["conversations"] == []
 
     def test_never_writes_to_the_database(self, db) -> None:
         before = db.read_bytes()
@@ -97,7 +97,7 @@ class TestCostReport:
         assert db.read_bytes() == before
 
     def test_the_connection_it_reports_with_refuses_writes(self, db) -> None:
-        conn = open_read_only(db)
+        conn, _ = open_read_only(db)
         try:
             with pytest.raises(sqlite3.OperationalError, match="readonly"):
                 conn.execute("DELETE FROM request_log")
@@ -115,6 +115,88 @@ class TestCostReport:
 
         assert result.exit_code == 0, result.output
         assert "11111111" in result.output
+
+    def test_a_copy_without_its_wal_says_rows_may_be_missing(self, tmp_path) -> None:
+        """Rows not yet checkpointed live in the -wal; a copy of the main file alone lacks them."""
+        live = tmp_path / "live" / "metrics.db"
+        live.parent.mkdir()
+        init_metrics_db(live)
+        keeper = sqlite3.connect(live)  # holds the WAL open so it is not checkpointed away
+        keeper.execute("PRAGMA wal_autocheckpoint=0")
+        keeper.execute("SELECT count(*) FROM sqlite_master").fetchall()
+        for n in range(3):
+            _log(live, f"w{n}", HAIKU, "quick", "22222222-bbbb", 1)
+        assert Path(f"{live}-wal").stat().st_size > 0
+        copy = tmp_path / "copy.db"
+        shutil.copyfile(live, copy)
+
+        result = runner.invoke(
+            cli, ["metrics", "cost-report", "-c", "nemar", "--db", str(copy), "--json"]
+        )
+        beside = runner.invoke(
+            cli, ["metrics", "cost-report", "-c", "nemar", "--db", str(live), "--json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        warning = " ".join(result.stderr.split())
+        assert "no -wal file is beside it" in warning
+        assert "metrics.db-wal" in warning
+        assert json.loads(result.stdout)["note"] == SNAPSHOT_NOTE
+        assert beside.exit_code == 0, beside.output
+        assert "note" not in json.loads(beside.stdout)
+        assert json.loads(beside.stdout)["totals"]["quick"]["turns"] == 3
+        assert json.loads(result.stdout)["totals"]["quick"]["turns"] < 3
+        keeper.close()
+
+    def test_the_note_is_a_field_of_the_json_and_a_warning_on_stderr(self, db, tmp_path) -> None:
+        copy = tmp_path / "copy.db"
+        shutil.copyfile(db, copy)
+        assert not Path(f"{copy}-wal").exists()
+
+        result = runner.invoke(
+            cli, ["metrics", "cost-report", "-c", "nemar", "--db", str(copy), "--json"]
+        )
+
+        assert result.exit_code == 0
+        assert json.loads(result.stdout)["note"] == SNAPSHOT_NOTE
+        assert "no -wal file is beside it" in " ".join(result.stderr.split())
+
+    def test_a_vacuum_into_snapshot_is_complete_and_needs_no_note(self, tmp_path) -> None:
+        """The snapshot the docs recommend: taken on the server, rows still in the -wal included."""
+        live = tmp_path / "live.db"
+        init_metrics_db(live)
+        keeper = sqlite3.connect(live)
+        keeper.execute("PRAGMA wal_autocheckpoint=0")
+        keeper.execute("SELECT count(*) FROM sqlite_master").fetchall()
+        for n in range(3):
+            _log(live, f"v{n}", HAIKU, "quick", "33333333-cccc", 1)
+        snapshot = tmp_path / "snapshot.db"
+        keeper.execute("VACUUM INTO ?", (str(snapshot),))
+        keeper.close()
+
+        result = runner.invoke(
+            cli, ["metrics", "cost-report", "-c", "nemar", "--db", str(snapshot), "--json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        report = json.loads(result.stdout)
+        assert "note" not in report
+        assert report["totals"]["quick"]["turns"] == 3
+        assert result.stderr == ""
+
+    def test_a_locked_database_is_not_opened_as_immutable(self, tmp_path) -> None:
+        """Only "unable to open" falls back; a lock is raised, not hidden behind a stale read."""
+        path = tmp_path / "locked.db"
+        conn = sqlite3.connect(path, isolation_level=None)
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("CREATE TABLE request_log (id INTEGER PRIMARY KEY)")
+        conn.execute("BEGIN EXCLUSIVE")
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                open_read_only(path)
+        finally:
+            conn.execute("ROLLBACK")
+            conn.close()
 
     def test_a_database_from_before_the_columns_existed_lists_rows_by_model(self, tmp_path) -> None:
         old = tmp_path / "old.db"
@@ -168,6 +250,50 @@ class TestCostReport:
         assert result.exit_code == 1
         assert "Cannot read" in result.output
 
+    @pytest.mark.parametrize("make", ["empty_file", "no_tables"])
+    def test_an_empty_or_schemaless_file_is_an_error(self, tmp_path, make) -> None:
+        path = tmp_path / "blank.db"
+        if make == "empty_file":
+            path.write_bytes(b"")
+        else:
+            sqlite3.connect(path).close()
+
+        result = runner.invoke(cli, ["metrics", "cost-report", "-c", "nemar", "--db", str(path)])
+
+        assert result.exit_code == 1
+        assert "Cannot read" in result.output and "as a metrics database" in result.output
+
+    def test_the_default_path_does_not_create_the_data_directory(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        data_dir = tmp_path / "no-such-dir"
+        monkeypatch.setenv("DATA_DIR", str(data_dir))
+
+        result = runner.invoke(cli, ["metrics", "cost-report", "-c", "nemar"])
+
+        assert result.exit_code == 1
+        assert "No metrics database" in result.output
+        assert not data_dir.exists()
+
+    def test_a_since_with_an_offset_is_read_in_utc(self, db) -> None:
+        # 2026-11-01T00:00-08:00 is 08:00 UTC; every row of the fixture is far newer.
+        result = runner.invoke(
+            cli,
+            [
+                "metrics",
+                "cost-report",
+                "-c",
+                "nemar",
+                "--db",
+                str(db),
+                "--json",
+                "--since",
+                "2000-11-01T00:00-08:00",
+            ],
+        )
+
+        assert json.loads(result.stdout)["since"] == "2000-11-01T08:00:00+00:00"
+
 
 class TestParseSince:
     NOW = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
@@ -181,6 +307,12 @@ class TestParseSince:
 
     def test_a_date_is_midnight_utc(self) -> None:
         assert parse_since("2026-11-01", self.NOW) == datetime(2026, 11, 1, tzinfo=UTC)
+
+    def test_an_offset_is_converted_to_utc(self) -> None:
+        moment = parse_since("2026-11-01T00:00-08:00", self.NOW)
+
+        assert moment == datetime(2026, 11, 1, 8, 0, tzinfo=UTC)
+        assert moment.utcoffset() == timedelta(0)
 
     def test_nonsense_is_refused(self) -> None:
         with pytest.raises(ValueError, match="Cannot read --since"):
