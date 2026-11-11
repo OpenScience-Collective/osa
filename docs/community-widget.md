@@ -1034,7 +1034,7 @@ It replaces the footer checkbox "Share page URL to help answer questions", and o
 | Choice | What it does | Stored in `localStorage` as |
 |---|---|---|
 | **Use this page for answers** | Sends the page's address and title as `page_context.url` and `page_context.title`. Off, neither is sent. The dataset a page names (`page_context.dataset_id`), the community's `widget_instructions` and the memory budget are about the chat, so they are still sent; the helper text under the choice says so. | `osa-page-context-enabled`, the key the footer checkbox used, so a reader's earlier choice carries over |
-| **Share usage data** | Off, `POST /{community}/chat` and `POST /{community}/chat/resume` carry a top-level `share_usage: false`, and the server writes the request's usage row without its `conversation_id`, `tools_called` and `langfuse_trace_id`. On, the field is left out. | `osa-share-usage-enabled` |
+| **Share usage data** | Off, `POST /{community}/chat` and `POST /{community}/chat/resume` carry a top-level `share_usage: false`, and the server writes the request's usage row without its `conversation_id`, `tools_called` and `langfuse_trace_id`, and makes no Langfuse trace for the request. On, the field is left out. | `osa-share-usage-enabled` |
 
 The dialog is another `.osa-settings-overlay` (also `.osa-privacy-overlay`) with `role="dialog"`, `aria-modal="true"` and `aria-labelledby`.
 Each choice is a labelled checkbox in a 44 px row, with its helper text tied by `aria-describedby`.
@@ -1045,8 +1045,10 @@ What `share_usage: false` changes on the server, and what it leaves:
 
 - The request still runs, and its `request_log` row keeps the timestamp, community, endpoint, model, tokens, cost, tier, key source, status, duration, `tool_call_count` and `request_id`, so the community's budget and `osa metrics cost-report` still add up.
 - The row has no `conversation_id` (so it cannot be grouped into a conversation), no `tools_called` and no Langfuse trace id.
-- Feedback (thumbs and free text) is a separate choice the reader makes by sending it, and is not affected.
-- Langfuse tracing, the search overview and the stored metrics already written are not changed by the choice.
+- No Langfuse trace is made for the request (`create_community_assistant(trace=False)`), so no trace holds its messages and tool calls.
+- Feedback (thumbs and free text) is still received and stored, but a thumb on an opted-out answer is not attached to a Langfuse trace as a score, because the answer has none.
+- The server's in-memory conversation (the 24 hours that let a follow-up have its context), the search overview and the stored metrics already written are not changed by the choice.
+- The widget re-reads the two saved choices when it builds a request, so a choice made in another tab, a pop-out or a notebook tab applies without a reload. When the browser will not save a choice, the dialog says so and the choice holds until the page reloads.
 
 `POST /{community}/ask` and `/chat/resume` accept the same `share_usage` field (default `true`).
 The Cloudflare worker forwards the JSON body unchanged, so the field needs no header or allowlist entry.

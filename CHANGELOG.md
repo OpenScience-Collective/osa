@@ -19,7 +19,10 @@ the version being released and start a new `[Unreleased]` section above it.
   The dialog has **Use this page for answers** (the old choice, under the same `osa-page-context-enabled` key, so an earlier choice carries over; its helper text says the dataset a page names is still sent) and **Share usage data** (new, under `osa-share-usage-enabled`), both on by default, and a link to the privacy page.
   It is another `.osa-settings-overlay` with `role="dialog"`, `aria-modal` and `aria-labelledby`, labelled checkboxes in 44 px rows, Tab and Shift+Tab wrapping inside it in the corner and the center, Escape closing only it, and focus returning to the button.
   With **Share usage data** off, `POST /{community}/chat` and `/chat/resume` carry a top-level `share_usage: false` (omitted while it is on; `ChatRequest`, `ResumeRequest` and `AskRequest` take `share_usage: bool = True`), and the request's usage row is written without `conversation_id`, `tools_called` and `langfuse_trace_id`; tokens, cost, tier, counts, status and duration are kept, so budgets and `osa metrics cost-report` still add up.
-  Feedback is unaffected, and so are Langfuse tracing and the search overview.
+  No Langfuse trace is made for such a request (`create_community_assistant(trace=False)`), so no trace holds its messages and tool calls.
+  Feedback is still received, but a thumb on an opted-out answer is not attached to a Langfuse trace, since the answer has none; the search overview is unaffected.
+  The widget re-reads both saved choices when it builds a request, so a choice made in another tab applies without a reload, and the dialog says so when the browser will not save a choice.
+  `PRIVACY.md` now describes the dialog and both choices.
   `RequestLogEntry` gets a non-persisted `share_usage` that `log_request` honors, so every writer of the row goes through one place.
   The new `widget.privacy_url` (an `https://` URL, validated like `analysis_docs`, at most 500 characters; widget key `privacyUrl`) sets the link, which defaults to the platform's `PRIVACY.md` and is validated again in the widget.
   The `pageContextLabel` setting is gone (nothing uses it).
