@@ -564,6 +564,29 @@ Testing:
 `frontend/test-widget-popout.js`, the card in the pop-out.
 `frontend/browser-harness/run-card-check.mjs [screenshot-dir]` draws every state at 400 px in headless Chrome, light and dark, checks the layout (inside the panel, nothing scrolls sideways, every button 36 px tall) and writes a screenshot of each.
 
+### Taking a chat's code out: the notebook card and Download code
+
+A community whose runtime has loaded (a `runtime` in its config, `docs/community-browser-runtime.md`) gives a chat's code three ways out (issue #675).
+All three build from the chat's stored runs, in message order and without the runs that only read an output back (`get_full_output`), with the runtime bundle's `OSARuntime.buildConversationNotebook`: the same notebook and percent-format script for each, and the same count of steps (the runs that succeeded and have code; one that failed, was denied, timed out, was cancelled or ran out of memory is listed in the notebook's closing note instead).
+A community with no runtime has none of them, and a chat with no dataset context (an empty context, or the dataset search) has none, since the files are named from the dataset.
+
+- **The card.** Under the last reply, once it is whole, a bordered note appears after the first successful run, in the notice colors with secondary-style buttons: "N steps ran in this chat. Keep going in a notebook with all of their code." It is drawn again when the runtime bundle loads late and when the page's dataset changes.
+  It is not drawn while a reply is loading, and it is not drawn for a chat whose runs all failed or were denied, or whose builder throws or finds no step.
+- **Continue in notebook** is on the card only when the widget is a capsule, the page's dataset has a Zarr copy (`setDataset`'s `zarr: true`), and it is the chat's dataset; otherwise the card offers only Download code, and says to download.
+  Clicking it builds the notebook and calls `importNotebookToTab` (above, "The notebook tab"), which opens the notebook tab, writes `<community>/<dataset> · <chat title>.ipynb`, and offers Run all and Undo in the banner.
+  The button is disabled while it waits; a refusal or an error (including a notebook that does not answer) is said on the card with `role="alert"`.
+  After an import the button reads **Open notebook**, which switches to the notebook tab and the imported notebook and does not import again, until a new successful run changes the step count (then Continue offers the chat's new code) or the import is undone.
+  This memory is in the page only: after a reload the card offers Continue again.
+- **Download code** opens a small menu, **Notebook (.ipynb)** and **Python script with cells (.py)**, with "Opens as cells in VS Code, Spyder and Jupytext."
+  Each saves one file, named for the chat's dataset (`on002718-chat.ipynb`, `on002718-chat.py`), holding exactly what the builder returned (the notebook as JSON with one-space indentation; the script as text).
+  Escape closes the menu and returns focus to the button, the arrow keys move between the items, and moving focus out of the card closes it.
+- **The History row menu** has the same two items, **Continue in notebook** and **Download code** (which unfolds the two files), for a chat whose context is a dataset and that has a successful run.
+  Continue is disabled, with its reason in text under it, unless that dataset is the page's and its notebook is available; for another chat than the open one it imports that chat's runs, closes the sheet, and leaves the open chat as it is.
+
+Everything from the conversation (the title, the descriptions, the code) reaches the page as text, never markup, and the notebook and the script are built from the stored run records, not from the page.
+
+Testing: `frontend/test-widget-notebook-entry.js` runs the real widget and the real runtime bundle in happy-dom over conversations from `frontend/test-support/notebook-conversations.js`, with files recorded on the way to their link click; it runs in CI.
+
 ## Quick answers and analysis: the `handover` events
 
 A community that sets `quick_model` and `analysis_model` (NEMAR: `haiku` and `sonnet`; both or neither, each an offered model, and `execute_code` configured) answers most turns on the quick model and runs code, plots and analysis on the analysis model (issues #670 and #674, plan E8).

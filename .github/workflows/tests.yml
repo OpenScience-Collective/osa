@@ -462,6 +462,9 @@ jobs:
       - name: Run the notebook strip tests on a real DOM
         run: bun frontend/test-widget-notebook-strip.js
 
+      - name: Run the notebook entry point tests on a real DOM
+        run: bun frontend/test-widget-notebook-entry.js
+
       - name: Run the first paint tests on a real DOM
         run: bun frontend/test-widget-first-paint.js
 
@@ -541,6 +544,23 @@ jobs:
       # so no backend and no network; the runner ships Chrome.
       - name: Check the run card in headless Chrome
         run: bun frontend/browser-harness/run-card-check.mjs
+
+      # The notebook card and the History row menu's notebook items in real Chrome at
+      # 400 px, in light and dark: inside the panel, 44 px controls, text at 4.5:1,
+      # and the tallest History menu wholly inside the list that clips it. Its own
+      # server, so no backend and no network; the runner ships Chrome.
+      - name: Check the notebook card and History items in headless Chrome
+        env:
+          NOTEBOOK_ENTRY_CHECK_SCREENSHOTS: ${{ runner.temp }}/notebook-entry-check
+        run: bun frontend/browser-harness/notebook-entry-check.mjs
+
+      - name: Upload the notebook card check screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notebook-entry-check-screenshots
+          path: ${{ runner.temp }}/notebook-entry-check
+          if-no-files-found: ignore
 
       # The History sheet and saved figures in real Chrome at 390 x 844: a run that
       # draws a figure is saved to the real IndexedDB, the page reloads, and the figure
