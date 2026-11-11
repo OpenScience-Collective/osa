@@ -18,7 +18,8 @@ A precise, reliable AI assistant platform for researchers working with open scie
 
 **Branch Protection (GitHub rulesets `protect-main` / `protect-dev` / `prevent-branch-deletion`):**
 - Both `main` and `develop` require changes to go through a pull request; direct pushes are blocked
-- Both require at least 1 approving review before merge, from someone other than the PR author; an Admin-role account may bypass this review requirement for a self-merge (`bypass_actors` on both rulesets)
+- `main` requires at least 1 approving review before merge, from someone other than the PR author; an Admin-role account may bypass this review requirement for a self-merge (`bypass_actors` on both rulesets)
+- `develop` requires no approving review (`required_approving_review_count: 0` since 2026-11-10), so a reviewed feature PR merges without `--admin`; the agent review (`.rules/code_review.md`) and green `Lint` and `Test (3.12)` checks are the gate, and the branch must be up to date with `develop`
 - A separate, non-bypassable `prevent-branch-deletion` ruleset (no exempt actors) protects both branches from deletion regardless of the admin bypass above — see `docs/adr/0005-enforce-pr-approval-requirement.md` for why this needed its own ruleset
 - `main` only allows a regular merge commit (`allowed_merge_methods: ["merge"]`) — release PRs are not squashed, so the individual feature history survives on `main`
 - `develop` allows merge or squash; feature branches into `develop` are always squash-merged per the workflow below
@@ -189,6 +190,7 @@ src/
 ### Architecture & Planning
 - **[Architecture](https://docs.osc.earth/osa/architecture/)** - High-level system diagrams
 - **.context/plan.md** - Implementation roadmap and current tasks
+- **.context/nemar-ai-ux-plan.md** - NEMAR AI experience epics (E1 to E8) and the delivery loop; design references in `.context/designs/nemar-ai-ux/`
 - **.context/research.md** - Technical notes, target project resources
 - **docs/adr/** - Architecture Decision Records for significant, hard-to-reverse decisions
 

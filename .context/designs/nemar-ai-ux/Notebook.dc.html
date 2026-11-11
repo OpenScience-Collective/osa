@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Continue in notebook</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0e5a70}a:hover{color:#083b4a}
+</style>
+</helmet>
+<div style="width: 1320px; height: 840px; box-sizing: border-box; font-family: Inter, system-ui, sans-serif; color: #1f2937; background: #eef1f6; padding: 20px; display: flex; gap: 40px; align-items: flex-start">
+
+  <div style="width: 400px; height: 800px; flex: none; box-sizing: border-box; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 14px; overflow: hidden; display: flex; flex-direction: column">
+    <header style="background: #5bbad5; color: #06112a; padding: 12px 14px; display: flex; align-items: center; gap: 10px">
+      <div style="width: 34px; height: 34px; border-radius: 999px; background: #ffffff; display: flex; align-items: center; justify-content: center; flex: none">
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" fill="#0e7490"></path></svg>
+      </div>
+      <div style="flex: 1 1 auto; font-weight: 600; font-size: 15px">NEMAR Assistant</div>
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; background: #ffffff; border-radius: 4px; padding: 2px 6px">on002718</span>
+    </header>
+    <div style="flex: 1 1 auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; overflow: hidden">
+      <div style="display: flex; align-items: center; gap: 8px; border: 1px solid #e5e7eb; border-radius: 10px; padding: 9px 12px; font-size: 13px">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#15803d" stroke-width="2.5" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>
+        <span style="flex: 1 1 auto"><strong style="font-weight: 600">Step 4</strong> · Plotted famous vs scrambled ERPs</span>
+        <span style="font-size: 11px; color: #64748b">2nd try</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; border: 1px solid #e5e7eb; border-radius: 10px; padding: 9px 12px; font-size: 13px">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#15803d" stroke-width="2.5" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>
+        <span style="flex: 1 1 auto"><strong style="font-weight: 600">Step 5</strong> · Summary</span>
+      </div>
+      <div style="background: #f3f4f6; border-radius: 12px; padding: 12px 14px; font-size: 13.5px; line-height: 1.55">Famous faces evoke a larger N170 than scrambled faces in sub-002: −4.1 µV against −2.3 µV at 172 ms over EEG065 to EEG068. This is one subject; I can repeat it for all 18.</div>
+      <div style="margin-top: auto; border: 1px solid #b9e0eb; background: #f5fbfd; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px">
+        <div style="font-size: 12.5px; color: #0f3d4c">5 steps ran in this chat. Keep going in a notebook with all of their code.</div>
+        <div style="display: flex; gap: 8px">
+          <button type="button" style="flex: 1 1 auto; display: flex; align-items: center; justify-content: center; gap: 6px; background: #0e7490; color: #ffffff; border: 0; border-radius: 8px; min-height: 40px; font: 600 13px Inter, sans-serif">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"></rect><path d="M9 8h6M9 12h6M9 16h4"></path></svg>
+            Continue in notebook
+          </button>
+          <button type="button" style="background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 8px; min-height: 40px; padding: 0 12px; font: 500 12.5px Inter, sans-serif">Download code</button>
+        </div>
+      </div>
+    </div>
+    <form style="border-top: 1px solid #e5e7eb; padding: 12px 14px; display: flex; gap: 8px">
+      <label for="nb-chat" style="position: absolute; left: -9999px">Message</label>
+      <input id="nb-chat" type="text" placeholder="Ask a follow-up…" style="flex: 1 1 auto; min-width: 0; border: 1px solid #cbd5e1; border-radius: 999px; padding: 11px 16px; font: 14px Inter, sans-serif">
+    </form>
+  </div>
+
+  <div style="flex: 1 1 auto; height: 800px; box-sizing: border-box; background: #ffffff; border: 1px solid #d0d7e2; border-radius: 10px; overflow: hidden; display: flex; flex-direction: column">
+    <div role="tablist" aria-label="Assistant surfaces" style="display: flex; align-items: center; gap: 2px; padding: 8px 12px; background: #5bbad5">
+      <button type="button" role="tab" aria-selected="false" style="background: transparent; border: 0; border-radius: 6px; padding: 6px 12px; font: 500 13px Inter, sans-serif; color: #06112a">Chat</button>
+      <button type="button" role="tab" aria-selected="true" style="background: #ffffff; border: 0; border-radius: 6px; padding: 6px 12px; font: 600 13px Inter, sans-serif; color: #06112a">Notebook</button>
+      <span style="flex: 1 1 auto"></span>
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; background: #ffffff; border-radius: 4px; padding: 2px 6px; color: #06112a">on002718</span>
+    </div>
+    <div role="tablist" aria-label="Notebooks" style="display: flex; align-items: flex-end; gap: 4px; padding: 6px 10px 0; background: #f7f8fb; border-bottom: 1px solid #e2e8f0">
+      <button type="button" role="tab" aria-selected="false" style="display: flex; align-items: center; gap: 6px; background: transparent; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; padding: 7px 10px; font: 12.5px Inter, sans-serif; color: #475569">Playground</button>
+      <div role="tab" aria-selected="true" style="display: flex; align-items: center; gap: 6px; background: #ffffff; border: 1px solid #e2e8f0; border-bottom: 0; border-radius: 6px 6px 0 0; padding: 4px 6px 4px 10px; font: 500 12.5px Inter, sans-serif; color: #0f172a">
+        <span>ERPs: famous vs scrambled</span>
+        <button type="button" aria-label="Rename notebook" style="width: 24px; height: 24px; border: 0; background: transparent; display: flex; align-items: center; justify-content: center"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path></svg></button>
+        <button type="button" aria-label="Close notebook" style="width: 24px; height: 24px; border: 0; background: transparent; display: flex; align-items: center; justify-content: center"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+      </div>
+      <button type="button" role="tab" aria-selected="false" style="display: flex; align-items: center; gap: 6px; background: transparent; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; padding: 7px 10px; font: 12.5px Inter, sans-serif; color: #475569">PSD across subjects</button>
+      <button type="button" aria-label="New notebook" aria-haspopup="menu" style="width: 30px; height: 30px; margin-bottom: 2px; border: 1px dashed #94a3b8; border-radius: 6px; background: #ffffff; display: flex; align-items: center; justify-content: center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2.2" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+      <div style="flex: 1 1 auto"></div>
+      <button type="button" style="display: flex; align-items: center; gap: 6px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 5px 10px; margin-bottom: 6px; font: 500 12px Inter, sans-serif; color: #0f172a">Download <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2.5" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+    </div>
+
+    <div role="status" style="display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: #f5fbfd; border-bottom: 1px solid #cfe7ef; font-size: 13px; color: #0f3d4c">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0e7490" stroke-width="2" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"></path></svg>
+      <span style="flex: 1 1 auto">Imported 5 steps from your chat. The failed first try of step 4 was left out. Python is starting, then run all cells.</span>
+      <button type="button" style="background: #0e7490; color: #ffffff; border: 0; border-radius: 6px; padding: 6px 12px; font: 600 12px Inter, sans-serif">Run all</button>
+      <button type="button" style="background: transparent; color: #0e5a70; border: 0; padding: 6px 4px; font: 500 12px Inter, sans-serif">Undo</button>
+    </div>
+
+    <div style="flex: 1 1 auto; overflow: hidden; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; position: relative">
+      <div style="padding: 4px 12px 4px 46px">
+        <div style="font-size: 22px; font-weight: 700; color: #0b1a3a">Famous vs scrambled ERPs in on002718</div>
+        <div style="font-size: 13px; color: #475569; margin-top: 4px">From a NEMAR Assistant chat on Nov 10, 2026. Data: NEMAR's streaming copy, quantized and lossy.</div>
+      </div>
+      <div style="display: flex; gap: 8px">
+        <span style="width: 38px; flex: none; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #64748b; text-align: right; padding-top: 8px">[ ]:</span>
+        <pre style="flex: 1 1 auto; margin: 0; background: #f7f8fb; border: 1px solid #e2e8f0; border-radius: 4px; padding: 8px 10px; font: 12px/1.6 'JetBrains Mono', monospace; color: #0f172a">%pip install eegprep-lean scipy
+import numpy as np
+import matplotlib.pyplot as plt
+import eegprep_lean
+
+index = await eegprep_lean.read_index("on002718")</pre>
+      </div>
+      <div style="padding: 2px 12px 0 46px; font-size: 16px; font-weight: 600; color: #0b1a3a">Step 1 · Count face onsets per condition</div>
+      <div style="display: flex; gap: 8px">
+        <span style="width: 38px; flex: none; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #64748b; text-align: right; padding-top: 8px">[ ]:</span>
+        <pre style="flex: 1 1 auto; margin: 0; background: #f7f8fb; border: 1px solid #e2e8f0; border-radius: 4px; padding: 8px 10px; font: 12px/1.6 'JetBrains Mono', monospace; color: #0f172a">store = index.store("sub-002/eeg/sub-002_task-FaceRecognition_eeg.set")
+events = store.events()
+faces = events[events["trial_type"].str.match("(famous|unfamiliar|scrambled)_")]
+print(faces["trial_type"].str.split("_").str[0].value_counts())</pre>
+      </div>
+      <div style="padding: 2px 12px 0 46px; font-size: 16px; font-weight: 600; color: #0b1a3a">Step 2 · Cut epochs from −200 to 600 ms</div>
+      <div style="display: flex; gap: 8px">
+        <span style="width: 38px; flex: none; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #64748b; text-align: right; padding-top: 8px">[ ]:</span>
+        <pre style="flex: 1 1 auto; margin: 0; background: #f7f8fb; border: 1px solid #e2e8f0; border-radius: 4px; padding: 8px 10px; font: 12px/1.6 'JetBrains Mono', monospace; color: #0f172a">window = await eegprep_lean.read_window(index, store, group=store.group("eeg_250hz"))
+rate = window.rate
+onsets = (faces["onset"].to_numpy() * rate).astype(int)
+…</pre>
+      </div>
+      <div style="padding: 2px 12px 0 46px; font-size: 16px; font-weight: 600; color: #94a3b8">Step 3 · Average epochs per condition</div>
+
+      <aside aria-label="Download options" style="position: absolute; right: 18px; top: 2px; width: 290px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14); padding: 6px">
+        <button type="button" style="display: block; width: 100%; text-align: left; background: #f5fbfd; border: 0; border-radius: 6px; padding: 9px 10px; font: 500 13px Inter, sans-serif; color: #0f172a">Notebook (.ipynb)</button>
+        <button type="button" style="display: block; width: 100%; text-align: left; background: transparent; border: 0; border-radius: 6px; padding: 9px 10px; font: 500 13px Inter, sans-serif; color: #0f172a">Python script with cells (.py)</button>
+        <pre style="margin: 4px 6px 6px; background: #1e293b; color: #e2e8f0; border-radius: 6px; padding: 8px 10px; font: 11px/1.55 'JetBrains Mono', monospace"><span style="color: #94a3b8"># %% [markdown]</span>
+<span style="color: #94a3b8"># ## Step 1 · Count face onsets</span>
+
+<span style="color: #7dd3fc"># %%</span>
+store = index.store("sub-002/…")
+events = store.events()</pre>
+        <div style="padding: 2px 10px 6px; font-size: 11.5px; color: #475569">Opens as cells in VS Code, Spyder and Jupytext.</div>
+      </aside>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1320,"height":840}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

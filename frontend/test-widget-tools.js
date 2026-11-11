@@ -41,6 +41,14 @@ function assertEqual(actual, expected, msg) {
   assert(same, `${msg}${same ? '' : ` (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`}`);
 }
 
+// The stored record's active conversation (history format v3, #654): the working
+// copy `messages` and `sessionId` as they were last saved.
+function storedActiveConversation(window, api) {
+  const record = JSON.parse(window.localStorage.getItem(api.getConfig().storageKey));
+  assertEqual(record.version, 3, 'the stored history is the v3 conversation store');
+  return record.conversations.find((c) => c.id === record.activeId);
+}
+
 /**
  * Poll `predicate` until it is true, for real DOM click handlers that kick
  * off an async runLocal() a test cannot otherwise await directly (the click
@@ -391,7 +399,7 @@ console.log('\na local run is kept in the reply\'s runs and survives reloading t
   api.setMessages([{ role: 'assistant', content: 'here you go', executions: [localRun] }]);
   api.saveHistory();
 
-  const raw = JSON.parse(window.localStorage.getItem(api.getConfig().storageKey));
+  const raw = storedActiveConversation(window, api);
   const savedRun = raw.messages[0].executions[0];
   assert(
     !('_editing' in savedRun) && !('_draft' in savedRun) && !('_runningLocal' in savedRun) && !('_localResult' in savedRun),
@@ -487,7 +495,7 @@ console.log('\nclicking Run executes the reader\'s edit for real and lands it in
   const bodyText = container.querySelector('.osa-chat-messages').textContent;
   assert(bodyText.includes('stdout of print("edited")'), "the rendered DOM shows the run's real stdout, not just the in-memory record");
 
-  const raw = JSON.parse(window.localStorage.getItem(api.getConfig().storageKey));
+  const raw = storedActiveConversation(window, api);
   assertEqual(raw.messages[1].executions.length, 2, 'the conversation was saved with both runs, not just rendered');
   assertEqual(raw.messages[1].executions[1].local, true, 'saved marked local too');
 }
@@ -2265,7 +2273,7 @@ console.log('\nan opened code panel stays open across a re-render, and is not st
 
   api.getMessages()[2].executions[1]._codeOpen = true;
   api.saveHistory();
-  const saved = JSON.parse(window.localStorage.getItem(api.getConfig().storageKey)).messages[2].executions[1];
+  const saved = storedActiveConversation(window, api).messages[2].executions[1];
   assert(!('_codeOpen' in saved), 'whether it was open is not stored: a reload shows it closed');
   assertEqual(saved.code, RUN_CODE, 'while the code itself is');
 }

@@ -29,8 +29,9 @@ was mergeable with zero approvals, by the same account that opened it.
 **Final state** (both `protect-main`, id `12110625`, and `protect-dev`, id
 `12110632`):
 
-- `required_approving_review_count: 1` on both. A PR author cannot approve
-  their own PR (verified directly against PR #403).
+- `required_approving_review_count: 1` on `protect-main`. A PR author
+  cannot approve their own PR (verified directly against PR #403).
+  `protect-dev` has been back at `0` since 2026-11-10 (see History, item 4).
 - `bypass_actors: [{"actor_id": 5, "actor_type": "RepositoryRole",
   "bypass_mode": "exempt"}]` on both - RepositoryRole `5` is `Admin`. An
   admin/owner can bypass this ruleset's rules (including the review
@@ -73,12 +74,23 @@ rulesets are repository configuration rather than repository content.
    `prevent-branch-deletion` was created as a second, non-bypassable
    ruleset to close that gap without reintroducing the review-approval
    friction the second revision was meant to relieve.
+4. **Fourth version (2026-11-10):** `protect-dev`'s
+   `required_approving_review_count` went back to `0`, at the maintainer's
+   request, for the agent delivery loop in `.context/nemar-ai-ux-plan.md`.
+   Agents act through the maintainer's account, so they cannot approve their
+   own pull requests, and Claude Code's auto mode refuses the `--admin`
+   bypass. A feature PR into `develop` now merges after the agent review
+   rounds of `.rules/code_review.md` and the required `Lint` and
+   `Test (3.12)` checks. `protect-main`, its review requirement and both
+   rulesets' bypass actors are unchanged, so a release into `main` still
+   needs another maintainer's approval or an admin.
 
 ## Consequences
 
-- Every future PR into `main` or `develop`, from a non-admin account, needs
-  a real approval from someone other than the author before it can merge.
-  An admin account can self-merge without another reviewer, by design.
+- Every future PR into `main`, from a non-admin account, needs a real
+  approval from someone other than the author before it can merge. An admin
+  account can self-merge without another reviewer, by design. PRs into
+  `develop` need no approval since the fourth version.
 - `main` and `develop` cannot be deleted by anyone, admin or not, regardless
   of future changes to `protect-main`/`protect-dev`'s bypass settings -
   that guarantee now lives in a ruleset most people editing branch

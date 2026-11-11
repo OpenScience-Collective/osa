@@ -445,6 +445,9 @@ jobs:
       - name: Run the pop-out tests on a real DOM
         run: bun frontend/test-widget-popout.js
 
+      - name: Run the conversation store tests on a real DOM
+        run: bun frontend/test-widget-history-store.js
+
       - name: Run the Settings dialog tests on a real DOM
         run: bun frontend/test-widget-settings.js
 

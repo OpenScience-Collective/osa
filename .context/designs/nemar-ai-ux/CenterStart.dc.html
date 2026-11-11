@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AI Mode opens on the dataset</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0e5a70}a:hover{color:#083b4a}
+</style>
+</helmet>
+<div style="width: 1280px; height: 900px; box-sizing: border-box; font-family: Inter, system-ui, sans-serif; color: #1f2937; background: #ffffff; position: relative; overflow: hidden">
+  <div aria-hidden="true" style="position: absolute; inset: 0; padding: 30px 80px; color: #0f172a">
+    <div style="font-size: 26px; font-weight: 700">NEMAR</div>
+    <div style="font-size: 44px; font-weight: 700; margin-top: 60px; max-width: 640px; line-height: 1.1">Face processing EEG dataset for EEGLAB</div>
+  </div>
+  <div aria-hidden="true" style="position: absolute; inset: 0; background: rgba(6, 17, 42, 0.55)"></div>
+
+  <div role="dialog" aria-modal="true" aria-label="AI Mode for on002718" style="position: absolute; left: 80px; right: 80px; top: 36px; bottom: 36px; background: #ffffff; border-radius: 16px; box-shadow: 0 24px 60px rgba(6, 17, 42, 0.35); display: flex; flex-direction: column; overflow: hidden">
+    <header style="display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid #e5e7eb">
+      <span style="display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; height: 32px; border-radius: 999px; background: #5bbad5; color: #04121f; font: 600 13px Inter, sans-serif">
+        <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z" fill="currentColor"></path><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" fill="currentColor"></path></svg>
+        AI Mode
+      </span>
+      <div style="flex: 1 1 auto; min-width: 0; font-size: 13px; color: #475569; white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><span style="font-family: 'JetBrains Mono', monospace; color: #0f172a">on002718</span> · Face processing EEG dataset for EEGLAB</div>
+      <button type="button" style="display: inline-flex; align-items: center; gap: 6px; background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 999px; min-height: 36px; padding: 0 14px; font: 500 13px Inter, sans-serif">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5"></path></svg>
+        History
+      </button>
+      <button type="button" style="display: inline-flex; align-items: center; gap: 6px; background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 999px; min-height: 36px; padding: 0 14px; font: 500 13px Inter, sans-serif">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2" aria-hidden="true"><path d="M14 10l6-6M15 4h5v5M10 14l-6 6M9 20H4v-5"></path></svg>
+        Move to corner
+      </button>
+      <button type="button" aria-label="Close" style="width: 36px; height: 36px; border: 0; background: transparent; display: flex; align-items: center; justify-content: center">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+      </button>
+    </header>
+
+    <div style="flex: 1 1 auto; display: flex; justify-content: center; align-items: center; padding: 24px 40px">
+      <div style="width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 22px">
+        <h2 style="margin: 0; font-size: 28px; line-height: 1.25; font-weight: 600; letter-spacing: -0.4px; color: #0b1a3a; text-align: center">What would you like to know about this dataset?</h2>
+
+        <form style="position: relative">
+          <label for="cs-start" style="position: absolute; left: -9999px">Ask about on002718</label>
+          <input id="cs-start" type="text" placeholder="Ask a question, or describe an analysis you want to run…" style="width: 100%; box-sizing: border-box; min-height: 60px; border: 1px solid #cbd5e1; border-radius: 999px; padding: 0 70px 0 24px; font: 17px Inter, sans-serif; color: #0f172a; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.10)">
+          <button type="submit" aria-label="Send" style="position: absolute; right: 8px; top: 8px; width: 44px; height: 44px; border-radius: 999px; border: 0; background: #5bbad5; display: flex; align-items: center; justify-content: center">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#04121f" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+          </button>
+        </form>
+
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center">
+          <button type="button" style="display: inline-flex; align-items: center; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #cbd5e1; background: #ffffff; color: #0f172a; font: 500 14px Inter, sans-serif">What was recorded, and how?</button>
+          <button type="button" style="display: inline-flex; align-items: center; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #cbd5e1; background: #ffffff; color: #0f172a; font: 500 14px Inter, sans-serif">Which event types are in the recordings?</button>
+          <button type="button" style="display: inline-flex; align-items: center; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #cbd5e1; background: #ffffff; color: #0f172a; font: 500 14px Inter, sans-serif">Compare ERPs for famous vs scrambled faces</button>
+          <button type="button" style="display: inline-flex; align-items: center; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #cbd5e1; background: #ffffff; color: #0f172a; font: 500 14px Inter, sans-serif">Plot the power spectrum of sub-002</button>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 8px">
+          <div style="border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; background: #f7f8fb">
+            <div style="font-size: 14px; font-weight: 600; color: #0b1a3a">Describe</div>
+            <div style="font-size: 13px; line-height: 1.5; color: #475569; margin-top: 4px">Summaries, methods and citations, from the dataset's own files.</div>
+          </div>
+          <div style="border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; background: #f7f8fb">
+            <div style="font-size: 14px; font-weight: 600; color: #0b1a3a">Look closer</div>
+            <div style="font-size: 13px; line-height: 1.5; color: #475569; margin-top: 4px">Events, channels and recordings, read live from NEMAR.</div>
+          </div>
+          <div style="border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; background: #f7f8fb">
+            <div style="font-size: 14px; font-weight: 600; color: #0b1a3a">Analyze</div>
+            <div style="font-size: 13px; line-height: 1.5; color: #475569; margin-top: 4px">Plans the steps with you, then runs Python in your browser.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <footer style="border-top: 1px solid #e5e7eb; padding: 12px 20px; display: flex; gap: 12px; align-items: center; font-size: 12px; color: #475569; flex-wrap: wrap">
+      <span style="flex: 1 1 auto">Code runs in your browser on NEMAR's streaming copy, which is lossy. Nothing you run is uploaded. AI can make mistakes.</span>
+      <a href="#">How it works</a>
+    </footer>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
