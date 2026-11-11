@@ -410,6 +410,8 @@ console.log('\nApprove posts exactly {session_id, result: {call_id, decision, st
         run_mode: 'pause',
       },
       client_tools: ['execute_code', 'get_full_output', 'propose_plan'],
+      // The reader's memory budget, the default here: a page with the runtime sends it.
+      page_context: { memory_budget_mb: 512 },
     },
     'the body is exactly that, in that order, with the steps as edited, added and removed'
   );

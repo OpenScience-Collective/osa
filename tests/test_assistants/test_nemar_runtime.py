@@ -61,9 +61,11 @@ class TestTheShippedConfig:
     ) -> None:
         """The model reads this on every call, and it says nothing else can be installed,
         so a preloaded package it leaves out is one the model will not use: SciPy was
-        preloaded before the description said so (#495). The welch rule is here too, one
-        channel at a time and a bounded length, since past either the call fails in
-        this runtime."""
+        preloaded before the description said so (#495). The spectrum rule is here too: the
+        recording is read in pieces sized by the budget and welch's limit, one channel of
+        a piece at a time, averaged by segment count, since past either limit the call
+        fails in this runtime and a capped read would report a part of the recording as
+        the whole."""
         assert nemar.extensions is not None and nemar.runtime is not None
         assert nemar.runtime.python is not None
         description = nemar.extensions.client_tools[0].description.lower()
@@ -72,9 +74,54 @@ class TestTheShippedConfig:
         installed = head.rsplit(".", 1)[-1]
         for package in nemar.runtime.python.preload:
             assert package.replace("-", "_") in installed, (package, installed)
-        assert "scipy.signal.welch one channel at a time" in description
-        assert "2**28 // nperseg samples" in description
-        assert "array is too big" in description
+        flat = " ".join(description.split())
+        assert "read the recording in pieces sized by the reader's memory budget" in flat
+        assert "and by welch's limit" in flat
+        assert "scipy.signal.welch on one channel of a piece at a time" in flat
+        assert "average over the pieces weighted by their segment counts" in flat
+        # The old recipe, which read the whole recording first and chunked it in memory.
+        assert "chunks of at most 2**28 // nperseg samples" not in flat
+        assert "spectrum of the whole recording" in flat
+        assert "array is too big" in flat
+        # The capped recipe is gone: no read cut at a maximum, and no "on at most".
+        assert "on at most" not in flat
+
+    def test_the_spectrum_recipe_reads_pieces_and_covers_the_whole_recording(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """The prompt's recipe reads the recording in pieces, welches each channel of each
+        piece, weights the pieces by their segment counts, takes its piece from the reader's
+        memory budget as well as from the runtime's own limit, and names no `most` cap and
+        no "cut short" sentence (E5.2, #669). The block's budget line is the one number the
+        model edits besides the group, and the prose says so (the data lane suite runs the
+        block and holds it to one welch call)."""
+        prompt = nemar.system_prompt
+        assert prompt is not None
+        start = prompt.index("**Power spectrum.**")
+        bullet = prompt[start : prompt.index("**Events.**", start)]
+        flat = " ".join(bullet.split())
+        assert (
+            "piece = min(2**28 // nperseg, budget_mb * 2**20 // 4 // (group.n_channels * 8 + 160))"
+            in flat
+        )
+        assert "await eegprep_lean.read_window(" in flat
+        # The block stands alone: it opens its own index and store, which the model fills in.
+        assert 'index = await eegprep_lean.read_index("DATASET_ID")' in flat
+        assert 'store = index.store("RECORDING_PATH")' in flat
+        assert "`DATASET_ID`, `RECORDING_PATH` and `GROUP`" in flat
+        assert "left_out" in flat
+        assert "summed[row] += k * p" in flat
+        assert "power = summed / used" in flat
+        assert "assert used == total" in flat
+        # The totals come from the recording's length, not from one piece's.
+        assert "total = (group.n_samples - noverlap) // hop" in flat
+        assert "eeg.shape[1]" not in flat
+        assert flat.count("budget_mb = 512") == 1
+        assert "`budget_mb` with the reader's budget" in flat and "change nothing else" in flat
+        assert "most =" not in flat and "[:most]" not in flat
+        assert "cut the read short" not in flat
+        assert "when `most`" not in flat
+        assert "chunk" not in flat.replace("chunks", "")
 
     def test_the_prompt_says_where_each_value_comes_from(self, nemar: CommunityConfig) -> None:
         """index.store matches a store's path only, and nemar_read_window also accepts

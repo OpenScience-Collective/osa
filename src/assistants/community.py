@@ -16,7 +16,7 @@ Features:
 import importlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from langchain_core.tools import BaseTool, StructuredTool, tool
 
@@ -43,6 +43,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# The browser memory budgets a reader may choose, in MB. The API model
+# (src/api/routers/community.py PageContext) types the field with the same four sizes;
+# a test holds the two to each other.
+MemoryBudgetMb = Literal[256, 512, 1024, 2048]
+MEMORY_BUDGETS_MB: tuple[int, ...] = get_args(MemoryBudgetMb)
+
+
 @dataclass
 class PageContext:
     """Context about the page where the assistant widget is embedded."""
@@ -55,6 +62,17 @@ class PageContext:
     # {"type": "dataset", "id": ...} or {"type": "search"}: where the reader was before
     # choosing to continue this conversation in the page's context.
     moved_from: dict[str, str] | None = None
+    # How much of the reader's browser memory one step of an analysis may use, in MB
+    # (one of MEMORY_BUDGETS_MB). Checked here as well as at the API boundary, because the
+    # value is written into the system prompt and any caller can build this directly.
+    memory_budget_mb: MemoryBudgetMb | None = None
+
+    def __post_init__(self) -> None:
+        if self.memory_budget_mb is not None and self.memory_budget_mb not in MEMORY_BUDGETS_MB:
+            raise ValueError(
+                f"memory_budget_mb must be one of {list(MEMORY_BUDGETS_MB)} or None, "
+                f"got {self.memory_budget_mb!r}"
+            )
 
 
 # Default system prompt template for generic communities
@@ -599,18 +617,31 @@ class CommunityAssistant(ToolAgent):
             return ""
         return "## Reader Context\n\n" + "\n\n".join(paragraphs)
 
+    def _format_memory_budget(self) -> str:
+        """The reader's browser memory budget, which every step has to fit in."""
+        page = self._page_context
+        if page is None or page.memory_budget_mb is None:
+            return ""
+        return (
+            "## Browser memory budget\n\n"
+            f"Each step must fit in {page.memory_budget_mb} MB of the reader's browser memory; "
+            "read long recordings in pieces."
+        )
+
     def _format_page_context_section(self) -> str:
         """Format page context section for system prompt."""
         if not self.config.enable_page_context:
             return ""
         if not self._page_context:
             return ""
-        # Need at least a URL, widget instructions or a dataset to include this section
+        # Need at least a URL, widget instructions, a dataset or a memory budget to include
+        # this section
         if (
             not self._page_context.url
             and not self._page_context.widget_instructions
             and not self._page_context.dataset_id
             and not self._page_context.moved_from
+            and self._page_context.memory_budget_mb is None
         ):
             return ""
 
@@ -619,6 +650,10 @@ class CommunityAssistant(ToolAgent):
         reader_context = self._format_reader_context()
         if reader_context:
             sections.append(reader_context)
+
+        memory_budget = self._format_memory_budget()
+        if memory_budget:
+            sections.append(memory_budget)
 
         if self._page_context.url:
             sections.append(

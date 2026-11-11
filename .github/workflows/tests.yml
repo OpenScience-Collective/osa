@@ -529,6 +529,13 @@ jobs:
       - name: Run the plan card tests on a real DOM
         run: bun frontend/test-widget-plan-card.js
 
+      # The browser memory budget (E5.1): the Settings field and its stored value, the
+      # budget on /chat and /chat/resume only from a page with the runtime, the run card's
+      # "Heap N MB of B MB" and its warning by step, the plan card's warning, and a reload
+      # and History restoring the line. The real widget and the runtime bundle as built.
+      - name: Run the memory budget tests on a real DOM
+        run: bun frontend/test-widget-memory-budget.js
+
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a
       # reading pace, the code block whole, and at once with reduced motion emulated.

@@ -137,10 +137,18 @@ async function openSettingsDialog(options) {
   return {
     window,
     q,
-    saved: () => JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || 'null'),
+    saved: () => withoutBudget(JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || 'null')),
     // The settings the next request would read, in memory.
-    inMemory: () => window.OSAChatWidget.__settings.get(),
+    inMemory: () => withoutBudget(window.OSAChatWidget.__settings.get()),
   };
+}
+
+// This suite is about the model and the key. The memory budget saved beside them is held to
+// its own rules in frontend/test-widget-memory-budget.js, and a model test need not name it.
+function withoutBudget(settings) {
+  if (!settings) return settings;
+  const { memoryBudgetMb, ...rest } = settings;
+  return rest;
 }
 
 const shown = (q, selector) => q(selector).style.display !== 'none';

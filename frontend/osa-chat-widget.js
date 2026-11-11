@@ -346,7 +346,26 @@
   let backendCommitSha = null; // Backend git commit SHA from health check
   let pageContextEnabled = true; // Runtime state for page context toggle
   let chatPopup = null; // Reference to pop-out window (prevents duplicates)
-  let userSettings = { apiKey: null, model: null, keyProvider: null }; // User settings (BYOK and model selection)
+  // The browser memory budgets Settings offers per step, in MB, and the one a reader who
+  // never chose gets. The server accepts exactly these (PageContext.memory_budget_mb), and
+  // frontend/osa-memory.js holds the same list for the runtime bundle; this copy is here
+  // because a saved setting is read before that bundle has loaded. test-widget-memory-budget.js
+  // holds the copies to each other.
+  const MEMORY_BUDGETS_MB = Object.freeze([256, 512, 1024, 2048]);
+  const DEFAULT_MEMORY_BUDGET_MB = 512;
+  // A budget as a Settings choice reads it: 256 MB, 1 GB (osa-memory.js sizeLabel).
+  function memorySizeLabel(mb) {
+    return mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024} GB` : `${mb} MB`;
+  }
+  // A stored budget: an offered size, else the default.
+  function normalizeMemoryBudget(value) {
+    return Number.isInteger(value) && MEMORY_BUDGETS_MB.includes(value) ? value : DEFAULT_MEMORY_BUDGET_MB;
+  }
+  // A reader with nothing saved: no key, the community's model, the default memory budget.
+  function defaultUserSettings() {
+    return { apiKey: null, model: null, keyProvider: null, memoryBudgetMb: DEFAULT_MEMORY_BUDGET_MB };
+  }
+  let userSettings = defaultUserSettings(); // User settings (BYOK, model selection, memory budget)
   let communityDefaultModel = null; // Community's default model from API
   let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
@@ -387,6 +406,10 @@
   let browserToolsReady = null; // Promise resolving to the controller, or null
   let browserTools = null; // OSARuntime.ClientToolController
   let browserRuntime = null; // The OSARuntime.PyodideRuntime it drives
+  // The heap the runtime last reported, in MB. Kept here, not read back from the chat on
+  // screen: the runtime is shared by every chat on the page, so a new chat or a History
+  // conversation starts on the heap an earlier one left.
+  let lastReportedHeapMb = null;
   let runtimeApi = null; // The OSARuntime global itself, captured when it loaded
   let browserToolsSetup = null; // {tools, python} from the config, kept for a retry
   let browserToolsUnavailable = null; // {reason, detail} while code execution is off
@@ -783,7 +806,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-oQAeK/wuVT0Ivb60H786tNN0Kx0ZEwVzQClRNzP2yWtMKQCex/deV1TNMTnWgytK';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-CmnMFZjJfOAdo5XJkHd0RsjwIScuK5C9zF9chl/sKT5RjblkrSbeAV8XRSrowKTX';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -826,6 +849,10 @@
          outrank the dark rule below, which has to replace it (a color chosen to read
          on white is often too dark to read on the dark panel). */
       --osa-accent: var(--osa-accent-on-light, var(--osa-primary));
+      /* The caution color (a run over its memory budget, a plan expected to): 4.9:1 on the
+         light panel, and lightened below for the dark one. The run card and the plan card
+         read it through their own tokens. */
+      --osa-warn: #b45309;
       --osa-bg: #ffffff;
       --osa-text: #1f2937;
       --osa-text-light: #6b7280;
@@ -3940,6 +3967,94 @@
       background: var(--osa-primary-dark);
     }
 
+    /* Browser memory (E5.1): four choices in a row, each a 44 px target. The radio itself is
+       kept for the keyboard and screen readers and drawn as the choice's own border. */
+    .osa-memory-fieldset {
+      border: 0;
+      margin: 0;
+      padding: 0;
+      min-width: 0;
+    }
+
+    .osa-memory-fieldset legend.osa-settings-label {
+      padding: 0;
+    }
+
+    .osa-memory-choices {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .osa-memory-choice {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      box-sizing: border-box;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--osa-text);
+      cursor: pointer;
+      text-align: center;
+    }
+
+    .osa-memory-choice-on {
+      border: 1.5px solid var(--osa-accent);
+      background: var(--osa-notice-bg);
+      font-weight: 600;
+    }
+
+    .osa-memory-choice:focus-within {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-memory-radio {
+      position: absolute;
+      opacity: 0;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      cursor: pointer;
+    }
+
+    .osa-memory-last {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-memory-last[hidden] {
+      display: none;
+    }
+
+    .osa-memory-last-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .osa-memory-bar {
+      height: 6px;
+      border-radius: 3px;
+      background: var(--osa-border);
+      overflow: hidden;
+    }
+
+    .osa-memory-bar-fill {
+      height: 6px;
+      background: var(--osa-accent);
+    }
+
+    .osa-memory-bar-over .osa-memory-bar-fill {
+      background: var(--osa-warn);
+    }
+
     .osa-workspace-actions {
       display: flex;
       flex-wrap: wrap;
@@ -3998,6 +4113,8 @@
       --osa-run-ok: #15803d;
       --osa-run-danger: #b91c1c;
       --osa-run-danger-bg: #fef2f2;
+      --osa-run-warn: var(--osa-warn);
+      --osa-run-warn-bg: #fffbeb;
       position: relative;
       border: 1px solid var(--osa-border);
       border-radius: 12px;
@@ -4134,6 +4251,28 @@
 
     .osa-run-card-retry .osa-activity-pulse {
       background: var(--osa-accent);
+    }
+
+    /* The WebAssembly heap after the run, against the reader's memory budget (E5.1), and
+       the caution under it when the run passed the budget. A caution, not a failure: the
+       run finished. */
+    .osa-run-card-heap {
+      color: var(--osa-text-light);
+      font-size: 12px;
+    }
+
+    .osa-run-card-heap-over {
+      color: var(--osa-run-warn);
+      font-weight: 600;
+    }
+
+    .osa-run-card-memory-warning {
+      background: var(--osa-run-warn-bg);
+      color: var(--osa-run-warn);
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12.5px;
+      overflow-wrap: anywhere;
     }
 
     .osa-run-card-actions {
@@ -4425,6 +4564,7 @@
     .osa-plan-strip,
     .osa-plan-bar {
       --osa-plan-danger: #b91c1c;
+      --osa-plan-warn: var(--osa-warn);
       --osa-plan-editing-bg: #fffbeb;
     }
 
@@ -4486,6 +4626,12 @@
       font-size: 12px;
       color: var(--osa-text-light);
       overflow-wrap: anywhere;
+    }
+
+    /* The largest step is expected to pass the reader's memory budget (E5.1). */
+    .osa-plan-card .osa-plan-meta-warn {
+      color: var(--osa-plan-warn);
+      font-weight: 600;
     }
 
     .osa-plan-card .osa-plan-mode-line {
@@ -5061,6 +5207,7 @@
       --osa-notice-border: #2c5a69;
       --osa-notice-text: #d3eef6;
       --osa-danger-text: #fca5a5;
+      --osa-warn: #fbbf24;
       /* A shadow alone vanishes against a dark host page, so every raised surface
          (the panel, the launcher, the tooltips) also gets a hairline edge. */
       --osa-shadow: 0 0 0 1px #374151, 0 10px 25px rgba(0, 0, 0, 0.5);
@@ -5195,6 +5342,7 @@
       --osa-run-ok: #4ade80;
       --osa-run-danger: #fca5a5;
       --osa-run-danger-bg: rgba(220, 38, 38, 0.15);
+      --osa-run-warn-bg: rgba(245, 158, 11, 0.15);
     }
 
     .osa-chat-widget.osa-dark .osa-run-card-excerpt {
@@ -7033,6 +7181,7 @@
       .slice(0, MAX_BROWSER_RUNS_PER_REPLY)
       .map((run) => {
         const figureCount = normalizeFigureCount(run.figureCount);
+        const heapMb = normalizeHeapMb(run.heapMb);
         return {
           callId: clipField(run.callId, 'callId'),
           tool: clipField(run.tool, 'tool'),
@@ -7049,6 +7198,8 @@
           // read back from storage renders identically to one just produced.
           local: run.local === true,
           workspaceNote: clipField(run.workspaceNote, 'workspaceNote'),
+          ...(heapMb ? { heapMb, budgetMb: normalizeMemoryBudget(run.budgetMb) } : {}),
+          ...(heapMb && normalizeHeapMb(run.heapBeforeMb) ? { heapBeforeMb: normalizeHeapMb(run.heapBeforeMb) } : {}),
           ...normalizePlanRunFields(run),
         };
       });
@@ -7057,6 +7208,14 @@
   // The most figures a run keeps: the server's own cap on a result's images
   // (MAX_IMAGES in osa-output.js, which the widget cannot import).
   const MAX_FIGURES_PER_RUN = 3;
+
+  // A stored heap size in MB (E5.1): a whole number from 1 to MAX_HEAP_MB, else null. The
+  // limit is osa-memory.js's MAX_HEAP_MB, which a restored chat needs before the bundle
+  // has loaded; test-widget-memory-budget.js holds the two to each other.
+  const MAX_HEAP_MB = 4096;
+  function normalizeHeapMb(value) {
+    return Number.isInteger(value) && value >= 1 ? Math.min(value, MAX_HEAP_MB) : null;
+  }
 
   // A stored figure count: a whole number from 0 to MAX_FIGURES_PER_RUN, else 0.
   function normalizeFigureCount(value) {
@@ -9107,8 +9266,10 @@
     if (move) move.told = true;
   }
 
-  // Get page context (URL, title, widget instructions, the dataset and a move) for contextual answers
-  function getPageContext() {
+  // Get page context (URL, title, widget instructions, the dataset and a move) for contextual
+  // answers. `withBudget` adds the reader's memory budget, for a request that declares the
+  // client tools (see withMemoryBudget for the one that is sent before they are known).
+  function getPageContext(withBudget = false) {
     // Widget instructions are always sent if configured, even if page context is off
     const hasWidgetInstructions = typeof CONFIG.widgetInstructions === 'string'
       && CONFIG.widgetInstructions.trim() !== '';
@@ -9118,8 +9279,14 @@
     // page's URL.
     const datasetId = currentDataset ? currentDataset.id : null;
     const movedFrom = pendingMovedFrom();
+    // The reader's memory budget goes with a request that declares the client tools
+    // (`withBudget`) on a page that can run code in the browser (the controller exists),
+    // and with none of a page that cannot: there is nothing to size there. Like the
+    // dataset, it is about the chat, so it is sent whether or not the reader shares the
+    // page's URL.
+    const memoryBudget = withBudget && browserTools ? normalizeMemoryBudget(userSettings.memoryBudgetMb) : null;
 
-    if (!hasPageContext && !hasWidgetInstructions && !datasetId && !movedFrom) {
+    if (!hasPageContext && !hasWidgetInstructions && !datasetId && !movedFrom && !memoryBudget) {
       return null;
     }
 
@@ -9133,7 +9300,16 @@
     }
     if (datasetId) context.dataset_id = datasetId;
     if (movedFrom) context.moved_from = movedFrom;
+    if (memoryBudget) context.memory_budget_mb = memoryBudget;
     return context;
+  }
+
+  // `context` (getPageContext's, or null) with the reader's memory budget added. For the
+  // first request, whose page context is captured when the question is sent, before the
+  // wait for the runtime: only the budget is decided after it, and only for a request that
+  // declares tools to run code with (one sent with streaming off declares none).
+  function withMemoryBudget(context) {
+    return { ...(context || {}), memory_budget_mb: normalizeMemoryBudget(userSettings.memoryBudgetMb) };
   }
 
   // Load page context preference from localStorage
@@ -9169,7 +9345,7 @@
     try {
       const saved = localStorage.getItem(storageKey);
       if (!saved) {
-        userSettings = { apiKey: null, model: null, keyProvider: null };
+        userSettings = defaultUserSettings();
         return;
       }
 
@@ -9179,7 +9355,7 @@
       } catch (jsonErr) {
         console.error('[OSA] Saved settings contain invalid JSON:', jsonErr.message);
         queuePendingNotice('Saved settings are corrupted. Using defaults.');
-        userSettings = { apiKey: null, model: null, keyProvider: null };
+        userSettings = defaultUserSettings();
         // Clear corrupted data
         try { localStorage.removeItem(storageKey); } catch {}
         return;
@@ -9190,7 +9366,7 @@
       if (!parsed || typeof parsed !== 'object') {
         console.error('[OSA] Saved settings are not an object, ignoring');
         queuePendingNotice('Saved settings are corrupted. Using defaults.');
-        userSettings = { apiKey: null, model: null, keyProvider: null };
+        userSettings = defaultUserSettings();
         try { localStorage.removeItem(storageKey); } catch {}
         return;
       }
@@ -9229,13 +9405,17 @@
       userSettings = {
         apiKey: parsed.apiKey || null,
         model: parsed.model || null,
-        keyProvider: inferKeyProvider(parsed.apiKey || '')
+        keyProvider: inferKeyProvider(parsed.apiKey || ''),
+        // Settings saved before the budget existed have none, which is the default and
+        // no cause for a notice. One that is there but not an offered size reads as the
+        // default too: the server refuses any other, so it must not be sent.
+        memoryBudgetMb: normalizeMemoryBudget(parsed.memoryBudgetMb)
       };
     } catch (e) {
       // localStorage access error
       console.error('[OSA] Cannot access localStorage for settings:', e.message);
       queuePendingNotice('Cannot access browser storage. Settings will not persist.');
-      userSettings = { apiKey: null, model: null, keyProvider: null };
+      userSettings = defaultUserSettings();
     }
   }
 
@@ -10183,6 +10363,29 @@
       // so a plain property read is the only way to see it; it never rode
       // along in what was sent to the server.
       workspaceNote: clipField(result && result.workspaceFailureNote, 'workspaceNote'),
+      ...heapFields(request && request.call_id),
+    };
+  }
+
+  // The heap after the run `callId` and the budget it ran under, as the run's record keeps
+  // them (E5.1); nothing when the runtime reported no heap (a run refused before it
+  // started, a timeout) or has not loaded. Read from the runtime beside the result, which
+  // does not carry it (see PyodideRuntime#heapBytes).
+  function heapFields(callId) {
+    if (!browserRuntime || typeof browserRuntime.heapBytes !== 'function'
+      || !runtimeApi || !runtimeApi.memory || typeof callId !== 'string' || !callId) return {};
+    const heapMb = runtimeApi.memory.heapMbFromBytes(browserRuntime.heapBytes(callId));
+    if (!heapMb) return {};
+    // The heap the runtime reported before this run, whichever chat that run was in, so the
+    // card can tell the run that took the heap past the budget from the ones that only report
+    // what it left (heapReport). A restarted runtime reports a smaller figure than this one,
+    // which heapReport reads as a run that grew it.
+    const heapBeforeMb = lastReportedHeapMb;
+    lastReportedHeapMb = heapMb;
+    return {
+      heapMb,
+      budgetMb: normalizeMemoryBudget(userSettings.memoryBudgetMb),
+      ...(heapBeforeMb ? { heapBeforeMb } : {}),
     };
   }
 
@@ -10205,6 +10408,7 @@
       // The reader's own run never reaches the server at all, so this note
       // is the ONLY place a save failure on it is ever visible to anyone.
       workspaceNote: clipField(result && result.workspaceFailureNote, 'workspaceNote'),
+      ...heapFields(result && result.call_id),
     };
   }
 
@@ -10450,7 +10654,7 @@
       client_tools: browserTools ? withPlanTool(browserTools.declared) : [],
     };
     const carried = carriedMove();
-    const pageContext = getPageContext();
+    const pageContext = getPageContext(true);
     if (pageContext) body.page_context = pageContext;
     const model = modelOverride || userSettings.model;
     if (model) body.model = model;
@@ -11015,6 +11219,22 @@
     const workspaceNote = run.workspaceNote
       ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
       : '';
+    // The runtime's memory after the run against the budget it ran under (E5.1), and, when it
+    // passed, which step took it there. The runs after that one only report what it left, in
+    // the plain style: the amber box is for the run that grew the heap. Needs the runtime
+    // bundle's logic, so a restored chat gets it when the bundle has loaded (which draws the
+    // chat again).
+    const heap = runtimeApi && runtimeApi.memory ? runtimeApi.memory.heapReport(run.heapMb, run.budgetMb, run.heapBeforeMb) : null;
+    const heapLine = heap
+      ? `<div class="osa-run-card-heap${heap.grew ? ' osa-run-card-heap-over' : ''}">${escapeHtml(heap.text)}</div>`
+      : '';
+    const heapNoteText = heap && heap.exceeded
+      ? escapeHtml(runtimeApi.memory.overBudgetWarning(heap, { step: run.step, title: run.stepTitle }))
+      : '';
+    const heapWarning = !heapNoteText ? ''
+      : (heap.grew
+        ? `<div class="osa-run-card-memory-warning">${heapNoteText}</div>`
+        : `<div class="osa-run-card-note osa-run-card-heap-held">${heapNoteText}</div>`);
     const noMessage = run.status === 'error' && !error
       ? '<div class="osa-run-card-note osa-run-card-no-message">No error message was recorded.</div>'
       : '';
@@ -11039,6 +11259,8 @@
           ${localNote}
           ${error ? runErrorHtml(run, error) : noMessage}
           ${runFiguresHtml(run, located)}
+          ${heapLine}
+          ${heapWarning}
           ${workspaceNote}
           ${cutNote}
           ${retryLine}
@@ -11393,8 +11615,14 @@
     const findings = plan.findings
       ? `<div class="osa-plan-findings"><strong>What I found.</strong> ${escapeHtml(plan.findings)}</div>`
       : '';
+    // Beside it, while the reader can still act on it (edit the steps, or raise the budget),
+    // the warning that the estimate passes their memory budget.
+    const overBudget = live && plan.estPeakMb > 0 && runtimeApi && runtimeApi.memory
+      ? runtimeApi.memory.planBudgetWarning(plan.estPeakMb, userSettings.memoryBudgetMb)
+      : '';
     const peak = plan.estPeakMb > 0
       ? `<div class="osa-plan-meta">Largest step needs about ${escapeHtml(String(plan.estPeakMb))} MB</div>`
+        + (overBudget ? `<div class="osa-plan-meta osa-plan-meta-warn">${escapeHtml(overBudget)}</div>` : '')
       : '';
     const steps = plan.steps.map((_, index) => planStepHtml(plan, ui, index, id)).join('');
     let tail;
@@ -12343,6 +12571,55 @@
     }
   }
 
+  // The heap of the latest run in the chat on screen that reported one, in MB, or null.
+  function lastRunHeapMb() {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const runs = messages[i] && messages[i].executions;
+      if (!Array.isArray(runs)) continue;
+      for (let j = runs.length - 1; j >= 0; j -= 1) {
+        if (Number.isInteger(runs[j].heapMb) && runs[j].heapMb > 0) return runs[j].heapMb;
+      }
+    }
+    return null;
+  }
+
+  // The memory budget chosen in the dialog, as an offered size, else the saved one.
+  function memoryChoiceIn(container) {
+    const checked = container.querySelector('.osa-memory-radio:checked');
+    return checked ? normalizeMemoryBudget(Number(checked.value)) : normalizeMemoryBudget(userSettings.memoryBudgetMb);
+  }
+
+  // The Browser memory field: shown only on a page that can run code in the browser, with
+  // the saved budget chosen when the dialog opens (`reset`), the chosen choice marked, and
+  // how much the last step used against it. The choice is the dialog's until Save, like the
+  // model's; Cancel leaves what was saved.
+  function syncMemoryField(container, { reset = false } = {}) {
+    const field = container.querySelector('.osa-memory-field');
+    if (!field) return;
+    field.style.display = browserTools ? '' : 'none';
+    if (reset) {
+      const saved = normalizeMemoryBudget(userSettings.memoryBudgetMb);
+      field.querySelectorAll('.osa-memory-radio').forEach((radio) => { radio.checked = Number(radio.value) === saved; });
+    }
+    const chosen = memoryChoiceIn(container);
+    field.querySelectorAll('.osa-memory-choice').forEach((label) => {
+      const radio = label.querySelector('.osa-memory-radio');
+      label.classList.toggle('osa-memory-choice-on', !!radio && radio.checked);
+    });
+    const last = field.querySelector('.osa-memory-last');
+    if (!last) return;
+    const heapMb = lastRunHeapMb();
+    if (heapMb === null) {
+      last.hidden = true;
+      last.textContent = '';
+      return;
+    }
+    const percent = Math.max(0, Math.min(100, Math.round((heapMb / chosen) * 100)));
+    last.hidden = false;
+    last.innerHTML = `<div class="osa-memory-last-row"><span>Runtime memory after the last step</span><span>${escapeHtml(String(heapMb))} MB of ${escapeHtml(String(chosen))} MB${heapMb > chosen ? '<span class="osa-sr-only"> (over budget)</span>' : ''}</span></div>`
+      + `<div class="osa-memory-bar${heapMb > chosen ? ' osa-memory-bar-over' : ''}" aria-hidden="true"><div class="osa-memory-bar-fill" style="width: ${percent}%"></div></div>`;
+  }
+
   function openSettings(container) {
     // Don't open settings if chat window is closed
     if (!isOpen) return;
@@ -12403,6 +12680,7 @@
       }
     }
     syncCustomFields(container);
+    syncMemoryField(container, { reset: true });
 
     // Update hint with current default model
     if (modelHint) {
@@ -12486,6 +12764,8 @@
     userSettings.apiKey = apiKey || null;
     userSettings.model = model;
     userSettings.keyProvider = inferKeyProvider(apiKey);
+    // The budget is the saved one when the field is not showing (a page with no runtime).
+    userSettings.memoryBudgetMb = memoryChoiceIn(container);
 
     // Save to localStorage
     try {
@@ -12962,6 +13242,21 @@
               />
               <span class="osa-settings-hint">
                 An Anthropic or OpenRouter key. Required for a custom model. Stored in this browser and sent with your requests.
+              </span>
+            </div>
+            <div class="osa-settings-field osa-memory-field" style="display: none;">
+              <fieldset class="osa-memory-fieldset">
+                <legend class="osa-settings-label">Browser memory</legend>
+                <div class="osa-memory-choices">
+                  ${MEMORY_BUDGETS_MB.map((mb) => `<label class="osa-memory-choice">
+                    <input type="radio" name="osa-settings-memory" class="osa-memory-radio" value="${escapeHtml(String(mb))}">
+                    <span>${escapeHtml(memorySizeLabel(mb))}</span>
+                  </label>`).join('')}
+                </div>
+              </fieldset>
+              <div class="osa-memory-last" hidden></div>
+              <span class="osa-settings-hint">
+                The assistant sizes each step to fit this budget, reading long recordings in pieces. A larger budget reads more at once but can slow or crash the tab on a laptop with little memory. One array cannot exceed 2 GB in the browser.
               </span>
             </div>
             <div class="osa-settings-field osa-workspace-field" style="display: none;">
@@ -14950,16 +15245,15 @@
     try {
       const body = { message: question.trim() };
 
+      // What the page and the reader say about themselves is captured now, as the question
+      // is sent: the wait for the runtime below can be long, and a reader who navigates
+      // during it still asked about the page they were on.
+      const carried = carriedMove();
+      const pageContext = getPageContext();
+
       // Include session ID for conversation continuity
       if (sessionId) {
         body.session_id = sessionId;
-      }
-
-      // Add page context if enabled
-      const carried = carriedMove();
-      const pageContext = getPageContext();
-      if (pageContext) {
-        body.page_context = pageContext;
       }
 
       // Add Turnstile token if available
@@ -14989,6 +15283,14 @@
         if (declared.length > 0) {
           body.client_tools = declared;
         }
+      }
+
+      // Add page context if enabled. The reader's memory budget goes only with a request
+      // that declares tools to run code with, which is known once the runtime has loaded.
+      if (body.client_tools) {
+        body.page_context = withMemoryBudget(pageContext);
+      } else if (pageContext) {
+        body.page_context = pageContext;
       }
 
       // A streamed request is bounded by its silence (60 s after the last data from the
@@ -15568,6 +15870,9 @@
     settingsCloseBtn?.addEventListener('click', () => closeSettings(container));
     settingsCancelBtn?.addEventListener('click', () => closeSettings(container));
     settingsSaveBtn?.addEventListener('click', () => saveSettings(container));
+
+    // Browser memory (E5.1): the marked choice and the usage bar follow the radios.
+    container.querySelector('.osa-memory-field')?.addEventListener('change', () => syncMemoryField(container));
 
     // Workspace panel (#433), inside Settings.
     const workspaceDownloadBtn = container.querySelector('.osa-workspace-download-btn');
