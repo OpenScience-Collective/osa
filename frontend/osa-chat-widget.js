@@ -446,6 +446,19 @@
   // with no DOM and no widget state, so loadHistory, saveHistory and the
   // conversation functions further down are thin callers. The widget is one
   // classic script pinned by SRI, so the store cannot be a module of its own.
+  //
+  // @typedef {{type: 'dataset', id: string} | {type: 'search'} | null} ConversationContext
+  // @typedef {{id: string, context: ConversationContext, title: string,
+  //   sessionId: string | null, createdAt: number, updatedAt: number,
+  //   messages: object[]}} Conversation
+  // @typedef {{version: 3, activeId: string | null,
+  //   conversations: Conversation[]}} Envelope
+  // @typedef {{kind: 'v3' | 'legacy' | 'empty' | 'unreadable', reason?: 'newer' | 'damaged',
+  //   envelope: Envelope | null, needsSave: boolean, dropped: number}} ReadResult
+  //   (`envelope` is null only when kind is 'unreadable')
+  // The working copy is the module's `messages` and `sessionId` plus
+  // `activeConversation`, {id, context, createdAt}: the active conversation's
+  // identity, never its content.
   const CHAT_HISTORY_VERSION = 3;
   const MAX_CONVERSATIONS = 30;
   const CONVERSATION_TITLE_LIMIT = 60;
@@ -525,16 +538,28 @@
     };
   }
 
+  // Whether the reader has said anything in a conversation. One that is only the
+  // greeting holds nothing worth a slot.
+  function hasUserMessage(conversation) {
+    return conversation.messages.some((m) => m && m.role === 'user');
+  }
+
   // The newest MAX_CONVERSATIONS by updatedAt, newest first, and never the
-  // active one: it stays even when it is older than all the others.
+  // active one: it stays even when it is older than all the others. Only
+  // conversations with a user message count toward the limit. The active one is
+  // kept either way; an empty one that is not active is dropped (its tab writes
+  // it again when the reader says something). So starting a chat never costs the
+  // oldest saved one its place.
   function trimConversations(conversations, activeId, max = MAX_CONVERSATIONS) {
     const byNewest = (a, b) => b.updatedAt - a.updatedAt;
-    const sorted = [...conversations].sort(byNewest);
-    if (sorted.length <= max) return sorted;
-    const active = sorted.find((conversation) => conversation.id === activeId);
-    const others = sorted.filter((conversation) => conversation !== active);
-    const kept = others.slice(0, max - (active ? 1 : 0));
-    return (active ? [...kept, active] : kept).sort(byNewest);
+    const active = conversations.find((conversation) => conversation.id === activeId);
+    const others = conversations
+      .filter((conversation) => conversation !== active && hasUserMessage(conversation))
+      .sort(byNewest);
+    const slots = active && hasUserMessage(active) ? max - 1 : max;
+    const kept = others.slice(0, slots);
+    // The active one first, so that on a tie of timestamps it is the newest.
+    return (active ? [active, ...kept] : kept).sort(byNewest);
   }
 
   // The envelope without its oldest conversation other than the active one, or
@@ -554,18 +579,23 @@
   //   kind 'legacy'      a v2 or v1 record ({version, messages, sessionId}) or the
   //                      bare messages array, each now one conversation
   //   kind 'empty'       nothing the widget recognizes
-  //   kind 'unreadable'  written by a newer widget (version above 3): never to be
-  //                      read as if current, nor overwritten; envelope is null
+  //   kind 'unreadable'  a record the widget cannot read; envelope is null.
+  //                      reason 'newer': written by a newer widget (version above
+  //                      3), never read as current and never overwritten.
+  //                      reason 'damaged': version 3 without a conversations list
   // `needsSave` says the stored record is not yet what the widget would write.
   // `dropped` counts messages and conversations that were invalid and left out.
   function readConversationStore(parsed, now) {
     const empty = { version: CHAT_HISTORY_VERSION, activeId: null, conversations: [] };
     const isObject = parsed && typeof parsed === 'object' && !Array.isArray(parsed);
     if (isObject && Number.isInteger(parsed.version) && parsed.version > CHAT_HISTORY_VERSION) {
-      return { kind: 'unreadable', envelope: null, needsSave: false, dropped: 0 };
+      return { kind: 'unreadable', reason: 'newer', envelope: null, needsSave: false, dropped: 0 };
+    }
+    if (isObject && parsed.version === CHAT_HISTORY_VERSION && !Array.isArray(parsed.conversations)) {
+      return { kind: 'unreadable', reason: 'damaged', envelope: null, needsSave: false, dropped: 0 };
     }
 
-    if (isObject && parsed.version === CHAT_HISTORY_VERSION && Array.isArray(parsed.conversations)) {
+    if (isObject && parsed.version === CHAT_HISTORY_VERSION) {
       let dropped = 0;
       const seen = new Set();
       const conversations = [];
@@ -632,23 +662,37 @@
     };
   }
 
+  // A message list as compared to find out whether a save changed anything:
+  // without the votes, which are not a change to the conversation.
+  function withoutVotes(list) {
+    return list.map((message) => {
+      if (!message || (message.feedback === undefined && message.feedbackCommitted === undefined)) return message;
+      const { feedback, feedbackCommitted, ...rest } = message;
+      return rest;
+    });
+  }
+
   // The envelope to write: what is stored now, with only the working copy's
   // conversation replaced, so a second tab or the pop-out, which share this
   // storage, never loses the others. `working` is {id, context, createdAt,
   // sessionId, messages}; `dropIds` are conversations to remove (a discarded or
   // deleted one). A stored record in a legacy shape is already what the working
-  // copy was read from, so it is not merged. Returns null when the stored record
+  // copy was read from, so it is not merged; a damaged one has nothing to merge
+  // (saveHistory keeps a copy of it first). Returns null when the stored record
   // is from a newer widget and must not be overwritten.
   function mergeActiveConversation(stored, working, now, dropIds = []) {
     const existing = readConversationStore(stored, now);
-    if (existing.kind === 'unreadable') return null;
+    if (existing.kind === 'unreadable' && existing.reason === 'newer') return null;
     const previous = existing.kind === 'v3' ? existing.envelope.conversations : [];
     const prior = previous.find((conversation) => conversation.id === working.id);
-    // A save that changes nothing (a vote, a repair) must not make the
-    // conversation look newer than its last message.
+    // A save that changes no message or session (a vote, a repair) must not make
+    // the conversation look newer than its last message. So updatedAt is the last
+    // time the messages or the session changed: a run edited in place counts, a
+    // thumbs-up or thumbs-down does not.
     const unchanged = prior
       && prior.sessionId === working.sessionId
-      && JSON.stringify(prior.messages) === JSON.stringify(working.messages.map(normalizePersistedMessage).filter(Boolean));
+      && JSON.stringify(withoutVotes(prior.messages))
+        === JSON.stringify(withoutVotes(working.messages.map(normalizePersistedMessage).filter(Boolean)));
     const dropped = new Set(dropIds);
     const conversation = {
       id: working.id,
@@ -4758,14 +4802,22 @@
   function loadHistory() {
     let historyLoadFailed = false;
     let historyNeedsSave = false;
+    // Whatever the outcome, no active conversation means an empty working copy.
+    messages = [];
+    sessionId = null;
+    activeConversation = null;
     try {
       const saved = localStorage.getItem(CONFIG.storageKey);
       if (saved) {
         const result = readConversationStore(JSON.parse(saved), Date.now());
         if (result.kind === 'unreadable') {
-          // Written by a newer widget: leave it exactly as it is.
           historyLoadFailed = true;
-          queuePendingNotice('Saved chat history was written by a newer version of this widget, so it was left untouched and this chat will not be saved.');
+          if (result.reason === 'newer') {
+            // Written by a newer widget: leave it exactly as it is.
+            queuePendingNotice('Saved chat history was written by a newer version of this widget, so it was left untouched and this chat will not be saved.');
+          } else {
+            queuePendingNotice(unreadableHistoryNotice());
+          }
         } else {
           historyNeedsSave = result.needsSave;
           const active = result.envelope.conversations.find((c) => c.id === result.envelope.activeId);
@@ -4773,9 +4825,6 @@
             messages = active.messages;
             sessionId = active.sessionId;
             activeConversation = { id: active.id, context: active.context, createdAt: active.createdAt };
-          } else if (result.kind !== 'empty') {
-            messages = [];
-            sessionId = null;
           }
           if (result.dropped > 0) console.warn('Some chat messages were invalid and filtered out');
         }
@@ -4783,7 +4832,11 @@
     } catch (e) {
       console.error('Failed to load chat history:', e);
       historyLoadFailed = true;
-      queuePendingNotice('Saved chat history is corrupted and could not be loaded.');
+      // Only an unparsable string is a record to copy aside; a storage that cannot
+      // be read is not one.
+      queuePendingNotice(e && e.name === 'SyntaxError'
+        ? unreadableHistoryNotice()
+        : 'Saved chat history is corrupted and could not be loaded.');
     }
     if (messages.length === 0) {
       messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
@@ -4803,17 +4856,34 @@
     };
   }
 
-  // The stored record as parsed JSON; null when there is none or it cannot be
-  // parsed (nothing in it to keep, so it is written over, as it always was).
-  // A storage that cannot be read at all throws.
+  // Where a copy of a record the widget could not read is kept before the first
+  // save replaces it.
+  function unreadableHistoryKey() {
+    return `${CONFIG.storageKey}-unreadable`;
+  }
+
+  function unreadableHistoryNotice() {
+    return 'Saved chat history is corrupted and could not be loaded. '
+      + `It is left as it is until your next message is saved, then replaced; a copy stays in browser storage under "${unreadableHistoryKey()}".`;
+  }
+
+  // The stored record: {raw, record, unreadable}. `raw` is the stored string (null
+  // when there is none), `record` its parsed JSON, and `unreadable` is true for a
+  // string that is not JSON, or a version 3 record without a conversations list:
+  // nothing in it the widget can use, but not something to destroy unseen. A
+  // storage that cannot be read at all throws.
   function readStoredHistoryRecord() {
-    const saved = localStorage.getItem(CONFIG.storageKey);
-    if (!saved) return null;
+    const raw = localStorage.getItem(CONFIG.storageKey);
+    if (!raw) return { raw: null, record: null, unreadable: false };
+    let record;
     try {
-      return JSON.parse(saved);
+      record = JSON.parse(raw);
     } catch {
-      return null;
+      return { raw, record: null, unreadable: true };
     }
+    const damaged = !!record && typeof record === 'object' && !Array.isArray(record)
+      && record.version === CHAT_HISTORY_VERSION && !Array.isArray(record.conversations);
+    return { raw, record, unreadable: damaged };
   }
 
   function isStorageFullError(error) {
@@ -4851,7 +4921,11 @@
         return rest;
       });
       if (!activeConversation) beginConversation(null);
-      let envelope = mergeActiveConversation(readStoredHistoryRecord(), {
+      const stored = readStoredHistoryRecord();
+      // The first save over a record the widget could not read keeps a copy of
+      // it first; if the copy cannot be kept, nothing is overwritten.
+      if (stored.unreadable) localStorage.setItem(unreadableHistoryKey(), stored.raw);
+      let envelope = mergeActiveConversation(stored.record, {
         id: activeConversation.id,
         context: activeConversation.context,
         createdAt: activeConversation.createdAt,
@@ -4865,6 +4939,7 @@
       }
       // A full storage gives up the oldest other conversation and tries again,
       // until the active one is all there is.
+      let evicted = 0;
       for (;;) {
         try {
           localStorage.setItem(CONFIG.storageKey, JSON.stringify(envelope));
@@ -4873,10 +4948,20 @@
           const smaller = isStorageFullError(writeError) ? evictOldestInactive(envelope) : null;
           if (!smaller) throw writeError;
           envelope = smaller;
+          evicted += 1;
         }
       }
       droppedConversationIds.clear();
       saveErrorShown = false;
+      if (evicted > 0) {
+        // The chat is saved, but the reader should know what it cost.
+        const container = document.querySelector('.osa-chat-widget');
+        if (container) {
+          showError(container, evicted === 1
+            ? 'Browser storage was full, so the oldest saved conversation was removed to keep this one.'
+            : `Browser storage was full, so the ${evicted} oldest saved conversations were removed to keep this one.`);
+        }
+      }
     } catch (e) {
       console.error('[OSA] localStorage save failed:', {
         errorName: e.name,
@@ -4917,7 +5002,7 @@
   // record.
   function readStoredConversations() {
     try {
-      const result = readConversationStore(readStoredHistoryRecord(), Date.now());
+      const result = readConversationStore(readStoredHistoryRecord().record, Date.now());
       return result.kind === 'v3' ? result.envelope.conversations : [];
     } catch (e) {
       console.error('[OSA] Failed to read saved conversations:', e);
@@ -4925,13 +5010,23 @@
     }
   }
 
+  // Whether the save went through; saveHistory has already shown the reason on
+  // screen when it did not.
   function saveHistoryQuietly(what) {
     try {
       saveHistory();
+      return true;
     } catch (saveError) {
-      // saveHistory has already shown the reason on screen.
       console.error(`[OSA] Failed to save history on ${what}:`, saveError);
+      return false;
     }
+  }
+
+  // Commit an open thumbs-down comment on the conversation about to leave the
+  // screen, as resetChat does, so a swap never silently drops the vote.
+  function flushFeedbackBeforeSwap() {
+    const container = document.querySelector('.osa-chat-widget');
+    if (container) flushPendingResponseFeedback(container);
   }
 
   // Take the active conversation out of the way before another becomes active:
@@ -4939,6 +5034,7 @@
   // only the greeting.
   function retireActiveConversation() {
     if (!activeConversation) return;
+    flushFeedbackBeforeSwap();
     if (messages.some((m) => m.role === 'user')) {
       saveHistoryQuietly('leaving a conversation');
     } else {
@@ -5011,6 +5107,7 @@
     if (!isValidConversationId(id)) return false;
     if (activeConversation && activeConversation.id === id) {
       if (isLoading) return false;
+      flushFeedbackBeforeSwap();
       droppedConversationIds.add(id);
       messages = greetingMessages();
       sessionId = null;
@@ -10401,6 +10498,7 @@
       runningActivity,
       getMessages: () => messages,
       setMessages: (list) => { messages = list; },
+      setLoading: (value) => { isLoading = value; },
       // The Settings workspace panel (#433): workspaceStore is normally
       // set only by setUpBrowserTools once a runtime bundle loads, which
       // needs IndexedDB behind it to mean anything; a test sets it directly

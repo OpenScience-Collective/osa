@@ -60,9 +60,10 @@ const API = 'http://localhost/api';
 const KEY = 'osa-test-history-store';
 const GREETING = 'Hello from the store tests';
 
-function serverFetch() {
-  return async (url) => {
+function serverFetch(log = []) {
+  return async (url, init = {}) => {
     const u = String(url);
+    log.push({ url: u, body: init.body ? JSON.parse(init.body) : null });
     if (u.endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
     return new Response(JSON.stringify({
       default_model: 'm', offered_models: [], widget: { title: 'Store Tests' }, client_tools: [], runtime: null,
@@ -104,7 +105,8 @@ function start({ storage = {}, shared = null, config = {} } = {}) {
   script.setAttribute('src', 'http://localhost/static/osa-chat-widget.js');
   script.setAttribute('data-no-auto-init', '');
   Object.defineProperty(window.document, 'currentScript', { value: script, configurable: true });
-  const fetch = serverFetch();
+  const fetchLog = [];
+  const fetch = serverFetch(fetchLog);
   window.fetch = fetch;
   // eslint-disable-next-line no-new-func
   const run = new Function(
@@ -126,7 +128,7 @@ function start({ storage = {}, shared = null, config = {} } = {}) {
     q('.osa-chat-button').click();
     return q('.osa-error').textContent;
   };
-  return { window, api, hooks, container, q, localStorage, stored, raw, notice };
+  return { window, api, hooks, container, q, localStorage, stored, raw, notice, fetchLog };
 }
 
 const activeOf = (record) => record.conversations.find((c) => c.id === record.activeId);
@@ -307,6 +309,12 @@ console.log('\na save that changes nothing does not make the conversation newer'
   ctx.hooks.saveHistory();
   const stored = ctx.stored();
   assertEqual(stored.conversations.find((c) => c.id === 'conv-1').updatedAt, 1001, 'updatedAt is kept');
+  const voted = ctx.hooks.getMessages().map((m, i, all) => (i === all.length - 1 ? { ...m, feedback: 'up', feedbackCommitted: true } : m));
+  ctx.hooks.setMessages(voted);
+  ctx.hooks.saveHistory();
+  const afterVote = ctx.stored().conversations.find((c) => c.id === 'conv-1');
+  assertEqual(afterVote.updatedAt, 1001, 'a committed vote does not move it either');
+  assertEqual(afterVote.messages.at(-1).feedback, 'up', 'though the vote itself is stored');
   ctx.hooks.setMessages([...ctx.hooks.getMessages(), { role: 'user', content: 'One more' }]);
   ctx.hooks.saveHistory();
   assert(ctx.stored().conversations[0].updatedAt > 1001, 'a new message moves it to the top');
@@ -338,6 +346,8 @@ console.log('\nthe 31st conversation evicts the oldest by updatedAt');
   const ctx = start({ storage: { [KEY]: envelope(shuffled, 'conv-30') } });
   assertEqual(ctx.stored().conversations.length, 30, 'thirty are kept as they are');
   const id = ctx.hooks.startConversation({ context: { type: 'search' } });
+  assert(ctx.stored().conversations.some((c) => c.id === 'conv-1'), 'a new, empty conversation does not cost the oldest its place');
+  assertEqual(ctx.stored().conversations.filter((c) => c.id.startsWith('conv-')).length, 30, 'all thirty real ones are still stored');
   ctx.hooks.setMessages([...ctx.hooks.getMessages(), { role: 'user', content: 'The 31st' }]);
   ctx.hooks.saveHistory();
   const stored = ctx.stored();
@@ -365,6 +375,31 @@ console.log('\nan active conversation older than all the others survives');
   const store = ctx.hooks.conversationStore;
   const trimmed = store.trimConversations([...stored.conversations, conversation(99)], 'conv-1');
   assert(trimmed.some((c) => c.id === 'conv-1') && trimmed.length === 30, 'trimConversations keeps the active one too');
+}
+
+console.log('\nan empty conversation never takes one of the thirty places');
+{
+  const thirty = Array.from({ length: 30 }, (_, i) => conversation(i + 1));
+  const ctx = start({ storage: { [KEY]: envelope(thirty, 'conv-30') } });
+  const empty = ctx.hooks.startConversation();
+  assertEqual(ctx.stored().activeId, empty, 'the empty one is the active one');
+  assertEqual(ctx.stored().conversations.filter((c) => c.id.startsWith('conv-')).length, 30, 'with all thirty real conversations beside it');
+  assert(ctx.hooks.activateConversation('conv-30') === true, 'going back to a saved conversation works');
+  const ids = ctx.stored().conversations.map((c) => c.id);
+  assertEqual(ids.length, 30, 'the empty one is dropped, leaving thirty');
+  assert(ids.includes('conv-1') && !ids.includes(empty), 'conv-1 is still there, the empty one is not');
+  // resetChat replaces the active one with an empty one: still no eviction.
+  ctx.q('.osa-reset-btn').click();
+  const afterReset = ctx.stored().conversations.map((c) => c.id);
+  assert(afterReset.includes('conv-1'), 'resetChat does not evict the oldest either');
+  assert(!afterReset.includes('conv-30'), 'while it discards the active one');
+  assertEqual(afterReset.filter((id) => id.startsWith('conv-')).length, 29, 'leaving the other 29');
+  // The pure function: empty conversations are not counted, the active one is kept.
+  const store = ctx.hooks.conversationStore;
+  const empties = [conversation(101, { messages: [{ role: 'assistant', content: GREETING }] }), conversation(102, { messages: [] })];
+  const trimmed = store.trimConversations([...thirty, ...empties], 'conv-101');
+  assertEqual(trimmed.length, 31, 'trimConversations: thirty real plus the empty active one');
+  assert(trimmed.some((c) => c.id === 'conv-101') && !trimmed.some((c) => c.id === 'conv-102'), 'an empty one that is not active is dropped');
 }
 
 // ---------------------------------------------------------------------------
@@ -395,11 +430,17 @@ console.log('\nsave then load returns identical messages, with no in-page-only f
   assert(!JSON.stringify(saved.messages).includes('feedbackDraft'), 'nor the unsent draft');
   assertEqual(saved.messages[2].executions[0].images, [], 'the stored run has no images');
 
+  const expected = [
+    { role: 'assistant', content: GREETING, citations: [], executions: [] },
+    { role: 'user', content: 'plot it', dataset: 'nm000103' },
+    { role: 'assistant', content: 'here', citations: [], executions: [{ ...RUN, images: [] }] },
+  ];
+  assertEqual(saved.messages, expected, 'what is stored is the input minus its in-page fields, dataset, run code and output kept');
   ctx.hooks.setMessages([]);
   ctx.hooks.setSessionId(null);
   const needsSave = ctx.hooks.loadHistory();
   assert(needsSave === false, 'a clean v3 record needs no re-save');
-  assertEqual(ctx.hooks.getMessages(), saved.messages, 'the messages come back as saved');
+  assertEqual(ctx.hooks.getMessages(), expected, 'the messages come back as the expected literal');
   assertEqual(ctx.hooks.getSessionId(), 'session-rt', 'with the session');
   const loaded = ctx.hooks.getMessages();
   assert(!JSON.stringify(loaded).match(/"_[A-Za-z]+"/), 'no transient field comes back');
@@ -421,7 +462,50 @@ console.log('\ncorrupt JSON is left byte-identical, with a notice');
   assertEqual(ctx.hooks.getMessages(), [{ role: 'assistant', content: GREETING }], 'the widget shows the greeting');
   assert(ctx.hooks.loadHistory() === false, 'and loadHistory asks for no save');
   assert(ctx.raw() === corrupt, 'still byte-identical');
-  assert(/corrupted/.test(ctx.notice()), 'the reader is told it is corrupted');
+  const shown = ctx.notice();
+  assert(/corrupted/.test(shown), 'the reader is told it is corrupted');
+  assert(shown.includes(`${KEY}-unreadable`), 'and where a copy will be kept');
+  // The first message the reader sends is saved: the unreadable record is kept aside first.
+  ctx.hooks.setMessages([...ctx.hooks.getMessages(), { role: 'user', content: 'First message' }]);
+  ctx.hooks.saveHistory();
+  assert(ctx.raw() !== corrupt && ctx.stored().version === 3, 'the first save then writes a fresh record');
+  assert(ctx.localStorage.getItem(`${KEY}-unreadable`) === corrupt, 'after copying the unreadable one, byte for byte');
+}
+
+console.log('\nif the copy of an unreadable record cannot be kept, it is not overwritten');
+{
+  const corrupt = '{"version": 3, "conversations": [{"id": "a", "mess';
+  const probe = start();
+  const { storage, control } = failingStorage(probe.window.localStorage);
+  probe.window.localStorage.setItem(KEY, corrupt);
+  const ctx = start({ shared: storage });
+  ctx.hooks.setMessages([...ctx.hooks.getMessages(), { role: 'user', content: 'x' }]);
+  control.failAlways = true;
+  const originalError = console.error;
+  console.error = () => {};
+  let thrown = null;
+  try {
+    ctx.hooks.saveHistory();
+  } catch (e) {
+    thrown = e;
+  } finally {
+    console.error = originalError;
+  }
+  assert(thrown !== null, 'the save reports that it did not happen');
+  assert(probe.window.localStorage.getItem(KEY) === corrupt, 'and the record is byte-identical');
+}
+
+console.log('\na version 3 record without a conversations list is reported, kept aside, then replaced');
+{
+  const damaged = JSON.stringify({ version: 3, activeId: 'x', conversations: 'nope' });
+  const ctx = start({ storage: { [KEY]: damaged } });
+  assert(ctx.raw() === damaged, 'storage is byte-identical after load');
+  assertEqual(ctx.hooks.getMessages(), [{ role: 'assistant', content: GREETING }], 'the widget shows the greeting');
+  assert(/corrupted/.test(ctx.notice()), 'and the reader is told it is corrupted');
+  ctx.hooks.setMessages([...ctx.hooks.getMessages(), { role: 'user', content: 'First message' }]);
+  ctx.hooks.saveHistory();
+  assert(ctx.localStorage.getItem(`${KEY}-unreadable`) === damaged, 'the damaged record is copied aside on the first save');
+  assertEqual(ctx.stored().conversations.length, 1, 'and replaced by a record with the new conversation');
 }
 
 console.log('\na version above 3 is left byte-identical, with a notice, and never overwritten');
@@ -476,7 +560,10 @@ console.log('\na write that hits the storage limit once evicts the oldest inacti
   assertEqual(control.attempts, 2, 'one refused write and one that went through');
   assertEqual(stored.conversations.map((c) => c.id).sort(), ['conv-1', 'conv-3', 'conv-4'], 'the oldest inactive, conv-2, was given up');
   assert(activeOf(stored).messages.some((m) => m.content === 'a larger conversation'), 'and the new message is saved');
-  assert(ctx.q('.osa-error').style.display !== 'block', 'with no error shown');
+  const notice = ctx.q('.osa-error');
+  assert(notice.style.display === 'block' && /storage was full.*oldest saved conversation was removed/.test(notice.textContent),
+    'and the reader is told, in a notice, that the oldest saved conversation was removed');
+  assert(!/NOT saved/.test(notice.textContent), 'which does not say the chat was lost');
 }
 
 console.log('\na storage that stays full gives up the others one by one, then reports it');
@@ -655,6 +742,82 @@ console.log('\nresetChat keeps today\'s meaning: an empty chat, the others left'
   assertEqual(ctx.hooks.getMessages(), [{ role: 'assistant', content: GREETING }], 'the chat is empty');
   const reloaded = start({ storage: { [KEY]: ctx.raw() } });
   assertEqual(reloaded.hooks.getMessages().map((m) => m.content), [GREETING], 'and a reload opens that empty chat, not another');
+}
+
+console.log('\na conversation to be dropped stays dropped until a save succeeds');
+{
+  const probe = start();
+  const { storage, control } = failingStorage(probe.window.localStorage);
+  probe.window.localStorage.setItem(KEY, envelope([conversation(1), conversation(2), conversation(3)], 'conv-3'));
+  const ctx = start({ shared: storage });
+  control.failAlways = true;
+  const originalError = console.error;
+  console.error = () => {};
+  let deleted;
+  try {
+    deleted = ctx.hooks.deleteConversation('conv-1');
+  } finally {
+    console.error = originalError;
+  }
+  assert(deleted === true, 'deleteConversation answers true: the delete is queued');
+  assert(JSON.parse(probe.window.localStorage.getItem(KEY)).conversations.some((c) => c.id === 'conv-1'), 'the failed save left conv-1 in storage');
+  control.failAlways = false;
+  ctx.hooks.setMessages([...ctx.hooks.getMessages(), { role: 'user', content: 'Later' }]);
+  ctx.hooks.saveHistory();
+  const ids = JSON.parse(probe.window.localStorage.getItem(KEY)).conversations.map((c) => c.id).sort();
+  assertEqual(ids, ['conv-2', 'conv-3'], 'a later save applies the delete');
+}
+
+console.log('\nthe conversation functions do nothing while a reply is on its way');
+{
+  const ctx = start({ storage: { [KEY]: envelope([conversation(1), conversation(2)], 'conv-2') } });
+  const { hooks } = ctx;
+  hooks.setLoading(true);
+  assert(hooks.startConversation() === null, 'startConversation returns null');
+  assert(hooks.activateConversation('conv-1') === false, 'activateConversation returns false');
+  assert(hooks.deleteConversation('conv-2') === false, 'deleteConversation of the active one returns false');
+  assertEqual(hooks.getActiveConversation().id, 'conv-2', 'the active conversation is unchanged');
+  assertEqual(ctx.stored().conversations.map((c) => c.id).sort(), ['conv-1', 'conv-2'], 'and so is storage');
+  assert(hooks.deleteConversation('conv-1') === true, 'a saved conversation that is not active can still be deleted');
+  hooks.setLoading(false);
+  assert(hooks.startConversation() !== null, 'with the reply over, startConversation works again');
+}
+
+console.log('\nan open thumbs-down comment is sent before another conversation takes over');
+{
+  const down = (n) => conversation(n, {
+    messages: [
+      { role: 'assistant', content: GREETING },
+      { role: 'user', content: `Question ${n}` },
+      { role: 'assistant', content: `Answer ${n}`, citations: [], executions: [], feedback: 'down', feedbackDraft: 'it was wrong', requestId: `req-${n}` },
+    ],
+  });
+  const swaps = {
+    startConversation: (hooks) => hooks.startConversation(),
+    activateConversation: (hooks) => hooks.activateConversation('conv-2'),
+    'deleteConversation (active)': (hooks) => hooks.deleteConversation('conv-1'),
+  };
+  for (const [name, swap] of Object.entries(swaps)) {
+    const ctx = start({ storage: { [KEY]: envelope([down(1), conversation(2)], 'conv-1') } });
+    ctx.hooks.setMessages(ctx.hooks.getMessages().map((m) => ({ ...m })));
+    swap(ctx.hooks);
+    const sent = ctx.fetchLog.filter((call) => call.url.endsWith('/feedback'));
+    assert(sent.length === 1 && sent[0].body.sentiment === 'down' && sent[0].body.comment === 'it was wrong', `${name} sends the open down-vote with its comment`);
+  }
+}
+
+console.log('\nloadHistory resets the working copy whenever there is no active conversation');
+{
+  const ctx = start({ storage: { [KEY]: envelope([conversation(1)], 'conv-1') } });
+  assertEqual(ctx.hooks.getActiveConversation().id, 'conv-1', 'sanity: a conversation is active');
+  ctx.localStorage.setItem(KEY, '{"hello": 1}');
+  ctx.hooks.loadHistory();
+  assertEqual(ctx.hooks.getMessages(), [{ role: 'assistant', content: GREETING }], 'an unrecognized record leaves only the greeting');
+  assert(ctx.hooks.getSessionId() === null, 'and no session');
+  assert(ctx.hooks.getActiveConversation().id !== 'conv-1', 'and a new, empty conversation, not the stale one');
+  ctx.localStorage.setItem(KEY, envelope([], null));
+  ctx.hooks.loadHistory();
+  assertEqual(ctx.hooks.getMessages(), [{ role: 'assistant', content: GREETING }], 'an empty v3 record does the same');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
