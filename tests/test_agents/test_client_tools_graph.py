@@ -14,7 +14,10 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
 from src.agents.base import ToolAgent, _after_client_tools
+from src.core.config.community import PROPOSE_PLAN_TOOL_NAME
 from src.tools.client_tools import (
+    MAX_PLAN_FINDINGS_CHARS,
+    MAX_PLAN_STEPS,
     ClientTool,
     ExecuteCodeArgs,
     GetFullOutputArgs,
@@ -509,7 +512,7 @@ class TestARefusedClientCallStillGetsAReply:
 
 def _plan_tool() -> ClientTool:
     return ClientTool(
-        name="propose_plan",
+        name=PROPOSE_PLAN_TOOL_NAME,
         description="Show the reader a plan.",
         args_schema=ProposePlanArgs,
         requires_permission=False,
@@ -532,7 +535,7 @@ class TestProposePlanInTheGraph:
     async def test_a_plan_call_parks_the_run_with_no_permission_gate(self) -> None:
         ai = AIMessage(
             content="",
-            tool_calls=[{"id": "call_plan", "name": "propose_plan", "args": PLAN_ARGS}],
+            tool_calls=[{"id": "call_plan", "name": PROPOSE_PLAN_TOOL_NAME, "args": PLAN_ARGS}],
         )
         agent = ToolAgent(model=_fake_model(ai), tools=[_client_tool(), _plan_tool()])
 
@@ -540,7 +543,7 @@ class TestProposePlanInTheGraph:
 
         assert result["pending_client_call"] == {
             "call_id": "call_plan",
-            "tool": "propose_plan",
+            "tool": PROPOSE_PLAN_TOOL_NAME,
             "args": PLAN_ARGS,
             "requires_permission": False,
         }
@@ -550,9 +553,9 @@ class TestProposePlanInTheGraph:
         "args",
         [
             {**PLAN_ARGS, "steps": []},
-            {**PLAN_ARGS, "steps": PLAN_ARGS["steps"] * 5},
+            {**PLAN_ARGS, "steps": PLAN_ARGS["steps"] * MAX_PLAN_STEPS},
             {**PLAN_ARGS, "est_peak_mb": -1},
-            {**PLAN_ARGS, "findings": "x" * 2001},
+            {**PLAN_ARGS, "findings": "x" * (MAX_PLAN_FINDINGS_CHARS + 1)},
             {"findings": "only findings"},
         ],
     )
@@ -561,7 +564,7 @@ class TestProposePlanInTheGraph:
     ) -> None:
         bad = AIMessage(
             content="",
-            tool_calls=[{"id": "call_plan", "name": "propose_plan", "args": args}],
+            tool_calls=[{"id": "call_plan", "name": PROPOSE_PLAN_TOOL_NAME, "args": args}],
         )
         reply = AIMessage(content="Let me fix the plan.")
         agent = ToolAgent(model=_fake_model(bad, reply), tools=[_client_tool(), _plan_tool()])
@@ -572,6 +575,52 @@ class TestProposePlanInTheGraph:
         error = next(m for m in result["messages"] if isinstance(m, ToolMessage))
         assert error.tool_call_id == "call_plan"
         assert error.status == "error"
-        assert "Invalid arguments for propose_plan" in error.content
+        assert f"Invalid arguments for {PROPOSE_PLAN_TOOL_NAME}" in error.content
         assert len(error.content) < 700
         assert result["messages"][-1].content == "Let me fix the plan."
+
+
+class TestAPlanOutOfBrowserRuns:
+    """Out of runs, a plan is refused like code, and told why in its own words."""
+
+    async def test_a_plan_is_refused_with_a_reason_that_is_not_about_running_code(self) -> None:
+        ai = AIMessage(
+            content="",
+            tool_calls=[{"id": "call_plan", "name": PROPOSE_PLAN_TOOL_NAME, "args": PLAN_ARGS}],
+        )
+        agent = ToolAgent(
+            model=_fake_model(ai, AIMessage(content="Here is what the earlier runs showed.")),
+            tools=[_client_tool(), _plan_tool()],
+            browser_runs_left=0,
+        )
+
+        result = await agent.ainvoke([HumanMessage(content="plot the ERP")])
+
+        assert not result.get("pending_client_call")
+        refusal = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+        assert refusal.tool_call_id == "call_plan"
+        assert refusal.status == "error"
+        assert "no plan was shown" in refusal.content
+        assert "this call was not run" not in refusal.content
+
+    async def test_code_is_still_refused_with_the_run_wording(self) -> None:
+        ai = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_code",
+                    "name": "execute_code",
+                    "args": {"code": "1", "description": "d"},
+                }
+            ],
+        )
+        agent = ToolAgent(
+            model=_fake_model(ai, AIMessage(content="done")),
+            tools=[_client_tool(), _plan_tool()],
+            browser_runs_left=0,
+        )
+
+        result = await agent.ainvoke([HumanMessage(content="plot the ERP")])
+
+        refusal = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+        assert "this call was not run" in refusal.content
