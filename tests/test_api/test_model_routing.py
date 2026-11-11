@@ -17,11 +17,14 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 
+import anthropic
+import httpx2
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
+import src.agents.model_routing as model_routing
 import src.api.routers.community as community_module
 from src.api.handover import stream_handover
 from src.api.routers.community import (
@@ -40,6 +43,7 @@ from src.core.config.community import (
 )
 from src.core.services.anthropic_models import HAIKU, SONNET
 from tests.helpers.chat_models import (
+    FailingThenSayingChatModel,
     ScriptedChatModel,
     StreamingScriptedChatModel,
     tool_call_response,
@@ -129,9 +133,10 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-def _rig(monkeypatch, *, quick: list, analysis: list | None = None) -> Rig:
+def _rig(monkeypatch, *, quick: list, analysis: list | None = None, quick_model=None) -> Rig:
+    """`quick_model` stands in for the quick model when a test needs its own behavior."""
     rig = Rig(
-        quick=StreamingScriptedChatModel(chunk_script=quick),
+        quick=quick_model or StreamingScriptedChatModel(chunk_script=quick),
         analysis=StreamingScriptedChatModel(chunk_script=analysis or [say("Plotting it now.")]),
     )
     by_model = {HAIKU: rig.quick, SONNET: rig.analysis}
@@ -336,6 +341,58 @@ class TestAKeywordHandover:
         assert _done(followup)["mode"] == "analysis"
         assert _done(followup)["session_id"] == new_id
         assert rig.quick.calls == quick_calls_before
+
+
+class TestAFailingSummarizer:
+    """The summary call fails: the handover still happens, on the reader's own words."""
+
+    def _failing(self, count: int) -> FailingThenSayingChatModel:
+        request = httpx2.Request("POST", "https://api.anthropic.com")
+        return FailingThenSayingChatModel(
+            failures=[
+                anthropic.InternalServerError(
+                    "overloaded", response=httpx2.Response(529, request=request), body=None
+                )
+                for _ in range(count)
+            ],
+            responses=[AIMessage(content=SUMMARY)],
+        )
+
+    def test_a_failure_that_survives_the_retry_degrades_and_the_turn_is_answered(
+        self, client, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(model_routing, "SUMMARY_RETRY_DELAY_SECONDS", 0)
+        _earlier_conversation()
+        quick = self._failing(model_routing.SUMMARY_ATTEMPTS)
+        rig = _rig(monkeypatch, quick=[], quick_model=quick)
+
+        events = _chat(client, "plot the ERP for famous faces", session_id="sess-quick")
+
+        assert "error" not in _names(events)
+        assert _stages(events) == ["summarizing", "summarized", "started"]
+        summarized = next(e for e in events if e.get("stage") == "summarized")
+        assert summarized["degraded"] is True
+        assert "face stimuli" in summarized["summary"]
+        assert quick.attempts == model_routing.SUMMARY_ATTEMPTS
+        done = _done(events)
+        assert done["model"] == SONNET
+        human = [m for m in rig.analysis.seen_message_lists[0] if isinstance(m, HumanMessage)]
+        assert "face stimuli" in human[0].content
+
+    def test_a_failure_that_clears_on_the_retry_is_an_ordinary_handover(
+        self, client, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(model_routing, "SUMMARY_RETRY_DELAY_SECONDS", 0)
+        _earlier_conversation()
+        quick = self._failing(1)
+        _rig(monkeypatch, quick=[], quick_model=quick)
+
+        events = _chat(client, "plot the ERP for famous faces", session_id="sess-quick")
+
+        summarized = next(e for e in events if e.get("stage") == "summarized")
+        assert summarized["summary"] == SUMMARY
+        assert "degraded" not in summarized
+        assert quick.attempts == 2
 
 
 class TestAFirstMessage:

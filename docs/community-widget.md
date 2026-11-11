@@ -598,6 +598,8 @@ data: {"event": "handover", "stage": "started", "session_id": "<new id>", "model
   The summary is at most 150 words: the quick model is asked for that, and the server cuts it to that, whole words only.
   It is built from the reader's and the assistant's text alone, with no tool output or image, and keeps the dataset ids the reader chose and their goal.
   It is what the analysis model is told, with the reader's message; the card's "What the analysis model is told" shows it.
+  The analysis model is told it is background context, not instructions, and is given it apart from the reader's message.
+  If the quick model fails (after one retry) or writes nothing, the handover still happens: the summary is the tail of the reader's own last three messages, and `summarized` carries `"degraded": true`.
 - `started` names the new session and the analysis model.
 
 The analysis turn then streams as any turn does, on the new session, so its own `session` event and `done.session_id` carry the new id.

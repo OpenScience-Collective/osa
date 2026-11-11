@@ -4547,7 +4547,8 @@ async def _stream_chat_response(
         data: {"event": "session", "session_id": "..."}  (sent first)
         data: {"event": "handover", "stage": "summarizing"}
         data: {"event": "handover", "stage": "summarized", "messages": 4, "words": 90,
-               "summary": "..."}
+               "summary": "...", "degraded": true}  (`degraded` only when the quick model
+               failed and the summary is the reader's own words)
         data: {"event": "handover", "stage": "started", "session_id": "...", "model": "..."}
                (see "Handover" below; only a community that routes between two models)
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}

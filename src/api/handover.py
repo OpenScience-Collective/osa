@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from src.agents.model_routing import (
+    Summary,
     count_words,
     message_text,
     seeded_message,
@@ -60,6 +61,8 @@ async def stream_handover(
     open_session: Callable[[], ChatSession],
     analysis_model: str,
     run_analysis: Callable[[ChatSession], AsyncIterator[str]],
+    summarizer_config: Any | None = None,
+    record_summary: Callable[[Summary], None] | None = None,
 ) -> AsyncIterator[str]:
     """Summarize `history`, open a new analysis session from it, and stream the run on it.
 
@@ -72,20 +75,27 @@ async def stream_handover(
         analysis_model: The model the analysis run uses, for the `started` event.
         run_analysis: Streams the analysis turn on the new session, which already holds
             its one seeded message and whose turn is already claimed.
+        summarizer_config: The runnable config (LangFuse callbacks) the summary call runs
+            under, so it is traced with the request.
+        record_summary: Called with the `Summary` as soon as it is written, so the caller
+            can account for the summarizer's tokens.
     """
     yield handover_sse("summarizing")
 
-    summary = await summarize_history(summarizer, history)
+    summary = await summarize_history(summarizer, history, summarizer_config)
+    if record_summary is not None:
+        record_summary(summary)
     yield handover_sse(
         "summarized",
         messages=conversation_size(history),
-        words=count_words(summary),
-        summary=summary,
+        words=count_words(summary.text),
+        summary=summary.text,
+        **({"degraded": True} if summary.degraded else {}),
     )
 
     session = open_session()
     session.mode = "analysis"
-    session.messages = [HumanMessage(content=seeded_message(summary, reader_message))]
+    session.messages = [HumanMessage(content=seeded_message(summary.text, reader_message))]
     # The new session's turn is claimed here, before its id is sent, and handed to the
     # analysis run, which does not claim again: it sends its own `session` event first,
     # and a claim made after that would leave the session open to a second request for as
