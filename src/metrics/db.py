@@ -304,6 +304,11 @@ def purge_expired_metrics(db_path: Path | None = None, now: datetime | None = No
 
     Runs at startup and daily from the scheduler. Both deletes commit together.
 
+    A feedback comment can hold personal data, so the rows are erased, not only unlinked:
+    ``secure_delete`` makes SQLite overwrite the freed content with zeros, and a checkpoint
+    that truncates the write-ahead log removes the older copies of those pages from it.
+    A checkpoint that a concurrent reader blocks is logged and left to SQLite's next one.
+
     Args:
         db_path: Optional path override (for testing).
         now: The current time (for testing); defaults to now in UTC.
@@ -311,9 +316,17 @@ def purge_expired_metrics(db_path: Path | None = None, now: datetime | None = No
     cutoff = retention_cutoff(now)
     conn = get_metrics_connection(db_path)
     try:
+        conn.execute("PRAGMA secure_delete=ON")
         requests = conn.execute("DELETE FROM request_log WHERE timestamp < ?", (cutoff,)).rowcount
         feedback = conn.execute("DELETE FROM feedback_log WHERE timestamp < ?", (cutoff,)).rowcount
         conn.commit()
+        if requests or feedback:
+            busy, _, _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if busy:
+                logger.warning(
+                    "Deleted expired metrics, but a reader blocked the checkpoint, so older "
+                    "copies of those rows stay in the write-ahead log until the next one"
+                )
     finally:
         conn.close()
     if requests or feedback:

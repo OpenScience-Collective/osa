@@ -340,16 +340,45 @@ def _cleanup_mirrors() -> None:
         )
 
 
+_metrics_retention_failures = 0
+
+
 def _purge_expired_metrics() -> None:
     """Delete usage metrics and feedback past their retention period (#725).
 
     Startup runs the same purge, so it happens at least once per deploy even when this
-    scheduler is off; this job keeps a long-running server within the period.
+    scheduler is off; this job keeps a long-running server within the period. PRIVACY.md
+    promises the deletion, so repeated failures escalate like the other jobs'.
     """
+    global _metrics_retention_failures
     try:
         purge_expired_metrics()
+        _metrics_retention_failures = 0
     except (sqlite3.Error, OSError):
-        logger.error("Could not delete expired usage metrics and feedback", exc_info=True)
+        _metrics_retention_failures += 1
+        logger.error(
+            "Could not delete expired usage metrics and feedback (attempt %d/%d)",
+            _metrics_retention_failures,
+            MAX_CONSECUTIVE_FAILURES,
+            exc_info=True,
+        )
+        if _metrics_retention_failures >= MAX_CONSECUTIVE_FAILURES:
+            logger.critical(
+                "Metrics retention has failed %d times consecutively, so rows past the "
+                "retention period are not being deleted. Manual intervention required.",
+                _metrics_retention_failures,
+            )
+
+
+def _add_metrics_retention_job(scheduler: BackgroundScheduler) -> None:
+    """Register the daily retention purge (03:15) on ``scheduler``."""
+    scheduler.add_job(
+        _purge_expired_metrics,
+        trigger=CronTrigger(hour="3", minute="15"),
+        id="metrics_retention",
+        name="Usage Metrics and Feedback Retention",
+        replace_existing=True,
+    )
 
 
 def _check_community_budgets() -> None:
@@ -650,14 +679,7 @@ def start_scheduler() -> BackgroundScheduler | None:
 
     # Usage metrics and feedback retention (daily, deletes rows older than five years)
     try:
-        retention_trigger = CronTrigger(hour="3", minute="15")  # Daily at 03:15
-        _scheduler.add_job(
-            _purge_expired_metrics,
-            trigger=retention_trigger,
-            id="metrics_retention",
-            name="Usage Metrics and Feedback Retention",
-            replace_existing=True,
-        )
+        _add_metrics_retention_job(_scheduler)
         logger.info("Metrics retention scheduled: daily at 03:15")
     except ValueError as e:
         logger.error("Failed to schedule metrics retention: %s", e)

@@ -84,8 +84,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
     # Initialize metrics database (non-critical; degrade gracefully if unavailable)
+    metrics_ready = False
     try:
         init_metrics_db()
+        metrics_ready = True
     except Exception:
         logger.error(
             "Failed to initialize metrics database. Metrics collection will be unavailable. "
@@ -94,9 +96,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
     # Delete usage metrics and feedback past their retention period (#725). The scheduler
-    # repeats it daily, but only when sync is enabled, so every start runs it once.
+    # repeats it daily, but only when sync is enabled, so every start runs it once. Skipped
+    # when the database could not be initialized, which was just logged.
     try:
-        purge_expired_metrics()
+        if metrics_ready:
+            purge_expired_metrics()
     except Exception:
         logger.error(
             "Could not delete expired usage metrics and feedback at startup. The app is "

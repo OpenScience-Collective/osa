@@ -4,11 +4,20 @@ Real SQLite files and the real writers; the only thing pinned is the clock, pass
 ``now`` so a row's age is exact.
 """
 
-from datetime import UTC, datetime, timedelta
+import logging
+from datetime import UTC, datetime, timedelta, timezone
 
+import pytest
+from apscheduler.schedulers.background import BackgroundScheduler
+
+import src.api.scheduler as scheduler_module
 from src.api.config import get_settings
 from src.api.main import create_app, lifespan
-from src.api.scheduler import _purge_expired_metrics
+from src.api.scheduler import (
+    MAX_CONSECUTIVE_FAILURES,
+    _add_metrics_retention_job,
+    _purge_expired_metrics,
+)
 from src.metrics.db import (
     METRICS_RETENTION_YEARS,
     FeedbackEntry,
@@ -65,9 +74,9 @@ class TestRetentionCutoff:
 
     def test_a_time_in_another_zone_is_compared_in_utc(self) -> None:
         """Rows are written in UTC, so the cutoff must be UTC too."""
-        pacific = NOW.astimezone(datetime.now().astimezone().tzinfo)
-        assert retention_cutoff(pacific) == retention_cutoff(NOW)
-        assert retention_cutoff(pacific).endswith("+00:00")
+        pacific = NOW.astimezone(timezone(timedelta(hours=-8)))
+        assert pacific.hour != NOW.hour  # the same instant, another wall clock
+        assert retention_cutoff(pacific) == retention_cutoff(NOW) == "2026-06-15T12:00:00+00:00"
 
 
 class TestPurge:
@@ -108,6 +117,29 @@ class TestPurge:
 
         assert _ids(db_path, "request_log", "request_id") == {"fraction"}
 
+    def test_a_deleted_comment_is_erased_from_the_files(self, tmp_path) -> None:
+        """A feedback comment can hold personal data: after the purge its text is in
+        neither the database file nor the write-ahead log, not only unlinked."""
+        db_path = tmp_path / "metrics.db"
+        init_metrics_db(db_path)
+        marker = "erase-me-7f3a9c-personal-detail"
+        old = NOW.replace(year=NOW.year - 6)
+        entry = _feedback("old", old)
+        entry.comment = marker
+        write_feedback(entry, db_path)
+        write_feedback(_feedback("recent", NOW), db_path)
+
+        def on_disk() -> bytes:
+            files = [db_path, db_path.with_name(db_path.name + "-wal")]
+            return b"".join(f.read_bytes() for f in files if f.exists())
+
+        assert marker.encode() in on_disk()  # the check below is not vacuous
+
+        purge_expired_metrics(db_path, now=NOW)
+
+        assert _ids(db_path, "feedback_log", "feedback_id") == {"recent"}
+        assert marker.encode() not in on_disk()
+
     def test_an_empty_database_is_a_no_op(self, tmp_path) -> None:
         db_path = tmp_path / "metrics.db"
         init_metrics_db(db_path)
@@ -146,6 +178,7 @@ class TestWhereItRuns:
 
         assert _ids(db_path, "request_log", "request_id") == set()
 
+    @pytest.mark.usefixtures("reset_retention_failures")
     def test_the_daily_job_logs_a_broken_database_and_does_not_raise(
         self, monkeypatch, tmp_path, caplog
     ) -> None:
@@ -159,3 +192,46 @@ class TestWhereItRuns:
         (record,) = [r for r in caplog.records if "expired usage metrics" in r.getMessage()]
         assert record.levelname == "ERROR"
         assert record.exc_info is not None
+
+    @pytest.mark.usefixtures("reset_retention_failures")
+    def test_repeated_failures_escalate_and_a_success_resets_them(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        """PRIVACY.md promises the deletion, so a job that keeps failing escalates to
+        CRITICAL like the budget and mirror jobs, and one success starts the count over."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        broken = tmp_path / "metrics.db"
+        broken.write_bytes(b"this is not a sqlite database" * 100)
+        caplog.set_level(logging.ERROR)
+
+        for _ in range(MAX_CONSECUTIVE_FAILURES):
+            _purge_expired_metrics()
+
+        critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(critical) == 1
+        assert "not being deleted" in critical[0].getMessage()
+
+        broken.unlink()
+        init_metrics_db(broken)
+        _purge_expired_metrics()
+        assert scheduler_module._metrics_retention_failures == 0
+
+    def test_the_scheduler_registers_the_daily_job_at_03_15(self) -> None:
+        """A real APScheduler, never started: the job is registered with its trigger."""
+        scheduler = BackgroundScheduler()
+        _add_metrics_retention_job(scheduler)
+
+        job = scheduler.get_job("metrics_retention")
+
+        assert job is not None
+        assert job.func is _purge_expired_metrics
+        fields = {f.name: str(f) for f in job.trigger.fields}
+        assert (fields["hour"], fields["minute"]) == ("3", "15")
+
+
+@pytest.fixture
+def reset_retention_failures():
+    """Reset the module-global failure counter around tests that exercise it."""
+    scheduler_module._metrics_retention_failures = 0
+    yield
+    scheduler_module._metrics_retention_failures = 0
