@@ -469,6 +469,12 @@ jobs:
       - name: Run the fresh chat on return tests on a real DOM
         run: bun frontend/test-widget-fresh-return.js
 
+      # The context switch: a page whose dataset or search page differs from the chat's
+      # shows a notice and starts a new chat on the next message, or continues with the
+      # move told to the assistant; an empty chat switches silently.
+      - name: Run the context switch tests on a real DOM
+        run: bun frontend/test-widget-context-switch.js
+
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a
       # reading pace, the code block whole, and at once with reduced motion emulated.

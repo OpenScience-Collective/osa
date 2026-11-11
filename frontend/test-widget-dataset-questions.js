@@ -374,8 +374,12 @@ console.log('\na different dataset mid-conversation: a compact row of two, gone 
   // The reader types their own question instead of clicking one.
   await send(ctx, 'Does xx099904 have HED tags?');
   assertEqual(shown(ctx.q), null, 'the reader sent from this page: the row is gone');
-  assertEqual(ctx.api.__browser.getMessages().filter((m) => m.role === 'user').map((m) => m.dataset), ['nm000132', 'xx099904'],
-    'each message records the page it was sent from');
+  // A new dataset starts a new chat on the reader's next message (E1.3), so the two
+  // questions are in two conversations, each recording the page it was sent from.
+  const userDatasets = (list) => list.filter((m) => m.role === 'user').map((m) => m.dataset);
+  assertEqual(userDatasets(ctx.api.__browser.getMessages()), ['xx099904'], 'the message records the page it was sent from');
+  assertEqual(ctx.api.__browser.listConversations().filter((c) => !c.active).map((c) => userDatasets(c.messages)), [['nm000132']],
+    'and the earlier question stays in the chat it was asked in');
 
   ctx.api.setDataset({ id: 'xx099903', zarr: false });
   assertEqual(shown(ctx.q), ['What is xx099903 about, and how was it recorded?', 'How do I download xx099903?'],
