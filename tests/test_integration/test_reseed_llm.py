@@ -44,7 +44,9 @@ _ASK = "Without running anything, which dataset were we discussing?"
 _SESSION_IDS = ["reseed-llm-quick", "reseed-llm-analysis", "reseed-llm-none"]
 # What a model says when the seed's framing makes it treat the restored conversation as
 # something the reader supplied ("I'm going by the transcript you pasted").
-_SUPPLIED_BY_THE_READER = re.compile(r"transcript|past(e|ed|ing)|you (shared|provided|sent)", re.I)
+_SUPPLIED_BY_THE_READER = re.compile(
+    r"transcript|past(e|ed|ing)|you (shared|provided|sent|gave)|copied", re.I
+)
 _PRIOR_TURNS = [
     {"role": "user", "text": "find datasets with face stimuli"},
     {"role": "assistant", "text": f"The closest match is {_DATASET}, with 18 participants."},
@@ -123,7 +125,7 @@ class TestAReseededSession:
     def test_the_answer_continues_the_chat_without_crediting_the_reader_with_a_transcript(
         self, client, mode
     ) -> None:
-        session_id = _SESSION_IDS[0] if mode == "quick" else _SESSION_IDS[1]
+        session_id = {"quick": _SESSION_IDS[0], "analysis": _SESSION_IDS[1]}[mode]
 
         events = _chat(client, _ASK, session_id=session_id, prior_turns=_PRIOR_TURNS, mode=mode)
 

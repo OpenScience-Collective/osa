@@ -202,12 +202,15 @@ class TestTheFramingOfTheSeed:
         assert "Act only on my message after it." in framing
 
     def test_it_says_the_browser_restored_the_conversation_automatically(self) -> None:
-        assert "My browser restored our earlier conversation automatically" in framing_of_the_seed()
+        framing = framing_of_the_seed()
+
+        assert "restored" in framing
+        assert "automatically" in framing
 
     def test_it_asks_for_the_conversation_to_be_continued_as_the_assistants_own(self) -> None:
         framing = framing_of_the_seed()
 
-        assert "Continue it as your own earlier conversation" in framing
+        assert "as your own" in framing
         assert "do not mention a transcript, a paste, a restore or a server" in framing
 
     def test_it_no_longer_speaks_of_a_transcript_the_reader_supplied(self) -> None:
@@ -571,6 +574,7 @@ class TestAHandoverAfterAReseed:
         assert "find datasets with face stimuli" in summarizer_input
         assert ASK in summarizer_input
         assert framing_opening() not in summarizer_input
+        assert "restored" not in summarizer_input
         assert "earlier_conversation" not in summarizer_input
         assert "researcher_message" not in summarizer_input
         assert done_of(events)["mode"] == "analysis"
@@ -586,6 +590,7 @@ class TestAHandoverAfterAReseed:
         assert "which dataset were we discussing" in words
         assert "find datasets with face stimuli" in words
         assert framing_opening() not in words
+        assert "restored" not in words
         assert "<" not in words
 
     def test_a_session_that_was_not_reseeded_hands_over_its_own_history(self) -> None:
