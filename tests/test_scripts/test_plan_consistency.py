@@ -417,3 +417,30 @@ def test_short_stems_need_word_boundaries():
     # "draw" inside "Withdraw" and "figure" in "Figure out" are not plotting
     assert pc.normalize_step({"title": "Withdraw bad trials"}) == "reject"
     assert pc.normalize_step({"title": "Figure out which channels are bad"}) != "plot"
+
+
+def test_step_basis_says_what_decided_the_operation():
+    assert pc.step_basis({"title": "Plot ERP", "detail": "Filter first."}) == ("plot", "title")
+    assert pc.step_basis({"title": "Next step", "detail": "Apply a notch filter."}) == (
+        "filter",
+        "detail",
+    )
+    assert pc.step_basis({"title": "Ponder", "detail": "Think."}) == ("other", "none")
+    assert pc.step_basis("Load the data") == ("load", "title")
+    assert pc.step_basis({"detail": "Plot it."}) == ("plot", "detail")
+
+
+def test_the_report_shows_the_detail_that_decided_a_vague_title():
+    steps = [
+        {"title": "Next step", "detail": "Apply a 1 to 40 Hz band-pass filter to the EEG."},
+        {"detail": "Plot the evoked response. " + "More words. " * 20},
+        {"title": "Plot ERP", "detail": "Epoch first."},
+    ]
+    record = pc.parse_plan_stream([_plan_line(steps)])
+    runs = {pc.REQUESTS[0]: [record] * 4}
+    report = pc.render_report("https://x.test", 4, runs, "2026-01-01")
+    assert "| 1 | plan | 1 | filter | detail | Next step [detail: Apply a 1 to 40 Hz" in report
+    assert "| (no title) [detail: Plot the evoked response." in report
+    assert "| 1 | plan | 3 | plot | title | Plot ERP |" in report  # title decided: no detail
+    assert "..." in report  # a long detail is truncated
+    assert "8 of 12 step(s) were classified by their detail" in report

@@ -24,7 +24,9 @@ operations are equal. Wording does not matter, order does. A request passes when
 common sequence occurs in at least 3 of 4 repeats (the same share for another
 ``--repeats``, rounded up). A run that proposed no plan (``('no_plan',)``) or failed
 (``('error',)``) never counts as agreement. The report prints the raw step titles beside
-the operations so a reviewer can audit the rules.
+the operations (and, for a step whose title matched no rule, the detail that decided it)
+so a reviewer can audit the rules. Every run is saved as JSON after each repeat, so a
+crash or interrupt keeps what was paid for; ``--from-raw`` re-renders it.
 
 Limits of the comparison, which the report repeats. A step no rule matches is ``other``,
 and two ``other`` steps compare equal, so unlike steps can agree; a plan of one step
@@ -205,16 +207,28 @@ def classify_text(text: str) -> str | None:
     return None
 
 
+def _title_detail(step: Any) -> tuple[Any, Any]:
+    """A step's title and detail; a bare string is a title."""
+    if isinstance(step, dict):
+        return step.get("title"), step.get("detail")
+    return step, None
+
+
+def step_basis(step: Any) -> tuple[str, str]:
+    """The operation of one step and what decided it: ``title``, ``detail`` or ``none``.
+
+    The title is tried first, then the detail; a step neither classifies is ``other``,
+    decided by ``none``.
+    """
+    for basis, text in zip(("title", "detail"), _title_detail(step), strict=True):
+        if isinstance(text, str) and (op := classify_text(text)):
+            return op, basis
+    return "other", "none"
+
+
 def normalize_step(step: Any) -> str:
     """One step to one operation of ``VOCABULARY``: title first, then detail, else other."""
-    if isinstance(step, dict):
-        title, detail = step.get("title"), step.get("detail")
-    else:
-        title, detail = step, None
-    for text in (title, detail):
-        if isinstance(text, str) and (op := classify_text(text)):
-            return op
-    return "other"
+    return step_basis(step)[0]
 
 
 def normalize_plan(steps: Sequence[Any] | None) -> tuple[str, ...]:
@@ -475,6 +489,21 @@ def _seq(sequence: tuple[str, ...]) -> str:
     return " > ".join(sequence) if sequence else "none"
 
 
+DETAIL_CHARS = 80
+
+
+def _title_cell(step: Any, basis: str) -> str:
+    """The raw title for the audit table; a step the title did not decide shows its detail too."""
+    title, detail = _title_detail(step)
+    shown = title.strip() if isinstance(title, str) and title.strip() else "(no title)"
+    if basis != "title" and isinstance(detail, str) and detail.strip():
+        text = " ".join(detail.split())
+        if len(text) > DETAIL_CHARS:
+            text = text[: DETAIL_CHARS - 3] + "..."
+        shown += f" [detail: {text}]"
+    return _cell(shown)
+
+
 def caveats(results: dict[PlanRequest, list[RunRecord]]) -> list[str]:
     """What a reader must know before trusting the shares, derived from these runs."""
     lines = [
@@ -483,6 +512,14 @@ def caveats(results: dict[PlanRequest, list[RunRecord]]) -> list[str]:
         "not an independent measurement.",
         "A step no rule matches is `other`, and two `other` steps compare equal.",
     ]
+    decided = Counter(
+        step_basis(step)[1] for runs in results.values() for run in runs for step in run.steps
+    )
+    if decided["detail"]:
+        lines.append(
+            f"{decided['detail']} of {sum(decided.values())} step(s) were classified by their "
+            "detail because the title matched no rule; the table shows that detail."
+        )
     for request, runs in results.items():
         top, _ = consistency(run.sequence for run in runs)
         if len(top) == 1:
@@ -525,15 +562,19 @@ def render_report(
     out += ["", "## Plans, run by run", ""]
     for request, runs in results.items():
         out += [f"### {request.kind} ({request.dataset_id})", "", f"> {request.message}", ""]
-        out += ["| Run | Outcome | Step | Operation | Raw title |", "|---|---|---|---|---|"]
+        out += [
+            "| Run | Outcome | Step | Operation | Decided by | Raw title |",
+            "|---|---|---|---|---|---|",
+        ]
         for i, run in enumerate(runs, start=1):
             if not run.steps:
                 out.append(
-                    f"| {i} | {run.kind} | - | {_cell(_seq(run.sequence))} | {_cell(run.note)} |"
+                    f"| {i} | {run.kind} | - | {_cell(_seq(run.sequence))} | - | {_cell(run.note)} |"
                 )
                 continue
             for n, (step, op) in enumerate(zip(run.steps, run.sequence, strict=True), start=1):
-                out.append(f"| {i} | plan | {n} | {op} | {_cell(str(step.get('title', '')))} |")
+                basis = step_basis(step)[1]
+                out.append(f"| {i} | plan | {n} | {op} | {basis} | {_title_cell(step, basis)} |")
         out.append("")
     out += [
         "## Normalization rules",
