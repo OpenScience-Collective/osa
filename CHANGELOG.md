@@ -102,6 +102,10 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
+- **The search overview needs a search of at least three words (#728)**: `POST /{community}/overview` answers 422 ("an overview needs a search of at least 3 words") for a shorter `query`, before any model call.
+  A word is a whitespace-separated token holding a letter or digit (`query_word_count`, `MIN_QUERY_WORDS = 3` in `src/api/overview.py`), so `P300` and `α-band` count and a lone `-` does not; nemar.org's Discover panel counts the same way and shows a note instead of calling.
+  A one-word search such as "EEG" had come back as a 502 with no overview.
+  `docs/search-overview.md` gives the rule; tests cover the count, the 422 with its reason and no model call.
 - **NEMAR's vendored eegprep-lean is 0.5.0**: the wheel is the eegprep 0.5.0 release (tag `v0.5.0`, commit `13c79837`). eegprep and eegprep-lean now share one version number, which is why this jumps from 0.1.0.dev3. The only package code change since `50c50879` is `help()` and `dir()` (sccn/eegprep#440). The names the chat and the notebook call are unchanged.
 - **`osa-demo.pages.dev` is no longer an allowed origin**: backend CORS, the widget authorization check, the worker's `isAllowedOrigin` (and the `sync_worker_cors.py` template that writes it) and the notebook `frame-ancestors` no longer list `osa-demo.pages.dev` or `*.osa-demo.pages.dev`. Those hosts redirect to the custom domains before any API call, and the names are account-scoped. The dashboard's `osa-dash.pages.dev` origins are unchanged, since its pull-request previews call the API from there.
 - **HED has no forum**: NeuroStars (tag `hed`, three topics) is removed from HED's sources, with its `search_hed_forum` tool. It had never been synced.
