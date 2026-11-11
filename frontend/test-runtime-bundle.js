@@ -66,6 +66,7 @@ console.log('\nthe bundle loads as a classic script and exposes one global');
     'GATE_DECISION',
     'highlightPython',
     'buildConversationNotebook',
+    'plan',
   ]) {
     assert(api && api[name] !== undefined, `it exposes ${name}`);
   }
@@ -99,6 +100,26 @@ console.log('\nthe notebook builder the BUNDLE carries gives what the source giv
     const source = buildConversationNotebook(NOTEBOOK_CONVERSATIONS[name]());
     assert(JSON.stringify(bundled) === JSON.stringify(source), `${name}: the minified builder's notebook, script and stats equal the source's`);
   }
+}
+
+console.log('\nthe plan logic the BUNDLE carries gives what the source gives');
+{
+  const source = await import('./osa-plan.js');
+  const same = (actual, expected, msg) => assert(JSON.stringify(actual) === JSON.stringify(expected), msg);
+  assert(Object.isFrozen(api.plan), 'the plan logic is frozen with the rest');
+  same(Object.keys(api.plan).sort(), Object.keys(source).sort(), 'the bundle exposes every export of osa-plan.js');
+  const args = {
+    findings: 'Found.',
+    est_peak_mb: 120,
+    steps: [{ title: 'Load  it', detail: 'd' }, { title: 'Plot', detail: '' }],
+  };
+  const proposal = api.plan.normalizeProposal(args, 'c1');
+  same(proposal, source.normalizeProposal(args, 'c1'), 'a proposal is normalized the same');
+  same(api.plan.buildDecision(proposal, 'approved'), source.buildDecision(proposal, 'approved'), 'a decision is built the same');
+  const approved = { ...proposal, status: 'approved' };
+  const runs = [{ step: 1, attempt: 1, status: 'error' }];
+  same(api.plan.nextRun(approved, runs), source.nextRun(approved, runs), 'the next run is attributed the same');
+  same(api.plan.progressOf(approved, runs, { active: true }), source.progressOf(approved, runs, { active: true }), 'progress is the same');
 }
 
 console.log('\nthe worker source the BUNDLE builds is real JavaScript');

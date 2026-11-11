@@ -7,6 +7,7 @@
 import { ClientToolController, FULL_OUTPUT_TOOL_NAME, GATE_DECISION } from './osa-controller.js';
 import { highlightPython } from './osa-highlight.js';
 import { buildConversationNotebook } from './osa-notebook-builder.js';
+import * as plan from './osa-plan.js';
 import { buildWorkerConfig, buildWorkerSource, PyodideRuntime, RUNTIME_STATE } from './osa-runtime.js';
 import { createWorkerRuntime } from './osa-worker-core.js';
 import {
@@ -43,4 +44,7 @@ globalThis.OSARuntime = Object.freeze({
   WORKSPACE_LIMITS,
   // A chat's successful runs as a notebook and a percent-format script (E4.1, #667).
   buildConversationNotebook,
+  // The plan card's and the step progress's pure logic (E2.3, E2.4): the widget declares
+  // `propose_plan` only when this is here, since only then can it answer one.
+  plan: Object.freeze({ ...plan }),
 });
