@@ -3743,6 +3743,9 @@ def _tool_call_sse_events(
     run: `run_id` keeps the runs of one turn apart, since their indices restart at 0.
     `announced` belongs to the caller, one per stream, and remembers what was sent.
 
+    The `start_analysis` call is never announced: it is not a tool the reader's client
+    runs or shows, it ends the quick turn and the stream moves on to the analysis run.
+
     Never raises. This is a courtesy to the reader, and a stream must not fail over it.
     """
     try:
@@ -3755,6 +3758,11 @@ def _tool_call_sse_events(
                 continue
             name = call.get("name")
             if not isinstance(name, str) or not name.strip():
+                continue
+            if name.strip() == START_ANALYSIS_TOOL_NAME:
+                # Not a tool the reader's client runs or shows: calling it ends the quick
+                # turn and the stream moves on to the analysis run. Announcing it would
+                # leave a "writing" label with no tool_start or tool_end after it.
                 continue
             index = call.get("index")
             call_id = call.get("id")

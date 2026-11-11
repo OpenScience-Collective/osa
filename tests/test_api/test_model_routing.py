@@ -578,6 +578,14 @@ class TestStartAnalysis:
         assert done["session_id"] != "sess-quick"
         assert rig.tiers == ["quick", "analysis"]
 
+    def test_the_call_is_not_announced_as_a_tool_call_event(self, client, monkeypatch) -> None:
+        _earlier_conversation()
+        _rig(monkeypatch, quick=[self._call(), say(SUMMARY)])
+
+        events = _chat(client, "could you look at the alpha band instead?", session_id="sess-quick")
+
+        assert [e for e in events if e["event"] in ("tool_call", "tool_start", "tool_end")] == []
+
     def test_the_summary_is_written_after_the_call_and_reaches_the_analysis_model(
         self, client, monkeypatch
     ) -> None:

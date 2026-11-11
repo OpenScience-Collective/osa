@@ -605,6 +605,10 @@ data: {"event": "handover", "stage": "started", "session_id": "<new id>", "model
 The analysis turn then streams as any turn does, on the new session, so its own `session` event and `done.session_id` carry the new id.
 A widget adopts that id from `session` and `done`, as it already does, and an older widget ignores the `handover` events.
 
+The quick model's call to `start_analysis` is not sent as a `tool_call` event (there is no tool for a client to show).
+Its prompt tells it to write nothing else, so a reply that hands over normally has no quick-model text before the handover.
+`frontend/test-widget-handover-events.js` runs the widget against this stream: the `handover` events (and ones it does not know) change nothing on the page, the second `session` event is adopted, and the next message goes to the new session.
+
 A first message has no earlier turns, so there is nothing to summarize: its own session is flipped to analysis, with no `handover` events.
 
 **Metrics.**
