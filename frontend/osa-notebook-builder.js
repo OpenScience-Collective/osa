@@ -487,6 +487,12 @@ function toNotebook(cells) {
 // cell with an explicit `# %%` marker (jupytext/magics.py). A line they match
 // is written with a `# ` prefix and read back without it, so a source line
 // that matches one comes back unchanged only if it is written the same way.
+//
+// They mirror Jupytext 1.19.x, the version the dev dependency pins
+// (`jupytext>=1.19.6,<1.20` in pyproject.toml). Raising that pin is a
+// deliberate step: re-run tests/test_frontend/test_notebook_builder.py, whose
+// round trip through the real library and its command line is what catches a
+// change in these rules. Readers on another Jupytext version are not covered.
 // ---------------------------------------------------------------------------
 
 const MAGIC_START = /^\s*(# |#)*(%|%%|%%%)[a-zA-Z]/;
