@@ -3418,6 +3418,37 @@ class TestModelRoutingConfig:
         with pytest.raises(ValidationError, match="reserved"):
             ClientToolConfig(name="start_analysis", runtime="python", description="Run.")
 
+    def test_plan_first_instructions_load_beside_the_pair(self) -> None:
+        config = CommunityConfig(
+            **_routing_kwargs(
+                quick_model="haiku", analysis_model="sonnet", plan_first_instructions="Plan."
+            )
+        )
+        assert config.plan_first_instructions == "Plan."
+        assert (
+            CommunityConfig(
+                **_routing_kwargs(quick_model="haiku", analysis_model="sonnet")
+            ).plan_first_instructions
+            is None
+        )
+
+    def test_plan_first_instructions_without_the_pair_are_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="plan_first_instructions"):
+            CommunityConfig(**_routing_kwargs(plan_first_instructions="Plan."))
+
+    @pytest.mark.parametrize("blank", ["", "   \n"])
+    def test_blank_plan_first_instructions_are_rejected(self, blank: str) -> None:
+        with pytest.raises(ValidationError, match="must not be blank"):
+            CommunityConfig(
+                **_routing_kwargs(
+                    quick_model="haiku", analysis_model="sonnet", plan_first_instructions=blank
+                )
+            )
+
+    def test_propose_plan_cannot_be_configured(self) -> None:
+        with pytest.raises(ValidationError, match="reserved"):
+            ClientToolConfig(name="propose_plan", runtime="python", description="Run.")
+
     def test_nemar_routes_haiku_to_sonnet(self) -> None:
         config = CommunityConfig.from_yaml(
             Path(__file__).parents[3] / "src" / "assistants" / "nemar" / "config.yaml"

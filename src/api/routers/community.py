@@ -43,6 +43,7 @@ from src.agents.model_routing import (
     reader_turn,
     tier_for_turn,
 )
+from src.agents.plan_first import plan_first_section
 from src.api.config import Settings, get_settings
 from src.api.handover import stream_handover
 from src.api.routers.health import compute_community_health
@@ -2174,7 +2175,9 @@ def create_community_assistant(
             and decides which client tools are bound. A quick turn also gets the prompt
             section that tells it to call ``start_analysis``, added to
             ``additional_instructions`` here because it must exist exactly when that tool
-            is bound, which is not something the YAML prompt can say.
+            is bound, which is not something the YAML prompt can say. An analysis turn
+            gets the community's ``plan_first_instructions`` on the same terms (see
+            ``src.agents.plan_first``).
         additional_instructions: Extra text for the system prompt.
 
     Returns:
@@ -2272,11 +2275,17 @@ def create_community_assistant(
         )
 
     # A quick turn gets the section that tells it to call `start_analysis`, after any
-    # instructions the caller passed.
+    # instructions the caller passed. An analysis turn gets the community's plan-first text
+    # when `propose_plan` is declared (`plan_first_section` says when), for the same reason:
+    # it must exist exactly when the tool it names is bound.
     merged_instructions = additional_instructions
     if tier == "quick":
         merged_instructions = "\n\n".join(
             part for part in (additional_instructions, QUICK_MODE_INSTRUCTIONS) if part
+        )
+    elif plan_first := plan_first_section(community_config, tier, declared_client_tools):
+        merged_instructions = "\n\n".join(
+            part for part in (additional_instructions, plan_first) if part
         )
 
     assistant = registry.create_assistant(

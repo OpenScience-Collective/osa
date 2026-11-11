@@ -2210,6 +2210,16 @@ class CommunityConfig(BaseModel):
     models inside one session, so the quick model's thinking blocks never meet it.
     """
 
+    plan_first_instructions: str | None = None
+    """Prompt text that makes the analysis model propose a plan before it runs code.
+
+    Valid only with ``quick_model`` and ``analysis_model``, because a plan is made by the
+    analysis model. Appended to the system prompt of an analysis turn, and only when the
+    request declares ``propose_plan`` (``PROPOSE_PLAN_TOOL_NAME``) and client tools are
+    not disabled: text that tells a model to call a tool it was not given would send it to
+    invent one. See ``src.agents.plan_first``.
+    """
+
     reasoning_effort: ReasoningEffort | None = None
     """How much this community's assistant thinks: one level of a provider-neutral scale.
 
@@ -2683,13 +2693,22 @@ class CommunityConfig(BaseModel):
     def validate_model_routing(self) -> "CommunityConfig":
         """``quick_model`` and ``analysis_model`` go together, and need ``execute_code``.
 
+        ``plan_first_instructions`` is valid only beside them, and may not be blank.
+
         The pair routes a turn to the analysis model when it asks for code, so without a
         client tool that runs code there is nothing for the analysis model to do and the
         quick model would hand over to no purpose.
         """
         if (self.quick_model is None) != (self.analysis_model is None):
             raise ValueError("quick_model and analysis_model must both be set or both unset")
+        if self.plan_first_instructions is not None and not self.plan_first_instructions.strip():
+            raise ValueError("plan_first_instructions must not be blank; omit the key instead")
         if self.quick_model is None:
+            if self.plan_first_instructions is not None:
+                raise ValueError(
+                    "plan_first_instructions is given to the analysis model, so it needs "
+                    "quick_model and analysis_model"
+                )
             return self
         configured = (
             {entry.name for entry in self.extensions.client_tools} if self.extensions else set()

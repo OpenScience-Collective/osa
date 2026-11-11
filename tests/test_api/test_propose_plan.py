@@ -13,7 +13,7 @@ it will do.
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 from fastapi import FastAPI
@@ -32,6 +32,7 @@ from src.core.config.community import (
 )
 from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
 from src.core.services.anthropic_models import HAIKU, SONNET
+from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
 from tests.helpers.chat_models import StreamingScriptedChatModel
 from tests.helpers.provider_replies import text_chunk
 
@@ -42,6 +43,7 @@ EXECUTE_CODE = "execute_code"
 PROPOSE_PLAN = "propose_plan"
 DECLARED = [EXECUTE_CODE, "get_full_output", PROPOSE_PLAN]
 ANALYSIS_REQUEST = "plot the ERP for famous faces"
+PLAN_TEXT = "PLAN-FIRST-MARKER: call propose_plan before any execute_code."
 
 PLAN_ARGS = {
     "findings": "18 participants with 3 runs each; 2 event types.",
@@ -78,6 +80,7 @@ def _config() -> CommunityConfig:
         cors_origins=[ORIGIN],
         quick_model="haiku",
         analysis_model="sonnet",
+        plan_first_instructions=PLAN_TEXT,
     )
 
 
@@ -106,6 +109,12 @@ def run_code(call_id: str) -> list[AIMessageChunk]:
 @dataclass
 class Rig:
     analysis: StreamingScriptedChatModel
+    quick: StreamingScriptedChatModel
+    assistants: list = field(default_factory=list)
+
+    @property
+    def prompts(self) -> list[str]:
+        return [awm.assistant.system_prompt for awm in self.assistants]
 
 
 @pytest.fixture(autouse=True)
@@ -131,7 +140,16 @@ def _rig(monkeypatch, script: list[list[AIMessageChunk]]) -> Rig:
     monkeypatch.setattr(
         community_module, "create_anthropic_llm", lambda *, model, **_kw: by_model[model]
     )
-    return Rig(analysis=analysis)
+    rig = Rig(analysis=analysis, quick=quick)
+    real_create = community_module.create_community_assistant
+
+    def spy(*args, **kwargs):
+        awm = real_create(*args, **kwargs)
+        rig.assistants.append(awm)
+        return awm
+
+    monkeypatch.setattr(community_module, "create_community_assistant", spy)
+    return rig
 
 
 def _events(response) -> list[dict]:
@@ -142,10 +160,10 @@ def _events(response) -> list[dict]:
     ]
 
 
-def _chat(client, *, declared=DECLARED) -> list[dict]:
+def _chat(client, *, declared=DECLARED, message=ANALYSIS_REQUEST) -> list[dict]:
     response = client.post(
         f"/{COMMUNITY}/chat",
-        json={"message": ANALYSIS_REQUEST, "client_tools": declared},
+        json={"message": message, "client_tools": declared},
         headers={"Origin": ORIGIN, **BYOK},
     )
     assert response.status_code == 200, response.text
@@ -409,3 +427,45 @@ class TestPlansAndTheBrowserRunBudget:
         assert request["tool"] == EXECUTE_CODE
         assert (session.pending_call.runs_before, session.pending_call.code_runs_before) == (1, 1)
         assert rig.analysis.calls == 3
+
+
+class TestThePlanFirstPrompt:
+    """The community's plan-first text reaches the model exactly when it can follow it."""
+
+    def test_an_analysis_turn_that_declares_the_tool_gets_it(self, client, monkeypatch) -> None:
+        rig = _rig(monkeypatch, [say("ok")])
+
+        _chat(client)
+
+        assert PLAN_TEXT in rig.prompts[0]
+
+    def test_an_undeclared_request_does_not(self, client, monkeypatch) -> None:
+        rig = _rig(monkeypatch, [say("ok")])
+
+        _chat(client, declared=[EXECUTE_CODE, "get_full_output"])
+
+        assert PLAN_TEXT not in rig.prompts[0]
+
+    def test_a_quick_turn_does_not(self, client, monkeypatch) -> None:
+        rig = _rig(monkeypatch, [say("ok")])
+
+        _chat(client, message="find datasets with face stimuli")
+
+        assert rig.quick.calls == 1
+        assert PLAN_TEXT not in rig.prompts[0]
+
+    def test_the_kill_switch_withdraws_it(self, client, monkeypatch) -> None:
+        monkeypatch.setenv(CLIENT_TOOL_KILL_SWITCH_ENV, "1")
+        rig = _rig(monkeypatch, [say("ok")])
+
+        _chat(client)
+
+        assert PLAN_TEXT not in rig.prompts[0]
+
+    def test_a_resume_keeps_it(self, client, monkeypatch) -> None:
+        rig, request = _parked_session(client, monkeypatch)
+
+        _resume(client, request["session_id"], _decision(request["call_id"]))
+
+        assert len(rig.prompts) == 2
+        assert all(PLAN_TEXT in prompt for prompt in rig.prompts)
