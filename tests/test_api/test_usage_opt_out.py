@@ -106,16 +106,22 @@ def _script() -> list[list]:
     ]
 
 
-def _serve_scripted(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "src.api.routers.community.create_community_assistant",
-        lambda *_a, **_k: assistant_for(PROVIDER, _script()),
-    )
+def _serve_scripted(monkeypatch) -> list[dict]:
+    """Serve the scripted assistant; returns the keyword arguments of each assistant the
+    handlers ask for, in order, so a test can see what a request asked for."""
+    asked: list[dict] = []
+
+    def create(*_a, **kwargs):
+        asked.append(kwargs)
+        return assistant_for(PROVIDER, _script())
+
+    monkeypatch.setattr("src.api.routers.community.create_community_assistant", create)
+    return asked
 
 
-def _serve_resume(monkeypatch) -> None:
+def _serve_resume(monkeypatch) -> list[dict]:
     """The browser-run community's assistant, replaying a search run and then an answer
-    that both report their usage."""
+    that both report their usage. Returns what the handlers asked for, as above."""
     search = _anthropic_call(
         "nemar_search_datasets", resume_fixtures.SEARCH_CALL_ID, resume_fixtures.SEARCH_ARGS
     )
@@ -123,10 +129,14 @@ def _serve_resume(monkeypatch) -> None:
         [*search, *PROVIDER.end(PROVIDER.finished, True, False)],
         scripted_reply(PROVIDER, ANSWER),
     ]
-    monkeypatch.setattr(
-        "src.api.routers.community.create_community_assistant",
-        lambda *_a, **_k: resume_fixtures._assistant(script),
-    )
+    asked: list[dict] = []
+
+    def create(*_a, **kwargs):
+        asked.append(kwargs)
+        return resume_fixtures._assistant(script)
+
+    monkeypatch.setattr("src.api.routers.community.create_community_assistant", create)
+    return asked
 
 
 def _chat(client: TestClient, share: bool | None, *, stream: bool) -> None:
@@ -238,6 +248,18 @@ class TestOptedOutRow:
         ):
             assert opted_out[column] == default[column], column
         assert opted_out["request_id"] != default["request_id"]
+
+    def test_an_opted_out_request_asks_for_no_langfuse_trace(
+        self, client, monkeypatch, serve, send
+    ) -> None:
+        """The assistant is built with ``trace=False`` on every route, so no Langfuse
+        config or trace id exists for the turn; a default request still traces."""
+        asked = serve(monkeypatch)
+        send(client, None)
+        send(client, True)
+        send(client, False)
+
+        assert [call["trace"] for call in asked] == [True, True, False]
 
     def test_the_budget_counts_an_opted_out_request(self, client, monkeypatch, serve, send) -> None:
         serve(monkeypatch)
