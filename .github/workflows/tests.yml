@@ -499,6 +499,13 @@ jobs:
       - name: Run the context switch tests on a real DOM
         run: bun frontend/test-widget-context-switch.js
 
+      # The History sheet: chats by day with dataset, step and figure counts, Open,
+      # Delete, Clear all (two clicks), off while a reply loads, hidden on the
+      # notebook tab; and a run's figures read back from the workspace into restored
+      # and opened chats, never into storage.
+      - name: Run the History panel tests on a real DOM
+        run: bun frontend/test-widget-history-panel.js
+
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a
       # reading pace, the code block whole, and at once with reduced motion emulated.
@@ -519,6 +526,25 @@ jobs:
       # so no backend and no network; the runner ships Chrome.
       - name: Check the run card in headless Chrome
         run: bun frontend/browser-harness/run-card-check.mjs
+
+      # The History sheet and saved figures in real Chrome at 390 x 844: a run that
+      # draws a figure is saved to the real IndexedDB, the page reloads, and the figure
+      # comes back in the restored chat, in the chat opened from History (and as its
+      # row's thumbnail), and in the pop-out. Its own server, so no backend and no
+      # network; the runner ships Chrome.
+      - name: Check the History sheet and saved figures in headless Chrome
+        env:
+          HISTORY_CHECK_SCREENSHOTS: ${{ runner.temp }}/history-check
+        run: bun frontend/browser-harness/history-check.mjs
+
+      # The screenshots the check took, for a failure to be looked at rather than guessed.
+      - name: Upload the History check screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: history-check-screenshots
+          path: ${{ runner.temp }}/history-check
+          if-no-files-found: ignore
 
       # What only a browser can check: Pyodide under a real Content-Security-Policy,
       # the egress guard on a real worker global, and NEMAR's lock overlay loaded by

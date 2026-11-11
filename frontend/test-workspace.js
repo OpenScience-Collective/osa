@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildStoredZip } from './osa-zip.js';
+import { memoryIndexedDB } from './test-support/memory-indexeddb.js';
 import {
   autoFigurePath,
   autoResultDir,
@@ -301,6 +302,78 @@ console.log('\na rejected open() does not poison later calls: _dbPromise is rese
   assertEqual(openCalls, 2, 'a rejected _dbPromise is not cached: the next call opens again');
   assert(!first.ok && first.reason === 'open attempt 1 failed', `the first attempt fails for its own reason (got ${JSON.stringify(first)})`);
   assert(!second.ok && second.reason === 'open attempt 2 failed', `the second attempt fails for ITS OWN reason, not the first's cached rejection (got ${JSON.stringify(second)})`);
+}
+
+console.log('\nfiguresForCalls reads a run\'s figures by call id, through the real read path');
+{
+  // The real store over the shared in-memory IndexedDB (test-support/memory-indexeddb.js),
+  // the same stand-in the panel suite uses: runs and figures are written by recordRun,
+  // as the controller records them, and only the cases recordRun cannot produce (a
+  // figure gap, a reservation that never became a run, a call id two runs share) are
+  // written as rows by hand. The real IndexedDB, after a reload, is the Chrome harness's.
+  const COMMUNITY = 'figures-test';
+  const SEP = '\u0000';
+  const realKeyRange = globalThis.IDBKeyRange;
+  const store = new WorkspaceStore({ community: COMMUNITY, dbFactory: memoryIndexedDB(), operationTimeoutMs: 5000 });
+  const png = (n) => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, n]);
+  const base64 = (bytes) => btoa(String.fromCharCode(...bytes));
+  const record = async (session, callId, figures) => {
+    const result = await store.recordRun({
+      session, callId, status: 'ok', description: 'plot', code: 'plot()', stdout: '', stderr: '', summary: '',
+      images: figures.map((n) => ({ data_base64: base64(png(n)) })), explicitFiles: [],
+    });
+    if (result.failures.length > 0) throw new Error(`could not record ${callId}: ${JSON.stringify(result.failures)}`);
+    return result.ordinal;
+  };
+  const put = async (name, row) => {
+    const db = await store._open();
+    const tx = db.transaction(name, 'readwrite');
+    tx.objectStore(name).put(row);
+    await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+  };
+  await record('s1', 'call-two-figures', [11, 12]);
+  await record('s1', 'call-no-figure', []);
+  await record('s2', 'call-other-session', [11]);
+  const gapOrdinal = await record('s1', 'call-gap', [31]);
+  // Figure 3 without figure 2: the list ends at the first one missing.
+  const gapPath = autoFigurePath(gapOrdinal, 3);
+  await put('files', { key: `${COMMUNITY}${SEP}s1${SEP}${gapPath}`, session: 's1', path: gapPath, data: png(99), size: 9 });
+  await record('s1', 'person-run-1', [41]);
+  await record('s2', 'person-run-1', [42]);
+  await put('runs', {
+    key: `${COMMUNITY}${SEP}s1${SEP}${String(90).padStart(6, '0')}`, community: COMMUNITY, session: 's1', ordinal: 90,
+    callId: 'call-reserved', status: 'reserved', description: '', files: [], timestamp: new Date().toISOString(),
+  });
+  const ids = ['call-two-figures', 'call-no-figure', 'call-other-session', 'call-gap', 'person-run-1', 'call-reserved', 'call-unknown'];
+  const figures = await store.figuresForCalls(ids);
+  assert(figures instanceof Map, 'it returns a Map');
+  assertEqual(figures.get('call-two-figures').map((b) => b[8]), [11, 12], 'a run\'s figures come back in order, as the exact bytes saved');
+  assertEqual(figures.get('call-two-figures')[0].slice(0, 4), png(0).slice(0, 4), 'a figure is the PNG bytes');
+  assertEqual(figures.get('call-other-session').map((b) => b[8]), [11], 'a call id is found in any session');
+  assert(!figures.has('call-no-figure'), 'a run that saved no figure is left out');
+  assertEqual(figures.get('call-gap').map((b) => b[8]), [31], 'the list ends at the first missing figure');
+  assert(!figures.has('person-run-1'), 'a call id two runs share is left out rather than answered with the wrong run\'s figures');
+  assertEqual([...figures.ambiguous], ['person-run-1'], 'and named on `ambiguous`, so it is not taken for a figure that is gone');
+  assert(!figures.has('call-reserved'), 'a reservation that never became a run is left out');
+  assert(!figures.has('call-unknown'), 'a call id with no run is left out');
+  assert(!figures.ambiguous.has('call-unknown') && !figures.ambiguous.has('call-no-figure'), 'which is not ambiguity');
+  assertEqual([...(await store.figuresForCalls(['call-two-figures']))].length, 1, 'only the call ids asked for are read');
+  assertEqual((await store.figuresForCalls(['call-two-figures'], { limit: 1 })).get('call-two-figures').map((b) => b[8]), [11], 'a limit of 1 reads only figure 1');
+  assertEqual((await store.figuresForCalls(['call-two-figures'], { limit: 0 })).get('call-two-figures').length, 2, 'a limit that is not a positive whole number is ignored');
+  assertEqual((await store.figuresForCalls([])).size, 0, 'no call ids, no figures');
+  assertEqual((await store.figuresForCalls([null, '', 7])).size, 0, 'a call id that is not a string is ignored');
+  if (realKeyRange === undefined) delete globalThis.IDBKeyRange;
+  else globalThis.IDBKeyRange = realKeyRange;
+
+  const unavailable = new WorkspaceStore({ community: 'figures-test-none' });
+  let rejected = null;
+  try {
+    await unavailable.figuresForCalls(['call-two-figures']);
+  } catch (err) {
+    rejected = err;
+  }
+  assert(rejected instanceof Error && /not available/.test(rejected.message), 'with no IndexedDB it rejects, as manifests() does, for the caller to report');
+  assertEqual((await unavailable.figuresForCalls([])).size, 0, 'but asking for nothing is not an error');
 }
 
 console.log('\nbuildStoredZip refuses more than 65,535 entries rather than writing a wrapped count');
