@@ -222,15 +222,22 @@ jobs:
         run: |
           uv sync --frozen --extra dev
 
-      # tests/test_frontend/test_workspace_export.py spawns a small Bun
-      # script (build_workspace_export_fixture.js) that calls the real
-      # frontend/osa-workspace.js; it has no external package dependencies,
-      # so `bun` on PATH is enough here, with no `bun install` needed.
+      # Two kinds of frontend fixture run under Bun here. tests/test_frontend/
+      # test_workspace_export.py spawns build_workspace_export_fixture.js, which calls
+      # the real frontend/osa-workspace.js and has no package dependencies. The plan
+      # tests (test_plan_resume_payload.py, build_plan_payload_fixture.js) load the
+      # widget through frontend/test-support/plan-widget-harness.js, which imports
+      # happy-dom, so the dependencies are installed too. There is no Bun lockfile in
+      # the repo, so this is a plain `bun install`, as in the Frontend job.
       - name: Set up Bun
         if: env.RUN_ALL == 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
+
+      - name: Install frontend test dependencies
+        if: env.RUN_ALL == 'true'
+        run: bun install
 
       # The union of the two old selections: tests.yml ran everything outside
       # tests/test_integration that is not network or llm, test.yml everything
@@ -508,6 +515,14 @@ jobs:
       # and opened chats, never into storage.
       - name: Run the History panel tests on a real DOM
         run: bun frontend/test-widget-history-panel.js
+
+      # The plan card and the step progress (E2.3, E2.4), the real widget and the runtime
+      # bundle as built, with fetch answering recorded-shape SSE: the card and its edits,
+      # the decision posted to /chat/resume, consent, step headers, the strip and bar,
+      # Stop plan, and a restored chat. The Python half is
+      # tests/test_frontend/test_plan_resume_payload.py.
+      - name: Run the plan card tests on a real DOM
+        run: bun frontend/test-widget-plan-card.js
 
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a
