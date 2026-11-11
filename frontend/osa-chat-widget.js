@@ -16891,7 +16891,8 @@
     hostQueue.push(call);
     if (hostInitTimer === null) {
       hostInitTimer = setTimeout(() => {
-        if (!hostLive) hostWarn('call', `${hostQueue.length} call(s) are waiting for OSAChatWidget.init(); none runs until it has built the widget`);
+        hostInitTimer = null;
+        if (!hostLive) hostWarn('call', `${hostQueue.length} call(s) are waiting; OSAChatWidget.init() has not been called or did not finish building the widget, and none runs until it has`);
       }, HOST_INIT_WARN_MS);
     }
   }
@@ -16997,6 +16998,8 @@
       input.value = draft;
       const field = container.querySelector('.osa-center-input');
       if (field) field.value = draft;
+      // Tell whatever mirrors the field (the start screen's sync, the send button).
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
     }
     sending.catch((error) => console.error('[OSA] ask failed:', error));
   }

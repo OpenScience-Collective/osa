@@ -898,7 +898,7 @@ console.log('\ncalls before init() are bounded, and a page that never calls init
   idle.api.open();
   await waitUntil(() => quiet.warn.length > 0, 'the warning for a widget that never initialized');
   quiet.stop();
-  assert(/waiting for OSAChatWidget\.init\(\)/.test(quiet.warn[0]), 'it says calls are waiting for init()');
+  assert(/waiting; OSAChatWidget\.init\(\) has not been called or did not finish/.test(quiet.warn[0]), 'it says calls are waiting and init() was not called or did not finish');
 
   const prompt = await load({ fastInitWarning: true });
   const none = listen();
