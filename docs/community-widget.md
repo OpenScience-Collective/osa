@@ -563,6 +563,51 @@ Testing:
 `frontend/test-widget-popout.js`, the card in the pop-out.
 `frontend/browser-harness/run-card-check.mjs [screenshot-dir]` draws every state at 400 px in headless Chrome, light and dark, checks the layout (inside the panel, nothing scrolls sideways, every button 36 px tall) and writes a screenshot of each.
 
+## Quick answers and analysis: the `handover` events
+
+A community that sets `quick_model` and `analysis_model` (NEMAR: `haiku` and `sonnet`; both or neither, each an offered model, and `execute_code` configured) answers most turns on the quick model and runs code, plots and analysis on the analysis model (issues #670 and #674, plan E8).
+This is the stream contract the widget's handover card reads; the card itself is separate work, and a widget that predates it keeps working, as below.
+
+**When a turn is routed.**
+Routing applies to a streamed `/chat` or `/chat/resume` request that declares `execute_code` in `client_tools` and names no `model`.
+A reader's own model choice always wins, and a request that declares no `execute_code` runs on the community's `default_model`, as it always did.
+Every other community, and every non-streamed request, behaves as before.
+
+**Which model a turn uses.**
+A turn is analysis when its session is already in analysis (a session never goes back), or when the message names code, a plot or an analysis (`run`, `plot`, `analyze`, `compute`, `execute`, `spectrum`, `ERP image`, `filter` or `fit`, as whole words, in any case), or when the quick model calls its `start_analysis` tool.
+Otherwise it is quick.
+The quick model has no `execute_code` and no `get_full_output`; it has `start_analysis`, and its prompt says to call that for a request to run, plot or analyze instead of writing a recipe.
+`/chat/resume` always runs on its session's tier.
+
+**Why a new session.**
+Switching models inside one session would send the quick model's thinking blocks to the analysis model, which its checks reject (issue #522).
+So the conversation is compacted into a new session, and the old one is left as it was: valid, on the quick model, with no tool call left waiting.
+
+**The events.**
+When the session has earlier turns, three `handover` events precede the analysis run, in this order:
+
+```text
+data: {"event": "handover", "stage": "summarizing"}
+data: {"event": "handover", "stage": "summarized", "messages": 4, "words": 90, "summary": "The reader searched for ..."}
+data: {"event": "handover", "stage": "started", "session_id": "<new id>", "model": "claude-sonnet-5-5"}
+```
+
+- `summarizing` means the quick model is writing the summary.
+- `summarized` carries the summary, the number of earlier messages it stands for (`messages`) and its length in words (`words`).
+  The summary is at most 150 words: the quick model is asked for that, and the server cuts it to that, whole words only.
+  It is built from the reader's and the assistant's text alone, with no tool output or image, and keeps the dataset ids the reader chose and their goal.
+  It is what the analysis model is told, with the reader's message; the card's "What the analysis model is told" shows it.
+- `started` names the new session and the analysis model.
+
+The analysis turn then streams as any turn does, on the new session, so its own `session` event and `done.session_id` carry the new id.
+A widget adopts that id from `session` and `done`, as it already does, and an older widget ignores the `handover` events.
+
+A first message has no earlier turns, so there is nothing to summarize: its own session is flipped to analysis, with no `handover` events.
+
+**`done.mode`.**
+On a routed request, `done` carries `mode` (`"quick"` or `"analysis"`) beside `model`.
+It is absent on a request that is not routed.
+
 ## Saved conversations
 
 The widget keeps up to 30 conversations in the reader's browser, in one `localStorage` record per community and origin (`osa-chat-history-<community>` unless `storageKey` says otherwise).
