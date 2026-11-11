@@ -1007,6 +1007,152 @@ console.log('\na run-all plan whose reply ended between steps is waiting, and th
   assertEqual(barButtons(page), ['Run step 2', 'Change step 2', 'Stop plan'], 'the plan is not running, so it waits for the reader, as a paused plan does');
 }
 
+console.log('\na failed step and text after it: the card still says the step is tried again (#731 review)');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const afterFail = page.queue();
+  first.send(codeRequest('y1', "FAIL:KeyError: 'x'\nprint(1)", 'Count'));
+  first.close();
+  await waitUntil(() => page.requests.length === 3, 'attempt 1 fails and is posted');
+  await waitUntil(() => page.q('.osa-run-card-retry'), 'the card says it will be tried again');
+  const before = text(page.q('.osa-run-card-retry'));
+  assert(before.includes('attempt 2 of 2'), 'before any text: the retry line names attempt 2 of 2');
+  afterFail.send({ event: 'content', content: 'It failed; fixing the key. ' });
+  await waitUntil(() => page.api.getMessages().some((m) => (m.content || '').includes('fixing the key')), 'the text shows');
+  assert(!settled(page), 'the reply is still going');
+  assertEqual(text(page.q('.osa-run-card-retry')), before, 'after the text the retry line is still there, unchanged');
+  assertEqual(barButtons(page), ['Pause', 'Stop plan'], 'and the bar is the running one');
+  afterFail.send(doneEvent('Gave up.'));
+  afterFail.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  assert(page.q('.osa-run-card-retry') === null, 'once the reply is over the retry line goes');
+}
+
+console.log('\na question asked while the plan waits: the bar stays the waiting one, with Run step N visibly disabled');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const next = page.queue();
+  first.send(codeRequest('w1', 'print(1)', 'Count'));
+  first.close();
+  await waitUntil(() => page.requests.length === 3, 'step 1 ran');
+  next.send(doneEvent('Step 1 done.'));
+  next.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  assertEqual(barButtons(page), ['Run step 2', 'Change step 2', 'Stop plan'], 'the plan waits');
+  assert(page.q('.osa-plan-bar-run').getAttribute('aria-disabled') === null, 'with Run step 2 enabled');
+
+  const answer = page.queue();
+  send(page, 'What is BIDS?');
+  answer.send(sessionEvent());
+  answer.send({ event: 'content', content: 'BIDS is a data standard. ' });
+  await waitUntil(() => page.api.getMessages().some((m) => (m.content || '').includes('BIDS is a data standard')), 'the answer shows');
+  assert(!settled(page), 'the unrelated reply is going');
+  assertEqual(barButtons(page), ['Run step 2', 'Change step 2', 'Stop plan'], 'the bar is still the waiting one: no Working, no Pause');
+  assert(text(page.q('.osa-plan-bar-text')).startsWith('Paused after step 1'), 'and says Paused after step 1');
+  assertEqual(page.q('.osa-plan-bar-run').getAttribute('aria-disabled'), 'true', 'Run step 2 is visibly disabled for the length of the answer');
+  const count = page.requests.length;
+  click(page, page.q('.osa-plan-bar-run'));
+  assertEqual(page.requests.length, count, 'and a click sends nothing alongside the answer');
+  answer.send(doneEvent('BIDS is a data standard.'));
+  answer.close();
+  await waitUntil(() => settled(page), 'the answer ends');
+  assert(page.q('.osa-plan-bar-run').getAttribute('aria-disabled') === null, 'afterwards Run step 2 is enabled again');
+  assertEqual(barButtons(page), ['Run step 2', 'Change step 2', 'Stop plan'], 'with the same buttons');
+}
+
+console.log('\na reply the bar\'s Run step N started is the plan\'s: Pause and Stop plan, with text on screen');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const next = page.queue();
+  first.send(codeRequest('v1', 'print(1)', 'Count'));
+  first.close();
+  await waitUntil(() => page.requests.length === 3, 'step 1 ran');
+  next.send(doneEvent('Step 1 done.'));
+  next.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  const go = page.queue();
+  click(page, page.q('.osa-plan-bar-run'));
+  await waitUntil(() => page.requests.length === 4, 'Run step 2 is sent');
+  go.send(sessionEvent());
+  go.send({ event: 'content', content: 'Going on with step 2. ' });
+  await waitUntil(() => page.api.getMessages().some((m) => (m.content || '').includes('Going on')), 'the text shows');
+  assertEqual(barButtons(page), ['Pause', 'Stop plan'], 'Pause and Stop plan');
+  go.send(doneEvent('Done.'));
+  go.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+}
+
+console.log('\na reply the reader started by hand becomes the plan\'s once a run of the plan arrives in it');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const next = page.queue();
+  first.send(codeRequest('h1', 'print(1)', 'Count'));
+  first.close();
+  await waitUntil(() => page.requests.length === 3, 'step 1 ran');
+  next.send(doneEvent('Step 1 done.'));
+  next.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  const go = page.queue();
+  const after = page.queue();
+  send(page, 'go on');
+  go.send(sessionEvent());
+  go.send({ event: 'content', content: 'Sure. ' });
+  await waitUntil(() => page.api.getMessages().some((m) => (m.content || '').includes('Sure.')), 'the text shows');
+  assertEqual(barButtons(page), ['Run step 2', 'Change step 2', 'Stop plan'], 'until a run arrives the plan is waiting');
+  go.send(codeRequest('h2', 'DELAY:200\nprint(2)', 'Epoch'));
+  go.close();
+  await waitUntil(() => page.api.getBrowserTools().busy, 'step 2 runs');
+  assertEqual(barButtons(page), ['Pause', 'Stop plan'], 'then it is the running bar');
+  await waitUntil(() => page.requests.length === 5, 'step 2 is answered');
+  after.send(doneEvent('Done.'));
+  after.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+}
+
+console.log('\nRun step N after a Pause, the send fails: the second click still says the step never ran');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const afterStep1 = page.queue();
+  first.send(codeRequest('f1', 'DELAY:300\nprint(1)', 'Count'));
+  first.close();
+  await waitUntil(() => page.api.getBrowserTools().busy, 'step 1 is running');
+  click(page, page.qa('.osa-plan-bar button').find((b) => text(b) === 'Pause'));
+  await waitUntil(() => page.requests.length === 3, 'step 1 ends');
+  afterStep1.send(codeRequest('f2', 'print(2)', 'Epoch'));
+  afterStep1.close();
+  await waitUntil(() => settled(page), 'the reply ends, step 2 held');
+  const held = messagesOf(page).find((m) => m.plan).plan;
+  assertEqual(held.held, 2, 'step 2 is held');
+  const note = 'Continue with step 2. It has not run: I paused before it started, so it is not a failed attempt. Run it now, then run the remaining steps without stopping.';
+
+  // No stream is queued, so the request fails before the server has it.
+  click(page, page.q('.osa-plan-bar-run'));
+  await waitUntil(() => page.requests.length === 4 && settled(page), 'the first send fails');
+  assertEqual(page.requests[3].body.message, note, 'the first send carried the note');
+  assertEqual(held.held, 2, 'the note is kept, since the server never had it');
+  assertEqual(barButtons(page), ['Run step 2', 'Change step 2', 'Stop plan'], 'and the plan still waits');
+
+  const go = page.queue();
+  click(page, page.q('.osa-plan-bar-run'));
+  await waitUntil(() => page.requests.length === 5, 'the second send is made');
+  assertEqual(page.requests[4].body.message, note, 'the second send carries the note too');
+  go.send(sessionEvent());
+  go.send(doneEvent('Done.'));
+  go.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  assertEqual(held.held, undefined, 'once the server has it the note is spent');
+}
+
 console.log('\na failed step: its header, the retry line, what waits, and the second attempt');
 {
   const page = await start();

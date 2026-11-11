@@ -624,7 +624,8 @@ class TestPlanToolMessage:
         assert "no closing message until the last step has run" in run_all
         # A step the reader paused before was never run: the parked call is repaired as an
         # error, and the model must not count it as a failed attempt.
-        assert "left unanswered during a run_all plan means the reader paused" in run_all
+        assert "left unanswered during a run_all plan was not run" in run_all
+        assert "most likely the reader paused" in run_all
         assert "not a failed attempt" in run_all
         assert "same turn" not in pause
 

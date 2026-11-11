@@ -337,6 +337,34 @@ console.log('\na run-all plan on the rail: it follows the bar, Run step N is not
   assert(page.q('.osa-plan-bar') === null && runButtons().length === 0, 'with no bar');
 }
 
+console.log('\nan unrelated question while a run-all plan waits: the rail and the bar stay the waiting ones');
+{
+  const page = await centerPage();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const next = page.queue();
+  first.send(codeRequest('j1', 'print(1)', 'Step 1'));
+  first.close();
+  await waitUntil(() => page.requests.length === 3, 'step 1 ran');
+  next.send(doneEvent('Step 1 done.'));
+  next.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  const answer = page.queue();
+  typeInto(page, page.q('.osa-chat-input input'), 'What is BIDS?');
+  page.q('.osa-chat-input input').value = 'What is BIDS?';
+  click(page, page.q('.osa-send-btn'));
+  answer.send({ event: 'session', session_id: 'sess-1' });
+  answer.send({ event: 'content', content: 'BIDS is a data standard. ' });
+  await waitUntil(() => page.api.getMessages().some((m) => (m.content || '').includes('BIDS is a data standard')), 'the answer shows');
+  assert(!settled(page), 'the answer is going');
+  assertEqual(rowStates(page), ['done', 'current', 'pending'], 'the rail still shows step 2 as the one waiting');
+  assertEqual(barButtons(page), ['Run step 2', 'Change step 2', 'Stop plan'], 'the bar is the waiting one');
+  assertEqual(page.q('.osa-plan-bar-run').getAttribute('aria-disabled'), 'true', 'with Run step 2 disabled for the answer');
+  answer.send(doneEvent('BIDS is a data standard.'));
+  answer.close();
+  await waitUntil(() => settled(page), 'the answer ends');
+}
+
 console.log('\na finished plan: every step done, every row a button');
 {
   const page = await centerPage();

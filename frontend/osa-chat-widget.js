@@ -5206,6 +5206,11 @@
       font-weight: 600;
     }
 
+    .osa-plan-bar button[aria-disabled="true"] {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
     .osa-plan-bar button.osa-plan-bar-pause {
       border-color: var(--osa-primary);
     }
@@ -8925,7 +8930,8 @@
   // The card for the reply at msgIndex, or null: only under the last assistant
   // reply, once it is whole, when a run succeeded and the builder found a step.
   function notebookEntryCard(msgIndex) {
-    if (!runtimeApi || isLoading || !activeConversation || msgIndex === revealingIndex) return null;
+    // Once it is whole: not while a reply that has shown text still has runs to come.
+    if (!runtimeApi || isLoading || currentReply !== null || !activeConversation || msgIndex === revealingIndex) return null;
     // Scan back from the end and stop at the first assistant reply: O(1) for the
     // usual transcript, and no array built per rendered message.
     let lastAssistant = -1;
@@ -11633,6 +11639,7 @@
     const runsCode = request.tool !== runtimeApi.FULL_OUTPUT_TOOL_NAME;
     // The step of the approved plan this run is, read before the gate asks about it.
     const planned = runsCode && runtimeApi.plan ? runtimeApi.plan.nextRunOf(messages) : null;
+    if (planned && currentReply) currentReply.forPlan = true;
     let result;
     try {
       if (runsCode) toolActivity = runningActivity(requestPrompt(request));
@@ -12607,6 +12614,8 @@
   // request is left parked (see continueBrowserReply). It is not stored: a reply that
   // has ended has either paused or finished, and the plan's own state says which.
   let currentReply = null;
+  // Set by the bar's Run step N just before it sends: {plan, held}, read once by sendMessage.
+  let pendingPlanSend = null;
   // The selector of the control that should have focus once the card has been redrawn.
   let planFocusAfterRender = null;
 
@@ -12684,7 +12693,10 @@
     if (plan) {
       message.plan = plan;
       // A pause was asked of the plan that was running; this is another plan.
-      if (currentReply) currentReply.pausing = false;
+      if (currentReply) {
+        currentReply.pausing = false;
+        currentReply.forPlan = true;
+      }
     }
   }
 
@@ -13075,8 +13087,13 @@
   // and the plan would read as paused, with a Run step button that sends a second
   // request alongside the one running (#731). `currentReply` is set when a message is
   // sent and cleared when the whole reply, every run of it, has ended.
+  //
+  // Only a reply that is the plan's counts: one that proposed the plan and went on after
+  // its approval, one the bar's Run step N started, or one in which a run of the approved
+  // plan arrived (`forPlan`). An unrelated question asked while the plan waits is not,
+  // so the bar stays the waiting one for the length of its answer.
   function planReplyActive() {
-    return currentReply !== null || toolActivity !== null;
+    return (currentReply !== null && currentReply.forPlan === true) || toolActivity !== null;
   }
 
   function planStripLabel(progress) {
@@ -13144,8 +13161,12 @@
       change: `Change step ${progress.step}`,
       stop: 'Stop plan',
     };
+    // Run step N while a reply that is not the plan's is going (a question asked while the
+    // plan waits): a second request cannot start, so the button says so rather than
+    // doing nothing when pressed.
+    const busy = currentReply !== null;
     const buttonHtml = buttons.map((name) =>
-      `<button type="button" class="osa-plan-bar-btn osa-plan-bar-${escapeHtml(name)}" data-plan-bar="${escapeHtml(name)}">${escapeHtml(labels[name])}</button>`
+      `<button type="button" class="osa-plan-bar-btn osa-plan-bar-${escapeHtml(name)}" data-plan-bar="${escapeHtml(name)}"${name === 'run' && busy ? ' aria-disabled="true"' : ''}>${escapeHtml(labels[name])}</button>`
     ).join('');
     return `<span class="osa-plan-bar-text">${escapeHtml(text)}</span><span class="osa-plan-bar-buttons">${buttonHtml}</span>`;
   }
@@ -13192,15 +13213,17 @@
   // must not stop again. After the reader's Pause the model's request for step N was left
   // unanswered and the server repaired it as a call that did not complete; the message
   // says the step never ran, so it is not counted as a failed attempt.
+  // Returns {text, plan, held}: `held` is the step the note is about, which sendMessage
+  // forgets only once the server has the message, so a send that fails keeps the note.
   function planContinueMessage(progress) {
     const current = runtimeApi && runtimeApi.plan ? runtimeApi.plan.currentPlan(messages) : null;
-    const held = current && current.plan.held === progress.step;
-    if (current && held) delete current.plan.held;
+    const plan = current ? current.plan : null;
+    const held = plan && plan.held === progress.step ? progress.step : 0;
     const rest = progress.step < progress.total ? ', then run the remaining steps without stopping' : '';
-    if (held) {
-      return `Continue with step ${progress.step}. It has not run: I paused before it started, so it is not a failed attempt. Run it now${rest}.`;
-    }
-    return `Continue with step ${progress.step}${progress.mode === 'run_all' ? rest : ''}.`;
+    const text = held
+      ? `Continue with step ${progress.step}. It has not run: I paused before it started, so it is not a failed attempt. Run it now${rest}.`
+      : `Continue with step ${progress.step}${progress.mode === 'run_all' ? rest : ''}.`;
+    return { text, plan, held };
   }
 
   function fillChatInput(container, text) {
@@ -13223,7 +13246,11 @@
       if (currentReply) return;
       // The bar the button was in is replaced; focus goes to the strip, which says what runs.
       planFocusAfterRender = '.osa-plan-strip';
-      sendMessage(container, planContinueMessage(progress));
+      const next = planContinueMessage(progress);
+      pendingPlanSend = { plan: next.plan, held: next.held };
+      sendMessage(container, next.text);
+      // sendMessage reads it before its first await; a send that was refused leaves none.
+      pendingPlanSend = null;
     } else if (name === 'change') {
       fillChatInput(container, `Change step ${progress.step}: `);
     }
@@ -14794,7 +14821,8 @@
   function replyWaitingOnAssistant(msgIndex) {
     if (toolActivity) return false;
     if (activity) return activity.messageIndex === msgIndex;
-    return isLoading && msgIndex === messages.length - 1;
+    // `isLoading` is false once the reply shows text, while it may still run the step again.
+    return currentReply !== null && msgIndex === messages.length - 1;
   }
 
   // The status the conversation shows, or null. While the reply has no text on screen
@@ -16477,8 +16505,13 @@
   // Send message to API. `options.model` runs this one request on another model than the
   // saved setting (the button on a failed reply uses it); the setting is not changed.
   async function sendMessage(container, question, options = {}) {
-    if (isLoading || !question.trim()) return;
+    // `currentReply` as well as `isLoading`: the latter is false once text shows.
+    if (isLoading || currentReply !== null || !question.trim()) return;
     modelOverride = options.model || null;
+    // Whether this send continues the plan (the bar's Run step N), consumed here, before
+    // anything awaits, so a send that does nothing leaves no trace for the next.
+    const planSend = pendingPlanSend;
+    pendingPlanSend = null;
 
     // Commit any open thumbs-down comment box before the conversation moves on.
     flushPendingResponseFeedback(container);
@@ -16492,7 +16525,7 @@
 
     isLoading = true;
     isThinking = false;
-    currentReply = { stopped: false };
+    currentReply = { stopped: false, pausing: false, forPlan: planSend !== null };
     beginWait();
 
     // Boot the browser runtime now if this community preloads on first message,
@@ -16666,6 +16699,9 @@
         }
       }
       serverAnswered = true;
+      // The server has the message that says the held step never ran: the note is spent.
+      // A send that fails before this keeps it, for the next click on Run step.
+      if (planSend && planSend.held && planSend.plan.held === planSend.held) delete planSend.plan.held;
       markContextMoveTold(carried);
       if (idle) idleTimers.set(response, idle);
 
@@ -17511,7 +17547,7 @@
   function hostAsk(text, mode) {
     const container = widgetContainer();
     if (!container) return;
-    if (isLoading) {
+    if (isLoading || currentReply !== null) {
       hostWarn('ask', 'a reply is still loading, ignoring the question');
       return;
     }
