@@ -361,6 +361,15 @@ console.log('\nthe pure part');
     { role: 'assistant', content: 'c' },
   ]), 'analysis', 'the last reply that says a mode (a stopped reply says none)');
   assertEqual(pure.lastReplyMode([{ role: 'assistant', content: 'a', mode: 'turbo' }]), null, 'a mode the server does not know is not sent');
+  assertEqual(pure.selectReseedTurns([
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: '_[Error: boom]_', failed: true },
+  ]), [{ role: 'user', text: 'q' }], 'an error-only bubble is not a turn');
+  assertEqual(pure.reseedFields({
+    list: [{ role: 'user', content: 'q' }, { role: 'assistant', content: '_[Error: boom]_', failed: true }],
+    confirmedAt: null, now: 10 * SESSION_TTL_MS, ttlMs: SESSION_TTL_MS,
+  }), null, 'a chat whose only assistant message is an error bubble sends nothing');
+  assertEqual(pure.lastReplyMode([{ role: 'assistant', content: 'x', mode: 'analysis', failed: true }]), null, 'a failed bubble does not set the mode');
   const list = [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a' }];
   const now = 10 * SESSION_TTL_MS;
   assertEqual(pure.reseedFields({ list, confirmedAt: null, now, ttlMs: SESSION_TTL_MS }), { prior_turns: [{ role: 'user', text: 'q' }, { role: 'assistant', text: 'a' }] }, 'unconfirmed: sent, and no mode when no reply says one');

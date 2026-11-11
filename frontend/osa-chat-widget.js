@@ -8656,6 +8656,8 @@
       if (typeof message.content !== 'string') continue;
       if (message.role === 'user') started = true;
       if (!started) continue;
+      // A bubble that is only an error (`failed`) is not a reply the server could build on.
+      if (message.failed) continue;
       const text = message.content.trim();
       if (text) turns.push({ role: message.role, text: clipTurnMiddle(text) });
     }
@@ -8671,7 +8673,7 @@
   function lastReplyMode(list) {
     for (let index = list.length - 1; index >= 0; index -= 1) {
       const message = list[index];
-      if (message && message.role === 'assistant' && (message.mode === 'quick' || message.mode === 'analysis')) {
+      if (message && message.role === 'assistant' && !message.failed && (message.mode === 'quick' || message.mode === 'analysis')) {
         return message.mode;
       }
     }
@@ -14864,6 +14866,8 @@
               messages[messageIndex].content = shown + `\n\n_[Error: ${errorMsg}]_`;
             } else {
               messages[messageIndex].content = `_[Error: ${errorMsg}]_`;
+              // Only the error, no reply: not a turn to carry into a reseeded session.
+              messages[messageIndex].failed = true;
             }
             renderMessages(container);
             try {
@@ -14951,6 +14955,7 @@
         }
 
         messages[messageIndex].content = (shown ? `${shown}\n\n` : '') + `_[${userMessage}]_`;
+        if (!shown) messages[messageIndex].failed = true;
         renderMessages(container);
         try {
           saveHistory();
