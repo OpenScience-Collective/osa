@@ -112,3 +112,49 @@ class TestNemarPlanFirstText:
         assert "`est_peak_mb` must not exceed the reader's browser memory budget" in flat
         # The heading it points at is the one the prompt renders for a request with a budget.
         assert "Browser memory budget" in flat
+
+    def test_it_says_how_to_cut_a_plan_into_steps(self) -> None:
+        """One step per kind of work, in a fixed order, so a request gets the same steps (#714)."""
+        config = CommunityConfig.from_yaml(NEMAR_YAML)
+        text = plan_first_section(config, "analysis", DECLARED)
+
+        assert text is not None
+        flat = " ".join(text.split())
+        assert "Use one step per kind, in this order" in flat
+        assert "read the recording; inspect; preprocess; epoch; compute; plot" in flat
+        assert "leave out every kind the request does not need" in flat
+        assert (
+            "Inspect is a step only when the request depends on something you cannot know yet, "
+            "such as channel or event names; otherwise there is no inspection step." in flat
+        )
+        assert (
+            "Preprocess is ONE step for all filtering, re-referencing and artifact rejection."
+            in flat
+        )
+        assert "Never fold plotting into computing" in flat
+        assert (
+            "never fold preparation (read, preprocess, epoch) into the step that follows it" in flat
+        )
+        assert "Never split one kind of work across steps." in flat
+
+    def test_the_example_titles_open_with_the_verb_of_their_kind(self) -> None:
+        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
+
+        assert text is not None
+        flat = " ".join(text.split())
+        for title in (
+            "Read the recording",
+            "Inspect the event names",
+            "Filter and clean the recording",
+            "Epoch around the events",
+            "Compute the band power",
+            "Plot the result",
+        ):
+            assert f'"{title}"' in flat
+
+    def test_the_three_to_six_steps_rule_is_kept(self) -> None:
+        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
+
+        assert text is not None
+        flat = " ".join(text.split())
+        assert "as `findings`, 3 to 6 steps, each a short `title` and a `detail`" in flat

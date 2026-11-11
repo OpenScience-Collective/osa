@@ -14,6 +14,7 @@ it will do.
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -528,3 +529,36 @@ class TestThePlanFirstPrompt:
         assert PROPOSE_PLAN in rig.analysis.bound_tool_names
         assert PLAN_TEXT in rig.prompts[-1]
         assert PLAN_TEXT not in rig.prompts[0], "the quick turn that wrote the summary got none"
+
+
+NEMAR_YAML = Path(__file__).parents[2] / "src" / "assistants" / "nemar" / "config.yaml"
+CUT_RULE = "Never fold plotting into computing"
+
+
+class TestTheNemarPlanFirstText:
+    """NEMAR's real text, with its step-cutting rules (#714), reaches the model on an analysis turn."""
+
+    @pytest.fixture(autouse=True)
+    def _nemar_text(self):
+        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
+        assert text is not None
+        registry.register_from_config(
+            _config().model_copy(update={"plan_first_instructions": text})
+        )
+        self.text = text
+
+    def test_an_analysis_turn_gets_the_step_cutting_rules(self, client, monkeypatch) -> None:
+        rig = _rig(monkeypatch, [say("ok")])
+
+        _chat(client)
+
+        assert self.text in rig.prompts[0]
+        assert CUT_RULE in " ".join(rig.prompts[0].split())
+
+    def test_a_quick_turn_does_not(self, client, monkeypatch) -> None:
+        rig = _rig(monkeypatch, [say("ok")])
+
+        _chat(client, message="find datasets with face stimuli")
+
+        assert rig.quick.calls == 1
+        assert CUT_RULE not in " ".join(rig.prompts[0].split())
