@@ -15,6 +15,11 @@
  * is loading is refused. The places that took "one message" for "an empty chat" (the
  * start screen, the reset button, setConfig's greeting, the suggestions) know better.
  *
+ * It also holds the dialog's motion and the "Move to corner" icon to the brief of #730: the
+ * open and the dock are 80 to 150 ms keyframe animations on the opened state, off under
+ * reduced motion, with the state changing at once and nothing waiting on an animation event;
+ * the icon points to the bottom right, at the header icons' 18 px.
+ *
  * What stands in: `fetch` (the community config, and a one-line chat reply that can be
  * held, answering like the server with a `session` event first), and Cloudflare's
  * Turnstile script (render and reset, which hand out tokens). The request bodies it
@@ -543,6 +548,98 @@ console.log('\na seed while a reply is loading is refused');
   release();
   await answered(ctx);
   assertEqual(ctx.sent.length, 1, 'only the first question was sent');
+}
+
+// ---------------------------------------------------------------------------
+// The motion and the icon (#730)
+// ---------------------------------------------------------------------------
+
+// The text of the CSS block whose "{" is at `open`, braces matched.
+function blockAt(css, open) {
+  let depth = 0;
+  for (let i = open; i < css.length; i += 1) {
+    if (css[i] === '{') depth += 1;
+    if (css[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return css.slice(open + 1, i);
+    }
+  }
+  throw new Error('unbalanced braces');
+}
+
+const NEW_ANIMATIONS = ['osa-center-in', 'osa-center-scrim-in', 'osa-center-scrim-out'];
+const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
+
+console.log('\nthe dialog opens and docks with a short keyframe animation');
+{
+  const ctx = await start();
+  const css = [...ctx.document.querySelectorAll('style')].map((el) => el.textContent).join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
+  const reduced = /@media \(prefers-reduced-motion: reduce\)\s*\{/.exec(css);
+  assert(!!reduced, 'the widget has its reduced-motion block');
+  assertEqual(css.match(/@media \(prefers-reduced-motion: reduce\)/g).length, 1, 'and only one');
+  const reducedBody = blockAt(css, reduced.index + reduced[0].length - 1);
+
+  // Every rule outside the reduced-motion block that names one of the new animations.
+  const outside = css.replace(reduced[0] + reducedBody + '}', '');
+  const rules = [...outside.matchAll(/([^{}]+)\{([^{}]*animation:[^{}]*)\}/g)]
+    .map(([, selector, body]) => ({ selector: selector.trim(), body }))
+    .filter((rule) => NEW_ANIMATIONS.some((name) => rule.body.includes(name)));
+  const selectors = rules.map((rule) => rule.selector);
+  assert(selectors.some((sel) => sel.includes('.osa-center-scrim.open')), 'the scrim fades in on its opened state');
+  assert(selectors.some((sel) => sel.includes('.osa-chat-window.osa-center.open')), 'the window fades and scales in on its opened state');
+  assert(selectors.some((sel) => sel.includes('.osa-dock-in')), 'the corner window fades in after a dock');
+  assert(selectors.some((sel) => sel.includes('.osa-center-scrim.closing')), 'the scrim fades out after a dock');
+  assert(rules.every((rule) => !/transition/.test(rule.body)), 'all of them are animations, not transitions (the center rules force transition: none)');
+
+  const durations = rules.map((rule) => Number(/animation:\s*[\w-]+\s+(\d+)ms/.exec(rule.body)[1]));
+  assert(durations.length === rules.length && durations.every((ms) => ms >= 80 && ms <= 150), `every duration is between 80 and 150 ms (${durations.join(', ')})`);
+  const cleanup = Number(/const CENTER_FADE_CLEANUP_MS = (\d+);/.exec(SOURCE)[1]);
+  assert(cleanup >= 80 && cleanup <= 150 && cleanup >= Math.max(...durations), `and so is the timer that removes the classes (${cleanup} ms), which outlasts the longest`);
+  for (const name of NEW_ANIMATIONS) {
+    assert(new RegExp(`@keyframes ${name}\\b`).test(css), `@keyframes ${name} is defined`);
+  }
+
+  // Reduced motion: no animation at all for each of the new rules.
+  for (const selector of selectors) {
+    assert(reducedBody.includes(selector), `reduced motion names ${selector}`);
+  }
+  const dockRule = /([^{}]*\.osa-dock-in[^{}]*)\{([^{}]*)\}/.exec(reducedBody);
+  assert(dockRule && /animation:\s*none\s*!important/.test(dockRule[2]), 'and sets animation: none !important in the rule that names them');
+  assert(/\.osa-center-scrim\.closing\s*\{[^}]*display:\s*none\s*!important/.test(reducedBody), 'the scrim that would fade out is not shown at all');
+
+  // No state hangs on an animation or transition event.
+  assert(!/transitionend|animationend|animationcancel|transitioncancel/i.test(SOURCE), 'nothing in the widget listens for transitionend or animationend');
+}
+
+console.log('\nopening and docking change the state at once, and the cosmetic classes go by timer');
+{
+  const ctx = await start();
+  const scrim = ctx.q('.osa-center-scrim');
+  const page = ctx.document.getElementById('host-page');
+  ctx.api.open({ mode: 'center' });
+  assert(ctx.isCenter() && scrim.classList.contains('open') && page.hasAttribute('inert'), 'open: the dialog, its scrim and the inert page, in the same call');
+  assertEqual(ctx.document.body.style.overflow, 'hidden', 'with the scroll locked');
+  ctx.q('.osa-center-dock-btn').click();
+  assert(!ctx.isCenter() && ctx.isOpen(), 'dock: docked, at once');
+  assert(!scrim.classList.contains('open') && !page.hasAttribute('inert'), 'the scrim is no longer open and the page is not inert, at once');
+  assertEqual(ctx.document.body.style.overflow, '', 'the scroll is unlocked');
+  assert(ctx.win().classList.contains('osa-dock-in') && scrim.classList.contains('closing'), 'only the cosmetic classes remain for a moment');
+  await settle();
+  assert(!ctx.win().classList.contains('osa-dock-in') && !scrim.classList.contains('closing'), 'and a timer takes them off');
+
+  ctx.api.setMode('center');
+  ctx.api.setMode('corner');
+  assert(ctx.win().classList.contains('osa-dock-in') && scrim.classList.contains('closing'), 'setMode("corner") docks the same way');
+  ctx.api.setMode('center');
+  assert(!ctx.win().classList.contains('osa-dock-in') && !scrim.classList.contains('closing') && scrim.classList.contains('open'),
+    'undocking again at once leaves neither class on');
+  ctx.document.dispatchEvent(new ctx.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert(!ctx.isCenter() && ctx.win().classList.contains('osa-dock-in'), 'Escape docks the same way');
+  await settle();
+  ctx.api.setMode('center');
+  ctx.api.close();
+  assert(!ctx.win().classList.contains('osa-dock-in') && !scrim.classList.contains('closing') && !scrim.classList.contains('open'),
+    'closing the dialog gives no fading scrim: the window goes with it');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

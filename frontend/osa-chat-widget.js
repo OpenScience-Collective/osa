@@ -2126,6 +2126,19 @@
       .osa-handover .osa-handover-marker.osa-handover-live {
         animation: none;
       }
+
+      /* The center-stage dialog opens and docks with no motion (#730), and the scrim that
+         would fade out is simply gone. */
+      .osa-center-scrim.open,
+      .osa-center-scrim.closing,
+      .osa-chat-widget .osa-chat-window.osa-center.open,
+      .osa-chat-widget .osa-chat-window.open.osa-dock-in:not(.osa-center) {
+        animation: none !important;
+      }
+
+      .osa-center-scrim.closing {
+        display: none !important;
+      }
     }
 
     /* Above the launcher, --osa-panel-gap clear of it, and 30px short of the window's
@@ -5587,6 +5600,46 @@
 
     .osa-center-scrim.open {
       display: block;
+    }
+
+    /* The dialog's motion (#730): keyframes on the opened state, 120 ms, because the
+       window's rules below force transition: none and the scrim goes from display: none to
+       block, which no transition crosses. The state changes at once (inert, focus, scroll
+       lock, events); only these effects follow, and nothing waits for one to end. The
+       reduced-motion block turns every one of them off. */
+    .osa-center-scrim.open {
+      animation: osa-center-scrim-in 120ms ease-out;
+    }
+
+    .osa-chat-widget .osa-chat-window.osa-center.open {
+      animation: osa-center-in 120ms ease-out;
+    }
+
+    /* Docked: the corner window fades in, and the scrim, which is already gone as far as
+       the page is concerned, fades out under a class a timer removes (CENTER_FADE_CLEANUP_MS). */
+    .osa-chat-widget .osa-chat-window.open.osa-dock-in:not(.osa-center) {
+      animation: osa-center-in 120ms ease-out;
+    }
+
+    .osa-center-scrim.closing {
+      display: block;
+      pointer-events: none;
+      animation: osa-center-scrim-out 120ms ease-in forwards;
+    }
+
+    @keyframes osa-center-in {
+      from { opacity: 0; transform: scale(0.98); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @keyframes osa-center-scrim-in {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    @keyframes osa-center-scrim-out {
+      from { opacity: 1; }
+      to { opacity: 0; }
     }
 
     .osa-chat-widget.osa-dark .osa-center-scrim {
@@ -17283,6 +17336,12 @@
   let centerInerted = [];
   let centerScrollLock = null;
   let centerKeyHandler = null;
+  // The cosmetic classes of a dock (osa-dock-in on the window, closing on the scrim) are
+  // taken off by these timers, after the 120 ms the CSS gives the effect. Nothing waits for
+  // an animation to end: the state (inert, scroll lock, focus, events) has already changed.
+  const CENTER_FADE_CLEANUP_MS = 150;
+  let dockMotionTimer = null;
+  let scrimFadeTimer = null;
 
   function hostWarn(call, message, value) {
     if (value === undefined) console.warn(`[OSA] ${call}: ${message}`);
@@ -17519,10 +17578,12 @@
   // work is done.
   function applyHostMode(container, mode) {
     if (mode === hostMode) return false;
+    const docking = hostMode === 'center' && mode === 'corner' && isOpen;
     hostMode = mode;
     const win = container.querySelector('.osa-chat-window');
     const center = mode === 'center';
     win.classList.toggle('osa-center', center);
+    playDockMotion(win, docking);
     if (center) {
       win.setAttribute('role', 'dialog');
       win.setAttribute('aria-modal', 'true');
@@ -17540,6 +17601,31 @@
     return true;
   }
 
+  // The corner window fades in from a hair smaller after a dock; nothing else about the
+  // dock waits for it. Taken off by a timer, never by an animation event.
+  function playDockMotion(win, docking) {
+    if (dockMotionTimer !== null) clearTimeout(dockMotionTimer);
+    dockMotionTimer = null;
+    win.classList.remove('osa-dock-in');
+    if (!docking) return;
+    win.classList.add('osa-dock-in');
+    dockMotionTimer = setTimeout(() => {
+      dockMotionTimer = null;
+      win.classList.remove('osa-dock-in');
+    }, CENTER_FADE_CLEANUP_MS);
+  }
+
+  // The scrim of a dialog that docked fades out under `closing`; opening it again takes
+  // the class off at once.
+  function fadeScrimOut(scrim) {
+    if (scrimFadeTimer !== null) clearTimeout(scrimFadeTimer);
+    scrim.classList.add('closing');
+    scrimFadeTimer = setTimeout(() => {
+      scrimFadeTimer = null;
+      scrim.classList.remove('closing');
+    }, CENTER_FADE_CLEANUP_MS);
+  }
+
   // Modal for as long as the dialog is open: the page behind it is inert and does not
   // scroll, and Tab and Escape are the dialog's (handleCenterKey).
   function engageCenter(container) {
@@ -17549,7 +17635,12 @@
     if (activeTab !== 'chat') setTab(container, 'chat');
     if (centerKeyHandler) return;
     const scrim = container.querySelector('.osa-center-scrim');
-    if (scrim) scrim.classList.add('open');
+    if (scrim) {
+      if (scrimFadeTimer !== null) clearTimeout(scrimFadeTimer);
+      scrimFadeTimer = null;
+      scrim.classList.remove('closing');
+      scrim.classList.add('open');
+    }
     const hold = (node) => {
       if (node.hasAttribute('inert')) return;
       node.setAttribute('inert', '');
@@ -17571,7 +17662,12 @@
 
   function releaseCenter(container) {
     const scrim = container.querySelector('.osa-center-scrim');
-    if (scrim) scrim.classList.remove('open');
+    if (scrim) {
+      const wasShown = scrim.classList.contains('open');
+      scrim.classList.remove('open');
+      // Only a dialog that docks, with the window staying, has a scrim worth fading.
+      if (wasShown && isOpen) fadeScrimOut(scrim);
+    }
     centerInerted.forEach((node) => node.removeAttribute('inert'));
     centerInerted = [];
     if (centerScrollLock) {
