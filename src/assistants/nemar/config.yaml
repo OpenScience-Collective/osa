@@ -503,8 +503,8 @@ extensions:
         NEMAR's Zarr host is reachable. For a spectrum, read the recording in pieces sized
         by the reader's memory budget and by welch's limit, call scipy.signal.welch on
         one channel of a piece at a time, and average over the pieces weighted by their
-        segment counts, as the power-spectrum or band-power procedure document shows: that is the spectrum of the whole
-        recording, and past either limit welch raises "array is too big" in this
+        segment counts, as the power-spectrum or band-power procedure document
+        shows: that is the spectrum of the whole recording, and past either limit welch raises "array is too big" in this
         runtime.
         eegprep_lean draws on its own figure
         rather than pyplot's, so hand the figure over with
