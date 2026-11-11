@@ -899,7 +899,7 @@ A request that matches none uses the plan-first step rules.
 Each document opens with its fixed plan, a `## Plan` section listing the step titles, what each step's one code run does and its memory behavior, and then gives the rules and code for each step.
 Runs share one Python namespace, so later steps use the variables earlier ones made.
 Choose the step titles so that `scripts/plan_consistency.normalize_step` maps them to the operations of the plan, which is how the consistency check tells whether two plans agree.
-NEMAR's four (`src/assistants/nemar/procedures/`) are the power spectrum, band power, ERP by condition and ERP image by condition; the short rules every analysis needs (which channels, how to ask for events by condition) stay in its system prompt.
+NEMAR's seven (`src/assistants/nemar/procedures/`) are the power spectrum, band power, band power topography, ERP by condition, ERP topography, ERP image by condition and time-frequency by condition; the short rules every analysis needs (which channels, how to ask for events by condition) stay in its system prompt.
 The `procedures` key is also listed in `/{community}/metrics/public` as the tool `get_procedure` in `available_tools_list`.
 
 ## Browser memory: the budget and the heap report

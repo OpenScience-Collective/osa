@@ -341,7 +341,9 @@ with many channels the budget binds at EEG rates too (33 channels at 250 Hz and 
 | 50 minutes at 250 Hz, 3 channels, one `welch` call per channel | refused (750,000 samples) |
 | the same, as `power-spectrum.md`'s pieces, at a 64 MB budget | 2,999 segments over the whole 3,000 s, each read within a quarter of the budget |
 
-`frontend/test-data-lane.js` runs the code blocks of `power-spectrum.md` and `erp-by-condition.md`
+`frontend/test-data-lane.js` runs the code blocks of `power-spectrum.md`, `band-power.md`, `erp-by-condition.md`,
+`band-power-topography.md` (its position table, label matching and scalp-map drawing, which `erp-topography.md` carries unchanged)
+and `time-frequency-by-condition.md` (its epoch and wavelet blocks)
 (NEMAR's procedure documents, `src/assistants/nemar/procedures/`) as written,
 with controls that the whole array and one over-long channel are refused,
 so a Pyodide that lifts the limit says so.
@@ -352,6 +354,8 @@ that it equals a by-hand estimate that shares no code with SciPy,
 that every piece starts at a multiple of `m * hop`, no read passes a quarter of the budget, and an electrooculography channel is left out by its label,
 and that a 50-minute signal at 250 Hz, which one call refuses, is covered whole:
 every one of its 2,999 segments counted on every channel, the last piece ending at the end of the recording, and a tone carried only by its last tenth found at its frequency.
+The scalp-map block is run on 30 positioned channels (a surface only inside the head, a plane through them returned to within 0.02, one figure) and on 3 (markers only, one figure),
+and the time-frequency block on a Gaussian burst of a known frequency, whose peak in the dB map must be at that frequency and at the burst's time.
 
 Measured on a real recording, 2026-11-10, by `frontend/browser-harness/spectrum-real-recording.mjs` (run it with `bun`; it needs the network, so CI does not),
 which takes the block out of NEMAR's `power-spectrum.md` and runs it on Pyodide 0.29.5 under Bun (not in a browser),

@@ -1062,6 +1062,167 @@ print(json.dumps({
       }
     }
   }
+
+  // The scalp-map, time-frequency and matching blocks of the topography and time-frequency
+  // documents (#721), run as the documents write them in the real Pyodide runtime. Every
+  // python fence of a document, in order, so a block is found by what it defines.
+  const documentFences = async (id) => {
+    const entry = (NEMAR.procedures || []).find((p) => p.id === id);
+    const document = entry ? await Bun.file(new URL(entry.file, COMMUNITY_DIR)).text() : '';
+    return [...document.matchAll(/```python\n([\s\S]*?)\n```/g)].map((m) => m[1]);
+  };
+  const fenceWith = (fences, marker) => fences.filter((f) => f.includes(marker));
+
+  console.log('\nthe scalp-map block draws an interpolated head for 30 channels and markers only for 3, one figure each');
+  {
+    const band = await documentFences('band-power-topography');
+    const erp = await documentFences('erp-topography');
+    const [positions] = fenceWith(band, 'positions = {');
+    const [locate] = fenceWith(band, 'def locate(');
+    const [scalp] = fenceWith(band, 'def scalp_maps(');
+    assert(positions && locate && scalp, 'the band power topography carries the table, the matching and the drawing blocks');
+    assertEqual(
+      [positions, locate, scalp],
+      [fenceWith(erp, 'positions = {')[0], fenceWith(erp, 'def locate(')[0], fenceWith(erp, 'def scalp_maps(')[0]],
+      'and the ERP topography carries the same three, byte for byte'
+    );
+    if (positions && locate && scalp) {
+      // The 30 EEG labels of ERP CORE's nm000132, and values that are a plane over the head:
+      // an interpolation through them returns the plane at any point inside their hull.
+      const labels30 = JSON.stringify(['FP1', 'F3', 'F7', 'FC3', 'C3', 'C5', 'P3', 'P7', 'P9', 'PO7', 'PO3', 'O1', 'Oz', 'Pz', 'CPz',
+        'FP2', 'Fz', 'F4', 'F8', 'FC4', 'FCz', 'Cz', 'C4', 'C6', 'P4', 'P8', 'P10', 'PO8', 'PO4', 'O2']);
+      const blocks = `${positions}\n${locate}\n${scalp}\n`;
+      const summary = (labels) => `import json
+labels = ${labels}
+at, xy = locate(labels)
+values = 10 * xy[:, 0] + 4 * xy[:, 1]  # a plane over the head
+fig = scalp_maps([("synthetic", values)], xy, [labels[i] for i in at], "synthetic unit", "synthetic title",
+                 float(values.min()), float(values.max()))
+ax, bar = fig.axes[0], fig.axes[-1]
+out = {
+    "positioned": len(at), "axes": len(fig.axes), "images": len(ax.images), "markers": int(ax.collections[0].get_offsets().shape[0]),
+    "named": len(ax.texts), "bar_label": bar.get_ylabel(), "title": fig._suptitle.get_text(),
+    "patches": len(ax.patches), "lines": len(ax.lines),
+}
+if ax.images:
+    surface = np.ma.filled(np.ma.masked_invalid(ax.images[0].get_array()).astype(float), np.nan)
+    n = surface.shape[0]
+    mid = n // 2
+    step = round(0.1 / (1.0 / (n - 1)))  # grid cells in 0.1
+    out["outside"] = float(np.isnan(surface).mean())
+    out["corner_is_empty"] = bool(np.isnan(surface[0, 0]) and np.isnan(surface[-1, -1]))
+    out["plane_error"] = float(abs(surface[mid + step, mid + step] - (10 * 0.1 + 4 * 0.1)))
+    out["centre_error"] = float(abs(surface[mid, mid]))
+print(json.dumps(out))
+`;
+      const thirty = await run(blocks + summary(labels30));
+      assertEqual(thirty.status, 'ok', `30 positioned channels: the blocks run (stderr: ${thirty.stderr.slice(-400)})`);
+      const r30 = JSON.parse((thirty.stdout || '').trim().split('\n').at(-1) || '{}');
+      assertEqual(thirty.images.length, 1, '30 channels: exactly one figure comes out');
+      assertEqual(thirty.images[0] && thirty.images[0].mime, 'image/png', '30 channels: and it is a PNG');
+      assertEqual(r30.positioned, 30, '30 channels: every label has a position');
+      assertEqual([r30.images, r30.markers, r30.named], [1, 30, 0], '30 channels: one interpolated surface, 30 markers, none named');
+      assertEqual(r30.axes, 2, '30 channels: one head and one color bar');
+      assertEqual([r30.bar_label, r30.title], ['synthetic unit', 'synthetic title'], '30 channels: the color bar carries the unit and the figure its title');
+      assert(r30.patches >= 2 && r30.lines >= 2, `30 channels: a head outline, a nose and two ears (${r30.patches} patches, ${r30.lines} lines)`);
+      assert(r30.corner_is_empty, '30 channels: nothing is interpolated outside the head');
+      assert(r30.outside > 0.19 && r30.outside < 0.24, `30 channels: about a fifth of the square is outside the circle (${r30.outside})`);
+      assert(r30.plane_error < 0.02, `30 channels: the interpolation returns the plane inside the head (error ${r30.plane_error})`);
+      assert(r30.centre_error < 0.02, `30 channels: and 0 at Cz, which is the origin (error ${r30.centre_error})`);
+
+      const three = await run(blocks + summary(JSON.stringify(['C3', 'Cz', 'C4'])));
+      assertEqual(three.status, 'ok', `3 positioned channels: the blocks run (stderr: ${three.stderr.slice(-400)})`);
+      const r3 = JSON.parse((three.stdout || '').trim().split('\n').at(-1) || '{}');
+      assertEqual(three.images.length, 1, '3 channels: exactly one figure comes out');
+      assertEqual(r3.positioned, 3, '3 channels: all three have a position');
+      assertEqual([r3.images, r3.markers, r3.named], [0, 3, 3], '3 channels: no interpolated surface, only 3 named colored markers');
+      assertEqual(r3.axes, 2, '3 channels: one head and one color bar');
+
+      // Labels as other recordings write them: a prefix, a reference suffix, other case, and some with no place.
+      const odd = await run(`${positions}\n${locate}\nimport json\nat, xy = locate(["EEG Fp1-REF", "eeg cz-le", "Pz-AVG", "HEOG_left", "T3", "T7", "Foo9"])\nprint(json.dumps(at.tolist()))\n`);
+      assertEqual(odd.status, 'ok', `the matching runs on odd labels (stderr: ${odd.stderr.slice(-300)})`);
+      assertEqual(JSON.parse((odd.stdout || '').trim().split('\n').at(-1) || '[]'), [0, 1, 2, 4],
+        'prefix, suffix and case are ignored, the unmatched are left out, and T7 repeats the place of T3');
+      assert(/left out, no position: \['HEOG_left', 'Foo9'\]/.test(odd.stdout), 'and the labels left out are printed');
+    }
+  }
+
+  console.log('\nthe time-frequency block puts a tone of known frequency at that frequency, over the burst, in dB');
+  {
+    const fences = await documentFences('time-frequency-by-condition');
+    const [epoching] = fenceWith(fences, 'pad_s =');
+    const [compute] = fenceWith(fences, 'fftconvolve');
+    assert(epoching && compute, 'the time-frequency document carries the epoch block and the compute block');
+    if (epoching && compute) {
+      // Two conditions of 40 epochs each: a burst of a Gaussian envelope (sd 80 ms) around 400 ms,
+      // at 12 Hz in one and 24 Hz in the other, with a random phase in each epoch, on noise.
+      // A rectangle or a fixed phase would be a different test.
+      const result = await run(`import json
+import numpy as np
+rate = 250.0
+${epoching}
+rng = np.random.default_rng(7)
+t = (np.arange(pre + post) - pre) / rate
+envelope = np.exp(-((t - 0.4) ** 2) / (2 * 0.08**2))
+def condition(hz):
+    phase = rng.uniform(0, 2 * np.pi, size=(40, 1))
+    return 20 * envelope * np.sin(2 * np.pi * hz * t + phase) + rng.standard_normal((40, t.size))
+epochs = {"twelve": condition(12.0), "twenty_four": condition(24.0)}
+${compute}
+out = {"freqs": freqs.tolist(), "shown": [float(shown[0]), float(shown[-1]), len(shown)], "pre": pre, "post": post, "kept": kept, "maps": {}}
+for name, db in tf_db.items():
+    f, k = np.unravel_index(np.argmax(db), db.shape)
+    before = (shown >= -0.4) & (shown <= -0.1)
+    out["maps"][name] = {"shape": list(db.shape), "peak_hz": float(freqs[f]), "peak_s": float(shown[k]), "peak_db": float(db[f, k]),
+                         "baseline_db": float(db[:, before].mean()), "off_hz_db": float(db[0, (shown > 0.2) & (shown < 0.6)].mean())}
+print(json.dumps(out))
+`);
+      assertEqual(result.status, 'ok', `the epoch and compute blocks run (stderr: ${result.stderr.slice(-400)})`);
+      const r = JSON.parse((result.stdout || '').trim().split('\n').at(-1) || '{}');
+      assertEqual(r.pre + r.post, 615, 'at 250 Hz an epoch is 0.5 s and 1 s plus a 0.48 s pad on each side: 615 samples');
+      assertEqual(r.kept, { twelve: 40, twenty_four: 40 }, 'every synthetic epoch is counted');
+      assertEqual(r.freqs[0], 4, 'the frequencies start at 4 Hz');
+      assertEqual(r.freqs.at(-1), 40, 'and stop at 40 Hz, a quarter of the rate being 62.5');
+      assert(Math.abs(r.shown[0] + 0.5) < 0.005 && Math.abs(r.shown[1] - 1.0) < 0.005, `the maps show -500 to 1,000 ms (${r.shown[0]} to ${r.shown[1]})`);
+      assertEqual(r.shown[2], 376, 'with 376 time points, the pad cut off');
+      for (const [name, hz] of [['twelve', 12], ['twenty_four', 24]]) {
+        const m = r.maps[name];
+        assertEqual(m.shape, [r.freqs.length, 376], `${name}: frequencies by times`);
+        assertEqual(m.peak_hz, hz, `${name}: the dB map peaks at the tone's ${hz} Hz (${m.peak_hz})`);
+        assert(Math.abs(m.peak_s - 0.4) < 0.1, `${name}: at the burst's 400 ms (${m.peak_s} s)`);
+        assert(m.peak_db > 20, `${name}: the burst is more than 20 dB over the pre-event power (${m.peak_db} dB)`);
+        assert(Math.abs(m.baseline_db) < 1.5, `${name}: the pre-event window is near 0 dB by construction (${m.baseline_db} dB)`);
+        assert(Math.abs(m.off_hz_db) < 3, `${name}: the lowest frequency, far from the tone, stays near 0 dB during the burst (${m.off_hz_db} dB)`);
+      }
+
+      // How long the compute block takes at the size the plan quotes (80 epochs a condition, two
+      // conditions, 19 frequencies, 250 Hz), for the warning the document gives before approval.
+      // It is printed, never asserted: timing is flaky in CI. One warm-up run, then three timed
+      // ones, each with time.perf_counter around the compute block only (the epochs are made
+      // before it), and the median is the figure. This is Pyodide in Bun on this machine, not a
+      // browser tab, so it is a floor for what a reader sees, not a browser figure.
+      const timed = `import time
+import numpy as np
+rate = 250.0
+${epoching}
+rng = np.random.default_rng(11)
+epochs = {name: rng.standard_normal((80, pre + post)) * 10 for name in ("faces", "cars")}
+started = time.perf_counter()
+${compute}
+print(f"TIMING {time.perf_counter() - started:.3f} {len(freqs)} {sum(kept.values())}")
+`;
+      const seconds = [];
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const timing = await run(timed);
+        assertEqual(timing.status, 'ok', `the timed compute block runs (stderr: ${timing.stderr.slice(-300)})`);
+        const [, took, nFreqs, nEpochs] = (timing.stdout.match(/TIMING (\S+) (\d+) (\d+)/) || []);
+        assertEqual([Number(nFreqs), Number(nEpochs)], [19, 160], 'the timed run is 19 frequencies and 160 epochs');
+        if (attempt > 0) seconds.push(Number(took)); // the first run is the warm-up
+      }
+      seconds.sort((a, b) => a - b);
+      console.log(`      time-frequency compute block, 80 epochs x 2 conditions x 19 frequencies at 250 Hz: median ${seconds[1].toFixed(3)} s (runs ${seconds.map((s) => s.toFixed(3)).join(', ')} s; Pyodide in Bun, not a browser)`);
+    }
+  }
 } finally {
   server.stop(true);
 }
