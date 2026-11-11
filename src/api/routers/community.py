@@ -2848,14 +2848,10 @@ def _set_metrics_on_request(
     }
 
 
-def _set_overview_metrics(
-    http_request: Request,
-    route: RequestRoute,
-    usage: TokenUsage | None,
-    *,
-    error_message: str | None = None,
-) -> None:
-    """Store an overview request's metrics on request.state for the middleware's row.
+def _overview_metrics(
+    route: RequestRoute, usage: TokenUsage | None, error_message: str | None
+) -> dict[str, Any]:
+    """The metrics of an overview request: model, key source, tokens, cost, quick tier.
 
     The row is what the community's budget sums (``src.metrics.budget``), so it carries
     the model, the key source, the tokens and the cost, and the quick tier. ``usage`` is
@@ -2879,7 +2875,7 @@ def _set_overview_metrics(
     else:
         tokens = (None, None, None)
         cost = None
-    http_request.state.metrics_agent_data = {
+    return {
         "model": route.model,
         "key_source": route.choice.key_source,
         "input_tokens": tokens[0],
@@ -2894,6 +2890,94 @@ def _set_overview_metrics(
         "conversation_id": None,
         "error_message": error_message,
     }
+
+
+def _set_overview_metrics(
+    http_request: Request,
+    route: RequestRoute,
+    usage: TokenUsage | None,
+    *,
+    error_message: str | None = None,
+) -> None:
+    """Store an overview request's metrics on request.state for the middleware's row.
+
+    The row is what the community's budget sums (``src.metrics.budget``). See
+    ``_overview_metrics`` for what it carries.
+    """
+    http_request.state.metrics_agent_data = _overview_metrics(route, usage, error_message)
+
+
+@dataclass
+class _OverviewSpend:
+    """What an overview's model call spent, and who books it.
+
+    Normally the request that started the call books it, on its own row (written by the
+    metrics middleware). When that request is cancelled (the reader left) the call goes on,
+    because others may be waiting on it and its result is cached, so the call's own tail
+    books the cost instead, on a 499 row: once, whoever is still waiting.
+    """
+
+    route: RequestRoute
+    http_request: Request
+    community_id: str
+    called: bool = False
+    finished: bool = False
+    abandoned: bool = False
+    booked: bool = False
+    usage: TokenUsage | None = None
+
+    def usage_of_this_request(self) -> TokenUsage | None:
+        """None when this request called no model (it hit the cache or joined a call);
+        zero tokens, read as missing, when its call reported none."""
+        if not self.called:
+            return None
+        return self.usage if self.usage is not None else TokenUsage(0, 0, 0)
+
+    def abandon(self) -> None:
+        """The request that started the call is gone: book the call's cost on its own row."""
+        if not self.called:
+            return
+        self.abandoned = True
+        if self.finished:
+            self.book()
+
+    def finish(self) -> None:
+        """The call has ended (answered, unanswered or failed)."""
+        self.finished = True
+        if self.abandoned:
+            self.book()
+
+    def book(self) -> None:
+        if self.booked:
+            return
+        self.booked = True
+        state = self.http_request.state
+        try:
+            data = _overview_metrics(
+                self.route,
+                self.usage_of_this_request(),
+                "client disconnected before the overview was returned",
+            )
+            started = getattr(state, "start_time", None)
+            log_request(
+                RequestLogEntry(
+                    request_id=getattr(state, "request_id", str(uuid.uuid4())),
+                    timestamp=now_iso(),
+                    endpoint=self.http_request.url.path,
+                    method=self.http_request.method,
+                    community_id=self.community_id,
+                    duration_ms=(
+                        round((time.monotonic() - started) * 1000, 1) if started else None
+                    ),
+                    status_code=CLIENT_DISCONNECTED_STATUS,
+                    **data,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Failed to book the spend of an abandoned overview for community %s",
+                self.community_id,
+            )
 
 
 class UnansweredReply(Exception):
@@ -3253,40 +3337,40 @@ def create_community_router(community_id: str) -> APIRouter:
         route = _route_request(info, community_id, byok, origin, None, tier="quick")
         _check_model_cost(route.model, route.choice.key_source)
 
-        spent: dict[str, TokenUsage] = {}
-        called = False
+        spend = _OverviewSpend(route=route, http_request=http_request, community_id=community_id)
 
         async def compute() -> OverviewResponse:
-            nonlocal called
-            called = True
-            chat_model = _build_chat_model(
-                route,
-                community_id,
-                byok=byok,
-                user_id=x_user_id,
-                reasoning_effort=OVERVIEW_REASONING_EFFORT,
-                max_tokens=OVERVIEW_MAX_TOKENS,
-            )
+            spend.called = True
             try:
-                run = await generate_overview(chat_model, body, model=route.model)
-            except OverviewUnanswered as unanswered:
-                if unanswered.usage is not None:
-                    spent["usage"] = unanswered.usage
-                raise
-            spent["usage"] = run.usage
-            return run.response
+                chat_model = _build_chat_model(
+                    route,
+                    community_id,
+                    byok=byok,
+                    user_id=x_user_id,
+                    reasoning_effort=OVERVIEW_REASONING_EFFORT,
+                    max_tokens=OVERVIEW_MAX_TOKENS,
+                )
+                try:
+                    run = await generate_overview(chat_model, body, model=route.model)
+                except OverviewUnanswered as unanswered:
+                    spend.usage = unanswered.usage
+                    raise
+                spend.usage = run.usage
+                return run.response
+            finally:
+                spend.finish()
 
-        def usage_of_this_request() -> TokenUsage | None:
-            # None when this request called no model (it hit the cache or joined a call);
-            # zero tokens, read as missing, when its call reported none.
-            if not called:
-                return None
-            return spent.get("usage", TokenUsage(0, 0, 0))
+        usage_of_this_request = spend.usage_of_this_request
 
         try:
             answer, source = await overview_caches.for_community(community_id).get_or_compute(
                 cache_key(body), compute
             )
+        except asyncio.CancelledError:
+            # The reader left. The call goes on for whoever else waits on it, so its cost
+            # is booked by the call, not lost with this request's row.
+            spend.abandon()
+            raise
         except OverviewUnanswered as unanswered:
             logger.warning(
                 "Search overview for community %s had no sentence to show: %s",
@@ -3312,10 +3396,19 @@ def create_community_router(community_id: str) -> APIRouter:
                 failure.kind,
                 exception_text(error),
                 extra={"community_id": community_id, "error_id": error_id, "model": route.model},
+                # A provider's failure says what it was; anything else is our own bug or
+                # configuration, which needs its traceback.
+                exc_info=None if failure.from_provider else error,
             )
             _set_overview_metrics(
                 http_request, route, usage_of_this_request(), error_message=failure.detail
             )
+            if not failure.from_provider:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Internal server error (ID: {error_id}). "
+                    "Please contact support if the issue persists.",
+                ) from error
             raise HTTPException(
                 status_code=502,
                 detail=f"The model could not write an overview (ID: {error_id}). Try again.",
