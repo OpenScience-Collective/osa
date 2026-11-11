@@ -1632,7 +1632,7 @@
       border: 0;
       border-radius: 6px 6px 0 0;
       background: transparent;
-      color: var(--osa-text-light);
+      color: var(--osa-text);
       cursor: pointer;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -4755,8 +4755,8 @@
     const record = { state: 'importing', title, steps, leftOut, path: null, undoable: false, error: null };
     notebookEmbed.import = record;
     renderNotebookBanner(container);
-    return sendNotebookRequest('import-notebook', { datasetId, title, notebook, stats }, (result) => {
-      if (notebookEmbed.import !== record) return;
+    return sendNotebookRequest('import-notebook', { datasetId, title, notebook }, (result) => {
+      if (notebookEmbed.import !== record || record.state !== 'importing') return;
       if (result.ok) {
         record.state = 'imported';
         record.path = result.path || null;
@@ -4777,7 +4777,8 @@
     record.notice = null;
     renderNotebookBanner(container);
     sendNotebookRequest('run-all', { path: record.path }, (result) => {
-      if (notebookEmbed.import !== record) return;
+      // Only the run that started this state may end it.
+      if (notebookEmbed.import !== record || record.state !== 'running') return;
       record.state = result.ok ? 'ran' : 'failed';
       record.error = result.ok ? null : (result.error || 'The cells did not all run.');
       renderNotebookBanner(container);
@@ -4786,18 +4787,18 @@
 
   function undoImportedNotebook(container) {
     const record = notebookEmbed.import;
-    if (!record || !record.path || !record.undoable) return;
+    if (!record || !record.path || !record.undoable || record.state === 'running') return;
     const before = record.state;
     record.state = 'undoing';
     renderNotebookBanner(container);
     sendNotebookRequest('undo-import', { path: record.path }, (result) => {
-      if (notebookEmbed.import !== record) return;
+      if (notebookEmbed.import !== record || record.state !== 'undoing') return;
       if (result.ok) {
         record.state = 'undone';
         record.undoable = false;
       } else {
         // Most often: the reader edited it, so it was kept.
-        record.state = before === 'running' ? 'imported' : before;
+        record.state = before;
         record.undoable = false;
         record.notice = result.error || 'It could not be undone.';
       }
@@ -4846,7 +4847,8 @@
     if (live) {
       addButton('Run all', 'osa-notebook-run-all', () => runImportedNotebook(container), record.state === 'running');
     }
-    if (live && record.undoable) {
+    // Not while the cells run: removing the file under a run would fail it.
+    if (live && record.undoable && record.state !== 'running') {
       addButton('Undo', 'osa-notebook-undo', () => undoImportedNotebook(container));
     }
     if (['ran', 'failed', 'undone', 'error'].includes(record.state)) {
@@ -4873,13 +4875,21 @@
     if (editing) notebookEmbed.renameDraft = editing.value;
     const hadFocus = !!editing && document.activeElement === editing;
     if (editing) editing.dataset.rebuilding = '1';
+    // What has focus in the strip, so it can be given back to the same control
+    // once the strip is rebuilt: a tab by its path, Rename or Close by the
+    // notebook they belong to.
+    const focused = document.activeElement && strip.contains(document.activeElement) ? document.activeElement : null;
+    const focusedGroup = focused ? focused.closest('.osa-nb-tab') : null;
+    const focusedPath = focusedGroup ? (focusedGroup.querySelector('.osa-nb-tab-label') || {}).dataset?.path : undefined;
+    const focusedAction = focused && focused.classList.contains('osa-nb-action')
+      ? (focused.classList.contains('osa-nb-rename-btn') ? 'osa-nb-rename-btn' : 'osa-nb-close-btn')
+      : null;
     strip.textContent = '';
     const selectedIndex = Math.max(0, open.findIndex((item) => item.path === notebookEmbed.tabs.active));
     open.forEach((item, index) => {
       const selected = item.path === notebookEmbed.tabs.active;
       const group = document.createElement('div');
       group.className = `osa-nb-tab${selected ? ' osa-nb-tab-on' : ''}`;
-      group.setAttribute('role', 'presentation');
       if (notebookEmbed.renaming === item.path) {
         const input = document.createElement('input');
         input.type = 'text';
@@ -4926,8 +4936,7 @@
       const tab = document.createElement('button');
       tab.type = 'button';
       tab.className = 'osa-nb-tab-label';
-      tab.setAttribute('role', 'tab');
-      tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+      if (selected) tab.setAttribute('aria-current', 'true');
       tab.tabIndex = index === selectedIndex ? 0 : -1;
       tab.title = item.title;
       tab.textContent = item.title;
@@ -4936,7 +4945,7 @@
         if (!selected) sendNotebookRequest('open-notebook', { path: item.path });
       });
       tab.addEventListener('keydown', (event) => {
-        const tabs = [...strip.querySelectorAll('[role="tab"]')];
+        const tabs = [...strip.querySelectorAll('.osa-nb-tab-label')];
         const at = tabs.indexOf(tab);
         const target = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: tabs.length - 1 }[event.key];
         if (target === undefined || tabs.length === 0) return;
@@ -4975,6 +4984,20 @@
       strip.appendChild(group);
     });
 
+    // Focus goes back where it was. A control that is gone (its notebook was
+    // closed or renamed, or its Rename and Close went with the selection) hands
+    // it to the tab of the same notebook, or else to the notebook now on screen.
+    if (focused && !strip.contains(document.activeElement)) {
+      const labels = [...strip.querySelectorAll('.osa-nb-tab-label')];
+      const byPath = labels.find((label) => label.dataset.path === focusedPath);
+      const action = focusedAction && byPath ? byPath.closest('.osa-nb-tab').querySelector(`.${focusedAction}`) : null;
+      const next = action || byPath || labels.find((label) => label.hasAttribute('aria-current')) || labels[0];
+      if (next) {
+        if (next.classList.contains('osa-nb-tab-label')) labels.forEach((label) => { label.tabIndex = label === next ? 0 : -1; });
+        next.focus();
+      }
+    }
+
     add.setAttribute('aria-expanded', notebookEmbed.menuOpen ? 'true' : 'false');
     menu.hidden = !notebookEmbed.menuOpen;
     menu.textContent = '';
@@ -4985,7 +5008,7 @@
       button.setAttribute('role', 'menuitem');
       button.textContent = label;
       button.addEventListener('click', () => {
-        closeNotebookMenu(container);
+        closeNotebookMenu(container, true);
         onClick();
       });
       menu.appendChild(button);
@@ -5044,6 +5067,22 @@
         closeNotebookMenu(container);
       }
     });
+    // Focus moving to something else in the widget closes the menu (Tab away).
+    // A target of null is no evidence: some browsers do not focus a button on
+    // click, so that case is left to the click handler above.
+    view.addEventListener('focusout', (event) => {
+      const container = view.closest('.osa-chat-widget');
+      const to = event.relatedTarget;
+      if (container && notebookEmbed.menuOpen && to && !to.closest('.osa-nb-add, .osa-nb-menu')) {
+        closeNotebookMenu(container);
+      }
+    });
+    // A click in the cross-origin frame is no event the widget can see, but it
+    // moves focus there and so blurs this window.
+    window.addEventListener('blur', () => {
+      const container = view.closest('.osa-chat-widget');
+      if (container && notebookEmbed.menuOpen) closeNotebookMenu(container);
+    });
   }
 
   // The notebook tab's header line and its loading and fallback overlays.
@@ -5084,7 +5123,7 @@
     view.setAttribute('inert', '');
     view.innerHTML = `
       <div class="osa-nb-bar" hidden>
-        <div class="osa-nb-strip" role="tablist" aria-label="Notebooks"></div>
+        <div class="osa-nb-strip" role="group" aria-label="Notebooks"></div>
         <button type="button" class="osa-nb-add" aria-label="New notebook" aria-haspopup="menu" aria-expanded="false">${NOTEBOOK_ICONS.plus}</button>
         <div class="osa-nb-menu" role="menu" aria-label="New notebook" hidden></div>
       </div>

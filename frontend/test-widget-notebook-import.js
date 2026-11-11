@@ -197,7 +197,8 @@ console.log('\nan import waits for the notebook to be ready, and is posted once,
   assertEqual(sent.message.datasetId, DATASET, 'with the dataset');
   assertEqual(sent.message.title, input.title, 'the title');
   assertEqual(sent.message.notebook, input.notebook, 'the notebook exactly as the builder made it');
-  assertEqual(sent.message.stats, input.stats, 'and the stats');
+  assert(!('stats' in sent.message), 'and not the stats: the page has no use for them, and the widget keeps them for its banner');
+  assertEqual(Object.keys(sent.message).sort(), ['datasetId', 'notebook', 'requestId', 'target', 'title', 'type'], 'only the fields the page reads');
   assert(typeof sent.message.requestId === 'string' && sent.message.requestId.length > 0, 'under a request id');
   assertEqual(state(window).outbox.length, 0, 'the outbox is empty');
 
@@ -320,9 +321,48 @@ console.log('\nUndo posts undo-import, and the banner follows the answer');
   assertEqual(state(window).import, null, 'and forgets the import');
 }
 
-console.log('\nan import the reader has edited is no longer offered for Undo');
+console.log('\nUndo is not offered while the cells run, and a late result cannot overwrite what Undo did');
 {
   const { window, widget, q, posts, importPosts, say } = await startNotebook();
+  say({ type: 'ready' });
+  widget.__notebook.importNotebookToTab(conversationInput());
+  say({ type: 'result', requestId: importPosts()[0].message.requestId, ok: true, path: IMPORT_PATH });
+  const notebooks = () => say({
+    type: 'notebooks', active: IMPORT_PATH,
+    items: [
+      { path: `nemar/${DATASET}.ipynb`, title: 'Playground', kind: 'playground', open: true },
+      { path: IMPORT_PATH, title: 'Famous', kind: 'chat', open: true, undoable: true }
+    ]
+  });
+  notebooks();
+  const click = (selector) => q(selector).dispatchEvent(new window.Event('click', { bubbles: true }));
+  const sentOf = (type) => posts.filter((p) => p.message.type === type);
+
+  click('.osa-notebook-run-all');
+  assertEqual(bannerButtons(q), ['Run all'], 'while the cells run: Undo is not offered');
+  notebooks();
+  assertEqual(bannerButtons(q), ['Run all'], 'and a fresh list that says it is undoable does not bring it back');
+  assertEqual(q('.osa-notebook-undo'), null, 'there is no Undo button to click');
+  say({ type: 'result', requestId: sentOf('run-all')[0].message.requestId, ok: true, path: IMPORT_PATH });
+  assertEqual(bannerButtons(q), ['Run all', 'Undo', 'Dismiss'], 'once the run is over: Undo is back');
+
+  // Out of order: the page answers a run after the import was undone (a run that
+  // outlived its notebook, which the page now prevents but the widget must not trust).
+  click('.osa-notebook-run-all');
+  const lateRun = sentOf('run-all')[1].message.requestId;
+  const record = state(window).import;
+  record.state = 'undone';
+  record.undoable = false;
+  say({ type: 'result', requestId: lateRun, ok: false, path: IMPORT_PATH, error: 'the notebook was closed before every cell ran' });
+  assertEqual(state(window).import.state, 'undone', 'a failed run-all result after the removal leaves it removed');
+  notebooks();
+  assert(/removed/.test(bannerText(q)), 'and the banner, drawn again, still says so');
+  assertEqual(bannerButtons(q), ['Dismiss'], 'with no Run all for a file that is gone');
+}
+
+console.log('\nan import the reader has edited is no longer offered for Undo');
+{
+  const { widget, q, importPosts, say } = await startNotebook();
   say({ type: 'ready' });
   widget.__notebook.importNotebookToTab(conversationInput());
   say({ type: 'result', requestId: importPosts()[0].message.requestId, ok: true, path: IMPORT_PATH });
@@ -345,12 +385,11 @@ console.log('\nan import the reader has edited is no longer offered for Undo');
   second.say({ type: 'result', requestId: undo.message.requestId, ok: false, error: 'it has been edited, so it was kept' });
   assert(bannerText(second.q).includes('it has been edited, so it was kept'), 'a refused Undo says why');
   assertEqual(bannerButtons(second.q), ['Run all'], 'and is not offered again');
-  void window; void q; void posts;
 }
 
 console.log('\nthe banner shows only on the imported notebook\'s tab');
 {
-  const { window, widget, q, importPosts, say } = await startNotebook();
+  const { widget, q, importPosts, say } = await startNotebook();
   say({ type: 'ready' });
   widget.__notebook.importNotebookToTab(conversationInput());
   say({ type: 'result', requestId: importPosts()[0].message.requestId, ok: true, path: IMPORT_PATH });
@@ -364,18 +403,16 @@ console.log('\nthe banner shows only on the imported notebook\'s tab');
   assert(banner(q).hidden, 'on the Playground: hidden');
   say({ type: 'notebooks', active: IMPORT_PATH, items });
   assert(!banner(q).hidden, 'and back: shown again');
-  void window;
 }
 
 console.log('\na refused import says why, and posts nothing');
 {
-  const { window, widget, q, importPosts, say } = await startNotebook();
+  const { widget, q, importPosts, say } = await startNotebook();
   say({ type: 'ready' });
   widget.__notebook.importNotebookToTab(conversationInput());
   say({ type: 'result', requestId: importPosts()[0].message.requestId, ok: false, error: 'dataset: does not look like a valid dataset id for this community' });
   assert(/does not look like a valid dataset id/.test(bannerText(q)), 'the notebook\'s reason is on the banner');
   assertEqual(bannerButtons(q), ['Dismiss'], 'with Dismiss alone');
-  void window;
 
   const warnings = [];
   const originalWarn = console.warn;
@@ -440,7 +477,7 @@ console.log('\nnothing to import into: no dataset, a dataset with no Zarr copy, 
 
 console.log('\na request that is waiting when the frame goes is answered, not left hanging');
 {
-  const { window, widget, q, importPosts, say } = await startNotebook();
+  const { window, widget, q, importPosts } = await startNotebook();
   const result = widget.__notebook.importNotebookToTab(conversationInput());
   widget.setDataset({ id: 'on000001', zarr: true });
   const outcome = await result;
@@ -450,7 +487,6 @@ console.log('\na request that is waiting when the frame goes is answered, not le
   assertEqual(state(window).requests, 0, 'nothing is pending');
   assert(banner(q).hidden, 'and the banner is gone');
   assertEqual(importPosts().length, 0, 'the import never reached the old frame');
-  void say;
 }
 
 console.log('\nan import for the dataset on screen when the notebook for it is not open yet opens it');
