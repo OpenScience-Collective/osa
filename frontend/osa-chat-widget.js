@@ -16564,6 +16564,7 @@
         // input, and the next send carries the conversation.
         if (await refusedAsSessionUnknown(response)) {
           if (idle) idle.stop();
+          response.body?.cancel().catch(() => {});
           throw new Error(SESSION_LOST_MESSAGE);
         }
       }
