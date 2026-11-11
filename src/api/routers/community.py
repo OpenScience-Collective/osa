@@ -3139,7 +3139,6 @@ def create_community_router(community_id: str) -> APIRouter:
         # Only a session this request just made is seeded: one that has messages is the
         # server's own record and is never overwritten by a client's.
         turns = body.prior_turns
-        reseeding = bool(turns) and not session.messages
 
         # The person moved on instead of answering a browser call. Close it out before
         # anything else: leaving an assistant message with tool_calls and no matching
@@ -3149,7 +3148,7 @@ def create_community_router(community_id: str) -> APIRouter:
 
         # Add user message with constraint validation
         try:
-            if turns and reseeding:
+            if turns and not session.messages:
                 _restore_tier(community_id, session, body)
                 session.reseed(turns, body.message)
                 logger.info(
