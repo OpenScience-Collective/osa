@@ -205,7 +205,10 @@ console.log('\nsummarizing: a live card, with nothing else yet');
   assert(!!loaded.q('.osa-handover .osa-handover-live'), 'the step is live (a turning ring)');
   assert(!loaded.q('.osa-handover details'), 'there is no summary to show yet');
   assert(!loaded.q('[role="separator"]'), 'and no divider: the session has not changed');
-  assertEqual(loaded.q('.osa-handover').getAttribute('aria-label'), 'Handing over to the analysis model', 'the card is a labeled region');
+  assertEqual(loaded.q('.osa-handover').getAttribute('aria-label'), 'Handing over to the analysis model', 'the card is a labeled group, not a landmark');
+  assertEqual(loaded.q('.osa-handover').getAttribute('role'), 'group', 'with role=group');
+  assertEqual(loaded.q('.osa-handover').tagName, 'DIV', 'on a div, so it is not a region landmark');
+  assertEqual(text(loaded.q('.osa-status-announcer')), 'Summarizing our conversation', 'a screen reader is told it is summarizing');
   assert(!visible(loaded.q('.osa-mode-label')) && !visible(loaded.q('.osa-mode-note')), 'no mode is known yet: no label and no footnote');
   finishAnalysis(stream);
   await waitUntil(() => settled(loaded), 'the reply finishes');
@@ -232,6 +235,11 @@ console.log('\nsummarized and started, then the analysis reply');
 
   stream.send({ event: 'handover', stage: 'started', session_id: 'new-session', model: SONNET });
   await handled(loaded, stream);
+  assertEqual(
+    text(loaded.q('.osa-status-announcer')),
+    'Summarized our conversation. Handing it to the analysis model with your question',
+    'the back-to-back summarized and started are spoken together, so the first is not dropped'
+  );
   assertEqual(
     stepTexts(loaded),
     ['Summarized our conversation (4 messages, 90 words)', 'Handing it to the analysis model with your question'],
@@ -507,6 +515,30 @@ console.log('\nstored fields are bounded and normalized');
   const third = loadWidget({ storage: JSON.stringify(tampered), marker: true });
   await third.ready();
   assertEqual(third.qa('.osa-handover').length, 0, 'a stored handover that is not an object draws no card');
+}
+
+console.log('\na reload in the middle of a summary: a step that did not finish');
+{
+  const tampered = JSON.parse(storedAfterHandover);
+  const reply = tampered.conversations[0].messages.find((m) => m.handover);
+  reply.handover = { stage: 'summarizing' };
+  const loaded = loadWidget({ storage: JSON.stringify(tampered), marker: true });
+  await loaded.ready();
+  assertEqual(stepTexts(loaded), ['–Did not finish summarizing our conversation'], 'the step says it did not finish');
+  assert(!loaded.q('.osa-handover-live'), 'with no turning ring');
+  assertEqual(loaded.qa('.osa-handover-stopped').length, 1, 'a dash marker stands in for it');
+  assert(!loaded.q('[role="separator"]'), 'and no divider: the session never changed');
+}
+
+console.log('\nreduced motion: the stylesheet holds the ring still');
+{
+  // happy-dom cannot compute the cascade, so read it from the source: the override must
+  // outrank the ring's own rule (two classes, later in the sheet).
+  const block = SOURCE.slice(SOURCE.indexOf('@media (prefers-reduced-motion: reduce)'));
+  const override = /([^{}]*\.osa-handover-marker\.osa-handover-live)\s*\{\s*animation:\s*none;/.exec(block);
+  assert(!!override, 'the reduced-motion block stops the ring');
+  const classes = (override ? override[1] : '').match(/\.[\w-]+/g) || [];
+  assert(classes.length >= 3, 'with a selector of three classes or more, to outrank the ring rule');
 }
 
 clearTimeout(watchdog);

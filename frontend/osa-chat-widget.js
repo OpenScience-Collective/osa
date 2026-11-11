@@ -1934,8 +1934,9 @@
         opacity: 0.6;
       }
 
-      /* The handover card's ring (E8.3) holds still, as a half ring. */
-      .osa-handover-marker.osa-handover-live {
+      /* The handover card's ring (E8.3) holds still, as a half ring. Three classes, to
+         outrank the ring's own two-class rule, which comes later in this sheet. */
+      .osa-handover .osa-handover-marker.osa-handover-live {
         animation: none;
       }
     }
@@ -7580,14 +7581,19 @@
   // The stream's `handover` event: record it on the reply it belongs to and draw it.
   function noticeHandover(container, message, event) {
     if (!message) return;
-    const next = nextHandover(message.handover, event);
+    const before = message.handover;
+    const next = nextHandover(before, event);
     if (!next) return;
     message.handover = next;
     renderMessages(container);
     // Said once to a screen reader, after the redraw (which empties the announcer when
-    // there is no status of its own to say).
+    // there is no status of its own to say). `summarized` and `started` arrive back to
+    // back and the one polite region would drop the first, so `started` says both.
     const announcer = container.querySelector('.osa-status-announcer');
-    const spoken = handoverSpoken(next);
+    let spoken = handoverSpoken(next);
+    if (next.stage === 'started' && before && before.stage === 'summarized') {
+      spoken = `${handoverSpoken(before)}. ${spoken}`;
+    }
     if (announcer && spoken) announcer.textContent = spoken;
   }
 
@@ -7637,8 +7643,11 @@
     const group = document.createElement('div');
     group.className = 'osa-handover-group';
 
-    const card = document.createElement('section');
+    // A group, not a region: a long chat holds one card per handover, and each would be
+    // a landmark.
+    const card = document.createElement('div');
     card.className = 'osa-handover';
+    card.setAttribute('role', 'group');
     card.setAttribute('aria-label', 'Handing over to the analysis model');
     const title = document.createElement('div');
     title.className = 'osa-handover-title';
