@@ -508,6 +508,12 @@ jobs:
       - name: Run the fresh chat on return tests on a real DOM
         run: bun frontend/test-widget-fresh-return.js
 
+      # Reseeding a chat the server forgot: the request carries the conversation so far
+      # (newest 12 turns, text only, each bounded) and its tier until the server has
+      # confirmed the session in this page load, and carries nothing for a new chat.
+      - name: Run the reseed tests on a real DOM
+        run: bun frontend/test-widget-reseed.js
+
       # The context switch: a page whose dataset or search page differs from the chat's
       # shows a notice and starts a new chat on the next message, or continues with the
       # move told to the assistant; an empty chat switches silently.
