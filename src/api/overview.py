@@ -67,9 +67,11 @@ SUMMARY_PROMPT_WORDS = 100
 SUMMARY_MAX_WORDS = 120
 """The length enforced: sentences that would carry the summary past it are dropped."""
 
-OVERVIEW_MAX_TOKENS = 1024
-"""The most tokens the model may write (reasoning included): a 100-word summary and three
-short picks need about 350, and a cached overview does not need the community's effort."""
+OVERVIEW_MAX_TOKENS = 1500
+"""The most tokens the model may write (reasoning included). A 100-word summary and three
+short picks need about 350; the rest is headroom for the little adaptive thinking runs at
+``OVERVIEW_REASONING_EFFORT``, since a reply cut off mid-JSON is a 502. The community's
+default (8000) is for answers, not for a cached summary."""
 
 OVERVIEW_REASONING_EFFORT = "low"
 
@@ -351,8 +353,11 @@ class OverviewCache:
 class OverviewCaches:
     """One ``OverviewCache`` per community, all on one swappable clock."""
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self, clock: Callable[[], float] = time.monotonic, max_entries: int = CACHE_MAX_ENTRIES
+    ) -> None:
         self.clock = clock
+        self.max_entries = max_entries
         self._caches: dict[str, OverviewCache] = {}
 
     def for_community(self, community_id: str) -> OverviewCache:
@@ -360,7 +365,7 @@ class OverviewCaches:
         if cache is None:
             # Read through self.clock on every call, so a clock set later reaches the
             # caches that already exist.
-            cache = OverviewCache(clock=lambda: self.clock())
+            cache = OverviewCache(max_entries=self.max_entries, clock=lambda: self.clock())
             self._caches[community_id] = cache
         return cache
 
