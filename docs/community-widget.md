@@ -976,12 +976,12 @@ Testing: `frontend/test-widget-fresh-return.js`.
 The server holds a chat's session for 24 hours after its last request, and loses it on a restart or when it is the least recently used of a community's 1000.
 The widget cannot tell, and a server that is sent a session id it does not know makes an empty session under that id, so a resumed chat used to be answered with no context.
 Now a request carries the chat so far when the widget cannot know the server has it, and the server uses it only when the request just created the session.
-One case is not covered: once the server has confirmed the session in a page load, the widget sends nothing for up to 24 hours, so a server restart or an eviction while the page stays open still starts an empty session under the old id (tracked in issue #698).
+Once the server has confirmed the session in a page load the widget stops sending the chat, so a request then asks the server to say if it lost the session (see "When the server lost it while the page stayed open" below), and sends the chat once more if it did.
 
 - **When the widget sends it.**
   Until the server has confirmed the session in this page load (a `session` or `done` event, or a non-streaming reply, with the id), every `/chat` request carries `prior_turns`, and `mode` when a reply said one.
   So the first request after a page load, after a chat is opened from History or the resume card, and after a request the server never answered, carries it; a conversation that has had no server answer for longer than `SESSION_TTL_HOURS` carries it again.
-  Nothing is sent for a new, empty chat or for one with no assistant reply, and nothing once the server has confirmed the session; a restart or eviction after that, with the page still open, is not detected.
+  Nothing is sent for a new, empty chat, and no turns for a chat with no assistant reply (there is nothing to carry) or once the server has confirmed the session; a restart or eviction after that, with the page still open, is caught by `expect_session` (next item).
   The confirmation is not stored.
   The pop-out is a page load of its own, so its first request carries the chat too.
 - **What it carries.**
@@ -999,11 +999,29 @@ One case is not covered: once the server has confirmed the session in a page loa
   On a request that is routed between a quick and an analysis model, `mode` sets the new session's tier before the turn, so an analysis chat continues on the analysis model with no handover and no summary; elsewhere `mode` is ignored.
   A keyword in the transcript is not a request for analysis; only the reader's own message is read for one.
   If the reader later asks for analysis, the summary for the handover is written from the turns and the reader's message, not from the framing the server added.
+- **When the server lost it while the page stayed open.**
+  A request that names a session and carries no turns also carries `expect_session: true`: the usual case is a session the server confirmed in this page load, and a stored chat with a session id and no assistant reply is the other (the server has confirmed nothing there, so a lost session costs one refused request and a plain resend).
+  If the server holds no live session for that id (it restarted, evicted the session, or the session expired) and the request has no `prior_turns`, it answers `409` with `{"detail": "<a plain sentence>", "code": "session_unknown"}` before it creates a session, starts a stream or calls a model.
+  The refusal writes no usage row, so the dashboards do not count it as an error: it is an expected recovery, not a failed request.
+  `detail` stays a string, so a client that reads only `detail` gets text it can show; `code` is the key a client acts on.
+  The widget then marks the server as having confirmed nothing, builds the same request again without `expect_session` and with the turns and tier (as a first request after a page load does), and sends it once.
+  The reader sees one answer and no error, and `serverAnswered`, the context-move notice and the host's `send` event behave as for one request.
+  The refused request spent its Turnstile token, which the worker verifies once before it forwards, so the widget resets Turnstile and waits up to 10 seconds for a fresh token for the second request.
+  A reply from a server that does not know the field (an older backend during a rolling deploy) is a normal one: the field is ignored and nothing changes.
+- **When the resend is not possible.**
+  If no fresh token arrives in time, or the server refuses the second request with `session_unknown` too, the reader sees "Earlier messages in this chat were not kept by the server. Your message was not sent; send it again.", the question goes back in the input, and the next send carries the turns (the widget has already marked the server as having confirmed nothing).
+  A `409` with another `code`, or none, is an ordinary error: it is shown as any error is and is not sent again.
+  A chat with no assistant reply has no turns to carry, so its resend is the plain request, with an extra round trip, an extra Turnstile token and an extra worker rate-limit unit.
 - **What it does not do.**
-  It does not store history on the server, summarize the transcript with a model, carry figures, or reseed `/chat/resume`, which still answers 404 for a session the server no longer holds.
-  A request sent to a live session carries the transcript for nothing; the bytes are bounded (at most about 12,000 characters of text, before JSON escaping) and are the price of not asking the server first.
+  It does not store history on the server, summarize the transcript with a model, carry figures, or reseed `/chat/resume`.
+  `/chat/resume` does not take `expect_session` and is unchanged: it already answers `404` for a session the server no longer holds and creates none, and the parked browser call it continues was lost with the session, so there is nothing a transcript could restore.
+  The reader's next `/chat` then meets the `409` path above.
+  The widget does not send the turns on every request: a live session then ignores them, and the 12,000 characters would be paid for on each message to cover a rare loss.
+- **Rate limits.**
+  A resend is a second `/chat` call for the worker's limits (per minute and per hour; 10 and 20 in production, 60 and 100 in development, see `getConfig` in `workers/osa-worker/index.js`).
+  The worker forwards the body untouched (it removes only `cf_turnstile_response`) and returns the backend's `409` with its status and JSON body, so nothing in it changes for this field.
 
-Testing: `frontend/test-widget-reseed.js`, `tests/test_api/test_reseed.py` and `tests/test_integration/test_reseed_llm.py`.
+Testing: `frontend/test-widget-reseed.js`, `frontend/test-widget-session-lost.js`, `tests/test_api/test_reseed.py`, `tests/test_api/test_expect_session.py` (the `409` body is `tests/fixtures/session_unknown_409.json`, which the widget test reads too), the `409` case in `workers/osa-worker/test-routing.js` and `tests/test_integration/test_reseed_llm.py`.
 
 ### A context change starts a new chat
 
