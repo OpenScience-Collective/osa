@@ -259,7 +259,8 @@ _RUN_ALL_NEXT: Final = (
     "In run_all mode, after each step's result call execute_code for the next step in the "
     "same turn, and write no closing message until the last step has run. An execute_code "
     "call left unanswered during a run_all plan was not run (most likely the reader paused "
-    "before that step started); it is not a failed attempt."
+    "before that step started); it is not a failed attempt. If a step fails a second time, "
+    "stop and say what went wrong: that is the one case for a message before the last step."
 )
 
 

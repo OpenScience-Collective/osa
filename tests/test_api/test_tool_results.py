@@ -627,7 +627,11 @@ class TestPlanToolMessage:
         assert "left unanswered during a run_all plan was not run" in run_all
         assert "most likely the reader paused" in run_all
         assert "not a failed attempt" in run_all
+        # The one exception to "no closing message": a step that fails twice stops the plan,
+        # as NEMAR's plan_first_instructions item 6 says, so the two never contradict.
+        assert "If a step fails a second time, stop and say what went wrong" in run_all
         assert "same turn" not in pause
+        assert "fails a second time" not in pause
 
     def test_edits_are_detected_on_the_server_and_the_edited_steps_are_what_is_shown(self) -> None:
         edited = [
