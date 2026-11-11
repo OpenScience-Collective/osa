@@ -5668,9 +5668,19 @@
 
     .osa-chat-window.osa-center-empty .osa-chat-messages,
     .osa-chat-window.osa-center-empty .osa-suggestions,
-    .osa-chat-window.osa-center-empty .osa-chat-input,
-    .osa-chat-window.osa-center-empty .osa-ai-disclaimer {
+    .osa-chat-window.osa-center-empty .osa-chat-input {
       display: none !important;
+    }
+
+    /* The community's disclaimer and its Send feedback link stay under the start screen.
+       A note of its own (center_start.note) takes the disclaimer's place there, so the
+       link stays and the two are not said twice. */
+    .osa-chat-window.osa-center-empty.osa-center-has-note .osa-ai-disclaimer .osa-disclaimer-text {
+      display: none;
+    }
+
+    .osa-chat-window.osa-center-empty.osa-center-has-note .osa-ai-disclaimer {
+      justify-content: flex-end;
     }
 
     .osa-center-start-body {
@@ -16797,6 +16807,12 @@
   // Calls made before init() built the widget, replayed in order once it has.
   let hostQueue = [];
   let hostLive = false;
+  // A page that calls before init() and never calls init() (or whose init stops early)
+  // would otherwise see nothing happen, and hear nothing. The queue is bounded, and one
+  // warning says what is waiting if init() has not built the widget after a while.
+  const HOST_QUEUE_MAX = 50;
+  const HOST_INIT_WARN_MS = 5000;
+  let hostInitTimer = null;
   // What had focus when the window opened, for Close to give it back.
   let hostReturnFocus = null;
   // The page's own nodes made inert while the dialog is open, and the page's scroll
@@ -16857,12 +16873,25 @@
   // A call is checked when it is made, and then run now, or queued until init() has
   // built the widget.
   function hostDo(call) {
-    if (hostLive) runHostCall(call);
-    else hostQueue.push(call);
+    if (hostLive) {
+      runHostCall(call);
+      return;
+    }
+    if (hostQueue.length >= HOST_QUEUE_MAX) {
+      hostWarn('call', `init() has not built the widget and ${HOST_QUEUE_MAX} calls are already waiting, ignoring this one`);
+      return;
+    }
+    hostQueue.push(call);
+    if (hostInitTimer === null) {
+      hostInitTimer = setTimeout(() => {
+        if (!hostLive) hostWarn('call', `${hostQueue.length} call(s) are waiting for OSAChatWidget.init(); none runs until it has built the widget`);
+      }, HOST_INIT_WARN_MS);
+    }
   }
 
   function flushHostCalls() {
     hostLive = true;
+    if (hostInitTimer !== null) clearTimeout(hostInitTimer);
     const calls = hostQueue;
     hostQueue = [];
     calls.forEach(runHostCall);
@@ -16922,13 +16951,22 @@
 
   function hostOpen(mode) {
     const container = widgetContainer();
-    if (!container || CONFIG.fullscreen) return;
+    if (!container) return;
+    if (CONFIG.fullscreen) {
+      hostWarn('open', 'the pop-out window is always open, ignoring the call');
+      return;
+    }
     openChatWindow(container, mode);
   }
 
   function hostClose() {
     const container = widgetContainer();
-    if (!container || CONFIG.fullscreen || !isOpen) return;
+    if (!container) return;
+    if (CONFIG.fullscreen) {
+      hostWarn('close', 'the pop-out window is always open, ignoring the call');
+      return;
+    }
+    if (!isOpen) return;
     toggleChat(container);
   }
 
@@ -16942,13 +16980,28 @@
       return;
     }
     if (!CONFIG.fullscreen) openChatWindow(container, mode);
-    sendMessage(container, text).catch((error) => console.error('[OSA] ask failed:', error));
+    // sendMessage empties the chat's input, as it does for a typed question. What the
+    // reader had typed and not sent is theirs, not the page's, so it goes back (and into
+    // the start screen's field, which is the same text) once the question is away.
+    const input = container.querySelector('.osa-chat-input input');
+    const draft = input ? input.value : '';
+    const sending = sendMessage(container, text);
+    if (input && draft && input.value === '') {
+      input.value = draft;
+      const field = container.querySelector('.osa-center-input');
+      if (field) field.value = draft;
+    }
+    sending.catch((error) => console.error('[OSA] ask failed:', error));
   }
 
   function hostSetMode(mode) {
     const container = widgetContainer();
     // The pop-out is a window of its own, with no corner to dock to.
-    if (!container || CONFIG.fullscreen) return;
+    if (!container) return;
+    if (CONFIG.fullscreen) {
+      hostWarn('setMode', 'the pop-out window has no corner to dock to, ignoring the call');
+      return;
+    }
     if (!applyHostMode(container, mode)) return;
     if (isOpen) focusChatField(container, true);
     emitHostEvent('modechange', { mode: hostMode });
@@ -16980,6 +17033,10 @@
   // Modal for as long as the dialog is open: the page behind it is inert and does not
   // scroll, and Tab and Escape are the dialog's (handleCenterKey).
   function engageCenter(container) {
+    // The dialog is the chat's: around the notebook it would hide that tab's title and
+    // leave no control that goes back (the tab strip is the pop-out's), so it opens on
+    // the chat, as open() and ask() do.
+    if (activeTab !== 'chat') setTab(container, 'chat');
     if (centerKeyHandler) return;
     const scrim = container.querySelector('.osa-center-scrim');
     if (scrim) scrim.classList.add('open');
@@ -17026,7 +17083,10 @@
     focusChatField(container, true);
   }
 
-  const FOCUSABLE_SELECTOR = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, [tabindex]';
+  // An iframe is a stop like any control; once focus is inside one, its keys stay in
+  // the frame and never reach the dialog's handler, so the notebook's frame is the one
+  // place Tab can leave (the dialog never lays over that tab, see engageCenter).
+  const FOCUSABLE_SELECTOR = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, iframe, [contenteditable]:not([contenteditable="false"]), [tabindex]';
 
   // Whether `node` can be seen: neither it nor an ancestor up to `scope` is hidden or not
   // displayed. `seen` remembers the answer for each node during one pass.
@@ -17156,6 +17216,10 @@
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
     link.textContent = text;
+    const hint = document.createElement('span');
+    hint.className = 'osa-sr-only';
+    hint.textContent = ' (opens in a new tab)';
+    link.appendChild(hint);
     return link;
   }
 
@@ -17217,6 +17281,8 @@
     }
     if (docs) footer.appendChild(docsAnchor('osa-center-docs-link', docs, 'How it works'));
     footer.hidden = !copy.note && !docs;
+    const win = container.querySelector('.osa-chat-window');
+    if (win) win.classList.toggle('osa-center-has-note', !!copy.note);
 
     // A community with no docs page has no link in Settings either.
     container.querySelectorAll('.osa-docs-field').forEach((row) => row.remove());
@@ -17275,12 +17341,12 @@
     container.querySelector('.osa-center-form')?.addEventListener('submit', (event) => {
       event.preventDefault();
       if (isLoading || !field.value.trim()) return;
-      sendMessage(container, field.value);
+      sendMessage(container, field.value).catch((error) => console.error('[OSA] send failed:', error));
       field.value = main.value;
     });
     container.querySelector('.osa-center-pills')?.addEventListener('click', (event) => {
       const pill = event.target && typeof event.target.closest === 'function' ? event.target.closest('.osa-center-suggestion') : null;
-      if (pill) sendMessage(container, pill.textContent);
+      if (pill) sendMessage(container, pill.textContent).catch((error) => console.error('[OSA] send failed:', error));
     });
   }
   // END host-api

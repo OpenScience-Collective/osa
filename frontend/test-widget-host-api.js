@@ -37,12 +37,16 @@ const watchdog = setTimeout(() => {
 }, SUITE_TIMEOUT_MS);
 watchdog.unref?.();
 
+// The suite's own reports use the console as it was at the start, so a failure that
+// happens while listen() holds the console is still printed, not collected as a warning.
+const report = { log: console.log, error: console.error };
+
 function assert(cond, msg) {
   if (cond) {
-    console.log(`  ok ${msg}`);
+    report.log(`  ok ${msg}`);
     passed++;
   } else {
-    console.error(`  x FAIL: ${msg}`);
+    report.error(`  x FAIL: ${msg}`);
     failed++;
   }
 }
@@ -127,19 +131,27 @@ function serverFetch(widget) {
 // Everything a page can see of the console while a call is made: the warnings and the
 // errors, so a refused call can be told from a silent one and a throwing handler's
 // report is kept out of the test's output.
+let listening = null;
 function listen() {
+  // A listener left running (a block that ended early) is given back before the next.
+  if (listening) listening.stop();
   const heard = { warn: [], error: [] };
   const real = { warn: console.warn, error: console.error };
+  listening = heard;
   console.warn = (...args) => { heard.warn.push(args.map(String).join(' ')); };
   console.error = (...args) => { heard.error.push(args.map(String).join(' ')); };
-  heard.stop = () => { console.warn = real.warn; console.error = real.error; };
+  heard.stop = () => {
+    console.warn = real.warn;
+    console.error = real.error;
+    if (listening === heard) listening = null;
+  };
   return heard;
 }
 
 // A page before init(): the widget's script has run and the host page has its own
 // elements, one of which has focus. `boot()` is what the page's init call does.
 async function load({
-  path = '/dataset/x', widget = {}, dataset = { id: A, title: TITLE }, popout = false, storage = null,
+  path = '/dataset/x', widget = {}, dataset = { id: A, title: TITLE }, popout = false, storage = null, fastInitWarning = false,
 } = {}) {
   const window = new Window({
     url: `http://localhost${path}`,
@@ -163,8 +175,11 @@ async function load({
     'window', 'document', 'localStorage', 'fetch', 'navigator', 'AbortSignal', 'URL',
     'TextDecoder', 'setTimeout', 'clearTimeout', 'console', SOURCE
   );
+  // The "init() was never called" warning waits seconds; a test that wants to see it
+  // shortens that one wait (5000 ms) and leaves every other timer as it is.
+  const timer = fastInitWarning ? (fn, ms, ...rest) => setTimeout(fn, ms === 5000 ? 20 : ms, ...rest) : setTimeout;
   run(window, window.document, window.localStorage, server.fetch, window.navigator, AbortSignal, URL,
-    TextDecoder, setTimeout, clearTimeout, console);
+    TextDecoder, timer, clearTimeout, console);
   const api = window.OSAChatWidget;
   const ctx = {
     window, api, hooks: api.__browser, sent: server.sent, hold: server.hold, document: window.document,
@@ -489,6 +504,13 @@ console.log('\nTab and Shift+Tab never leave the dialog');
   const list = focusables(ctx.win());
   assert(list.length > 4, `there are controls to cycle through (${list.length})`);
   assert(list.every((el) => inWindow(ctx, el) && !el.closest('[inert]')), 'all of them in the dialog, none inert');
+  // The expected cycle is named here, not taken from the helper under test: a control
+  // the helper skipped would otherwise be missing from both the list and the wrap.
+  for (const selector of ['.osa-center-dock-btn', '.osa-history-btn', '.osa-settings-btn-open', '.osa-close-btn', '.osa-center-input', '.osa-center-suggestion']) {
+    const el = ctx.q(selector);
+    assert(!!el && list.includes(el), `${selector} is in the cycle`);
+  }
+  assert(!list.includes(ctx.q('.osa-chat-input input')), 'the chat\'s own input, hidden behind the start screen, is not');
   assert(!list.some((el) => ctx.document.getElementById('host-pill') === el || ctx.document.getElementById('host-link') === el), 'none of the page\'s');
   list.at(-1).focus();
   const forward = key(ctx, 'Tab');
@@ -569,6 +591,13 @@ console.log('\nEscape closes History first, then docks');
   ctx.q('.osa-settings-btn-open').click();
   active(ctx).dispatchEvent(key(ctx, 'Escape'));
   assert(!ctx.q('.osa-settings-overlay').classList.contains('open') && ctx.isCenter(), 'and Settings the same');
+  ctx.q('.osa-feedback-link').click();
+  assert(ctx.q('.osa-feedback-overlay').classList.contains('open'), 'sanity: the feedback panel is open');
+  const third = key(ctx, 'Escape');
+  active(ctx).dispatchEvent(third);
+  assert(third.defaultPrevented && !ctx.q('.osa-feedback-overlay').classList.contains('open') && ctx.isCenter(), 'and the feedback panel the same: the dialog stays');
+  active(ctx).dispatchEvent(key(ctx, 'Escape'));
+  assert(!ctx.isCenter() && ctx.isOpen(), 'and then Escape docks');
 }
 
 console.log('\nClose gives focus back to what had it before the window opened');
@@ -606,9 +635,12 @@ console.log('\nthe pop-out has no corner: setMode, open and close do nothing the
 {
   const ctx = await start({ popout: true });
   const heard = record(ctx);
+  const warnings = listen();
   ctx.api.setMode('center');
   ctx.api.open({ mode: 'center' });
   ctx.api.close();
+  warnings.stop();
+  assertEqual(warnings.warn.length, 3, 'each says so on the console, not silently');
   assert(ctx.isOpen() && !ctx.isCenter(), 'still the open, plain window');
   assertEqual(heard.events, [], 'with no events');
   assert(ctx.document.querySelectorAll('[inert]').length === 0, 'and nothing made inert');
@@ -732,12 +764,13 @@ console.log('\nthe docs link: in the start footer and in Settings, https only, a
   ctx.api.open({ mode: 'center' });
   const footerLink = ctx.q('.osa-center-docs-link');
   assert(!!footerLink, 'the footer has the link');
-  assertEqual([text(footerLink), footerLink.getAttribute('href')], ['How it works', DOCS.url], 'its text, and the configured address');
+  assertEqual([text(footerLink), footerLink.getAttribute('href')], ['How it works (opens in a new tab)', DOCS.url], 'its text, with the new tab said for a screen reader, and the configured address');
+  assertEqual(text(footerLink.querySelector('.osa-sr-only')), '(opens in a new tab)', 'the hint is visually hidden, not drawn');
   assertEqual([footerLink.getAttribute('target'), footerLink.getAttribute('rel')], ['_blank', 'noopener noreferrer'], 'it opens a new tab, with no opener');
   ctx.q('.osa-settings-btn-open').click();
   const settingsLink = ctx.q('.osa-settings-body .osa-docs-link');
   assert(!!settingsLink, 'Settings has a row');
-  assertEqual([text(settingsLink), settingsLink.getAttribute('href')], [DOCS.title, DOCS.url], 'with the configured title and address');
+  assertEqual([text(settingsLink), settingsLink.getAttribute('href')], [`${DOCS.title} (opens in a new tab)`, DOCS.url], 'with the configured title, the new tab said, and the address');
   assertEqual([settingsLink.getAttribute('target'), settingsLink.getAttribute('rel')], ['_blank', 'noopener noreferrer'], 'also a new tab, with no opener');
   assert(settingsLink.getAttribute('href').startsWith('https://'), 'an https address');
   ctx.api.setMode('corner');
@@ -776,6 +809,104 @@ console.log('\nthe docs link: in the start footer and in Settings, https only, a
   assertEqual(next.qa('.osa-center-card').length, 3, 'and its cards are drawn');
   await waitUntil(() => next.qa('.osa-center-card').length === 0, 'the fresh config replaces the remembered one');
   assert(next.q('.osa-center-docs-link') === null && next.q('.osa-docs-link') === null, 'a fresh config that sets none takes the link away again');
+}
+
+console.log('\ncenter on the notebook tab goes to the chat, as open() and ask() do');
+{
+  const ctx = await start({ widget: { launcher: 'capsule', center_start: CENTER_START }, dataset: { id: A, title: TITLE, zarr: true } });
+  ctx.api.open();
+  ctx.q('.osa-notebook-btn').click();
+  assert(ctx.container().classList.contains('osa-tab-notebook'), 'sanity: the window is on the notebook tab');
+  ctx.api.setMode('center');
+  assert(ctx.isCenter() && ctx.container().classList.contains('osa-tab-chat') && !ctx.container().classList.contains('osa-tab-notebook'),
+    'setMode("center") takes it to the chat tab');
+  assert(!ctx.q('.osa-center-start').hidden, 'so the dialog shows the chat\'s start screen, not the notebook');
+  ctx.api.setMode('corner');
+  ctx.q('.osa-notebook-btn').click();
+  assert(ctx.container().classList.contains('osa-tab-notebook'), 'sanity: on the notebook again');
+  ctx.api.close();
+  ctx.api.setMode('center');
+  ctx.api.open();
+  assert(ctx.isCenter() && ctx.container().classList.contains('osa-tab-chat'), 'a dialog opened by open() is on the chat too');
+}
+
+console.log('\nask() keeps what the reader had typed and not sent');
+{
+  const ctx = await start({ widget: { center_start: CENTER_START } });
+  ctx.api.open();
+  const input = ctx.q('.osa-chat-input input');
+  input.value = 'A half-typed question';
+  ctx.api.ask('The page\'s question');
+  await answered(ctx);
+  assertEqual(ctx.sent[0].message, 'The page\'s question', 'the page\'s question is what was sent');
+  assertEqual(input.value, 'A half-typed question', 'the draft is still in the chat input');
+  ctx.api.setMode('center');
+  ctx.q('.osa-history-btn').click();
+  ctx.q('.osa-history-new').click();
+  assertEqual(ctx.q('.osa-center-input').value, 'A half-typed question', 'and in the start screen\'s field once it shows again');
+
+  const bare = await start({ dataset: null });
+  bare.api.open({ mode: 'center' });
+  const field = bare.q('.osa-center-input');
+  field.value = 'A draft typed on the start screen';
+  field.dispatchEvent(new bare.window.Event('input', { bubbles: true }));
+  bare.api.ask('Asked by the page');
+  await answered(bare);
+  assertEqual(bare.q('.osa-chat-input input').value, 'A draft typed on the start screen', 'a draft from the start screen survives too');
+  assertEqual(field.value, 'A draft typed on the start screen', 'in its own field');
+
+  const empty = await start({ dataset: null });
+  empty.api.ask('No draft');
+  await answered(empty);
+  assertEqual(empty.q('.osa-chat-input input').value, '', 'with no draft, the input is left empty');
+}
+
+console.log('\nthe start screen keeps the community\'s disclaimer and the feedback link');
+{
+  const shown = (ctx) => ctx.window.getComputedStyle(ctx.q('.osa-ai-disclaimer')).display !== 'none';
+  const textShown = (ctx) => ctx.window.getComputedStyle(ctx.q('.osa-disclaimer-text')).display !== 'none';
+  const bare = await start();
+  bare.api.open({ mode: 'center' });
+  assert(!bare.q('.osa-center-start').hidden, 'sanity: the start screen is up');
+  assert(shown(bare) && textShown(bare), 'a community with no note shows its disclaimer row, text included');
+  assertEqual(text(bare.q('.osa-disclaimer-text')), bare.hooks.getConfig().disclaimerText, 'with the community\'s own words');
+  assert(text(bare.q('.osa-feedback-link')) === 'Send feedback', 'and the Send feedback link');
+  bare.q('.osa-feedback-link').click();
+  assert(bare.q('.osa-feedback-overlay').classList.contains('open'), 'which opens the feedback panel');
+
+  const noted = await start({ widget: { center_start: CENTER_START } });
+  noted.api.open({ mode: 'center' });
+  assert(shown(noted) && !textShown(noted), 'a community with a note shows the link, and the note replaces the disclaimer text');
+  assertEqual(text(noted.q('.osa-center-note')), CENTER_START.note, 'the note is the footer\'s');
+  noted.api.setMode('corner');
+  assert(textShown(noted), 'docked, the disclaimer text is the chat\'s again');
+}
+
+console.log('\ncalls before init() are bounded, and a page that never calls init() hears about it');
+{
+  const ctx = await load();
+  const heard = record(ctx);
+  const warnings = listen();
+  for (let i = 0; i < 51; i++) ctx.api.setMode(i % 2 === 0 ? 'center' : 'corner');
+  warnings.stop();
+  assertEqual(warnings.warn.length, 1, 'the call past the 50th is refused, with a warning');
+  await ctx.boot();
+  assertEqual(heard.names().filter((name) => name === 'modechange').length, 50, 'the 50 kept ran');
+
+  const idle = await load({ fastInitWarning: true });
+  const quiet = listen();
+  idle.api.open();
+  await waitUntil(() => quiet.warn.length > 0, 'the warning for a widget that never initialized');
+  quiet.stop();
+  assert(/waiting for OSAChatWidget\.init\(\)/.test(quiet.warn[0]), 'it says calls are waiting for init()');
+
+  const prompt = await load({ fastInitWarning: true });
+  const none = listen();
+  prompt.api.open();
+  await prompt.boot();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  none.stop();
+  assertEqual(none.warn.filter((line) => /OSAChatWidget\.init/.test(line)), [], 'a page that does call init() in time hears nothing');
 }
 
 console.log('\n' + '='.repeat(60));

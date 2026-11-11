@@ -1088,8 +1088,8 @@ OSAChatWidget.close();
 |---|---|
 | `open({mode}?)` | Shows the window, in `mode` when one is given (`'corner'` or `'center'`), on the chat tab, with History and Settings closed. An open window stays open; the mode, if given, changes. |
 | `close()` | Closes the window, as the Close button does. |
-| `ask(text, {mode}?)` | Opens the window (in `mode` if given), then sends `text` through the same path as a typed question: it is in the saved conversation and History, the page-context reset of [A context change starts a new chat](#a-context-change-starts-a-new-chat) applies, and the browser runtime is preloaded as for any first message. `text` must be a non-empty string; a reply that is still loading refuses it. |
-| `setMode(mode)` | `'center'` makes the window the dialog; `'corner'` docks it. On a closed window the mode is kept for the next open. |
+| `ask(text, {mode}?)` | Opens the window (in `mode` if given), then sends `text` through the same path as a typed question: it is in the saved conversation and History, the page-context reset of [A context change starts a new chat](#a-context-change-starts-a-new-chat) applies, and the browser runtime is preloaded as for any first message. `text` must be a non-empty string; a reply that is still loading refuses it. What the reader had typed in the chat's input and not sent is theirs: it stays there (and in the start screen's field) after `ask`. |
+| `setMode(mode)` | `'center'` makes the window the dialog; `'corner'` docks it. On a closed window the mode is kept for the next open. The dialog is the chat's: a capsule community's window that is on the notebook tab is taken to the chat tab when it becomes the dialog. |
 | `on(event, handler)` | Listens for an event, below, and returns a function that stops listening. |
 
 - **Before `init()`.**
@@ -1100,10 +1100,13 @@ OSAChatWidget.close();
   An unknown `mode`, an `event` that is not one of the four, a handler that is not a function, an `options` that is not an object, or an empty question each log a `console.warn` and change nothing.
   A bad `on` still returns a function, which does nothing, so a page that keeps and later calls it does not throw.
   A call checked before `init()` is refused at once, not queued.
+- **Calls before `init()` are bounded.**
+  At most 50 are kept; the next logs a `console.warn` and is dropped.
+  If `init()` has not built the widget five seconds after the first call was kept, one `console.warn` says calls are waiting for it.
 - **The mode is in memory only.**
   It is `'corner'` after a load, and a dialog that is closed is `'corner'` again, so the launcher always opens the panel it always has.
 - **A pop-out has no corner.**
-  In the pop-out window (`fullscreen`), `setMode`, `open` and `close` do nothing; `ask` still sends.
+  In the pop-out window (`fullscreen`), `setMode`, `open` and `close` do nothing, each with a `console.warn`; `ask` still sends.
 
 ### Events
 
@@ -1147,6 +1150,7 @@ While the dialog's conversation is empty it shows board C2 in place of the threa
 Any message replaces it with the thread, in a centered column of at most 760 px, and a new chat from History shows it again.
 The field writes through to the chat's own input, so docking from the start screen keeps what was typed.
 In the corner the start screen is never shown.
+The community's disclaimer row stays under it, with its **Send feedback** link; when the community sets a `center_start.note`, the note takes the disclaimer text's place there and the link stays.
 
 The pills are what the chat's suggestions would be: the dataset questions for the dataset on screen, else `suggested_questions`.
 The cards, the footer's note and the docs link are the community's, from two `widget` keys; the widget carries no copy of its own about any community.
@@ -1154,7 +1158,7 @@ The cards, the footer's note and the docs link are the community's, from two `wi
 | Field | Type | What it changes |
 |---|---|---|
 | `center_start` | `{capabilities, note}` | `capabilities`: up to three `{title, text}` cards (a title of at most 40 characters, text of at most 160). `note`: a line of at most 300 characters in the start screen's footer. All plain text, with no `<` or `>`. Unset, the start screen has the field and the pills alone. |
-| `analysis_docs` | `{title, url}` | A docs page. `title`: at most 80 characters, shown as the link's text in Settings. `url`: an `https://` address of at most 500 characters, with a host and no credentials. The start screen's footer gets a **How it works** link, and Settings a **Learn more** row, both opening it in a new tab (`target="_blank"`, `rel="noopener noreferrer"`). Unset, neither link exists. |
+| `analysis_docs` | `{title, url}` | A docs page. `title`: at most 80 characters, shown as the link's text in Settings. `url`: an `https://` address of at most 500 characters, with a host and no credentials. The start screen's footer gets a **How it works** link, and Settings a **Learn more** row, both opening it in a new tab (`target="_blank"`, `rel="noopener noreferrer"`, and a visually hidden "(opens in a new tab)" for a screen reader). Unset, neither link exists. |
 
 ```yaml
 widget:
