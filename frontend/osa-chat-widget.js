@@ -13045,11 +13045,14 @@
       // focus() on an element that is not drawn does nothing, and the control that had
       // focus has been replaced, so focus would fall to the page: the strip is hidden
       // while the rail shows. The rail says the same, so it takes the focus, then the thread.
-      const target = wanted && !isDrawn(wanted)
+      const fallback = Boolean(wanted) && !isDrawn(wanted);
+      const target = fallback
         ? [container.querySelector('.osa-plan-rail'), messagesEl].find(isDrawn)
         : wanted;
       if (target && typeof target.focus === 'function') {
-        if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+        // Only a fallback is made focusable here: the wanted control is a real tab stop
+        // and a tabindex of -1 would take it out of the Tab order.
+        if (fallback && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
         target.focus();
       }
     }
@@ -17661,8 +17664,8 @@
     const memory = memoryLabel
       ? `<div class="osa-plan-rail-memory">Memory budget ${escapeHtml(memoryLabel)} <span aria-hidden="true">·</span> <button type="button" class="osa-plan-rail-change" aria-label="Change memory budget">change</button></div>`
       : '';
-    return `<p class="osa-plan-rail-heading" id="osa-plan-rail-heading">${escapeHtml(model.heading)}</p>
-        <ol class="osa-plan-rail-list" role="list" aria-labelledby="osa-plan-rail-heading">${rows}</ol>
+    return `<p class="osa-plan-rail-heading">${escapeHtml(model.heading)}</p>
+        <ol class="osa-plan-rail-list" role="list">${rows}</ol>
         <div class="osa-plan-rail-foot">
           <div class="osa-plan-rail-mode"><span class="osa-sr-only">Run mode: </span>${escapeHtml(model.modeLabel)}</div>
           ${memory}

@@ -330,6 +330,7 @@ console.log('\nediting: Edit, Save and Cancel, with a label on every field');
   assertEqual(stepTitles(page)[1], 'Epoch the EEG once', 'Save changes the step, its title one line');
   assertEqual(page.qa('.osa-plan-step-detail').map(text)[1], 'Baseline -200 to 0 ms.', 'and its detail');
   assert(page.window.document.activeElement === page.qa('.osa-plan-edit-btn')[1], 'focus returns to the step\'s Edit');
+  assert(!page.qa('.osa-plan-edit-btn')[1].hasAttribute('tabindex'), 'and that Edit stays a tab stop, not tabindex -1');
   assert(!page.q('.osa-plan-approve').disabled, 'the decision is open again');
 
   click(page, page.qa('.osa-plan-edit-btn')[0]);
@@ -353,6 +354,7 @@ console.log('\nadding and removing steps, within 1 to 8');
   click(page, page.q('.osa-plan-add'));
   assertEqual(page.qa('.osa-plan-step').length, 4, 'Add opens a fourth step');
   assert(page.window.document.activeElement === page.q('.osa-plan-input'), 'in its editor, with the title focused');
+  assert(!page.q('.osa-plan-input').hasAttribute('tabindex') && !page.q('.osa-plan-add').hasAttribute('tabindex'), 'the focused field and Add stay in the Tab order: no tabindex is added');
   click(page, page.q('.osa-plan-cancel'));
   assertEqual(page.qa('.osa-plan-step').length, 3, 'cancelling a step that was never saved takes it away again');
 
