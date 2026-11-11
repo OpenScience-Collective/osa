@@ -9846,6 +9846,30 @@
   }
   // END reseed
 
+  // --- Notice a conversation the server forgot while the page stays open (#698) ---
+  // Once the server has confirmed the session, a request stops carrying the turns, so a
+  // server that restarts or evicts the session would start an empty one without a word.
+  // A request that carries no turns for a session it names therefore says it expects the
+  // server to hold it (`expect_session`); the server then refuses with a 409 whose `code`
+  // is `session_unknown`, and the widget sends the request once more with the turns.
+  //
+  // BEGIN session-lost. Pure, and evaluated on its own by frontend/test-widget-session-lost.js:
+  // nothing between here and END may use the rest of the widget.
+  const SESSION_UNKNOWN_CODE = 'session_unknown';
+
+  // What to add to a chat request that names a session: {expect_session: true} when the
+  // request carries no turns (`reseed` is what reseedFields returned for it), else null.
+  function expectSessionFields({ sessionId, reseed }) {
+    if (typeof sessionId !== 'string' || !sessionId || reseed) return null;
+    return { expect_session: true };
+  }
+
+  // Whether a response is the server saying it holds no session for the request.
+  function isSessionUnknown(status, body) {
+    return status === 409 && !!body && typeof body === 'object' && body.code === SESSION_UNKNOWN_CODE;
+  }
+  // END session-lost
+
   // The conversation just left, while the empty state offers it back: {conversationId
   // (the new one), previousId, previousTitle}. Not stored: a reload shows nothing.
   let welcomeBack = null;
@@ -11697,6 +11721,37 @@
       }
     }
     return headers;
+  }
+
+  // What the reader sees when the server forgot the conversation and sending it again
+  // did not work. The next send carries the turns, so only this message has to be sent again.
+  const SESSION_LOST_MESSAGE = 'Earlier messages in this chat were not kept by the server. Your message was not sent; send it again.';
+  // How long to wait for the Turnstile widget to hand out a token after a reset.
+  // Settable only by a test (window.__OSA_TEST__).
+  let turnstileRefreshWaitMs = 10000;
+
+  // Whether a chat response is the server's refusal of a session it does not hold. The body
+  // is read from a copy, so a response that is anything else goes on to be read as usual.
+  async function refusedAsSessionUnknown(response) {
+    if (response.status !== 409) return false;
+    try {
+      return isSessionUnknown(response.status, await response.clone().json());
+    } catch {
+      return false;
+    }
+  }
+
+  // A fresh Turnstile token, or null when none arrived in time. A token is verified once, so
+  // a request that was refused before it reached the model has used the one it carried.
+  async function freshTurnstileToken() {
+    turnstileToken = null;
+    if (turnstileWidgetId === null || !window.turnstile) return null;
+    window.turnstile.reset(turnstileWidgetId);
+    const until = Date.now() + turnstileRefreshWaitMs;
+    while (!turnstileToken && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return turnstileToken;
   }
 
   // Turn a failed response into an Error carrying the most useful message.
@@ -16408,12 +16463,15 @@
       // Until the server has confirmed this session in this page load (or after it has
       // been idle longer than the server keeps one), carry the conversation so far: a
       // server that forgot the session starts it from this, and one that has it ignores it.
-      Object.assign(body, reseedFields({
+      const reseed = reseedFields({
         list: conversationBefore,
         confirmedAt: serverConfirmedAt,
         now: Date.now(),
         ttlMs: SESSION_TTL_MS,
-      }));
+      });
+      Object.assign(body, reseed);
+      // A request with no turns for a session it names asks to be told if the server lost it.
+      Object.assign(body, expectSessionFields({ sessionId, reseed }));
 
       // Add Turnstile token if available
       if (turnstileToken) {
@@ -16458,21 +16516,53 @@
       // A streamed request is bounded by its silence (60 s after the last data from the
       // server), not by its length; one sent with streaming off has no progress to
       // measure, so it keeps a fixed 2 minutes.
-      const idle = CONFIG.streamingEnabled ? createIdleTimeout() : null;
+      let idle = CONFIG.streamingEnabled ? createIdleTimeout() : null;
 
       // BYOK keys ride on the header matching their provider (inferred from the
       // key's own prefix; see inferKeyProvider and chatRequestHeaders).
-      let response;
-      try {
-        response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat`, {
-          method: 'POST',
-          headers: chatRequestHeaders(),
-          body: JSON.stringify(body),
-          signal: idle ? idle.signal : AbortSignal.timeout(120000),
-        });
-      } catch (fetchError) {
+      const postChat = async () => {
+        try {
+          return await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat`, {
+            method: 'POST',
+            headers: chatRequestHeaders(),
+            body: JSON.stringify(body),
+            signal: idle ? idle.signal : AbortSignal.timeout(120000),
+          });
+        } catch (fetchError) {
+          if (idle) idle.stop();
+          throw fetchError;
+        }
+      };
+      let response = await postChat();
+
+      // The server holds no session for the id the request named (it restarted, or let the
+      // session go), and refused to start an empty one. Send the request once more with the
+      // conversation, as a first request after a page load does. Nothing was run or counted.
+      if (body.expect_session && await refusedAsSessionUnknown(response)) {
         if (idle) idle.stop();
-        throw fetchError;
+        serverConfirmedAt = null;
+        delete body.expect_session;
+        Object.assign(body, reseedFields({
+          list: conversationBefore,
+          confirmedAt: serverConfirmedAt,
+          now: Date.now(),
+          ttlMs: SESSION_TTL_MS,
+        }));
+        // The refused request spent its Turnstile token, which the worker verifies once.
+        if (body.cf_turnstile_response) {
+          delete body.cf_turnstile_response;
+          const fresh = await freshTurnstileToken();
+          if (!fresh) throw new Error(SESSION_LOST_MESSAGE);
+          body.cf_turnstile_response = fresh;
+        }
+        idle = CONFIG.streamingEnabled ? createIdleTimeout() : null;
+        response = await postChat();
+        // Told the same again, though nothing asked for it: the question goes back in the
+        // input, and the next send carries the conversation.
+        if (await refusedAsSessionUnknown(response)) {
+          if (idle) idle.stop();
+          throw new Error(SESSION_LOST_MESSAGE);
+        }
       }
 
       if (!response.ok) {
@@ -18273,6 +18363,8 @@
     window.OSAChatWidget.__idle = {
       set: (ms, toolMs = ms * 2) => { requestIdleMs = ms; requestToolMs = toolMs; },
     };
+    // How long a resend waits for a fresh Turnstile token, for a test that cannot wait 10 s.
+    window.OSAChatWidget.__turnstileWait = { set: (ms) => { turnstileRefreshWaitMs = ms; } };
     window.OSAChatWidget.__reveal = {
       fencedRanges,
       nextRevealEnd,
