@@ -1,10 +1,10 @@
-// The prompt's power-spectrum recipe on a real NEMAR recording, once, by hand (E5.2, #669).
+// The power-spectrum procedure's recipe on a real NEMAR recording, once, by hand (E5.2, #669).
 //
-// frontend/test-data-lane.js runs the recipe as the prompt writes it over synthetic signals held
-// in memory, in CI. This runs the same block, extracted from NEMAR's power-spectrum procedure, against a
-// real recording on the production data host, and checks it against a by-hand Welch estimate
-// that shares no code with scipy.signal.welch. It needs the network, so CI does not run it; the
-// figures in docs/community-browser-runtime.md come from it.
+// frontend/test-data-lane.js runs the recipe as src/assistants/nemar/procedures/power-spectrum.md
+// writes it, over synthetic signals held in memory, in CI. This runs the same block, extracted
+// from that document, against a real recording on the production data host, and checks it
+// against a by-hand Welch estimate that shares no code with scipy.signal.welch. It needs the
+// network, so CI does not run it; the figures in docs/community-browser-runtime.md come from it.
 //
 // What is real: NEMAR's config, lock overlay and prelude, the worker core as the widget runs it,
 // Pyodide 0.29.5 from npm (the wheels it loads are cached under .cache/pyodide-packages),

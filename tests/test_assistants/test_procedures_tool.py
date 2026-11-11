@@ -104,6 +104,9 @@ class TestACommunityThatCanRunCode:
         assert f"before `{PROPOSE_PLAN_TOOL_NAME}`" in section
         assert "as written" in section
         assert "plan-first step rules" in section
+        # Where a document has no separate read step, the document wins over the
+        # plan-first text that follows this section in the prompt.
+        assert "the document wins" in section
 
     def test_the_prompt_carries_the_list_not_the_documents(self) -> None:
         prompt = _assistant(CODE_AND_PLAN).get_system_prompt()

@@ -339,9 +339,10 @@ with many channels the budget binds at EEG rates too (33 channels at 250 Hz and 
 | call | result |
 |---|---|
 | 50 minutes at 250 Hz, 3 channels, one `welch` call per channel | refused (750,000 samples) |
-| the same, as the prompt's pieces, at a 64 MB budget | 2,999 segments over the whole 3,000 s, each read within a quarter of the budget |
+| the same, as `power-spectrum.md`'s pieces, at a 64 MB budget | 2,999 segments over the whole 3,000 s, each read within a quarter of the budget |
 
-`frontend/test-data-lane.js` runs both of the prompt's blocks as written,
+`frontend/test-data-lane.js` runs the code blocks of `power-spectrum.md` and `erp-by-condition.md`
+(NEMAR's procedure documents, `src/assistants/nemar/procedures/`) as written,
 with controls that the whole array and one over-long channel are refused,
 so a Pyodide that lifts the limit says so.
 For the spectrum it runs the block as written, with its one I/O call, `eegprep_lean.read_window`, answered from an array in memory,
@@ -353,7 +354,7 @@ and that a 50-minute signal at 250 Hz, which one call refuses, is covered whole:
 every one of its 2,999 segments counted on every channel, the last piece ending at the end of the recording, and a tone carried only by its last tenth found at its frequency.
 
 Measured on a real recording, 2026-11-10, by `frontend/browser-harness/spectrum-real-recording.mjs` (run it with `bun`; it needs the network, so CI does not),
-which takes the block out of NEMAR's system prompt and runs it on Pyodide 0.29.5 under Bun (not in a browser),
+which takes the block out of NEMAR's `power-spectrum.md` and runs it on Pyodide 0.29.5 under Bun (not in a browser),
 in NEMAR's production runtime and prelude, with `https://zarr.nemar.org/` as the data host:
 `on002718` sub-002 `FaceRecognition`, group `eeg_250hz`, 74 channels × 747,750 samples (2,991 s), 422 MB as one read.
 One `welch` call over a channel is refused.

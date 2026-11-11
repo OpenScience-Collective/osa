@@ -774,8 +774,10 @@ class CommunityAssistant(ToolAgent):
                 f"When a request matches one of them, call `{GET_PROCEDURE_TOOL_NAME}` with "
                 f"its id before `{PROPOSE_PLAN_TOOL_NAME}`, then propose the steps of the "
                 "document's plan as written (its titles, in its order), filling in only the "
-                "dataset, recording, channel, conditions and bands. A request that matches "
-                "none of them uses the plan-first step rules."
+                "dataset, recording, channel, conditions and bands. Where a document's plan "
+                "differs from the plan-first step rules (for instance it has no separate read "
+                "step), the document wins. A request that matches none of them uses the "
+                "plan-first step rules."
             )
         else:
             rule = (
