@@ -506,6 +506,14 @@ jobs:
       - name: Run the History panel tests on a real DOM
         run: bun frontend/test-widget-history-panel.js
 
+      # The plan card and the step progress (E2.3, E2.4), the real widget and the runtime
+      # bundle as built, with fetch answering recorded-shape SSE: the card and its edits,
+      # the decision posted to /chat/resume, consent, step headers, the strip and bar,
+      # Stop plan, and a restored chat. The Python half is
+      # tests/test_frontend/test_plan_resume_payload.py.
+      - name: Run the plan card tests on a real DOM
+        run: bun frontend/test-widget-plan-card.js
+
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a
       # reading pace, the code block whole, and at once with reduced motion emulated.
