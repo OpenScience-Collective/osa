@@ -1219,7 +1219,8 @@ console.log('\nthe real bundle, loaded into the page, answers through the widget
   });
   assertEqual(widget.getBrowserRuntimeStatus().state, 'loading', 'loading while the bundle is fetched');
   const tools = await api.declaredClientTools();
-  assertEqual(tools, ['execute_code', 'get_full_output'], 'once loaded, the tools are declared');
+  // propose_plan rides along once the bundle that can answer one is loaded (E2.3).
+  assertEqual(tools, ['execute_code', 'get_full_output', 'propose_plan'], 'once loaded, the tools are declared');
   assertEqual(widget.getBrowserRuntimeStatus().state, 'ready', 'and the status says ready');
 
   // A container whose render throws: the gate must still settle, or the

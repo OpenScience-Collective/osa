@@ -447,3 +447,18 @@ After a reload the figure has to come back, as an image the browser decoded, thr
 The stored history must hold no figure, only `images: []` and the run's `figureCount`.
 The sheet must sit inside the window with nothing scrolling sideways and every button at least 44 px; in the dark scheme it takes the dark panel's color, and Escape closes it and returns focus to the History button.
 It is what CI runs, beside the run card check; with a screenshot directory it writes the light and dark sheet, the opened and restored chats and the pop-out.
+
+### The notebook card and the History row menu's notebook items
+
+```bash
+bun frontend/browser-harness/notebook-entry-check.mjs [screenshot-dir]
+```
+
+stands up its own server (the widget, the runtime bundle that carries the notebook builder, and a capsule community config that declares the Python tool) and drives headless Chrome at 400 px, in light and in dark (#675, E4.3).
+Seven chats are seeded in storage: the open one and three more on the page's dataset, and three on another dataset, whose Continue is disabled with its reason.
+The card under the last reply must sit inside the panel with nothing scrolling sideways, every control at least 44 px tall, and its sentence and both buttons at 4.5:1 or better.
+The Download code menu must open inside the panel with its two 44 px items and its note, readable at 4.5:1.
+The History sheet's last row, the one nearest the end of the list, gets its menu opened and Download code unfolded: the tallest the menu gets.
+The list clips what runs past it, so the menu must be wholly inside the list; the widget caps its height at the list's and scrolls it into view.
+Without that cap, the check fails: the menu is taller than the list.
+It is what CI runs; with a screenshot directory (or `NOTEBOOK_ENTRY_CHECK_SCREENSHOTS`) it writes the card, the open menu and the History menu in both schemes.
