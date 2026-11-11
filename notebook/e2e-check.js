@@ -16,6 +16,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attachWithNetwork, connect, findChrome, launch, NetworkRecorder } from '../frontend/browser-harness/chrome.js';
+import { buildConversationNotebook } from '../frontend/osa-notebook-builder.js';
+import { NOTEBOOK_CONVERSATIONS } from '../frontend/test-support/notebook-conversations.js';
 
 const COMMUNITY = 'nemar';
 // One dataset per environment, each present only on that environment's Zarr host,
@@ -924,6 +926,233 @@ async function main() {
         (await messagesOf(page)).some(
           (m) => m?.source === 'osa-notebook' && m.type === type && Object.entries(fields).every(([k, v]) => m[k] === v)
         );
+      /**
+       * The notebook tabs and the import (#673, #676), through the host page: the
+       * same messages the widget posts (docs/adr/0017-notebook-import-and-tabs.md),
+       * with a real import from the conversation builder. Everything the page does
+       * with them is read back from JupyterLite's own storage and shell, not from
+       * what the page says about itself.
+       */
+      async function checkTabsAndImport(host) {
+        const frameSession = () => host.frames.at(-1);
+        const inFrame = (expression) => evaluateAwaited(cdp, frameSession(), expression);
+        const getContents = (path, content) =>
+          inFrame(
+            `window.jupyterapp.serviceManager.contents.get(${JSON.stringify(path)}, { content: ${content} }).then((m) => m, () => null)`
+          );
+        const exists = async (path) => (await getContents(path, false)) !== null;
+        const directory = () =>
+          inFrame(
+            `window.jupyterapp.serviceManager.contents.get(${JSON.stringify(COMMUNITY)}, { content: true }).then((d) => d.content.map((m) => m.path).sort())`
+          );
+        const activePath = () => evaluate(cdp, frameSession(), 'window.jupyterapp.shell.currentWidget?.context?.path ?? null');
+        const notebookMessages = async (type) =>
+          (await messagesOf(host)).filter((m) => m?.source === 'osa-notebook' && m.type === type);
+        const latestList = async () => (await notebookMessages('notebooks')).at(-1) ?? null;
+        // A list follows every change a moment later, so it is polled for, never slept for.
+        const listWhere = (predicate, timeoutMs = 30_000) =>
+          pollUntil(
+            async () => {
+              const list = await latestList();
+              return list && predicate(list) ? list : null;
+            },
+            timeoutMs,
+            300
+          ).catch(() => null);
+        let requestCounter = 0;
+        const ask = async (type, fields = {}, timeoutMs = 120_000) => {
+          requestCounter += 1;
+          const requestId = `e2e-${requestCounter}`;
+          await evaluate(
+            cdp,
+            host.sessionId,
+            `window.__send(${JSON.stringify({ target: 'osa-notebook', type, requestId, ...fields })}); true`
+          );
+          return pollUntil(
+            async () => (await notebookMessages('result')).find((m) => m.requestId === requestId) ?? null,
+            timeoutMs,
+            300
+          ).catch(() => null);
+        };
+        const itemOf = (list, path) => list?.items.find((item) => item.path === path);
+        const starterPath = NOTEBOOK_PATH;
+        const prefix = `${COMMUNITY}/${DATASET} · `;
+        const hasAutorun = (notebook) => JSON.stringify(notebook).includes('osa-autorun');
+
+        // The starter is the first notebook, open and listed.
+        const first = await listWhere((list) => itemOf(list, starterPath)?.open === true && list.active === starterPath);
+        report(
+          !!first && itemOf(first, starterPath).kind === 'playground' && itemOf(first, starterPath).title === 'Playground',
+          `the page lists the starter as the open "Playground" notebook (${JSON.stringify(first?.items)})`
+        );
+        report(first?.items.length === 1, 'and as the only notebook to begin with');
+
+        // Whatever setup left unsaved is saved by the notebook's own autosave; the
+        // starter's last_modified is read once that has settled, so a later change is
+        // the import's.
+        const settled = await pollUntil(
+          () => evaluate(cdp, frameSession(), 'window.jupyterapp.shell.currentWidget?.context?.model?.dirty === false'),
+          30_000,
+          500
+        ).catch(() => false);
+        report(settled, "the starter's own autosave settled before the import");
+        const starterBefore = await contentsLastModified(cdp, frameSession(), starterPath);
+        report(!!starterBefore, `the starter's last_modified was read (${starterBefore})`);
+
+        // --- Import: a real builder notebook, with an autorun tag put on a cell ---
+        const conversation = NOTEBOOK_CONVERSATIONS.erp();
+        const built = buildConversationNotebook({ ...conversation, datasetId: DATASET });
+        const tagged = structuredClone(built.notebook);
+        tagged.cells.find((cell) => cell.cell_type === 'code').metadata = { tags: ['osa-autorun'] };
+        const importFields = { datasetId: DATASET, title: conversation.title, notebook: tagged, stats: built.stats };
+        log('tabs: importing a notebook from the builder');
+        const imported = await ask('import-notebook', importFields);
+        const importedPath = imported?.path;
+        report(imported?.ok === true, `import-notebook was answered ok (${JSON.stringify(imported)})`);
+        report(
+          typeof importedPath === 'string' &&
+            importedPath.startsWith(prefix) &&
+            importedPath.endsWith('.ipynb') &&
+            importedPath.slice(prefix.length, -'.ipynb'.length) === conversation.title,
+          `it is written as "<community>/<dataset> · <title>.ipynb" (${importedPath})`
+        );
+        const stored = importedPath ? await getContents(importedPath, true) : null;
+        report(stored?.type === 'notebook', 'the file exists in JupyterLite storage as a notebook');
+        report(stored?.content?.cells?.length === built.notebook.cells.length, 'with every cell the builder made');
+        report(!!stored?.content && !hasAutorun(stored.content), 'and the osa-autorun tag is not in it, so an import never runs by itself');
+        report(stored?.content?.metadata?.osa?.kind === 'chat', 'it records that it came from a chat');
+        report((await activePath()) === importedPath, 'it is open: the notebook on screen is the imported one');
+        const afterImport = await listWhere((list) => itemOf(list, importedPath)?.open === true && list.active === importedPath);
+        report(!!afterImport, 'the page lists it as open and active');
+        report(
+          itemOf(afterImport, importedPath)?.kind === 'chat' && itemOf(afterImport, importedPath)?.undoable === true,
+          'as a chat notebook that can still be undone'
+        );
+        report(itemOf(afterImport, importedPath)?.title === conversation.title, 'under its title');
+        report(
+          (await contentsLastModified(cdp, frameSession(), starterPath)) === starterBefore,
+          'the starter notebook was not changed: its last_modified is the same'
+        );
+        // Nothing runs by itself: a code cell that ran would have an execution count.
+        await Bun.sleep(3_000);
+        const counts = await evaluate(
+          cdp,
+          frameSession(),
+          `(() => {
+            const cells = window.jupyterapp.shell.currentWidget.content.model.cells;
+            return Array.from({ length: cells.length }, (_, i) => cells.get(i)).filter((cell) => cell.type === 'code').map((cell) => cell.executionCount);
+          })()`
+        );
+        report(counts.length > 0 && counts.every((count) => count === null), `no cell of the import ran by itself (${JSON.stringify(counts)})`);
+
+        // Python survives a tab switch: the starter's kernel keeps what setup defined.
+        log('tabs: back to the starter, whose Python should still be there');
+        const back = await ask('open-notebook', { path: starterPath });
+        report(back?.ok === true && (await activePath()) === starterPath, 'opening the Playground shows it again');
+        const kept = await kernelStdout(cdp, frameSession(), 'print(type(eegprep_lean).__name__)', 60_000);
+        report(kept === 'module\n', `its kernel kept what setup defined across the switch (${JSON.stringify(kept)})`);
+        report(
+          (await contentsLastModified(cdp, frameSession(), starterPath)) === starterBefore,
+          'and the starter is still unchanged'
+        );
+
+        // --- Undo ---
+        log('tabs: undo');
+        const undone = await ask('undo-import', { path: importedPath });
+        report(undone?.ok === true, `undo-import was answered ok (${JSON.stringify(undone)})`);
+        report(!(await exists(importedPath)), 'the imported file is gone');
+        const afterUndo = await listWhere((list) => !itemOf(list, importedPath));
+        report(!!afterUndo && afterUndo.active === starterPath, 'it is no longer listed, and the starter is the notebook on screen');
+        const undoAgain = await ask('undo-import', { path: importedPath });
+        report(undoAgain?.ok === false, 'a second undo of the same path is refused');
+
+        // --- Run all: cell by cell, and it stops at the first cell that fails ---
+        log('tabs: run-all on small imports');
+        const codeCell = (id, source) => ({ cell_type: 'code', id, metadata: {}, execution_count: null, outputs: [], source });
+        const small = (cells) => ({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: { kernelspec: { display_name: 'Python (Pyodide)', language: 'python', name: 'python' } },
+          cells: [{ cell_type: 'markdown', id: 'intro', metadata: {}, source: '# Run all check' }, ...cells],
+        });
+        const codeCounts = () =>
+          evaluate(
+            cdp,
+            frameSession(),
+            `(() => {
+              const cells = window.jupyterapp.shell.currentWidget.content.model.cells;
+              return Array.from({ length: cells.length }, (_, i) => cells.get(i)).filter((cell) => cell.type === 'code').map((cell) => cell.executionCount);
+            })()`
+          );
+        const passing = await ask('import-notebook', {
+          datasetId: DATASET,
+          title: 'All pass',
+          notebook: small([codeCell('a', 'total = 2 + 3'), codeCell('b', 'print(total)')]),
+        });
+        const passed = await ask('run-all', { path: passing?.path }, 240_000);
+        report(passed?.ok === true && passed.path === passing?.path, `run-all of a notebook whose cells pass is answered ok (${JSON.stringify(passed)})`);
+        const passedCounts = await codeCounts();
+        report(passedCounts.length === 2 && passedCounts.every((count) => count !== null), `and every code cell ran (${JSON.stringify(passedCounts)})`);
+        report((await kernelStdout(cdp, frameSession(), 'print(total)', 60_000)) === '5\n', 'in order, in one kernel');
+        report((await ask('undo-import', { path: passing?.path }))?.ok === true, 'a notebook that was run, not edited, can still be undone');
+        const failing = await ask('import-notebook', {
+          datasetId: DATASET,
+          title: 'One fails',
+          notebook: small([codeCell('a', 'total = 2 + 3'), codeCell('b', "raise ValueError('stop here')"), codeCell('c', "print('never')")]),
+        });
+        const stopped = await ask('run-all', { path: failing?.path }, 240_000);
+        report(stopped?.ok === false && /cell 3/.test(stopped.error), `run-all stops at the first cell that fails and says which (${JSON.stringify(stopped)})`);
+        const stoppedCounts = await codeCounts();
+        report(
+          stoppedCounts[0] !== null && stoppedCounts[1] !== null && stoppedCounts[2] === null,
+          `the cell after the failure did not run (${JSON.stringify(stoppedCounts)})`
+        );
+        report((await ask('undo-import', { path: failing?.path }))?.ok === true, 'and that notebook is undone too');
+        report(!(await exists(passing?.path)) && !(await exists(failing?.path)), 'with both files gone');
+
+        // --- Two imports of the same title arrive as two tabs ---
+        log('tabs: the same import twice');
+        const one = await ask('import-notebook', importFields);
+        const two = await ask('import-notebook', importFields);
+        report(one?.ok === true && two?.ok === true, 'two imports are both accepted');
+        report(
+          typeof one?.path === 'string' && two?.path === `${one.path.slice(0, -'.ipynb'.length)} 2.ipynb`,
+          `the second is a new notebook named with " 2", and nothing is overwritten (${one?.path}, ${two?.path})`
+        );
+        report((await exists(one?.path)) && (await exists(two?.path)), 'both files exist');
+        const both = await listWhere(
+          (list) => itemOf(list, one?.path)?.open && itemOf(list, two?.path)?.open && list.active === two?.path
+        );
+        report(!!both, 'and both are open tabs, the second the active one');
+        const olderUndo = await ask('undo-import', { path: one?.path });
+        report(olderUndo?.ok === false && (await exists(one?.path)), 'only the latest import can be undone');
+
+        // --- Not ours: nothing is answered, nothing is written ---
+        log('tabs: messages the page must not act on');
+        const filesBefore = await directory();
+        for (const message of [
+          { target: 'someone-else', type: 'new-notebook', requestId: 'foreign-1' },
+          { target: 'osa-notebook', type: 'delete-everything', requestId: 'unknown-1' },
+          { type: 'new-notebook', requestId: 'untargeted-1' },
+        ]) {
+          await evaluate(cdp, host.sessionId, `window.__send(${JSON.stringify(message)}); true`);
+        }
+        const outside = await ask('open-notebook', { path: '../escape.ipynb' });
+        report(outside?.ok === false, 'a path outside the community is refused, and answered');
+        const elsewhere = await ask('close-notebook', { path: `other/${DATASET}.ipynb` });
+        report(elsewhere?.ok === false, "so is another community's");
+        const hostileImport = await ask('import-notebook', { ...importFields, datasetId: '../escape' });
+        report(
+          hostileImport?.ok === false && /dataset/.test(hostileImport.error),
+          `an import for a dataset that is not valid is refused (${hostileImport?.error})`
+        );
+        const wrongFormat = await ask('import-notebook', { ...importFields, notebook: { ...tagged, nbformat: 3 } });
+        report(wrongFormat?.ok === false, 'so is a notebook that is not nbformat 4');
+        const answered = (await notebookMessages('result')).filter((m) => /^(foreign|unknown|untargeted)-/.test(m.requestId));
+        report(answered.length === 0, 'a message for another target, of an unknown type, or with no target is not answered');
+        report(JSON.stringify(filesBefore) === JSON.stringify(await directory()), 'and none of them, nor a refused import, wrote a file');
+      }
+
       let embedSeconds = null;
       try {
         if (allowedHost) {
@@ -976,6 +1205,8 @@ async function main() {
             await Bun.sleep(2_000);
             report(await shows('light'), 'after the widget chose light, the device switching to dark left the notebook light');
           }
+
+          await checkTabsAndImport(host);
         }
 
         log(`embedded: a site that may not embed the notebook (${refusedOrigin})`);

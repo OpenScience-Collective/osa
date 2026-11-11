@@ -434,9 +434,16 @@
   //   setup: the notebook's last setup status: null (none yet), 'running',
   //          'done', 'error' or 'none' (a starter with no setup cell)
   //   failure: why it failed, for the fallback's text: 'startup' or 'timeout'
+  // The notebook tabs and the import (#673, #676), all of it reset with the frame:
+  //   outbox:   messages waiting for the notebook to report ready
+  //   requests: requestId -> {type, resolve, timer} for a message awaiting its result
+  //   tabs:     the notebooks the notebook page last listed, {items, active}
+  //   import:   the banner's import, or null (see importNotebookToTab)
   const notebookEmbed = {
     frame: null, datasetId: null, state: 'idle', setup: null, failure: null,
-    loadTimer: null, readyTimer: null, sentScheme: null
+    loadTimer: null, readyTimer: null, sentScheme: null,
+    outbox: [], requests: new Map(), tabs: { items: [], active: null },
+    import: null
   };
   // --- Conversation store ---
   // The saved chats (#654): one record per community and origin, under
@@ -1569,6 +1576,61 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    /* The import banner (#673), above the notebook's frame. Every color is a
+       token, so the dark appearance needs no rules of its own: the banner sits on
+       the notice's surface. */
+    .osa-notebook-banner[hidden] {
+      display: none;
+    }
+
+    .osa-notebook-banner button:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    .osa-notebook-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 0 0 auto;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: var(--osa-notice-text);
+      background: var(--osa-notice-bg);
+      border-bottom: 1px solid var(--osa-notice-border);
+    }
+
+    .osa-notebook-banner-text {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .osa-notebook-banner button {
+      flex: 0 0 auto;
+      min-height: 30px;
+      padding: 4px 12px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--osa-notice-text);
+      text-decoration: underline;
+      cursor: pointer;
+    }
+
+    .osa-notebook-banner .osa-notebook-run-all {
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      text-decoration: none;
+    }
+
+    .osa-notebook-banner button:disabled {
+      opacity: 0.55;
+      cursor: default;
     }
 
     /* The chat's own header buttons have nothing to do on the notebook tab.
@@ -4268,7 +4330,10 @@
       }
     });
     notebookEmbed.readyTimer = setTimeout(() => failNotebook(container, frame, 'timeout'), NOTEBOOK_TOTAL_MS);
-    view.insertBefore(frame, view.firstChild);
+    // Under the notebooks strip and the import banner, which are the view's first two children.
+    const banner = view.querySelector('.osa-notebook-banner');
+    if (banner) banner.after(frame);
+    else view.insertBefore(frame, view.firstChild);
     frame.src = notebookUrlFor(datasetId);
     renderNotebookStatus(container);
   }
@@ -4283,6 +4348,7 @@
     notebookEmbed.setup = null;
     notebookEmbed.failure = null;
     notebookEmbed.sentScheme = null;
+    resetNotebookTabs('The notebook was replaced before it answered.');
   }
 
   function failNotebook(container, frame, failure) {
@@ -4291,6 +4357,7 @@
     clearTimeout(notebookEmbed.readyTimer);
     notebookEmbed.state = 'failed';
     notebookEmbed.failure = failure;
+    failNotebookRequests('The notebook did not open here.');
     console.warn(`[OSA] The notebook for ${notebookEmbed.datasetId} did not ${failure === 'startup' ? 'start' : 'load in time'}; offering it in a tab of its own.`);
     renderNotebookStatus(container);
     renderLauncherIcons(container);
@@ -4329,6 +4396,13 @@
       notebookEmbed.state = 'ready';
       notebookEmbed.failure = null;
       postNotebookTheme(true);
+      flushNotebookOutbox();
+    } else if (data.type === 'result') {
+      settleNotebookRequest(data);
+      return;
+    } else if (data.type === 'notebooks') {
+      applyNotebookList(container, data);
+      return;
     } else if (data.type === 'setup' && ['running', 'done', 'error', 'none'].includes(data.status)) {
       notebookEmbed.setup = data.status;
     } else if (data.type === 'error' && data.phase === 'startup') {
@@ -4347,6 +4421,264 @@
     }
     renderNotebookStatus(container);
     renderLauncherIcons(container);
+  }
+
+  // --- Notebook tabs ---
+  // The import of a chat's notebook into the notebook tab (#673), over the notebook page's
+  // bridge (notebook/osa-bridge.js, docs/adr/0017-notebook-import-and-tabs.md).
+  // The widget cannot write the notebook's storage itself, since the frame is
+  // another origin, so everything here is a request to the page and its answer:
+  //   to the page:   {target: 'osa-notebook', type, requestId, ...}
+  //                  import-notebook, run-all, undo-import, new-notebook,
+  //                  open-notebook, rename-notebook, close-notebook
+  //   from the page: {source: 'osa-notebook', type: 'result', requestId, ok, path?, error?}
+  //                  {source: 'osa-notebook', type: 'notebooks', items, active}
+  // The last `notebooks` message is kept, and says whether the import can still be undone.
+  // A request is posted once, to the notebook's own origin, and only after the
+  // notebook has reported ready; until then it waits in the outbox.
+
+  const NOTEBOOK_KINDS = ['playground', 'chat', 'blank'];
+  // Longest wait for the notebook's answer to one request. An import waits for
+  // the starter's setup first, which on a cold start takes a while.
+  const NOTEBOOK_REQUEST_MS = 180000;
+  let notebookRequestCounter = 0;
+
+  // The frame was replaced or failed: nothing posted to it will be answered.
+  function failNotebookRequests(reason) {
+    const waiting = [...notebookEmbed.requests.keys()];
+    notebookEmbed.outbox = [];
+    for (const requestId of waiting) finishNotebookRequest(requestId, { ok: false, error: reason });
+  }
+
+  // Settles one request: its callback first (the banner and the strip update
+  // in the same turn as the message that answered it), then its promise.
+  function finishNotebookRequest(requestId, result) {
+    const request = notebookEmbed.requests.get(requestId);
+    if (!request) return;
+    notebookEmbed.requests.delete(requestId);
+    clearTimeout(request.timer);
+    if (request.onResult) request.onResult(result);
+    request.resolve(result);
+  }
+
+  // The tabs and import go with the frame they belong to.
+  function resetNotebookTabs(reason) {
+    failNotebookRequests(reason);
+    notebookEmbed.tabs = { items: [], active: null };
+    notebookEmbed.import = null;
+    const container = document.querySelector('.osa-chat-widget');
+    if (container) renderNotebookBanner(container);
+  }
+
+  function postNotebookMessage(message) {
+    const frame = notebookEmbed.frame;
+    if (!frame || !frame.contentWindow) return false;
+    try {
+      frame.contentWindow.postMessage(message, notebookOrigin());
+      return true;
+    } catch (e) {
+      console.warn('[OSA] Could not send a message to the notebook:', e);
+      return false;
+    }
+  }
+
+  // Posts once the notebook has reported ready, and queues until then.
+  function flushNotebookOutbox() {
+    const waiting = notebookEmbed.outbox;
+    notebookEmbed.outbox = [];
+    for (const message of waiting) {
+      if (postNotebookMessage(message)) continue;
+      finishNotebookRequest(message.requestId, { ok: false, error: 'The message could not be sent to the notebook.' });
+    }
+  }
+
+  // Sends one request and resolves with the notebook's answer, {ok, path?, error?};
+  // `onResult`, if given, runs with it first, in the turn the answer arrives.
+  function sendNotebookRequest(type, fields, onResult) {
+    return new Promise((resolve) => {
+      notebookRequestCounter += 1;
+      const requestId = `osa-${notebookRequestCounter}-${Math.random().toString(36).slice(2, 8)}`;
+      const timer = setTimeout(() => {
+        notebookEmbed.outbox = notebookEmbed.outbox.filter((message) => message.requestId !== requestId);
+        finishNotebookRequest(requestId, { ok: false, error: 'The notebook did not answer.' });
+      }, NOTEBOOK_REQUEST_MS);
+      notebookEmbed.requests.set(requestId, { type, resolve, timer, onResult });
+      const message = { target: 'osa-notebook', type, requestId, ...fields };
+      notebookEmbed.outbox.push(message);
+      if (notebookEmbed.state === 'ready') flushNotebookOutbox();
+    });
+  }
+
+  // The notebook's answer to a request; one for a request this widget did not
+  // make, or already settled, is not acted on.
+  function settleNotebookRequest(data) {
+    if (typeof data.requestId !== 'string') return;
+    finishNotebookRequest(data.requestId, {
+      ok: data.ok === true,
+      path: typeof data.path === 'string' ? data.path : undefined,
+      error: typeof data.error === 'string' ? data.error : undefined
+    });
+  }
+
+  // The list of notebooks the page reported. Anything malformed is dropped, so
+  // the strip never shows a tab the page did not list.
+  function applyNotebookList(container, data) {
+    if (!Array.isArray(data.items)) {
+      console.warn('[OSA] Ignoring a list of notebooks that is not a list:', data);
+      return;
+    }
+    const items = [];
+    for (const item of data.items) {
+      if (!item || typeof item.path !== 'string' || typeof item.title !== 'string' ||
+          !NOTEBOOK_KINDS.includes(item.kind) || typeof item.open !== 'boolean') continue;
+      items.push({
+        path: item.path, title: item.title, kind: item.kind, open: item.open,
+        undoable: item.undoable === true
+      });
+    }
+    const active = typeof data.active === 'string' && items.some((item) => item.path === data.active) ? data.active : null;
+    notebookEmbed.tabs = { items, active };
+    const current = notebookEmbed.import;
+    if (current && current.path) {
+      const item = items.find((candidate) => candidate.path === current.path);
+      current.undoable = !!item && item.undoable;
+    }
+    renderNotebookBanner(container);
+  }
+
+  function pluralize(count, one, other) {
+    return `${count} ${count === 1 ? one : other}`;
+  }
+
+  // Hands a chat's notebook to the notebook page, which writes it as
+  // `<community>/<dataset> · <title>.ipynb`, opens it as a tab, and offers Run all
+  // and Undo here. The caller (the "Continue in notebook" card, E4.3) passes what
+  // buildConversationNotebook returned: {datasetId, title, notebook, stats}.
+  // Opens the notebook tab, and the panel, and waits for the notebook to be ready;
+  // resolves with the page's answer {ok, path?, error?}. Never throws.
+  function importNotebookToTab(input) {
+    const refuse = (reason) => {
+      console.warn(`[OSA] importNotebookToTab: ${reason}`);
+      return Promise.resolve({ ok: false, error: reason });
+    };
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container || !container.classList.contains('osa-capsule')) return refuse('this widget has no notebook tab');
+    if (!input || typeof input !== 'object') return refuse('nothing to import');
+    const { datasetId, title, notebook, stats } = input;
+    if (typeof datasetId !== 'string' || datasetId === '') return refuse('no dataset id');
+    if (typeof title !== 'string') return refuse('no title');
+    if (!notebook || typeof notebook !== 'object' || Array.isArray(notebook)) return refuse('no notebook');
+    if (!isNotebookAvailable() || currentDataset.id !== datasetId) {
+      return refuse(`the notebook on screen is not the one for ${datasetId}`);
+    }
+    setTab(container, 'notebook');
+    if (!isOpen) toggleChat(container);
+    if (notebookEmbed.state === 'failed' || !notebookEmbed.frame) return refuse('the notebook did not open here');
+    const steps = Number.isFinite(stats && stats.steps) ? stats.steps : 0;
+    const leftOut = Array.isArray(stats && stats.leftOut) ? stats.leftOut.length : 0;
+    const record = { state: 'importing', title, steps, leftOut, path: null, undoable: false, error: null };
+    notebookEmbed.import = record;
+    renderNotebookBanner(container);
+    return sendNotebookRequest('import-notebook', { datasetId, title, notebook, stats }, (result) => {
+      if (notebookEmbed.import !== record) return;
+      if (result.ok) {
+        record.state = 'imported';
+        record.path = result.path || null;
+        record.undoable = true;
+      } else {
+        record.state = 'error';
+        record.error = result.error || 'The notebook could not be imported.';
+      }
+      renderNotebookBanner(container);
+    });
+  }
+
+  // Run all and Undo: the banner's two buttons.
+  function runImportedNotebook(container) {
+    const record = notebookEmbed.import;
+    if (!record || !['imported', 'ran', 'failed'].includes(record.state) || !record.path) return;
+    record.state = 'running';
+    record.notice = null;
+    renderNotebookBanner(container);
+    sendNotebookRequest('run-all', { path: record.path }, (result) => {
+      if (notebookEmbed.import !== record) return;
+      record.state = result.ok ? 'ran' : 'failed';
+      record.error = result.ok ? null : (result.error || 'The cells did not all run.');
+      renderNotebookBanner(container);
+    });
+  }
+
+  function undoImportedNotebook(container) {
+    const record = notebookEmbed.import;
+    if (!record || !record.path || !record.undoable) return;
+    const before = record.state;
+    record.state = 'undoing';
+    renderNotebookBanner(container);
+    sendNotebookRequest('undo-import', { path: record.path }, (result) => {
+      if (notebookEmbed.import !== record) return;
+      if (result.ok) {
+        record.state = 'undone';
+        record.undoable = false;
+      } else {
+        // Most often: the reader edited it, so it was kept.
+        record.state = before === 'running' ? 'imported' : before;
+        record.undoable = false;
+        record.notice = result.error || 'It could not be undone.';
+      }
+      renderNotebookBanner(container);
+    });
+  }
+
+  // The banner under the strip, for the notebook the import made.
+  function renderNotebookBanner(container) {
+    const banner = container.querySelector('.osa-notebook-banner');
+    if (!banner) return;
+    const record = notebookEmbed.import;
+    const showing = !!record && (record.state === 'importing' || !record.path ||
+      notebookEmbed.tabs.active === null || notebookEmbed.tabs.active === record.path);
+    banner.hidden = !showing;
+    banner.textContent = '';
+    if (!showing) return;
+    const steps = pluralize(record.steps, 'step', 'steps');
+    const left = record.leftOut > 0
+      ? ` ${record.leftOut} ${record.leftOut === 1 ? 'run was' : 'runs were'} left out.`
+      : '';
+    const text = {
+      importing: `Importing ${steps} from your chat…`,
+      imported: `Imported ${steps} from your chat.${left} Python is starting; run all cells when it is ready.`,
+      running: 'Running the cells one at a time…',
+      ran: `All cells ran.${left}`,
+      undoing: 'Removing the imported notebook…',
+      undone: 'The imported notebook was removed.',
+      failed: record.error,
+      error: record.error
+    }[record.state] || '';
+    const message = document.createElement('span');
+    message.className = 'osa-notebook-banner-text';
+    message.textContent = record.notice ? `${text} ${record.notice}` : text;
+    banner.appendChild(message);
+    const addButton = (label, className, onClick, disabled = false) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = className;
+      button.textContent = label;
+      button.disabled = disabled;
+      button.addEventListener('click', onClick);
+      banner.appendChild(button);
+    };
+    const live = ['imported', 'running', 'ran', 'failed'].includes(record.state);
+    if (live) {
+      addButton('Run all', 'osa-notebook-run-all', () => runImportedNotebook(container), record.state === 'running');
+    }
+    if (live && record.undoable) {
+      addButton('Undo', 'osa-notebook-undo', () => undoImportedNotebook(container));
+    }
+    if (['ran', 'failed', 'undone', 'error'].includes(record.state)) {
+      addButton('Dismiss', 'osa-notebook-dismiss', () => {
+        if (notebookEmbed.import === record) notebookEmbed.import = null;
+        renderNotebookBanner(container);
+      });
+    }
   }
 
   // The notebook tab's header line and its loading and fallback overlays.
@@ -4386,6 +4718,7 @@
     view.className = 'osa-view osa-view-notebook osa-view-off';
     view.setAttribute('inert', '');
     view.innerHTML = `
+      <div class="osa-notebook-banner" role="status" hidden></div>
       <div class="osa-notebook-overlay osa-notebook-loading osa-overlay-hidden" role="status">
         <div class="osa-notebook-overlay-title">Opening the notebook</div>
         <div class="osa-notebook-bar-track"><div class="osa-notebook-bar"></div></div>
@@ -11720,7 +12053,12 @@
     window.OSAChatWidget.__isSameResponseMessage = isSameResponseMessage;
     window.OSAChatWidget.__notebook = {
       // The notebook tab's own state (#470), read-only, and its two timeouts.
-      state: () => ({ ...notebookEmbed, frame: undefined, loadTimer: undefined, readyTimer: undefined }),
+      state: () => ({
+        ...notebookEmbed, frame: undefined, loadTimer: undefined, readyTimer: undefined,
+        outbox: [...notebookEmbed.outbox], requests: notebookEmbed.requests.size
+      }),
+      // What E4.3's "Continue in notebook" card calls.
+      importNotebookToTab,
       setTimeouts: (afterLoadMs, totalMs) => {
         NOTEBOOK_AFTER_LOAD_MS = afterLoadMs;
         NOTEBOOK_TOTAL_MS = totalMs;

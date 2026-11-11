@@ -357,6 +357,12 @@ jobs:
       - name: Run notebook bootstrap tests
         run: bun notebook/test-open.js
 
+      # osa-notebook-files.js, the pure half of the notebook page's tabs and
+      # import: file names, what an import may hold, which messages to act on.
+      # What the page does with them is notebook/e2e-check.js, in real Chrome.
+      - name: Run notebook files tests
+        run: bun notebook/test-notebook-files.js
+
       # The worker core runs against the REAL Pyodide from npm, so the Python half
       # of the runtime is tested in CI rather than only by hand in a browser. The
       # npm package carries the interpreter; every wheel a suite loads (numpy, SciPy,
@@ -442,6 +448,9 @@ jobs:
 
       - name: Run the notebook tab tests on a real DOM
         run: bun frontend/test-widget-notebook-tab.js
+
+      - name: Run the notebook import tests on a real DOM
+        run: bun frontend/test-widget-notebook-import.js
 
       - name: Run the first paint tests on a real DOM
         run: bun frontend/test-widget-first-paint.js
