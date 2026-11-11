@@ -39,6 +39,12 @@ A browser page must be on one of the community's allowed origins
 `X-Anthropic-API-Key` or `X-OpenRouter-Key` header.
 The Cloudflare worker rate-limits the route and does not ask for a Turnstile
 token.
+Its limits are per IP address: the per-minute limit it shares with the chat
+routes, and an hourly limit of its own (100 in production), so searching in
+Discover does not use up the 20 chat questions an hour.
+An `Origin` header is enforced by browsers only, so a caller outside a browser
+can send any one: the per-IP limits and the community's daily and monthly budget
+are what bound the spend, not the origin list.
 
 | Field | Limits |
 |---|---|
@@ -68,7 +74,8 @@ token.
 - `summary` is a list of segments: `{"text": ...}` is plain text to show as
   text, and `{"dataset_id": ...}` is a result to link, so the page never parses
   markdown or HTML.
-  It is about 100 words and never more than 120.
+  It is about 100 words; sentences after the first are dropped once it would pass
+  120, and a first sentence that is long on its own is kept.
 - `picks` are at most three of the given results, best first, each with a short
   reason in plain text.
 - `cited_ids` are the ids the summary and the picks name, in order of first
@@ -79,12 +86,20 @@ token.
 Every id in the response is one of the ids in the request: a sentence that names
 any other id is dropped before the response is built, whatever the text of a
 result asks the model to say.
+A sentence that holds a link (`http://`, `https://` or `www.`) is dropped too.
+An id is checked inside `[[...]]` markers for every community; a bare id with no
+brackets is also checked, but only in the shape NEMAR ids have (two letters and
+six digits).
+A reply whose summary names no result at all (a refusal, a reply that is not the
+JSON asked for, text with no citation) is not an overview: it is a 502 and is not
+cached.
 
 | Status | Meaning |
 |---|---|
 | 403 | The origin is not allowed and no key was sent |
 | 404 | The community has no quick model |
 | 422 | A field is out of bounds (the body names which) |
+| 500 | A bug or a missing configuration on the server, not the model provider; the body has an error id to give the maintainers |
 | 502 | The model wrote no overview that could be shown, or the provider failed; try again later. Nothing is cached |
 
 ## Caching and cost
