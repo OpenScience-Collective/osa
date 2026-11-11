@@ -36,9 +36,10 @@ jobs:
   #
   # code=false docs=false: a push of a bot bookkeeping commit alone (below).
   #
-  # code=false docs=true: only documentation changed. Test runs the one test that
-  # reads documentation (test_embed_snippet_hygiene.py scans every tracked text
-  # file, docs/**/*.md included, for widget embed snippets); nothing else runs.
+  # code=false docs=true: only documentation changed. Test runs the two tests that
+  # read documentation (test_embed_snippet_hygiene.py scans every tracked text
+  # file, docs/**/*.md included, for widget embed snippets; test_privacy_page.py
+  # keeps PRIVACY.md naming the widget dialog's controls); nothing else runs.
   # Anything this job cannot classify, or fails on, runs everything.
   changes:
     name: Classify changes
@@ -250,12 +251,13 @@ jobs:
         run: |
           uv run pytest tests/ -v --cov=src --cov-report=xml -m "not network and not llm"
 
-      # A documentation-only change can still break this one test: it checks every
-      # widget embed snippet in any tracked text file, docs/**/*.md included.
-      - name: Run the test that reads documentation
+      # A documentation-only change can still break these tests: the first checks every
+      # widget embed snippet in any tracked text file, docs/**/*.md included; the second
+      # checks that PRIVACY.md still names the controls of the widget's privacy dialog.
+      - name: Run the tests that read documentation
         if: env.RUN_DOCS == 'true'
         run: |
-          uv run pytest tests/test_frontend/test_embed_snippet_hygiene.py -v -m "not network and not llm"
+          uv run pytest tests/test_frontend/test_embed_snippet_hygiene.py tests/test_frontend/test_privacy_page.py -v -m "not network and not llm"
 
       # The widget's light and dark appearance in real Chrome (#469). The bug is the
       # browser's own drawing of form controls on a dark host page, which the happy-dom
