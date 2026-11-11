@@ -353,7 +353,7 @@
   // holds the copies to each other.
   const MEMORY_BUDGETS_MB = Object.freeze([256, 512, 1024, 2048]);
   const DEFAULT_MEMORY_BUDGET_MB = 512;
-  // A budget as a reader reads it: 256 MB, 1 GB (osa-memory.js sizeLabel).
+  // A budget as a Settings choice reads it: 256 MB, 1 GB (osa-memory.js sizeLabel).
   function memorySizeLabel(mb) {
     return mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024} GB` : `${mb} MB`;
   }
@@ -802,7 +802,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-0SZW+yBsJvcAmUfMq94z+uml6IwbQY2M1Hl9bxCcuNNqviHEhKJdIDLRjfPzhxsU';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-CmnMFZjJfOAdo5XJkHd0RsjwIScuK5C9zF9chl/sKT5RjblkrSbeAV8XRSrowKTX';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -845,6 +845,10 @@
          outrank the dark rule below, which has to replace it (a color chosen to read
          on white is often too dark to read on the dark panel). */
       --osa-accent: var(--osa-accent-on-light, var(--osa-primary));
+      /* The caution color (a run over its memory budget, a plan expected to): 4.9:1 on the
+         light panel, and lightened below for the dark one. The run card and the plan card
+         read it through their own tokens. */
+      --osa-warn: #b45309;
       --osa-bg: #ffffff;
       --osa-text: #1f2937;
       --osa-text-light: #6b7280;
@@ -4044,7 +4048,7 @@
     }
 
     .osa-memory-bar-over .osa-memory-bar-fill {
-      background: #b45309;
+      background: var(--osa-warn);
     }
 
     .osa-workspace-actions {
@@ -4105,7 +4109,7 @@
       --osa-run-ok: #15803d;
       --osa-run-danger: #b91c1c;
       --osa-run-danger-bg: #fef2f2;
-      --osa-run-warn: #b45309;
+      --osa-run-warn: var(--osa-warn);
       --osa-run-warn-bg: #fffbeb;
       position: relative;
       border: 1px solid var(--osa-border);
@@ -4556,7 +4560,7 @@
     .osa-plan-strip,
     .osa-plan-bar {
       --osa-plan-danger: #b91c1c;
-      --osa-plan-warn: #b45309;
+      --osa-plan-warn: var(--osa-warn);
       --osa-plan-editing-bg: #fffbeb;
     }
 
@@ -5048,7 +5052,6 @@
     .osa-chat-widget.osa-dark .osa-plan-strip,
     .osa-chat-widget.osa-dark .osa-plan-bar {
       --osa-plan-danger: #fca5a5;
-      --osa-plan-warn: #fbbf24;
       --osa-plan-editing-bg: rgba(245, 158, 11, 0.12);
     }
 
@@ -5200,6 +5203,7 @@
       --osa-notice-border: #2c5a69;
       --osa-notice-text: #d3eef6;
       --osa-danger-text: #fca5a5;
+      --osa-warn: #fbbf24;
       /* A shadow alone vanishes against a dark host page, so every raised surface
          (the panel, the launcher, the tooltips) also gets a hairline edge. */
       --osa-shadow: 0 0 0 1px #374151, 0 10px 25px rgba(0, 0, 0, 0.5);
@@ -5334,7 +5338,6 @@
       --osa-run-ok: #4ade80;
       --osa-run-danger: #fca5a5;
       --osa-run-danger-bg: rgba(220, 38, 38, 0.15);
-      --osa-run-warn: #fbbf24;
       --osa-run-warn-bg: rgba(245, 158, 11, 0.15);
     }
 
@@ -7192,6 +7195,7 @@
           local: run.local === true,
           workspaceNote: clipField(run.workspaceNote, 'workspaceNote'),
           ...(heapMb ? { heapMb, budgetMb: normalizeMemoryBudget(run.budgetMb) } : {}),
+          ...(heapMb && normalizeHeapMb(run.heapBeforeMb) ? { heapBeforeMb: normalizeHeapMb(run.heapBeforeMb) } : {}),
           ...normalizePlanRunFields(run),
         };
       });
@@ -9258,8 +9262,10 @@
     if (move) move.told = true;
   }
 
-  // Get page context (URL, title, widget instructions, the dataset and a move) for contextual answers
-  function getPageContext() {
+  // Get page context (URL, title, widget instructions, the dataset and a move) for contextual
+  // answers. `withBudget` adds the reader's memory budget, for a request that declares the
+  // client tools (see withMemoryBudget for the one that is sent before they are known).
+  function getPageContext(withBudget = false) {
     // Widget instructions are always sent if configured, even if page context is off
     const hasWidgetInstructions = typeof CONFIG.widgetInstructions === 'string'
       && CONFIG.widgetInstructions.trim() !== '';
@@ -9273,7 +9279,7 @@
     // the browser (the controller exists), and with none of a page that cannot: there is
     // nothing to size there. Like the dataset, it is about the chat, so it is sent whether
     // or not the reader shares the page's URL.
-    const memoryBudget = browserTools ? normalizeMemoryBudget(userSettings.memoryBudgetMb) : null;
+    const memoryBudget = withBudget && browserTools ? normalizeMemoryBudget(userSettings.memoryBudgetMb) : null;
 
     if (!hasPageContext && !hasWidgetInstructions && !datasetId && !movedFrom && !memoryBudget) {
       return null;
@@ -9291,6 +9297,14 @@
     if (movedFrom) context.moved_from = movedFrom;
     if (memoryBudget) context.memory_budget_mb = memoryBudget;
     return context;
+  }
+
+  // `context` (getPageContext's, or null) with the reader's memory budget added. For the
+  // first request, whose page context is captured when the question is sent, before the
+  // wait for the runtime: only the budget is decided after it, and only for a request that
+  // declares tools to run code with (one sent with streaming off declares none).
+  function withMemoryBudget(context) {
+    return { ...(context || {}), memory_budget_mb: normalizeMemoryBudget(userSettings.memoryBudgetMb) };
   }
 
   // Load page context preference from localStorage
@@ -10356,7 +10370,16 @@
     if (!browserRuntime || typeof browserRuntime.heapBytes !== 'function'
       || !runtimeApi || !runtimeApi.memory || typeof callId !== 'string' || !callId) return {};
     const heapMb = runtimeApi.memory.heapMbFromBytes(browserRuntime.heapBytes(callId));
-    return heapMb ? { heapMb, budgetMb: normalizeMemoryBudget(userSettings.memoryBudgetMb) } : {};
+    if (!heapMb) return {};
+    // The run before it in the chat, so the card can tell the run that took the heap past
+    // the budget from the ones that only report what it left (heapReport). Called before
+    // this run is added to the chat.
+    const heapBeforeMb = lastRunHeapMb();
+    return {
+      heapMb,
+      budgetMb: normalizeMemoryBudget(userSettings.memoryBudgetMb),
+      ...(heapBeforeMb ? { heapBeforeMb } : {}),
+    };
   }
 
   // The same shape, for a run the READER started with "Edit and run"
@@ -10624,7 +10647,7 @@
       client_tools: browserTools ? withPlanTool(browserTools.declared) : [],
     };
     const carried = carriedMove();
-    const pageContext = getPageContext();
+    const pageContext = getPageContext(true);
     if (pageContext) body.page_context = pageContext;
     const model = modelOverride || userSettings.model;
     if (model) body.model = model;
@@ -11190,11 +11213,11 @@
       ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
       : '';
     // The runtime's memory after the run against the budget it ran under (E5.1), and, when it
-    // passed, which step did. Needs the runtime bundle's logic, so a restored chat gets it
+    // passed, which step took it there (the runs after that one only report what it left). Needs the runtime bundle's logic, so a restored chat gets it
     // when the bundle has loaded (which draws the chat again).
-    const heap = runtimeApi && runtimeApi.memory ? runtimeApi.memory.heapReport(run.heapMb, run.budgetMb) : null;
+    const heap = runtimeApi && runtimeApi.memory ? runtimeApi.memory.heapReport(run.heapMb, run.budgetMb, run.heapBeforeMb) : null;
     const heapLine = heap
-      ? `<div class="osa-run-card-heap${heap.exceeded ? ' osa-run-card-heap-over' : ''}">${escapeHtml(heap.text)}</div>`
+      ? `<div class="osa-run-card-heap${heap.grew ? ' osa-run-card-heap-over' : ''}">${escapeHtml(heap.text)}</div>`
       : '';
     const heapWarning = heap && heap.exceeded
       ? `<div class="osa-run-card-memory-warning">${escapeHtml(runtimeApi.memory.overBudgetWarning(heap, { step: run.step, title: run.stepTitle }))}</div>`
@@ -12580,7 +12603,7 @@
     }
     const percent = Math.max(0, Math.min(100, Math.round((heapMb / chosen) * 100)));
     last.hidden = false;
-    last.innerHTML = `<div class="osa-memory-last-row"><span>Last step used</span><span>${escapeHtml(String(heapMb))} MB of ${escapeHtml(memorySizeLabel(chosen))}</span></div>`
+    last.innerHTML = `<div class="osa-memory-last-row"><span>Runtime memory after the last step</span><span>${escapeHtml(String(heapMb))} MB of ${escapeHtml(String(chosen))} MB${heapMb > chosen ? '<span class="osa-sr-only"> (over budget)</span>' : ''}</span></div>`
       + `<div class="osa-memory-bar${heapMb > chosen ? ' osa-memory-bar-over' : ''}" aria-hidden="true"><div class="osa-memory-bar-fill" style="width: ${percent}%"></div></div>`;
   }
 
@@ -15209,6 +15232,12 @@
     try {
       const body = { message: question.trim() };
 
+      // What the page and the reader say about themselves is captured now, as the question
+      // is sent: the wait for the runtime below can be long, and a reader who navigates
+      // during it still asked about the page they were on.
+      const carried = carriedMove();
+      const pageContext = getPageContext();
+
       // Include session ID for conversation continuity
       if (sessionId) {
         body.session_id = sessionId;
@@ -15243,12 +15272,11 @@
         }
       }
 
-      // Add page context if enabled. After the wait for the client tools, not before: the
-      // reader's memory budget goes only with a page that can run code, and that is known
-      // once the runtime has loaded. The move it carries is read with it, so the two agree.
-      const carried = carriedMove();
-      const pageContext = getPageContext();
-      if (pageContext) {
+      // Add page context if enabled. The reader's memory budget goes only with a request
+      // that declares tools to run code with, which is known once the runtime has loaded.
+      if (body.client_tools) {
+        body.page_context = withMemoryBudget(pageContext);
+      } else if (pageContext) {
         body.page_context = pageContext;
       }
 

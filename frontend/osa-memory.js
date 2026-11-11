@@ -40,7 +40,7 @@ export function normalizeBudgetMb(value) {
   return isBudgetMb(value) ? value : DEFAULT_MEMORY_BUDGET_MB;
 }
 
-/** A size in MB as a reader reads it: 256 MB, 1 GB. */
+/** A budget as a Settings choice reads: 256 MB, 1 GB. Everywhere else uses `mbLabel`. */
 export function sizeLabel(mb) {
   return mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024} GB` : `${mb} MB`;
 }
@@ -56,32 +56,61 @@ export function normalizeHeapMb(value) {
   return Number.isInteger(value) && value >= 1 ? Math.min(value, MAX_HEAP_MB) : null;
 }
 
-/**
- * What a run card says about a run's heap, or null when the run has no figure.
- * `exceeded` is when the heap passed the budget; `budgetMb` is the budget the run was
- * under, which a run keeps so a card read later does not change with Settings.
- *
- * @param {unknown} heapMb
- * @param {unknown} budgetMb
- * @returns {{text: string, exceeded: boolean, heapMb: number, budgetMb: number} | null}
- */
-export function heapReport(heapMb, budgetMb) {
-  const heap = normalizeHeapMb(heapMb);
-  if (heap === null) return null;
-  const budget = normalizeBudgetMb(budgetMb);
-  return { text: `Heap ${heap} MB of ${budget} MB`, exceeded: heap > budget, heapMb: heap, budgetMb: budget };
+/** A budget or a heap as every line of text writes it: 512 MB, 1024 MB (never "1 GB"). */
+export function mbLabel(mb) {
+  return `${mb} MB`;
 }
 
 /**
- * The line under a run whose heap passed its budget, naming the step. `step` is the plan
- * step the run was ({step, title}), or null for a run no plan covers.
+ * What a run card says about a run's heap, or null when the run has no figure.
+ *
+ * `exceeded` is when the heap is past the budget. `grew` is when this run is the one that
+ * took it there or further, and `held` is when an earlier run did and this one added
+ * nothing: the heap only grows, so after one large read every later run, `print(1)`
+ * included, reports the same over-budget figure, and only the first should be blamed.
+ * `previousMb` is the heap the run before it in the chat reported, or null when there was
+ * none. A heap that is smaller than the previous one belongs to a runtime started since
+ * (a reload, a restart), whose first run to report it is the one that grew it.
+ * `budgetMb` is the budget the run was under, which a run keeps so a card read later does
+ * not change with Settings.
+ *
+ * @param {unknown} heapMb
+ * @param {unknown} budgetMb
+ * @param {unknown} [previousMb]
+ * @returns {{text: string, exceeded: boolean, grew: boolean, held: boolean, heapMb: number, budgetMb: number} | null}
+ */
+export function heapReport(heapMb, budgetMb, previousMb = null) {
+  const heap = normalizeHeapMb(heapMb);
+  if (heap === null) return null;
+  const budget = normalizeBudgetMb(budgetMb);
+  const previous = normalizeHeapMb(previousMb);
+  const exceeded = heap > budget;
+  const held = exceeded && previous !== null && heap === previous;
+  return {
+    text: `Heap ${mbLabel(heap)} of ${mbLabel(budget)}`,
+    exceeded,
+    grew: exceeded && !held,
+    held,
+    heapMb: heap,
+    budgetMb: budget,
+  };
+}
+
+/**
+ * The line under a run whose heap is past its budget, or ''. A run that took the heap
+ * there names its step; `step` is the plan step the run was ({step, title}), or null for a
+ * run no plan covers. A run that only reports what an earlier one left says so instead of
+ * blaming itself.
  */
 export function overBudgetWarning(report, step) {
   if (!report || !report.exceeded) return '';
+  if (report.held) {
+    return `The runtime is still holding ${mbLabel(report.heapMb)} from earlier steps; its memory does not shrink between runs.`;
+  }
   const what = step && Number.isInteger(step.step) && step.step > 0
     ? `Step ${step.step}${step.title ? `, ${step.title},` : ''}`
     : 'This run';
-  return `${what} used more than the ${sizeLabel(report.budgetMb)} budget. `
+  return `${what} used more than the ${mbLabel(report.budgetMb)} budget. `
     + 'Ask for smaller pieces, or raise the budget in Settings.';
 }
 
@@ -92,6 +121,6 @@ export function overBudgetWarning(report, step) {
 export function planBudgetWarning(estPeakMb, budgetMb) {
   const budget = normalizeBudgetMb(budgetMb);
   if (!Number.isFinite(estPeakMb) || estPeakMb <= budget) return '';
-  return `That is more than your ${sizeLabel(budget)} memory budget. `
+  return `That is more than your ${mbLabel(budget)} memory budget. `
     + 'Edit the steps to read in smaller pieces, or raise the budget in Settings.';
 }

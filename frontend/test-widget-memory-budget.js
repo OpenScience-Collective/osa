@@ -85,7 +85,11 @@ console.log('\nthe heap: whole MB from bytes, bounded, and nothing when the work
 
 console.log('\nheapReport and the warnings: the words, and who is named');
 {
-  assertEqual(memory.heapReport(312, 512), { text: 'Heap 312 MB of 512 MB', exceeded: false, heapMb: 312, budgetMb: 512 }, 'under the budget');
+  assertEqual(
+    memory.heapReport(312, 512),
+    { text: 'Heap 312 MB of 512 MB', exceeded: false, grew: false, held: false, heapMb: 312, budgetMb: 512 },
+    'under the budget'
+  );
   assertEqual(memory.heapReport(512, 512).exceeded, false, 'at the budget is not over it');
   assertEqual(memory.heapReport(513, 512).exceeded, true, 'one MB past it is');
   assertEqual(memory.heapReport(700, 300).text, 'Heap 700 MB of 512 MB', 'a budget that is not one of the four reads as the default');
@@ -96,11 +100,30 @@ console.log('\nheapReport and the warnings: the words, and who is named');
     'Step 2, Epoch the EEG, used more than the 512 MB budget. Ask for smaller pieces, or raise the budget in Settings.',
     'a planned step is named, with its number and title'
   );
-  assert(memory.overBudgetWarning(memory.heapReport(3000, 2048), { step: 1, title: '' }).startsWith('Step 1 used more than the 2 GB budget'), 'a step with no title is named by its number');
+  assert(memory.overBudgetWarning(memory.heapReport(3000, 2048), { step: 1, title: '' }).startsWith('Step 1 used more than the 2048 MB budget'), 'a step with no title is named by its number, and the budget is in MB as the heap line has it');
   assert(memory.overBudgetWarning(memory.heapReport(700, 512), { step: undefined, title: undefined }).startsWith('This run used more than'), 'a run no plan covers is "This run"');
+  // The heap only grows: only the run that took it past the budget is blamed.
+  const crossed = memory.heapReport(1155, 512, 300);
+  assertEqual([crossed.exceeded, crossed.grew, crossed.held], [true, true, false], 'the run that took the heap from 300 to 1155 MB grew it');
+  const first = memory.heapReport(1155, 512);
+  assertEqual([first.grew, first.held], [true, false], 'the first run in a chat, over the budget, grew it');
+  const same = memory.heapReport(1155, 512, 1155);
+  assertEqual([same.exceeded, same.grew, same.held], [true, false, true], 'a run that reports the heap the run before it left only holds it');
+  assertEqual(
+    memory.overBudgetWarning(same, { step: 3, title: 'Plot' }),
+    'The runtime is still holding 1155 MB from earlier steps; its memory does not shrink between runs.',
+    'and says so, naming no step'
+  );
+  assertEqual(memory.heapReport(1300, 512, 1155).grew, true, 'a run that grows an over-budget heap further is named again');
+  assertEqual(memory.heapReport(150, 512, 1155).grew, false, 'a heap under the budget never warns, whatever came before');
+  const restarted = memory.heapReport(700, 512, 1155);
+  assertEqual([restarted.grew, restarted.held], [true, false], 'a heap below the previous one is a runtime started since: its first over-budget run grew it');
+  assertEqual(memory.heapReport(700, 512, 'x').grew, true, 'a previous figure that is not a heap counts as none');
+  assertEqual(memory.mbLabel(1024), '1024 MB', 'a size in a line of text is in MB, never GB');
   assertEqual(memory.planBudgetWarning(300, 512), '', 'an estimate under the budget warns of nothing');
   assertEqual(memory.planBudgetWarning(512, 512), '', 'nor one at it');
   assert(memory.planBudgetWarning(600, 512).startsWith('That is more than your 512 MB memory budget.'), 'one over it does');
+  assert(memory.planBudgetWarning(1500, 1024).startsWith('That is more than your 1024 MB memory budget.'), 'in MB, as the heap line writes it');
   assertEqual(memory.planBudgetWarning(0, 512), '', 'a plan with no estimate has nothing to warn about');
   assertEqual(memory.planBudgetWarning(NaN, 512), '', 'nor an estimate that is not a number');
 }
@@ -314,6 +337,73 @@ console.log('\na run over the budget gets the warning style and a line naming th
     ['This run used more than the 256 MB budget. Ask for smaller pieces, or raise the budget in Settings.'],
     'and a line under it'
   );
+}
+
+console.log('\nthe heap only grows: the run that crossed the budget is blamed, the ones after it are not');
+{
+  const page = await start();
+  await runOnce(page, '# HEAP_MB=300\nprint(1)');
+  await runOnce(page, '# HEAP_MB=1155\nbig()');
+  await runOnce(page, '# HEAP_MB=1155\nprint(1)');
+  assertEqual(heapLine(page), ['Heap 300 MB of 512 MB', 'Heap 1155 MB of 512 MB', 'Heap 1155 MB of 512 MB'], 'every card shows its heap');
+  assertEqual(
+    warnings(page),
+    [
+      'This run used more than the 512 MB budget. Ask for smaller pieces, or raise the budget in Settings.',
+      'The runtime is still holding 1155 MB from earlier steps; its memory does not shrink between runs.',
+    ],
+    'the second run is named; the third, which only reports the same heap, is not'
+  );
+  assertEqual(page.qa('.osa-run-card-heap-over').length, 1, 'and only the run that crossed is in the warning style');
+  await runOnce(page, '# HEAP_MB=1300\nbigger()');
+  assertEqual(page.qa('.osa-run-card-heap-over').length, 2, 'a later run that grows the heap again is named');
+
+  // The same, from a reload: the figure before each run is kept with it.
+  const reloaded = await start({ storage: page.window.localStorage.getItem(page.storageKey), storageKey: page.storageKey });
+  await waitUntil(() => reloaded.qa('.osa-run-card').length > 0, 'the restored chat shows its runs');
+  assertEqual(warnings(reloaded).length, 3, 'a reload restores the same three lines');
+  assertEqual(reloaded.qa('.osa-run-card-heap-over').length, 2, 'and the same two warning styles');
+}
+
+console.log('\nSettings: the row says what it measures, in MB, and an over-budget heap reads as such to a screen reader');
+{
+  const page = await start();
+  await runOnce(page, '# HEAP_MB=700\nprint(1)');
+  open(page);
+  const row = page.q('.osa-memory-last');
+  assert(!row.hidden, 'the row is shown once a run has reported a heap');
+  assert(text(row).startsWith('Runtime memory after the last step') && text(row).includes('700 MB of 512 MB'), 'it is the runtime memory after the last step, not a step\'s own use');
+  assert(!text(row).includes('Last step used'), 'the old wording is gone');
+  assert(page.q('.osa-memory-bar-over'), 'the bar is in the warning style when the heap passes the choice');
+  assert(row.querySelector('.osa-sr-only') && text(row.querySelector('.osa-sr-only')) === '(over budget)', 'and the text says so');
+  assert(row.querySelector('.osa-memory-bar').getAttribute('aria-hidden') === 'true', 'the bar itself stays hidden from a screen reader');
+  choose(page, 1024);
+  assert(!page.q('.osa-memory-bar-over') && !row.querySelector('.osa-sr-only'), 'a larger choice puts it back under budget');
+  assert(text(row).includes('700 MB of 1024 MB'), 'in MB, as the run card writes it');
+}
+
+console.log('\nthe warning color is one token, light and dark, for the bar, the run card and the plan card');
+{
+  assert(/\.osa-chat-widget \{[^}]*--osa-warn: #b45309;/s.test(SOURCE), 'the light panel defines --osa-warn');
+  assert(/\.osa-chat-widget\.osa-dark \{[^}]*--osa-warn: #fbbf24;/s.test(SOURCE), 'and the dark panel lightens it');
+  assert(/\.osa-memory-bar-over \.osa-memory-bar-fill \{[^}]*background: var\(--osa-warn\)/s.test(SOURCE), 'the bar reads it');
+  assert(/--osa-run-warn: var\(--osa-warn\)/.test(SOURCE) && /--osa-plan-warn: var\(--osa-warn\)/.test(SOURCE), 'so do the run card and the plan card');
+  assert(!/#b45309/.test(SOURCE.replace('--osa-warn: #b45309;', '')), 'and no other rule writes the color out');
+}
+
+console.log('\nthe budget rides only with a request that declares the tools; the rest of the context is the send-time one');
+{
+  const page = await start({ allowPageContext: true });
+  page.widget.setConfig({ streamingEnabled: false });
+  const first = page.queue();
+  send(page, 'hello');
+  first.send(doneEvent('Hi.'));
+  first.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  const body = page.requests[0].body;
+  assert(!('client_tools' in body), 'a request sent with streaming off declares no tools');
+  assert(!('memory_budget_mb' in (body.page_context || {})), 'so it states no budget');
+  assert(typeof (body.page_context || {}).url === 'string', 'but still carries the page the reader shares');
 }
 
 console.log('\na planned step is named, by number and title');
