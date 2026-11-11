@@ -24,7 +24,10 @@
  * inside the 390 px window and nothing scrolls sideways, every control is at least
  * 44 px, the thumbnail and the figures are decoded images (naturalWidth > 0), the
  * stored history holds no figure, and the dark scheme paints the sheet with the dark
- * panel's color. Screenshots are written when a directory is given.
+ * panel's color, and the colors likeliest to fall short (the expanded History button,
+ * Delete, Clear all asking to confirm) reach their contrast ratio in both schemes.
+ * Screenshots are written when a directory is given, as the argument or as
+ * HISTORY_CHECK_SCREENSHOTS (CI sets it, and uploads them when the check fails).
  *
  * Usage: bun frontend/browser-harness/history-check.mjs [screenshot-dir]
  * Chrome is found at CHROME_PATH or where it installs (see chrome.js). Under CI a
@@ -99,14 +102,16 @@ async function evaluate(cdp, sessionId, expression, { userGesture = false } = {}
   return result.value;
 }
 
-// Reports a failure itself, once, when it times out.
+// Whether the expression came true in time. It reports nothing itself: the caller
+// passes the answer to report(), which counts a failure once; a timeout is only
+// said, with what was waited for.
 async function waitFor(cdp, sessionId, expression, label, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await evaluate(cdp, sessionId, expression)) return true;
     await Bun.sleep(100);
   }
-  report(false, `timed out waiting: ${label}`);
+  console.error(`  timed out waiting: ${label}`);
   return false;
 }
 
@@ -232,6 +237,41 @@ const SHEET_MEASURE = `(() => {
   };
 })()`;
 
+// The contrast ratio (WCAG) of an element's text color against what is behind it: its
+// own and its ancestors' backgrounds, composited from the first opaque one up, over
+// white. Text must reach 4.5:1; a graphic (an icon) 3:1.
+const CONTRAST_OF = (selector) => `(() => {
+  const el = document.querySelector(${JSON.stringify(selector)});
+  if (!el) return { ratio: null, why: 'no such element' };
+  const parse = (value) => {
+    const m = /rgba?\\(([^)]+)\\)/.exec(value);
+    if (!m) return null;
+    const p = m[1].split(/[ ,\\/]+/).filter(Boolean).map(Number);
+    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+  };
+  const over = (top, under) => ({
+    r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a), b: top.b * top.a + under.b * (1 - top.a), a: 1,
+  });
+  const layers = [];
+  for (let n = el; n; n = n.parentElement) {
+    const bg = parse(getComputedStyle(n).backgroundColor);
+    if (bg && bg.a > 0) layers.push(bg);
+    if (bg && bg.a >= 1) break;
+  }
+  let backdrop = { r: 255, g: 255, b: 255, a: 1 };
+  for (const layer of layers.reverse()) backdrop = over(layer, backdrop);
+  const fg = parse(getComputedStyle(el).color);
+  if (!fg) return { ratio: null, why: getComputedStyle(el).color };
+  const flat = over(fg, backdrop);
+  const lum = (c) => {
+    const f = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+  };
+  const a = lum(flat);
+  const b = lum(backdrop);
+  return { ratio: Math.round(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)) * 100) / 100 };
+})()`;
+
 const FIGURE_DECODED = (selector) => `(() => {
   const img = document.querySelector(${JSON.stringify(selector)});
   return !!img && img.complete && img.naturalWidth > 0 && img.getBoundingClientRect().height > 0;
@@ -252,6 +292,21 @@ async function openPopout(cdp, created, page) {
   await cdp.send('Runtime.enable', {}, sessionId);
   await cdp.send('Page.enable', {}, sessionId);
   return { targetId: target.targetId, sessionId };
+}
+
+// The colors most likely to fall short, measured where the browser paints them: the
+// History button while expanded (an icon on a wash over the themed header), Delete in
+// the row menu, and Clear all once it asks to confirm.
+async function checkContrast(call, scheme) {
+  const measure = async (selector, minimum, what) => {
+    const { ratio, why } = await call(CONTRAST_OF(selector));
+    report(ratio !== null && ratio >= minimum, `${what} reads at ${minimum}:1 or better in the ${scheme} scheme`, ratio === null ? why : ratio);
+  };
+  await measure('.osa-history-btn', 3, 'the expanded History button');
+  await measure('.osa-history-menu-delete', 4.5, 'Delete in the row menu');
+  await call(`document.querySelector('.osa-history-clear').click()`, { userGesture: true });
+  await measure('.osa-history-clear', 4.5, 'Clear all asking to confirm');
+  await call(`document.querySelector('.osa-history-day-label').click()`, { userGesture: true });
 }
 
 async function check(screenshotDir) {
@@ -310,6 +365,7 @@ async function check(screenshotDir) {
     report(await waitFor(cdp, sessionId, FIGURE_DECODED('.osa-history-thumb img'), 'the thumbnail is a decoded image'), 'the row\'s thumbnail is the figure, decoded by the browser');
     const thumbSrc = await call(`document.querySelector('.osa-history-thumb img').src`);
     report(thumbSrc.startsWith('blob:'), 'as an object URL', thumbSrc);
+    await checkContrast(call, 'light');
     await screenshot(cdp, sessionId, screenshotDir, 'history-sheet-light.png');
 
     console.log('--- open the chat');
@@ -345,6 +401,7 @@ async function check(screenshotDir) {
     const dark = await call(SHEET_MEASURE);
     report(dark.background === 'rgb(17, 24, 39)', 'the sheet is the dark panel\'s color', dark.background);
     report(dark.sheetVisible && dark.inside && !dark.sideways && dark.smallTargets.length === 0, 'and fits, with every control at least 44 px', dark);
+    await checkContrast(call, 'dark');
     await screenshot(cdp, sessionId, screenshotDir, 'history-sheet-dark.png');
     await call(`document.querySelector('.osa-history-sheet').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
     report(await call(`document.activeElement === document.querySelector('.osa-history-btn')`), 'Escape closes it and returns focus to the History button');
@@ -356,5 +413,5 @@ async function check(screenshotDir) {
   }
 }
 
-await check(process.argv[2]);
+await check(process.argv[2] || process.env.HISTORY_CHECK_SCREENSHOTS);
 if (failed) process.exit(1);
