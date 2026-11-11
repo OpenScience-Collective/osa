@@ -179,6 +179,29 @@ console.log('\nevery row names its state in words');
   assert(new Set(Object.values(RAIL_STATE)).size === 5, 'five distinct states');
 }
 
+console.log('\nno state progressOf produces is drawn as something else');
+{
+  // Every row of every shape of plan carries one of the rail's five states and a label
+  // with a real word after the step number: a segment progressOf grew that the rail does
+  // not know would show here, rather than quietly reading as "not started".
+  const shapes = [
+    [proposal(PLAN_STATUS.DRAFT)],
+    [proposal(PLAN_STATUS.APPROVED)],
+    [proposal(PLAN_STATUS.APPROVED), reply(ok(1), ok(2))],
+    [proposal(PLAN_STATUS.APPROVED), reply(ok(1), failedRun(2))],
+    [proposal(PLAN_STATUS.STOPPED), reply(ok(1))],
+    [proposal(PLAN_STATUS.APPROVED), reply(ok(1), ok(2), ok(3), ok(4), ok(5))],
+  ];
+  const known = new Set(Object.values(RAIL_STATE));
+  for (const messages of shapes) {
+    for (const active of [false, true]) {
+      const rail = planRailOf(messages, { active });
+      assert(rail.rows.every((row) => known.has(row.state)), `every state is a rail state (${messages[0].plan.status}, active ${active})`);
+      assert(rail.rows.every((row) => /^Step \d+, [a-z ]+$/.test(row.label)), `every label has its words (${messages[0].plan.status}, active ${active})`);
+    }
+  }
+}
+
 console.log('\ntitles are one line, and the input is not changed');
 {
   const messages = [proposal(PLAN_STATUS.APPROVED, { steps: [{ title: 'Two\n  lines', detail: 'd' }, { title: 'Second', detail: '' }] }), reply(ok(1))];

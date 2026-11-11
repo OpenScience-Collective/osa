@@ -45,8 +45,6 @@ const STATE_WORDS = Object.freeze({
   [RAIL_STATE.PENDING]: 'not started',
 });
 
-const KNOWN_STATES = Object.freeze(Object.values(RAIL_STATE));
-
 function rowLabel(n, state) {
   return `Step ${n}, ${STATE_WORDS[state]}`;
 }
@@ -73,10 +71,10 @@ export function planRailOf(messages, { active = false } = {}) {
   if (!current) return null;
   const { plan, runs } = current;
   if (!Array.isArray(plan.steps) || plan.steps.length === 0) return null;
-  const mode = plan.runMode === RUN_MODE.RUN_ALL ? RUN_MODE.RUN_ALL : RUN_MODE.PAUSE;
-  const modeLabel = RAIL_MODE_LABELS[mode];
 
   if (plan.status === PLAN_STATUS.DRAFT) {
+    // A draft has no progress yet, so its mode is read the way progressOf reads it.
+    const mode = plan.runMode === RUN_MODE.RUN_ALL ? RUN_MODE.RUN_ALL : RUN_MODE.PAUSE;
     const rows = plan.steps.map((step, i) => ({
       n: i + 1,
       title: oneLine(step && step.title),
@@ -85,14 +83,16 @@ export function planRailOf(messages, { active = false } = {}) {
       label: rowLabel(i + 1, RAIL_STATE.PENDING),
     }));
     const progress = { doneCount: 0, total: rows.length };
-    return { heading: headingOf(plan, progress), doneCount: 0, total: rows.length, mode, modeLabel, rows };
+    return { heading: headingOf(plan, progress), doneCount: 0, total: rows.length, mode, modeLabel: RAIL_MODE_LABELS[mode], rows };
   }
   if (plan.status !== PLAN_STATUS.APPROVED && plan.status !== PLAN_STATUS.STOPPED) return null;
 
   const progress = progressOf(plan, runs, { active });
   const ran = new Set(runs.map((run) => run.step));
-  const rows = progress.segments.map((segment, i) => {
-    const state = KNOWN_STATES.includes(segment) ? segment : RAIL_STATE.PENDING;
+  // A row's state is progressOf's segment as it is: the five states are the rail's own
+  // (RAIL_STATE), and a segment added there without a word here fails test-plan-rail.js
+  // (the label would read "undefined") instead of being drawn as not started.
+  const rows = progress.segments.map((state, i) => {
     const n = i + 1;
     return {
       n,
@@ -106,8 +106,8 @@ export function planRailOf(messages, { active = false } = {}) {
     heading: headingOf(plan, progress),
     doneCount: progress.doneCount,
     total: progress.total,
-    mode,
-    modeLabel,
+    mode: progress.mode,
+    modeLabel: RAIL_MODE_LABELS[progress.mode],
     rows,
   };
 }
