@@ -306,6 +306,37 @@ console.log('\na stopped plan keeps its rail, marking the step it stopped on');
   assertEqual(text(rows(page)[0].querySelector('.osa-sr-only')), 'Step 1, stopped:', 'in words');
 }
 
+console.log('\na run-all plan on the rail: it follows the bar, Run step N is not offered while it runs, Pause holds the next step');
+{
+  const page = await centerPage();
+  await proposeFirst(page);
+  const first = await approve(page, { runAll: true });
+  const afterStep1 = page.queue();
+  const runButtons = () => page.qa('button').filter((b) => /^Run step/.test(text(b))).map(text);
+  first.send(codeRequest('k1', 'DELAY:300\nprint(1)', 'Step 1'));
+  first.close();
+  await waitUntil(() => page.api.getBrowserTools().busy, 'step 1 is running');
+  assertEqual(rowStates(page), ['current', 'pending', 'pending'], 'running: step 1 is the current row');
+  assertEqual(text(page.q('.osa-plan-rail-mode')), 'Run mode: Runs all steps', 'the foot says it runs all steps');
+  assertEqual(barButtons(page), ['Pause', 'Stop plan'], 'the bar beside the rail offers Pause and Stop plan');
+  assertEqual(runButtons(), [], 'and no Run step button is anywhere, the rail included');
+  click(page, page.qa('.osa-plan-bar button').find((b) => text(b) === 'Pause'));
+  assertEqual(barButtons(page), ['Stop plan'], 'Pause asked: Stop plan only, until the step ends');
+  await waitUntil(() => page.requests.length === 3, 'step 1 ends');
+  assertEqual(heading(page), 'Plan · 1 of 3 done', 'between the steps the rail counts one done');
+  afterStep1.send(codeRequest('k2', 'print(2)', 'Step 2'));
+  afterStep1.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  assertEqual(page.requests.length, 3, 'step 2 is held');
+  assertEqual(rowStates(page), ['done', 'current', 'pending'], 'paused: step 2 is the current row, waiting');
+  assertEqual(text(page.q('.osa-plan-rail-mode')), 'Run mode: Runs all steps', 'the plan is still run-all');
+  assertEqual(barButtons(page), ['Run step 2', 'Change step 2', 'Stop plan'], 'the bar waits as a paused plan does');
+  click(page, page.q('.osa-plan-bar-stop'));
+  assertEqual(heading(page), 'Plan stopped · 1 of 3 done', 'Stop plan: the rail says stopped');
+  assertEqual(rowStates(page), ['done', 'stopped', 'pending'], 'on step 2');
+  assert(page.q('.osa-plan-bar') === null && runButtons().length === 0, 'with no bar');
+}
+
 console.log('\na finished plan: every step done, every row a button');
 {
   const page = await centerPage();

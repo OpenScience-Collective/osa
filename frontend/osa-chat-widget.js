@@ -824,7 +824,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-vB7j6hj+E/nfpdAfFnqCSsO7rs/SDnMaWXCghT4fMT0XL+75kk6rs+NCtpvXgCGo';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-YBVeIuUXNpx7o7foET5DTAQuIIogIvTAC7NEk0h9p34YtY+N11QB64a5cBK0ZgRj';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -5204,6 +5204,10 @@
       border-color: var(--osa-primary);
       color: var(--osa-on-primary);
       font-weight: 600;
+    }
+
+    .osa-plan-bar button.osa-plan-bar-pause {
+      border-color: var(--osa-primary);
     }
 
     .osa-plan-bar button.osa-plan-bar-stop {
@@ -11680,6 +11684,13 @@
         if (typeof steps.stopped === 'function') steps.stopped(messageIndex);
         return;
       }
+      // Pause: the step that was running has finished and been answered; the next one is
+      // left unanswered, like Stop plan's, and the next message ("Run step N") abandons
+      // it. The plan stays approved, so it waits as a paused plan does.
+      if (planPauseDue(toolRequest)) {
+        if (typeof steps.stopped === 'function') steps.stopped(messageIndex);
+        return;
+      }
       // A plan is the reader's to answer and runs no code, so it is not a run (the
       // server does not count it against the cap either).
       if (toolRequest.tool !== PROPOSE_PLAN_TOOL) runs += 1;
@@ -12588,7 +12599,10 @@
 
   // The decision being waited for: {callId, messageIndex, resolve}, or null.
   let planWait = null;
-  // The reply being sent, for Stop plan to reach: {stopped}. Set by sendMessage.
+  // The reply being sent, for Stop plan and Pause to reach: {stopped, pausing}. Set by
+  // sendMessage. `pausing` is the reader's Pause on a run-all plan: the next step's
+  // request is left parked (see continueBrowserReply). It is not stored: a reply that
+  // has ended has either paused or finished, and the plan's own state says which.
   let currentReply = null;
   // The selector of the control that should have focus once the card has been redrawn.
   let planFocusAfterRender = null;
@@ -13065,8 +13079,20 @@
   }
 
   // The words in the bar under the conversation, and which of its buttons show.
+  //
+  // A plan that runs all steps goes on by itself, so while its reply is going the bar
+  // does not offer Run step N: it would be a button for a click the plan does not wait
+  // for, and left out is clearer than a disabled one that looks like something to wait
+  // out. Pause takes its place beside Stop plan (osa-plan.js canPause). A plan that
+  // pauses after each step already does, so it is offered no Pause.
   function planBarParts(progress) {
     const { state, step, total, attempt } = progress;
+    const canPause = Boolean(runtimeApi && runtimeApi.plan) && runtimeApi.plan.canPause(progress);
+    const pausing = canPause && Boolean(currentReply && currentReply.pausing);
+    // Asked, not yet done: the step that is running finishes first.
+    if (pausing) {
+      return { text: 'Pausing: the plan will wait before the next step starts.', buttons: ['stop'] };
+    }
     if (state === 'paused') {
       return {
         text: step > 1 ? `Paused after step ${step - 1}.` : 'Approved. Step 1 has not run yet.',
@@ -13076,7 +13102,7 @@
     if (state === 'retrying') {
       return {
         text: step < total ? `Step ${step + 1} waits until step ${step} works.` : `The plan finishes when step ${step} works.`,
-        buttons: ['stop'],
+        buttons: canPause ? ['pause', 'stop'] : ['stop'],
       };
     }
     if (state === 'failed') {
@@ -13085,13 +13111,14 @@
         buttons: ['change', 'stop'],
       };
     }
-    return { text: `Working on step ${step} of ${total}.`, buttons: ['stop'] };
+    return { text: `Working on step ${step} of ${total}.`, buttons: canPause ? ['pause', 'stop'] : ['stop'] };
   }
 
   function planBarHtml(progress) {
     const { text, buttons } = planBarParts(progress);
     const labels = {
       run: `Run step ${progress.step}`,
+      pause: 'Pause',
       change: `Change step ${progress.step}`,
       stop: 'Stop plan',
     };
@@ -13118,6 +13145,27 @@
     renderMessages(container, { follow: false });
   }
 
+  // Pause: the plan waits before the next step starts. The step that is running finishes
+  // and goes back to the model as usual; the request for the next one is then left
+  // parked, as Stop plan leaves it, and the reply ends with the plan approved and
+  // waiting, so the bar is the paused one: Run step N, Change step N, Stop plan.
+  function pausePlan(container) {
+    const progress = planProgressNow();
+    if (!currentReply || !runtimeApi || !runtimeApi.plan || !runtimeApi.plan.canPause(progress)) return;
+    currentReply.pausing = true;
+    // The bar the button was in is replaced; focus goes to the strip, as after Run step.
+    planFocusAfterRender = '.osa-plan-strip';
+    renderMessages(container, { follow: false });
+  }
+
+  // Whether the reply must leave this request for code unanswered because the reader
+  // paused it. Not a request that only reads a run's output, which is part of a step.
+  function planPauseDue(request) {
+    if (!currentReply || !currentReply.pausing || !runtimeApi || !runtimeApi.plan) return false;
+    if (request.tool === PROPOSE_PLAN_TOOL || request.tool === runtimeApi.FULL_OUTPUT_TOOL_NAME) return false;
+    return runtimeApi.plan.pauseDue(messages);
+  }
+
   function fillChatInput(container, text) {
     const input = container.querySelector('.osa-chat-input input');
     if (!input) return;
@@ -13129,13 +13177,17 @@
   function onPlanBarClick(container, name, progress) {
     if (name === 'stop') {
       stopPlan(container);
+    } else if (name === 'pause') {
+      pausePlan(container);
     } else if (name === 'run') {
       // sendMessage returns without drawing while a reply is going on; nothing is then
       // pending, so focus is not moved by some later, unrelated render.
       if (isLoading) return;
       // The bar the button was in is replaced; focus goes to the strip, which says what runs.
       planFocusAfterRender = '.osa-plan-strip';
-      sendMessage(container, `Continue with step ${progress.step}.`);
+      // A plan that runs all steps goes on in that mode, so the reply must not stop again.
+      const goOn = progress.mode === 'run_all' ? ', then run the remaining steps without stopping' : '';
+      sendMessage(container, `Continue with step ${progress.step}${goOn}.`);
     } else if (name === 'change') {
       fillChatInput(container, `Change step ${progress.step}: `);
     }
@@ -16600,7 +16652,7 @@
           answer: (request, index) => answerToolRequest(container, request, index),
           resume: postResume,
           stream: (resumed, index) => handleStreamingResponse(resumed, container, { messageIndex: index }),
-          // Stop plan ended the reply: what it ran is kept, as a finished reply's is.
+          // Stop plan or Pause ended the reply: what it ran is kept, as a finished reply's is.
           stopped: () => {
             try {
               saveHistory();
