@@ -2555,6 +2555,12 @@
       line-height: 1;
     }
 
+    /* The word is body text on the bubble, so it takes the bubble's text color (the green
+       #22c55e is about 2.3:1 on white); the check beside it keeps the green. */
+    .osa-message-copy-btn .osa-copied-text {
+      color: var(--osa-text);
+    }
+
     /* The line that names the keys when a copy is refused (the widget's status announcer
        says it aloud; "Copied" is on the button). */
     .osa-copy-status {
@@ -3628,6 +3634,16 @@
 
     .osa-error-copy .osa-copied-text {
       font-size: 12px;
+    }
+
+    /* Success, not the banner's failure red: a dark green on the light banner (about 4.9:1
+       on #fef2f2), a light green on the dark one. */
+    .osa-error-copy.copied {
+      color: #15803d;
+    }
+
+    .osa-chat-widget.osa-dark .osa-error-copy.copied {
+      color: #86efac;
     }
 
     .osa-error-reference .osa-copy-status {
@@ -6699,6 +6715,7 @@
       pre = document.createElement('pre');
       pre.className = 'osa-execution-output osa-run-card-error-fallback';
       pre.tabIndex = 0;
+      pre.setAttribute('role', 'group');
       pre.setAttribute('aria-label', 'The error, to copy');
       const actions = card.querySelector('.osa-run-card-actions');
       if (actions) actions.insertAdjacentElement('afterend', pre);
@@ -6717,6 +6734,7 @@
       pre = document.createElement('pre');
       pre.className = 'osa-execution-output osa-message-copy-fallback';
       pre.tabIndex = 0;
+      pre.setAttribute('role', 'group');
       pre.setAttribute('aria-label', 'The reply as markdown, to copy');
       const content = messageEl.querySelector('.osa-message-content');
       if (content) content.insertAdjacentElement('afterend', pre);
@@ -6726,12 +6744,23 @@
     return pre;
   }
 
-  // Where a refused copy says so when the button is not in a code block with a status
-  // line of its own: a plain line in the message (or the error reference) the button
-  // sits in, made when first needed. It is not a live region (a redraw would make the
-  // conversation say it again): the widget's one status announcer says it.
-  function copyNoteFor(home) {
-    let note = home.querySelector('.osa-copy-status');
+  // Where a refused copy says so when the button is not in a run card's code block
+  // (which has a status line of its own): a plain line made when first needed, next to
+  // what was selected: right after the reply's code block for that block's button, after
+  // the message header for the whole reply, inside the error reference for its button.
+  // It is not a live region (a redraw would make the conversation say it again): the
+  // widget's one status announcer says it.
+  function copyNoteFor(home, button) {
+    const pre = button.closest('pre');
+    if (pre && home.contains(pre)) {
+      const next = pre.nextElementSibling;
+      if (next && next.classList.contains('osa-copy-status')) return next;
+      const note = document.createElement('div');
+      note.className = 'osa-copy-status';
+      pre.insertAdjacentElement('afterend', note);
+      return note;
+    }
+    let note = Array.from(home.children).find((child) => child.classList.contains('osa-copy-status'));
     if (!note) {
       note = document.createElement(home.classList.contains('osa-error-reference') ? 'span' : 'div');
       note.className = 'osa-copy-status';
@@ -6741,6 +6770,10 @@
     }
     return note;
   }
+
+  // The "Copied" timer of each button, so a second copy inside the wait restarts it
+  // instead of being cut short by the first one's.
+  const copiedTimers = new WeakMap();
 
   // Copy (#491, #665): the exact text, never the highlighted page text, onto the
   // clipboard, and "Copied" said twice: on the button, and to a screen reader. A run
@@ -6762,15 +6795,23 @@
     const home = button.closest('.osa-message, .osa-error-reference');
     const label = button.getAttribute('data-copy-label');
     const say = (text) => {
-      if (blockStatus) blockStatus.textContent = text;
-      else if (announcer) announcer.textContent = text;
+      const live = blockStatus || announcer;
+      if (!live) return;
+      if (live.textContent !== text) {
+        live.textContent = text;
+        return;
+      }
+      // The same words again (a second copy inside the wait): a live region only speaks a
+      // change, so clear it and set it on the next turn.
+      live.textContent = '';
+      setTimeout(() => { live.textContent = text; }, 0);
     };
     const unsay = (text) => {
       const live = blockStatus || announcer;
       if (live && live.textContent === text) live.textContent = '';
     };
-    const note = !blockStatus && home ? home.querySelector('.osa-copy-status') : null;
-    if (note) note.textContent = '';
+    // A new copy takes away every refusal line this message (or reference) is showing.
+    if (!blockStatus && home) home.querySelectorAll('.osa-copy-status').forEach((note) => { note.textContent = ''; });
     if (await writeClipboard(code)) {
       button.classList.add('copied');
       if (label) {
@@ -6780,12 +6821,14 @@
         button.innerHTML = ICONS.check + (block ? '' : '<span class="osa-copied-text">Copied</span>');
       }
       say('Copied');
-      setTimeout(() => {
+      clearTimeout(copiedTimers.get(button));
+      copiedTimers.set(button, setTimeout(() => {
+        copiedTimers.delete(button);
         button.classList.remove('copied', 'osa-run-card-copied');
         if (label) button.textContent = label;
         else button.innerHTML = ICONS.copy;
         unsay('Copied');
-      }, CODE_COPIED_MS);
+      }, CODE_COPIED_MS));
       return true;
     }
     const toggle = block && block.querySelector('.osa-run-card-code-toggle');
@@ -6794,16 +6837,21 @@
     const codeElement = (typeof selectable === 'function' ? selectable() : selectable) ||
       (block && block.querySelector('pre code')) ||
       (enclosingPre && enclosingPre.querySelector('code'));
+    let selected = false;
     if (codeElement && typeof window.getSelection === 'function') {
       const selection = window.getSelection();
       const range = document.createRange();
       range.selectNodeContents(codeElement);
       selection.removeAllRanges();
       selection.addRange(range);
+      selected = true;
     }
-    const prompt = `This page cannot copy for you: the ${selectable || !block ? 'text' : 'code'} is selected, so press ${isApplePlatform() ? 'Cmd' : 'Ctrl'}+C`;
+    const keys = `${isApplePlatform() ? 'Cmd' : 'Ctrl'}+C`;
+    const prompt = selected
+      ? `This page cannot copy for you: the ${selectable || !block ? 'text' : 'code'} is selected, so press ${keys}`
+      : `This page cannot copy for you: select the ${selectable || !block ? 'text' : 'code'} yourself, then press ${keys}`;
     if (blockStatus) blockStatus.classList.remove('osa-code-status-quiet');
-    else if (home) copyNoteFor(home).textContent = prompt;
+    else if (home) copyNoteFor(home, button).textContent = prompt;
     say(prompt);
     return false;
   }
@@ -6839,6 +6887,19 @@
     if (!text) return '';
     const figureAbove = Boolean(options && options.figureAbove);
 
+    // An image reference, "![alt](address)": the address may hold one level of balanced
+    // parentheses ("y_(1).png"). A link whose text holds image references is the linked
+    // badge "[![alt](img)](link)"; its text may hold plain characters and those references.
+    const IMAGE_REFERENCE = /!\[([^\]]*)\]\(((?:[^()]|\([^()]*\))+)\)/;
+    const LINK_WITH_IMAGES = /\[((?:[^\[\]]|!\[[^\]]*\]\((?:[^()]|\([^()]*\))+\))+)\]\(([^)]+)\)/;
+
+    // Render inline markdown (code, bold, italic, links, image references, plain URLs,
+    // citation markers)
+    // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
+    // When provided, a bare "[1]" (not followed by "(", so it never collides
+    // with a real markdown link) whose number is a known marker renders as a
+    // superscript link to its source; any other "[n]" is left as plain text.
+
     // Code spans are lifted out before anything else is matched, so what is inside
     // one is never read as markup and an italic, bold or link match that starts
     // earlier in the run cannot swallow a later span: "Use *.set or `*.fdt` files"
@@ -6866,6 +6927,30 @@
     // again (#666), so a link, a code span or an image reference inside them renders
     // too; the code spans are the ones lifted above, and every href goes through
     // isSafeUrl wherever it is written.
+    // An image reference: a span, escaped, never an img and never the address. The pointer to
+    // the run's figure is added only where `withHint` (not inside a link, where it would
+    // read as part of the link).
+    const imageReference = (rawAlt, withHint) => {
+      const alt = escapeRun(rawAlt.trim());
+      const hint = withHint && figureAbove
+        ? '<span class="osa-image-hint">' + (alt ? ' (see the figure above)' : '(see the figure above)') + '</span>'
+        : '';
+      return alt || hint ? '<span class="osa-image-reference">' + alt + hint + '</span>' : '';
+    };
+
+    // A link's text, which may hold image references (a badge that is a link):
+    // "[![badge](https://img/b.svg)](https://link)". Each reference becomes its alt text;
+    // the rest is escaped as it always was.
+    const renderLinkText = (linkText) => {
+      let html = '';
+      let last = 0;
+      for (const image of linkText.matchAll(new RegExp(IMAGE_REFERENCE.source, 'g'))) {
+        html += escapeRun(linkText.substring(last, image.index)) + imageReference(image[1], false);
+        last = image.index + image[0].length;
+      }
+      return html + escapeRun(linkText.substring(last));
+    };
+
     const renderRun = (run) => {
       let remaining = run;
       let result = '';
@@ -6887,19 +6972,6 @@
             if (citationsByMarker[candidate[1]]) {
               citationMatch = candidate;
               break;
-    // An image reference, "![alt](address)": the address may hold one level of balanced
-    // parentheses ("y_(1).png"). A link whose text holds image references is the linked
-    // badge "[![alt](img)](link)"; its text may hold plain characters and those references.
-    const IMAGE_REFERENCE = /!\[([^\]]*)\]\(((?:[^()]|\([^()]*\))+)\)/;
-    const LINK_WITH_IMAGES = /\[((?:[^\[\]]|!\[[^\]]*\]\((?:[^()]|\([^()]*\))+\))+)\]\(([^)]+)\)/;
-
-    // Render inline markdown (code, bold, italic, links, image references, plain URLs,
-    // citation markers)
-    // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
-    // When provided, a bare "[1]" (not followed by "(", so it never collides
-    // with a real markdown link) whose number is a known marker renders as a
-    // superscript link to its source; any other "[n]" is left as plain text.
-
             }
           }
         }
@@ -6927,30 +6999,6 @@
           result += '<em>' + renderRun(italicMatch[1]) + '</em>';
           remaining = remaining.substring(italicIndex + italicMatch[0].length);
         } else if (minIndex === imageIndex && imageMatch) {
-    // An image reference: a span, escaped, never an img and never the address. The pointer to
-    // the run's figure is added only where `withHint` (not inside a link, where it would
-    // read as part of the link).
-    const imageReference = (rawAlt, withHint) => {
-      const alt = escapeRun(rawAlt.trim());
-      const hint = withHint && figureAbove
-        ? '<span class="osa-image-hint">' + (alt ? ' (see the figure above)' : '(see the figure above)') + '</span>'
-        : '';
-      return alt || hint ? '<span class="osa-image-reference">' + alt + hint + '</span>' : '';
-    };
-
-    // A link's text, which may hold image references (a badge that is a link):
-    // "[![badge](https://img/b.svg)](https://link)". Each reference becomes its alt text;
-    // the rest is escaped as it always was.
-    const renderLinkText = (linkText) => {
-      let html = '';
-      let last = 0;
-      for (const image of linkText.matchAll(new RegExp(IMAGE_REFERENCE.source, 'g'))) {
-        html += escapeRun(linkText.substring(last, image.index)) + imageReference(image[1], false);
-        last = image.index + image[0].length;
-      }
-      return html + escapeRun(linkText.substring(last));
-    };
-
           if (imageIndex > 0) result += escapeRun(remaining.substring(0, imageIndex));
           // The widget never loads an image a reply names: a model-written address is
           // somebody else's server. The alt text stands in, with a pointer to the run's own
@@ -15965,6 +16013,7 @@
       executionRecord,
       executionsHtml,
       fillPersistentError,
+      injectStyles,
       handleStreamingResponse,
       loadRuntimeBundle,
       normalizePersistedExecutions,

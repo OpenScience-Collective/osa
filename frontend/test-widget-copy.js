@@ -227,6 +227,11 @@ for (const [name, button] of Object.entries(BUTTONS)) {
       : el.closest('.osa-message').querySelector('.osa-copy-status');
     assert(visible && prompt.test(visible.textContent), 'and so does a visible line next to the text');
     assert(!visible.classList.contains('osa-code-status-quiet'), 'in view, not hidden');
+    if (name === 'a reply code block') {
+      assert(el.closest('pre').nextElementSibling === visible, 'the line sits right after the code block that was selected');
+    } else if (name === 'the whole-reply copy') {
+      assert(el.closest('.osa-message-header').nextElementSibling === visible, 'the line sits right after the message header, for the whole reply');
+    }
     assert(!el.classList.contains('copied') && el.innerHTML === before, 'the button does not claim it copied');
     if (name === 'the whole-reply copy') {
       const blocks = container.querySelectorAll('.osa-message-copy-fallback');
@@ -275,6 +280,115 @@ console.log('\nthe error reference copies through the same path');
   await waitUntil(() => /Copied/.test(ok.textContent), 'the button says Copied');
   assertEqual(await works.window.navigator.clipboard.readText(), 'err-abc123', 'a working copy puts the reference on the clipboard');
   assertEqual(works.container.querySelector('.osa-status-announcer').textContent, 'Copied', 'and the announcer says so');
+}
+
+console.log('\nthe error reference copies through the copy command too');
+{
+  const { window, api, container, commandCalls } = await pageWith('command');
+  const banner = window.document.createElement('div');
+  container.appendChild(banner);
+  api.fillPersistentError(container, banner, 'The request failed.', 'err-abc123');
+  const copy = banner.querySelector('.osa-error-copy');
+  await quietly(async () => {
+    click(window, copy);
+    await waitUntil(() => copy.classList.contains('copied'), 'the button marks the copy');
+  });
+  assertEqual(commandCalls, [{ name: 'copy', text: 'err-abc123' }], 'the copy command ran once, on the reference');
+  assert(/Copied/.test(copy.textContent), 'and the button says Copied');
+}
+
+console.log('\na second copy inside the wait keeps Copied up and is said again');
+{
+  const { window, container } = await pageWith('api');
+  const el = BUTTONS['the whole-reply copy'].find(container);
+  const announcer = container.querySelector('.osa-status-announcer');
+  click(window, el);
+  await waitUntil(() => el.classList.contains('copied'), 'the first copy');
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  click(window, el);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assertEqual(announcer.textContent, 'Copied', 'the repeat is said again (cleared, then set)');
+  // The first click's timer would have fired at 2 s; the second click's runs to about 3.2 s.
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  assert(el.classList.contains('copied') && /Copied/.test(el.textContent), 'at 2.2 s the button still says Copied (the first timer was cancelled)');
+  assertEqual(announcer.textContent, 'Copied', 'and so does the announcer');
+  await waitUntil(() => !el.classList.contains('copied'), 'the button goes back', 4000);
+  assertEqual(announcer.textContent, '', 'and the announcer is cleared once');
+}
+
+console.log('\na new copy takes away the earlier refusal line');
+{
+  const { window, container } = await pageWith('none');
+  const el = BUTTONS['a reply code block'].find(container);
+  await quietly(async () => {
+    click(window, el);
+    await waitUntil(() => (container.querySelector('.osa-copy-status') || { textContent: '' }).textContent !== '', 'the refusal line');
+  });
+  window.document.execCommand = () => true;
+  click(window, el);
+  await waitUntil(() => el.classList.contains('copied'), 'the second copy works');
+  assertEqual(container.querySelector('.osa-copy-status').textContent, '', 'the refusal line is emptied');
+}
+
+console.log('\nthe prompt does not say the text is selected when nothing could be');
+{
+  const { window, container } = await pageWith('none');
+  window.getSelection = undefined;
+  const el = BUTTONS['a reply code block'].find(container);
+  await quietly(async () => {
+    click(window, el);
+    await waitUntil(() => /cannot copy/.test(spokenFor(el).textContent), 'the copy gives up');
+  });
+  const spoken = spokenFor(el).textContent;
+  assert(!/is selected/.test(spoken) && /select the text yourself, then press (Cmd|Ctrl)\+C$/.test(spoken), `it asks the reader to select (${JSON.stringify(spoken)})`);
+}
+
+console.log('\nthe fallback blocks are labelled groups, which a screen reader announces');
+{
+  const { window, container } = await pageWith('none');
+  const el = BUTTONS['the whole-reply copy'].find(container);
+  await quietly(async () => {
+    click(window, el);
+    await waitUntil(() => container.querySelector('.osa-message-copy-fallback'), 'the reply source is drawn');
+  });
+  const reply = container.querySelector('.osa-message-copy-fallback');
+  assertEqual([reply.getAttribute('role'), reply.getAttribute('aria-label')], ['group', 'The reply as markdown, to copy'], 'the reply source block');
+  assert(SOURCE.includes("pre.setAttribute('role', 'group');\n      pre.setAttribute('aria-label', 'The error, to copy');"), 'the error block is a labelled group in the source');
+}
+
+console.log('\nthe word Copied is readable on the page, in light and dark, and the error banner shows it as success');
+{
+  const { window, api, container } = await pageWith('api');
+  api.injectStyles();
+  const luminance = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a, b) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const el = BUTTONS['the whole-reply copy'].find(container);
+  click(window, el);
+  await waitUntil(() => el.classList.contains('copied'), 'the copy');
+  const word = window.getComputedStyle(el.querySelector('.osa-copied-text')).color;
+  const check = window.getComputedStyle(el).color;
+  assert(contrast(word, '#ffffff') >= 4.5 && contrast(word, '#f3f4f6') >= 4.5, `light: the word is ${word}, at least 4.5:1 on white and on the grey bubble`);
+  assert(word !== check, `and it is not the check's green (${check})`);
+  container.classList.add('osa-dark');
+  const darkWord = window.getComputedStyle(el.querySelector('.osa-copied-text')).color;
+  assert(contrast(darkWord, '#1f2937') >= 4.5, `dark: ${darkWord} reads on the dark panel`);
+  container.classList.remove('osa-dark');
+  const banner = window.document.createElement('div');
+  banner.className = 'osa-error';
+  container.appendChild(banner);
+  api.fillPersistentError(container, banner, 'The request failed.', 'err-abc123');
+  const copy = banner.querySelector('.osa-error-copy');
+  click(window, copy);
+  await waitUntil(() => copy.classList.contains('copied'), 'the banner copy');
+  const bannerWord = window.getComputedStyle(copy).color;
+  assert(contrast(bannerWord, '#fef2f2') >= 4.5 && bannerWord !== window.getComputedStyle(banner).color, `the banner's Copied is ${bannerWord}: readable on #fef2f2 and not the failure red`);
 }
 
 clearTimeout(watchdog);
