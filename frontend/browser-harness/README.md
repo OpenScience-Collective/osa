@@ -448,6 +448,21 @@ The stored history must hold no figure, only `images: []` and the run's `figureC
 The sheet must sit inside the window with nothing scrolling sideways and every button at least 44 px; in the dark scheme it takes the dark panel's color, and Escape closes it and returns focus to the History button.
 It is what CI runs, beside the run card check; with a screenshot directory it writes the light and dark sheet, the opened and restored chats and the pop-out.
 
+### The center-stage dialog
+
+```bash
+bun frontend/browser-harness/center-stage-check.mjs [screenshot-dir]
+```
+
+stands up its own server (the widget and a community config shaped like NEMAR's: cards, a footer note, a docs link, dataset questions and the teal theme) and drives headless Chrome at 1280 x 900 and 390 x 844, in the light scheme (the device emulated as light) and the dark one (E6.1, #701).
+The page behind the dialog has a long body of its own and a button that opens AI Mode.
+The dialog must sit inside the viewport (the board's 80 and 36 px margins on the laptop, the whole screen on the phone) with nothing scrolling sideways, the start screen included, and the page behind it inert and not scrolling.
+The question field is 60 px tall; every pill, the start screen's send button and the chat's own send button and field are at least 44 px; the header's buttons at least 36 px.
+The real Tab key, as trusted key events through the DevTools protocol (the only kind that moves focus in a browser), is pressed 40 times each way and must never leave the dialog or reach the page's own controls, and must wrap.
+Escape docks the window with the same message nodes, session and draft; Close gives focus back to the page's own button.
+Fourteen colors, among them the heading, the AI Mode pill, the dataset line, the buttons, a pill, a card, the note and the link, must reach 4.5:1 (an icon 3:1) in both schemes, measured where Chrome paints them; under `prefers-reduced-motion` the pills' transition is immediate.
+It is what CI runs, beside the History check; with a screenshot directory (or `CENTER_CHECK_SCREENSHOTS`) it writes the start screen in both schemes, the thread and the docked window at both sizes.
+
 ### The notebook card and the History row menu's notebook items
 
 ```bash

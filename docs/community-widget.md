@@ -23,6 +23,8 @@ this page is about the widget's appearance and copy.
 | `suggested_questions` | list of strings, at most 10 | empty list | Clickable suggestion buttons shown below the initial message. Empty and whitespace-only entries are dropped. |
 | `dataset_suggested_questions` | list of `{text, needs_zarr}`, at most 10 | empty list | Suggestions for a page that names a dataset with `setDataset`, in place of `suggested_questions`; see [Questions about the dataset on screen](#questions-about-the-dataset-on-screen). |
 | `search_paths` | list of paths, at most 5, each starting with `/`, at most 200 characters, with no query, fragment or whitespace | empty list | Pages where the reader is searching for datasets rather than viewing one: a page whose path is one of these, or below one at a path-segment boundary, gives the chat the search context (`/` is the home page alone); see [A context change starts a new chat](#a-context-change-starts-a-new-chat). |
+| `center_start` | `{capabilities, note}` | none | The center-stage dialog's start screen: up to three `{title, text}` cards and a footer note; see [The start screen](#the-start-screen). |
+| `analysis_docs` | `{title, url}`, an `https://` address | none | A docs page linked from the start screen's footer and from Settings; see [The start screen](#the-start-screen). |
 | `logo_url` | string: an `http://`/`https://` URL, or a path starting with `/` | none | A custom logo/icon for the widget header avatar. When unset, the API looks for a `logo.*` file (SVG, PNG, JPG, JPEG, WEBP) in the community's own folder; failing that, the widget falls back to a default brain icon. |
 
 ```yaml
@@ -356,7 +358,10 @@ OSAChatWidget.setDataset({ id: 'nm000132', zarr: true });
 OSAChatWidget.setDataset(null); // not a dataset page
 ```
 
-- `value` is `null` (not a dataset page) or an object `{ id, zarr, subject, task }`.
+- `value` is `null` (not a dataset page) or an object `{ id, title, zarr, subject, task }`.
+- `title` is optional, a string of 1 to 200 characters: the dataset's name, shown beside its id in the
+  [center-stage dialog's header](#the-dialog) and nowhere else.
+  One that is not a string of that length is dropped alone, with a `console.warn`.
 - `id` must match `^[A-Za-z0-9._-]{1,64}$`.
 - `zarr` is `true` (a Zarr copy exists), `false` (it does not), or absent/`undefined`
   (not known yet, e.g. the check is still in flight).
@@ -1065,6 +1070,111 @@ records the launcher on every animation frame in Chrome, with the config request
 held for 600 ms, for NEMAR on a light and a dark device and for a bubble community
 on a dark device; both run in CI.
 
+## The host API and the center-stage dialog
+
+A host page can open the widget, ask it a question and move it, without the reader touching the launcher (E6.1, #701).
+The calls are on `OSAChatWidget`, next to `setDataset`.
+
+```js
+OSAChatWidget.open({ mode: 'center' });          // the AI Mode dialog
+OSAChatWidget.ask('What events are annotated?'); // open, then send as if typed
+OSAChatWidget.setMode('corner');                 // dock the dialog
+const stop = OSAChatWidget.on('modechange', ({ mode }) => console.log(mode));
+stop();                                          // stop listening
+OSAChatWidget.close();
+```
+
+| Call | What it does |
+|---|---|
+| `open({mode}?)` | Shows the window, in `mode` when one is given (`'corner'` or `'center'`), on the chat tab, with History and Settings closed. An open window stays open; the mode, if given, changes. |
+| `close()` | Closes the window, as the Close button does. |
+| `ask(text, {mode}?)` | Opens the window (in `mode` if given), then sends `text` through the same path as a typed question: it is in the saved conversation and History, the page-context reset of [A context change starts a new chat](#a-context-change-starts-a-new-chat) applies, and the browser runtime is preloaded as for any first message. `text` must be a non-empty string; a reply that is still loading refuses it. What the reader had typed in the chat's input and not sent is theirs: it stays there (and in the start screen's field) after `ask`. |
+| `setMode(mode)` | `'center'` makes the window the dialog; `'corner'` docks it. On a closed window the mode is kept for the next open. The dialog is the chat's: a capsule community's window that is on the notebook tab is taken to the chat tab when it becomes the dialog, and the dialog docks to the corner (with a `modechange` event) when the notebook tab is opened from it, for example by the **Continue in notebook** or **Open notebook** button under a reply. |
+| `on(event, handler)` | Listens for an event, below, and returns a function that stops listening. |
+
+- **Before `init()`.**
+  `open`, `close`, `ask` and `setMode` may be called before `OSAChatWidget.init()`, as `setDataset` may.
+  They are kept and run, in the order they were made, once the widget is built, so a page need not wait for the script to be ready.
+  `on` takes effect at once.
+- **A bad call does nothing.**
+  An unknown `mode`, an `event` that is not one of the four, a handler that is not a function, an `options` that is not an object, or an empty question each log a `console.warn` and change nothing.
+  A bad `on` still returns a function, which does nothing, so a page that keeps and later calls it does not throw.
+  A call checked before `init()` is refused at once, not queued.
+- **Calls before `init()` are bounded.**
+  At most 50 are kept; the next logs a `console.warn` and is dropped.
+  If `init()` has not built the widget five seconds after the first call was kept, one `console.warn` says calls are waiting for it.
+- **The mode is in memory only.**
+  It is `'corner'` after a load, and a dialog that is closed is `'corner'` again, so the launcher always opens the panel it always has.
+- **A pop-out has no corner.**
+  In the pop-out window (`fullscreen`), `setMode`, `open` and `close` do nothing, each with a `console.warn`; `ask` still sends.
+
+### Events
+
+| Event | Payload | When |
+|---|---|---|
+| `open` | `{mode}` | The window opened, after the mode was applied. |
+| `close` | `{}` | The window closed, by the Close button, the launcher or `close()`. |
+| `modechange` | `{mode}` | The mode changed: `setMode`, `open({mode})`, Escape or Move to corner, or a dialog being closed (then `{mode: 'corner'}`, just before `close`). |
+| `send` | `{text}` | A question was sent, typed or by `ask`; `text` is as the server receives it, trimmed. |
+
+Each event fires once per occurrence.
+A payload is a plain object, and each handler gets its own copy.
+A handler that throws, or returns a rejected promise, is reported on the console and cannot stop the widget or the handlers after it.
+Opening in a mode from a closed window fires `open` and then `modechange`.
+
+### The dialog
+
+Center is the same `.osa-chat-window`, with an `osa-center` class and a scrim behind it, never a second instance, so docking keeps the conversation: the message nodes, the session and what was typed are not touched.
+
+- **Modal.**
+  The window has `role="dialog"`, `aria-modal="true"` and the name `AI Mode for <dataset id>` (`AI Mode` with no dataset).
+  The host page's other top-level elements and the launcher are `inert`, and the page does not scroll, until the dialog is closed or docked.
+  Tab and Shift+Tab stay inside the dialog (or inside Settings or History when one is on top of it).
+- **Escape.**
+  It closes what is on top first: the History sheet, then Settings or the feedback panel, and then docks the dialog.
+  The **Move to corner** button does the same as the last step.
+- **Focus.**
+  Focus moves into the dialog on open, and **Close** (or `close()`) gives it back to the element that had it before the window opened, or to the launcher when there was none.
+- **Header.**
+  The AI Mode pill, the dataset id and, when the page gave one, its title; History; Move to corner; Settings; and Close.
+  `setDataset({id, title})` takes an optional `title`, a string of 1 to 200 characters.
+  A title that is not one is dropped alone, with a `console.warn`, and the id is shown without it.
+- **Narrow screens.**
+  At 600 px and under the dialog fills the screen, and the header's buttons keep their icons only.
+- **Looks.**
+  Colors come from the widget's own tokens, so the dark scheme and the community's theme carry over, and the one transition, the pills' hover, is covered by the widget's `prefers-reduced-motion` rule.
+
+### The start screen
+
+While the dialog's conversation is empty it shows board C2 in place of the thread: a heading, a 60 px question field, the chat's own suggestions as 44 px pills, up to three capability cards and a footer.
+Any message replaces it with the thread, in a centered column of at most 760 px, and a new chat from History shows it again.
+The field writes through to the chat's own input, so docking from the start screen keeps what was typed.
+In the corner the start screen is never shown.
+The community's disclaimer row stays under it, with its **Send feedback** link; when the community sets a `center_start.note`, the note takes the disclaimer text's place there and the link stays.
+
+The pills are what the chat's suggestions would be: the dataset questions for the dataset on screen, else `suggested_questions`.
+The cards, the footer's note and the docs link are the community's, from two `widget` keys; the widget carries no copy of its own about any community.
+
+| Field | Type | What it changes |
+|---|---|---|
+| `center_start` | `{capabilities, note}` | `capabilities`: up to three `{title, text}` cards (a title of at most 40 characters, text of at most 160). `note`: a line of at most 300 characters in the start screen's footer. All plain text, with no `<` or `>`. Unset, the start screen has the field and the pills alone. |
+| `analysis_docs` | `{title, url}` | A docs page. `title`: at most 80 characters, shown as the link's text in Settings. `url`: an `https://` address of at most 500 characters, with a host and no credentials. The start screen's footer gets a **How it works** link, and Settings a **Learn more** row, both opening it in a new tab (`target="_blank"`, `rel="noopener noreferrer"`, and a visually hidden "(opens in a new tab)" for a screen reader). Unset, neither link exists. |
+
+```yaml
+widget:
+  center_start:
+    capabilities:
+      - title: Describe
+        text: "Summaries, methods and citations, from the dataset's own files."
+    note: "Code runs in your browser. Nothing you run is uploaded. AI can make mistakes."
+  analysis_docs:
+    title: Analyze data in your browser
+    url: https://docs.nemar.org/web/analyze-in-browser/
+```
+
+Both are validated twice, as the colors are: `WidgetConfig` refuses a bad value when the config loads, and the widget checks again before drawing, so a value the server did not check (an older deploy, an embedder's `setConfig({centerStart, analysisDocs})`) is held to the same limits.
+A card that is not within them is left out, and a link whose address is not an `https://` URL is not drawn at all.
+
 ## Embedder `setConfig` keys
 
 A page that embeds the widget directly (rather than only through a
@@ -1082,6 +1192,8 @@ field: once an embedder sets `themeColor`, no community config value for
 | `suggested_questions` | `suggestedQuestions` |
 | `dataset_suggested_questions` | `datasetSuggestedQuestions` (the same `{text, needs_zarr}` entries) |
 | `search_paths` | `searchPaths` (a list of paths) |
+| `center_start` | `centerStart` (the same `{capabilities, note}`) |
+| `analysis_docs` | `analysisDocs` (the same `{title, url}`) |
 | `logo_url` | `logo` |
 | `theme_color` | `themeColor` |
 | `theme_text_color` | `themeTextColor` |

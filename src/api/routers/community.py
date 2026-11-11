@@ -498,6 +498,29 @@ class DatasetQuestionResponse(BaseModel):
     needs_zarr: bool = Field(..., description="Shown only when the dataset has a Zarr copy")
 
 
+class CenterStartCapabilityResponse(BaseModel):
+    """One card of the center-stage dialog's start screen."""
+
+    title: str = Field(..., description="The card's heading")
+    text: str = Field(..., description="One or two sentences under the heading")
+
+
+class CenterStartResponse(BaseModel):
+    """The center-stage dialog's start screen copy, as the widget draws it."""
+
+    capabilities: list[CenterStartCapabilityResponse] = Field(
+        default_factory=list, description="Up to three cards: what the assistant can do"
+    )
+    note: str | None = Field(default=None, description="A line in the start screen's footer")
+
+
+class AnalysisDocsResponse(BaseModel):
+    """A docs page the widget links from its start screen and its Settings."""
+
+    title: str = Field(..., description="The link's text in Settings")
+    url: str = Field(..., description="An https URL, opened in a new tab")
+
+
 class WidgetConfigResponse(BaseModel):
     """Widget display configuration returned to the frontend."""
 
@@ -519,6 +542,20 @@ class WidgetConfigResponse(BaseModel):
         description=(
             "Page paths where the reader is searching; the widget gives the conversation "
             "the 'search' context there. Omitted when the community sets none"
+        ),
+    )
+    center_start: CenterStartResponse | None = Field(
+        default=None,
+        description=(
+            "Copy for the center-stage dialog's start screen (capability cards and a "
+            "footer note); omitted when the community sets none"
+        ),
+    )
+    analysis_docs: AnalysisDocsResponse | None = Field(
+        default=None,
+        description=(
+            "A docs page linked from the start screen and the widget's Settings, "
+            "https only; omitted when the community sets none"
         ),
     )
     logo_url: str | None = Field(

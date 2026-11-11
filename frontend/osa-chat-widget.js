@@ -101,6 +101,11 @@
     // Page paths where the reader is searching, not viewing a dataset (E1.3): a page
     // under one gives the conversation the search context. From the community config.
     searchPaths: [],
+    // The center-stage dialog's start screen copy {capabilities: [{title, text}], note}
+    // and the docs page it and Settings link {title, url} (E6.1). From the community
+    // config; validated again where they are drawn (validCenterStart, validAnalysisDocs).
+    centerStart: null,
+    analysisDocs: null,
     showExperimentalBadge: true,
     repoUrl: 'https://osc.earth/osa/',
     repoName: 'Open Science Assistant',
@@ -399,7 +404,7 @@
   // when nothing was remembered.
   let displayDefaults = null;
   const DISPLAY_KEYS = ['title', 'initialMessage', 'placeholder', 'suggestedQuestions',
-    'datasetSuggestedQuestions', 'searchPaths', 'themeColor',
+    'datasetSuggestedQuestions', 'searchPaths', 'centerStart', 'analysisDocs', 'themeColor',
     'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor', 'logo', 'launcher',
     'launcherLabel', 'colorScheme', ...LAUNCHER_GEOMETRY_KEYS.map(([, key]) => key)];
   // The header avatar as createWidget draws it, for a config that drops its logo.
@@ -839,6 +844,10 @@
     notebook: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>',
     hpc: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="17" width="18" height="4" rx="1"/><line x1="7" y1="5" x2="7.01" y2="5"/><line x1="7" y1="12" x2="7.01" y2="12"/><line x1="7" y1="19" x2="7.01" y2="19"/></svg>'
   };
+
+  // The AI Mode pill's two sparkles and the "Move to corner" arrows (boards C2, C3).
+  ICONS.sparkle = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z"/><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>';
+  ICONS.dock = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 10l6-6M15 4h5v5M10 14l-6 6M9 20H4v-5"/></svg>';
 
   // CSS Styles
   const STYLES = `
@@ -2062,7 +2071,8 @@
       .osa-chat-widget.osa-launcher-resizes > .osa-chat-button,
       .osa-capsule .osa-ttl,
       .osa-capsule .osa-ttl.osa-ttl-off,
-      .osa-strip-tab {
+      .osa-strip-tab,
+      .osa-center-suggestion {
         transition-duration: 1ms !important;
         transition-delay: 0ms !important;
       }
@@ -5462,6 +5472,438 @@
       border-color: #fca5a5;
       background: rgba(220, 38, 38, 0.15);
     }
+
+    /* The center-stage dialog (E6.1, boards C2 and C3): the same window, docked to the
+       middle of the page under a scrim. Colors are the panel's own tokens, so the dark
+       scheme and a community's theme carry over; the two rgba values are the History
+       scrim's, light and dark. The window's size and place are !important because
+       three other rules own them (the corner's offsets, the capsule's, and the inline
+       size a drag of the resize grip leaves). */
+    .osa-center-scrim {
+      display: none;
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 10003;
+      background: rgba(15, 23, 42, 0.55);
+    }
+
+    .osa-center-scrim.open {
+      display: block;
+    }
+
+    .osa-chat-widget.osa-dark .osa-center-scrim {
+      background: rgba(0, 0, 0, 0.55);
+    }
+
+    .osa-chat-window:focus {
+      outline: none;
+    }
+
+    /* What only the dialog shows. */
+    .osa-center-pill,
+    .osa-center-context,
+    .osa-center-dock-btn,
+    .osa-center-label,
+    .osa-center-start {
+      display: none;
+    }
+
+    .osa-chat-widget .osa-chat-window.osa-center {
+      position: fixed !important;
+      top: 36px !important;
+      right: 80px !important;
+      bottom: 36px !important;
+      left: 80px !important;
+      width: auto !important;
+      height: auto !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      max-width: none !important;
+      max-height: none !important;
+      z-index: 10004 !important;
+      transition: none !important;
+    }
+
+    .osa-chat-window.osa-center .osa-resize-handle,
+    .osa-chat-window.osa-center .osa-popout-btn,
+    .osa-chat-window.osa-center .osa-reset-btn,
+    .osa-chat-window.osa-center .osa-chat-avatar,
+    .osa-chat-window.osa-center .osa-chat-title-area {
+      display: none !important;
+    }
+
+    .osa-chat-window.osa-center .osa-chat-header {
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      border-bottom: 1px solid var(--osa-border);
+      padding: 14px 20px;
+    }
+
+    .osa-chat-window.osa-center .osa-center-pill {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      gap: 6px;
+      height: 32px;
+      padding: 0 12px;
+      border-radius: 999px;
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1;
+    }
+
+    .osa-center-pill svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .osa-chat-window.osa-center .osa-center-context {
+      display: block;
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 13px;
+      color: var(--osa-text-light);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .osa-center-context code {
+      font-family: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+      color: var(--osa-text);
+    }
+
+    .osa-chat-window.osa-center .osa-header-actions {
+      align-items: center;
+      gap: 8px;
+    }
+
+    .osa-chat-window.osa-center .osa-header-btn {
+      min-width: 36px;
+      min-height: 36px;
+      color: var(--osa-text);
+      opacity: 1;
+    }
+
+    .osa-chat-window.osa-center .osa-header-btn:hover {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-chat-window.osa-center .osa-center-dock-btn {
+      display: flex;
+    }
+
+    .osa-chat-window.osa-center .osa-history-btn,
+    .osa-chat-window.osa-center .osa-center-dock-btn {
+      gap: 6px;
+      padding: 0 14px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      background: var(--osa-bg);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .osa-chat-window.osa-center .osa-center-label {
+      display: inline;
+    }
+
+    .osa-chat-widget.osa-dark .osa-chat-window.osa-center .osa-history-btn[aria-expanded="true"] {
+      color: var(--osa-accent);
+      background: var(--osa-assistant-bg);
+    }
+
+    /* The thread is one centered column (760px); a narrower window gives it the
+       panel's own 16px edges. */
+    .osa-chat-window.osa-center .osa-chat-messages,
+    .osa-chat-window.osa-center .osa-suggestions,
+    .osa-chat-window.osa-center .osa-chat-input,
+    .osa-chat-window.osa-center .osa-ai-disclaimer,
+    .osa-chat-window.osa-center .osa-combined-footer {
+      padding-left: max(16px, calc((100% - 760px) / 2));
+      padding-right: max(16px, calc((100% - 760px) / 2));
+    }
+
+    .osa-chat-window.osa-center .osa-chat-input input {
+      min-height: 44px;
+      padding: 0 16px;
+      font-size: 15px;
+    }
+
+    .osa-chat-window.osa-center .osa-send-btn {
+      width: 44px;
+      height: 44px;
+    }
+
+    .osa-chat-window.osa-center .osa-suggestion {
+      min-height: 44px;
+    }
+
+    .osa-chat-window.osa-center .osa-history-sheet {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    /* The start screen (board C2) stands in for the thread, the suggestions and the
+       input while the conversation is empty; the input it holds writes through to the
+       chat's own, so docking keeps what was typed. */
+    .osa-chat-window.osa-center .osa-center-start:not([hidden]) {
+      display: flex;
+      flex: 1 1 auto;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-chat-window.osa-center-empty .osa-combined-footer {
+      padding-left: 20px;
+      padding-right: 20px;
+    }
+
+    .osa-chat-window.osa-center-empty .osa-chat-messages,
+    .osa-chat-window.osa-center-empty .osa-suggestions,
+    .osa-chat-window.osa-center-empty .osa-chat-input {
+      display: none !important;
+    }
+
+    /* The community's disclaimer and its Send feedback link stay under the start screen.
+       A note of its own (center_start.note) takes the disclaimer's place there, so the
+       link stays and the two are not said twice. */
+    .osa-chat-window.osa-center-empty.osa-center-has-note .osa-ai-disclaimer .osa-disclaimer-text {
+      display: none;
+    }
+
+    .osa-chat-window.osa-center-empty.osa-center-has-note .osa-ai-disclaimer {
+      justify-content: flex-end;
+    }
+
+    .osa-center-start-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      box-sizing: border-box;
+      padding: 24px 40px;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+
+    /* Spacers, not margins, so a tall screen centers and a short one scrolls from the top. */
+    .osa-center-start-body::before,
+    .osa-center-start-body::after {
+      content: "";
+      flex: 1 1 0;
+      min-height: 0;
+    }
+
+    .osa-center-start .osa-center-start-body > * {
+      flex: none;
+      box-sizing: border-box;
+      width: 100%;
+      max-width: 760px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .osa-center-heading {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 600;
+      line-height: 1.25;
+      letter-spacing: -0.4px;
+      text-align: center;
+      color: var(--osa-text);
+    }
+
+    .osa-center-form {
+      position: relative;
+      margin: 0;
+    }
+
+    .osa-center-input {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 60px;
+      padding: 0 70px 0 24px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 17px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.1);
+    }
+
+    .osa-center-input:focus,
+    .osa-center-input:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-center-send {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 44px;
+      height: 44px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .osa-center-send svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .osa-center-pills {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .osa-center-pills:empty {
+      display: none;
+    }
+
+    .osa-center-suggestion {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      min-height: 44px;
+      padding: 0 16px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1.3;
+      text-align: left;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .osa-center-suggestion:hover {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-center-send:focus-visible,
+    .osa-center-suggestion:focus-visible,
+    .osa-center-docs-link:focus-visible,
+    .osa-chat-window.osa-center .osa-header-btn:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-center-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .osa-center-cards:empty {
+      display: none;
+    }
+
+    .osa-center-card {
+      border: 1px solid var(--osa-border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      background: var(--osa-assistant-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-center-card-title {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .osa-center-card-text {
+      margin-top: 4px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .osa-center-footer {
+      flex: none;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      border-top: 1px solid var(--osa-border);
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-center-footer[hidden] {
+      display: none;
+    }
+
+    .osa-center-note {
+      flex: 1 1 auto;
+    }
+
+    .osa-center-docs-link,
+    .osa-docs-link {
+      color: var(--osa-accent);
+      text-decoration: underline;
+    }
+
+    /* A phone (600px and under): the dialog is the whole screen, and the header's
+       buttons keep their icons only. */
+    @media (max-width: 600px) {
+      .osa-chat-widget .osa-chat-window.osa-center {
+        top: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        left: 0 !important;
+        border-radius: 0;
+      }
+
+      .osa-chat-window.osa-center .osa-chat-header {
+        padding: 10px 12px;
+        gap: 8px;
+      }
+
+      .osa-chat-window.osa-center .osa-header-actions {
+        gap: 4px;
+      }
+
+      .osa-chat-window.osa-center .osa-center-label {
+        display: none;
+      }
+
+      .osa-chat-window.osa-center .osa-history-btn,
+      .osa-chat-window.osa-center .osa-center-dock-btn {
+        padding: 0;
+      }
+
+      .osa-center-start-body {
+        padding: 16px;
+      }
+
+      .osa-center-heading {
+        font-size: 22px;
+      }
+
+      .osa-center-footer {
+        padding: 10px 16px;
+      }
+    }
   `;
 
   // Escape text for interpolation into HTML, including quoted attribute values.
@@ -5765,6 +6207,13 @@
   function setTab(container, tab) {
     if (!container.classList.contains('osa-capsule')) return;
     if (tab === 'notebook' && !isNotebookAvailable()) tab = 'chat';
+    // The dialog is the chat's (see engageCenter): the notebook opens in the corner, so
+    // the page is live again and the notebook's frame is never inside a modal. The
+    // "Keep going in a notebook" card and a host-driven import reach here with the
+    // dialog up.
+    if (tab === 'notebook' && hostMode === 'center' && applyHostMode(container, 'corner')) {
+      emitHostEvent('modechange', { mode: 'corner' });
+    }
     activeTab = tab;
     if (tab === 'notebook') closeHistory(container, { restoreFocus: false });
     container.classList.toggle('osa-tab-notebook', tab === 'notebook');
@@ -6722,6 +7171,7 @@
   // re-renders if the capsule is already there. A different dataset, or one without
   // a Zarr copy any more, takes the notebook tab back to chat; its frame is replaced
   // the next time the tab opens (#470).
+  const DATASET_TITLE_MAX = 200;
   function applySetDataset(value) {
     if (value === null) {
       currentDataset = null;
@@ -6729,6 +7179,16 @@
       if (!isValidDatasetId(value.id)) {
         console.warn('[OSA] setDataset: invalid dataset id, ignoring:', value.id);
         return;
+      }
+      // The dataset's title (E6.1) only completes the center-stage header's line, so a
+      // bad one is dropped alone, as a bad subject or task is.
+      let title;
+      if (value.title !== undefined) {
+        if (typeof value.title === 'string' && value.title.trim() && value.title.trim().length <= DATASET_TITLE_MAX) {
+          title = value.title.trim();
+        } else {
+          console.warn(`[OSA] setDataset: invalid title (a string of 1 to ${DATASET_TITLE_MAX} characters), dropping it:`, value.title);
+        }
       }
       let zarr;
       if (value.zarr === true || value.zarr === false || value.zarr === undefined) {
@@ -6749,7 +7209,7 @@
           console.warn(`[OSA] setDataset: invalid ${fact} label, dropping it:`, value[fact]);
         }
       }
-      currentDataset = { id: value.id, zarr, subject: facts.subject, task: facts.task };
+      currentDataset = { id: value.id, title, zarr, subject: facts.subject, task: facts.task };
     } else {
       console.warn('[OSA] setDataset: invalid value, ignoring:', value);
       return;
@@ -6769,6 +7229,7 @@
     renderNotebookStatus(container);
     renderLauncherIcons(container);
     if (container.querySelector('.osa-suggestions')) renderSuggestions(container);
+    renderCenterStart(container);
     forwardDatasetToPopout();
     evaluateContextSwitch();
   }
@@ -9818,6 +10279,14 @@
         : [];
       changed = true;
     }
+    if (w.center_start != null && !_userSetKeys.has('centerStart')) {
+      CONFIG.centerStart = w.center_start;
+      changed = true;
+    }
+    if (w.analysis_docs != null && !_userSetKeys.has('analysisDocs')) {
+      CONFIG.analysisDocs = w.analysis_docs;
+      changed = true;
+    }
     if (w.theme_color != null && !_userSetKeys.has('themeColor')) {
       CONFIG.themeColor = w.theme_color;
       changed = true;
@@ -12700,6 +13169,7 @@
 
     // Update suggested questions
     renderSuggestions(container);
+    renderCenterStart(container);
 
     // Update avatar with community logo if available
     const avatar = container.querySelector('.osa-chat-avatar');
@@ -13447,9 +13917,12 @@
         ${ICONS.chat}
       </button>
       <div class="osa-chat-tooltip">${escapeHtml(CONFIG.launcherLabel || ('Ask me about ' + CONFIG.title.replace(' Assistant', '')))}</div>
-      <div class="osa-chat-window">
+      <div class="osa-center-scrim" aria-hidden="true"></div>
+      <div class="osa-chat-window" tabindex="-1">
         <div class="osa-resize-handle"></div>
         <div class="osa-chat-header">
+          <span class="osa-center-pill">${ICONS.sparkle}AI Mode</span>
+          <div class="osa-center-context"></div>
           <div class="osa-chat-avatar">${ICONS.brain}</div>
           <div class="osa-chat-title-area">
             <h3 class="osa-chat-title">
@@ -13464,9 +13937,12 @@
           </div>
           <div class="osa-header-actions">
             <button class="osa-header-btn osa-history-btn" title="History" aria-label="History" aria-expanded="false" aria-controls="osa-history-sheet" aria-describedby="osa-history-busy">
-              ${ICONS.historyClock}
+              ${ICONS.historyClock}<span class="osa-center-label">History</span>
             </button>
             <span id="osa-history-busy" class="osa-sr-only"></span>
+            <button type="button" class="osa-header-btn osa-center-dock-btn" aria-label="Move to corner" title="Move to corner">
+              ${ICONS.dock}<span class="osa-center-label">Move to corner</span>
+            </button>
             <button class="osa-header-btn osa-settings-btn-open" title="Settings">
               ${ICONS.settings}
             </button>
@@ -13480,6 +13956,19 @@
               ${ICONS.close}
             </button>
           </div>
+        </div>
+        <div class="osa-center-start" hidden>
+          <div class="osa-center-start-body">
+            <h2 class="osa-center-heading"></h2>
+            <form class="osa-center-form">
+              <label class="osa-sr-only" for="osa-center-input"></label>
+              <input type="text" id="osa-center-input" class="osa-center-input" autocomplete="off" />
+              <button type="submit" class="osa-center-send" aria-label="Send">${ICONS.send}</button>
+            </form>
+            <div class="osa-center-pills" role="group" aria-label="Suggested questions"></div>
+            <div class="osa-center-cards"></div>
+          </div>
+          <footer class="osa-center-footer" hidden></footer>
         </div>
         <div class="osa-chat-messages"></div>
         <div class="osa-status-announcer osa-sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -13945,6 +14434,7 @@
     const awayFromBottom = messagesEl.scrollHeight - messagesEl.clientHeight - scrolledFrom;
     messagesEl.innerHTML = '';
     syncHistoryAvailability(container);
+    syncCenterStart(container);
     // The loading bubble's label, or a line under the reply's text (#538), never both.
     const status = statusToShow();
     announceStatus(container, status);
@@ -14396,6 +14886,7 @@
     } else {
       suggestionsEl.style.display = 'none';
     }
+    fillCenterPills(container, shown);
   }
 
   // Show error. The banner for a failed request (`persist`) stays until the reader
@@ -15554,6 +16045,7 @@
     input.disabled = true;
     sendBtn.disabled = true;
     resetBtn.disabled = true;
+    emitHostEvent('send', { text: question.trim() });
 
     try {
       const body = { message: question.trim() };
@@ -15870,6 +16362,10 @@
   // Toggle chat window
   function toggleChat(container) {
     isOpen = !isOpen;
+    // What the host page hears, once the window has settled (the host API).
+    const hostEvents = [];
+    // Before anything moves focus into the widget.
+    if (isOpen) hostReturnFocus = focusedOutside(container);
     const chatWindow = container.querySelector('.osa-chat-window');
     const button = container.querySelector('.osa-chat-button');
     const tooltip = container.querySelector('.osa-chat-tooltip');
@@ -15884,7 +16380,11 @@
         button.innerHTML = ICONS.close;
         button.setAttribute('aria-label', 'Close chat');
       }
-      if (activeTab === 'chat') container.querySelector('.osa-chat-input input').focus();
+      // A window opened in center is the dialog from its first frame.
+      if (hostMode === 'center') engageCenter(container);
+      syncCenterStart(container);
+      if (activeTab === 'chat') focusChatField(container, hostMode === 'center');
+      hostEvents.push(['open', { mode: hostMode }]);
       // Hide tooltip when chat opens
       if (tooltip) tooltip.classList.remove('visible');
       // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
@@ -15901,11 +16401,22 @@
         button.innerHTML = ICONS.chat;
         button.setAttribute('aria-label', 'Open chat');
       }
+      // A closed dialog is the corner again; focus goes back to what had it before.
+      const wasCenter = hostMode === 'center';
+      if (wasCenter) {
+        applyHostMode(container, 'corner');
+        const back = hostReturnFocus && hostReturnFocus.isConnected ? hostReturnFocus : container.querySelector('.osa-chat-button');
+        if (back && typeof back.focus === 'function') back.focus();
+        hostEvents.push(['modechange', { mode: 'corner' }]);
+      }
+      hostReturnFocus = null;
+      hostEvents.push(['close', {}]);
     }
     if (capsule) {
       renderLauncherIcons(container);
       positionIndicator(container);
     }
+    for (const [name, payload] of hostEvents) emitHostEvent(name, payload);
   }
 
   // The script element the pop-out copies (#470): this script's own, or, for a copy
@@ -16112,6 +16623,7 @@
     startFreshChatOnReturn();
     injectStyles();
     const container = createWidget();
+    renderCenterStart(container);
     // Everything else the remembered config sets (the logo, the title, the
     // greeting), still before the first frame.
     if (remembered) applyWidgetConfig();
@@ -16168,6 +16680,7 @@
     closeBtn?.addEventListener('click', () => toggleChat(container));
     resetBtn?.addEventListener('click', () => resetChat(container));
     bindHistoryPanel(container);
+    bindCenterStage(container);
     popoutBtn?.addEventListener('click', () => openPopout());
     settingsBtn?.addEventListener('click', () => openSettings(container));
 
@@ -16277,12 +16790,576 @@
         if (activeTab === 'chat') input?.focus();
       }, 100);
     }
+    // The host page's calls made before this point (open, ask, ...), in order.
+    flushHostCalls();
   }
 
   // Validate communityId contains only safe characters (alphanumeric, hyphens, underscores)
   function isValidCommunityId(id) {
     return typeof id === 'string' && /^[a-zA-Z0-9_-]+$/.test(id);
   }
+
+  // BEGIN host-api (E6.1, #701). The host page's way into the widget (open, close, ask,
+  // setMode, on) and the center-stage dialog those calls drive. A page calls it the
+  // moment the script is there, so it is plain code in this file, not the runtime bundle.
+  //
+  // Center is the same .osa-chat-window with an osa-center class, never a second
+  // instance, so docking keeps the conversation: nothing here redraws the thread. The
+  // mode lives in memory only: it starts at 'corner', and a dialog that is closed is
+  // 'corner' again, so the launcher always opens the panel it always has.
+  const HOST_EVENTS = ['open', 'close', 'modechange', 'send'];
+  const HOST_MODES = ['corner', 'center'];
+  const hostListeners = new Map(HOST_EVENTS.map((name) => [name, []]));
+  let hostMode = 'corner';
+  // Calls made before init() built the widget, replayed in order once it has.
+  let hostQueue = [];
+  let hostLive = false;
+  // A page that calls before init() and never calls init() (or whose init stops early)
+  // would otherwise see nothing happen, and hear nothing. The queue is bounded, and one
+  // warning says what is waiting if init() has not built the widget after a while.
+  const HOST_QUEUE_MAX = 50;
+  const HOST_INIT_WARN_MS = 5000;
+  let hostInitTimer = null;
+  // What had focus when the window opened, for Close to give it back.
+  let hostReturnFocus = null;
+  // The page's own nodes made inert while the dialog is open, and the page's scroll
+  // before it was locked, to give back; and the dialog's Escape and Tab handler.
+  let centerInerted = [];
+  let centerScrollLock = null;
+  let centerKeyHandler = null;
+
+  function hostWarn(call, message, value) {
+    if (value === undefined) console.warn(`[OSA] ${call}: ${message}`);
+    else console.warn(`[OSA] ${call}: ${message}`, value);
+  }
+
+  // A handler gets its own copy of plain data, and nothing it does (a throw, a rejected
+  // promise) reaches the widget or another handler.
+  function emitHostEvent(name, payload) {
+    for (const entry of [...hostListeners.get(name)]) {
+      try {
+        const result = entry.handler({ ...payload });
+        if (result && typeof result.catch === 'function') {
+          result.catch((error) => console.error(`[OSA] A "${name}" handler failed:`, error));
+        }
+      } catch (error) {
+        console.error(`[OSA] A "${name}" handler threw:`, error);
+      }
+    }
+  }
+
+  // Returns the way to stop listening. A bad call returns one too, that does nothing, so
+  // a host that keeps the result and calls it later does not throw.
+  function hostOn(event, handler) {
+    const nothing = () => {};
+    if (!hostListeners.has(event)) {
+      hostWarn('on', `unknown event, ignoring (one of ${HOST_EVENTS.join(', ')}):`, event);
+      return nothing;
+    }
+    if (typeof handler !== 'function') {
+      hostWarn('on', 'the handler must be a function, ignoring:', handler);
+      return nothing;
+    }
+    const entry = { handler };
+    hostListeners.get(event).push(entry);
+    return function off() {
+      const list = hostListeners.get(event);
+      const at = list.indexOf(entry);
+      if (at !== -1) list.splice(at, 1);
+    };
+  }
+
+  function runHostCall(call) {
+    try {
+      call();
+    } catch (error) {
+      console.error('[OSA] A call to the widget failed:', error);
+    }
+  }
+
+  // A call is checked when it is made, and then run now, or queued until init() has
+  // built the widget.
+  function hostDo(call) {
+    if (hostLive) {
+      runHostCall(call);
+      return;
+    }
+    if (hostQueue.length >= HOST_QUEUE_MAX) {
+      hostWarn('call', `init() has not built the widget and ${HOST_QUEUE_MAX} calls are already waiting, ignoring this one`);
+      return;
+    }
+    hostQueue.push(call);
+    if (hostInitTimer === null) {
+      hostInitTimer = setTimeout(() => {
+        hostInitTimer = null;
+        if (!hostLive) hostWarn('call', `${hostQueue.length} call(s) are waiting; OSAChatWidget.init() has not been called or did not finish building the widget, and none runs until it has`);
+      }, HOST_INIT_WARN_MS);
+    }
+  }
+
+  function flushHostCalls() {
+    hostLive = true;
+    if (hostInitTimer !== null) clearTimeout(hostInitTimer);
+    const calls = hostQueue;
+    hostQueue = [];
+    calls.forEach(runHostCall);
+  }
+
+  // open() and ask() take {mode}: undefined when none is named, null when what is named
+  // is not a mode (the call is then refused), else the mode.
+  function modeOption(call, options) {
+    if (options === undefined || options === null) return undefined;
+    if (typeof options !== 'object' || Array.isArray(options)) {
+      hostWarn(call, 'options must be an object such as {mode}, ignoring the call:', options);
+      return null;
+    }
+    if (options.mode === undefined) return undefined;
+    if (!HOST_MODES.includes(options.mode)) {
+      hostWarn(call, `mode must be one of ${HOST_MODES.join(', ')}, ignoring the call:`, options.mode);
+      return null;
+    }
+    return options.mode;
+  }
+
+  function widgetContainer() {
+    return document.querySelector('.osa-chat-widget');
+  }
+
+  // The element that has focus, unless it is the page itself or part of the widget.
+  function focusedOutside(container) {
+    const active = document.activeElement;
+    if (!active || active === document.body || active === document.documentElement) return null;
+    return container.contains(active) ? null : active;
+  }
+
+  // Focus goes to the field the reader types in: the start screen's while it shows. When
+  // that is not possible (a reply is loading), `park` puts it on the window itself, so
+  // it is never left on a control that is gone.
+  function focusChatField(container, park = false) {
+    const win = container.querySelector('.osa-chat-window');
+    const target = win && win.classList.contains('osa-center-empty')
+      ? container.querySelector('.osa-center-input')
+      : container.querySelector('.osa-chat-input input');
+    if (target && !target.disabled) target.focus();
+    else if (park && win) win.focus();
+  }
+
+  // Open the window, in `mode` when one is given, on the chat and with nothing laid over
+  // it. A window that is open stays open and keeps what it shows.
+  function openChatWindow(container, mode) {
+    if (activeTab !== 'chat') setTab(container, 'chat');
+    closeHistory(container, { restoreFocus: false });
+    closeSettings(container);
+    closeFeedback(container);
+    const changed = mode !== undefined && applyHostMode(container, mode);
+    if (!isOpen) toggleChat(container);
+    else focusChatField(container, true);
+    if (changed) emitHostEvent('modechange', { mode: hostMode });
+  }
+
+  function hostOpen(mode) {
+    const container = widgetContainer();
+    if (!container) return;
+    if (CONFIG.fullscreen) {
+      hostWarn('open', 'the pop-out window is always open, ignoring the call');
+      return;
+    }
+    openChatWindow(container, mode);
+  }
+
+  function hostClose() {
+    const container = widgetContainer();
+    if (!container) return;
+    if (CONFIG.fullscreen) {
+      hostWarn('close', 'the pop-out window is always open, ignoring the call');
+      return;
+    }
+    if (!isOpen) return;
+    toggleChat(container);
+  }
+
+  // The question goes the way a typed one does, through sendMessage, so History, the
+  // context reset and the runtime preload all apply. A reply still loading refuses it.
+  function hostAsk(text, mode) {
+    const container = widgetContainer();
+    if (!container) return;
+    if (isLoading) {
+      hostWarn('ask', 'a reply is still loading, ignoring the question');
+      return;
+    }
+    if (!CONFIG.fullscreen) openChatWindow(container, mode);
+    // sendMessage empties the chat's input, as it does for a typed question. What the
+    // reader had typed and not sent is theirs, not the page's, so it goes back (and into
+    // the start screen's field, which is the same text) once the question is away.
+    const input = container.querySelector('.osa-chat-input input');
+    const draft = input ? input.value : '';
+    const sending = sendMessage(container, text);
+    if (input && draft && input.value === '') {
+      input.value = draft;
+      const field = container.querySelector('.osa-center-input');
+      if (field) field.value = draft;
+      // Tell whatever mirrors the field (the start screen's sync, the send button).
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    }
+    sending.catch((error) => console.error('[OSA] ask failed:', error));
+  }
+
+  function hostSetMode(mode) {
+    const container = widgetContainer();
+    // The pop-out is a window of its own, with no corner to dock to.
+    if (!container) return;
+    if (CONFIG.fullscreen) {
+      hostWarn('setMode', 'the pop-out window has no corner to dock to, ignoring the call');
+      return;
+    }
+    if (!applyHostMode(container, mode)) return;
+    if (isOpen) focusChatField(container, true);
+    emitHostEvent('modechange', { mode: hostMode });
+  }
+
+  // Take `mode`; whether it changed. Events are the caller's to send, once its own
+  // work is done.
+  function applyHostMode(container, mode) {
+    if (mode === hostMode) return false;
+    hostMode = mode;
+    const win = container.querySelector('.osa-chat-window');
+    const center = mode === 'center';
+    win.classList.toggle('osa-center', center);
+    if (center) {
+      win.setAttribute('role', 'dialog');
+      win.setAttribute('aria-modal', 'true');
+    } else {
+      win.removeAttribute('role');
+      win.removeAttribute('aria-modal');
+      win.removeAttribute('aria-label');
+    }
+    if (center && isOpen) engageCenter(container);
+    else releaseCenter(container);
+    syncCenterHeader(container);
+    syncCenterStart(container);
+    return true;
+  }
+
+  // Modal for as long as the dialog is open: the page behind it is inert and does not
+  // scroll, and Tab and Escape are the dialog's (handleCenterKey).
+  function engageCenter(container) {
+    // The dialog is the chat's: around the notebook it would hide that tab's title and
+    // leave no control that goes back (the tab strip is the pop-out's), so it opens on
+    // the chat, as open() and ask() do.
+    if (activeTab !== 'chat') setTab(container, 'chat');
+    if (centerKeyHandler) return;
+    const scrim = container.querySelector('.osa-center-scrim');
+    if (scrim) scrim.classList.add('open');
+    const hold = (node) => {
+      if (node.hasAttribute('inert')) return;
+      node.setAttribute('inert', '');
+      centerInerted.push(node);
+    };
+    for (const node of [...document.body.children]) {
+      if (node !== container && !node.contains(container)) hold(node);
+    }
+    // The launcher and its tooltip are the widget's own, and as far behind the dialog.
+    for (const node of [...container.children]) {
+      if (!node.classList.contains('osa-chat-window') && !node.classList.contains('osa-center-scrim')) hold(node);
+    }
+    centerScrollLock = { root: document.documentElement.style.overflow, body: document.body.style.overflow };
+    document.documentElement.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+    centerKeyHandler = (event) => handleCenterKey(container, event);
+    document.addEventListener('keydown', centerKeyHandler);
+  }
+
+  function releaseCenter(container) {
+    const scrim = container.querySelector('.osa-center-scrim');
+    if (scrim) scrim.classList.remove('open');
+    centerInerted.forEach((node) => node.removeAttribute('inert'));
+    centerInerted = [];
+    if (centerScrollLock) {
+      document.documentElement.style.overflow = centerScrollLock.root;
+      document.body.style.overflow = centerScrollLock.body;
+      centerScrollLock = null;
+    }
+    if (centerKeyHandler) {
+      document.removeEventListener('keydown', centerKeyHandler);
+      centerKeyHandler = null;
+    }
+  }
+
+  // Escape and "Move to corner" put the same conversation in the corner: the thread, the
+  // session and what was typed are not touched.
+  function dockCenter(container) {
+    if (hostMode !== 'center') return;
+    if (applyHostMode(container, 'corner')) emitHostEvent('modechange', { mode: 'corner' });
+    focusChatField(container, true);
+  }
+
+  // An iframe is a stop like any control; once focus is inside one, its keys stay in
+  // the frame and never reach the dialog's handler, so the notebook's frame is the one
+  // place Tab can leave (the dialog docks before that tab opens, see setTab).
+  const FOCUSABLE_SELECTOR = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, iframe, [contenteditable]:not([contenteditable="false"]), [tabindex]';
+
+  // Whether `node` can be seen: neither it nor an ancestor up to `scope` is hidden or not
+  // displayed. `seen` remembers the answer for each node during one pass.
+  function isShown(node, scope, seen) {
+    if (!node || node === scope.parentElement) return true;
+    if (seen.has(node)) return seen.get(node);
+    let shown = !node.hidden;
+    if (shown) {
+      try {
+        const style = window.getComputedStyle(node);
+        shown = style.display !== 'none' && style.visibility !== 'hidden';
+      } catch (e) {
+        shown = true;
+      }
+    }
+    shown = shown && isShown(node.parentElement, scope, seen);
+    seen.set(node, shown);
+    return shown;
+  }
+
+  function focusablesIn(scope) {
+    const seen = new Map();
+    return [...scope.querySelectorAll(FOCUSABLE_SELECTOR)].filter((el) => {
+      if (el.disabled || el.closest('[inert]')) return false;
+      const tabindex = el.getAttribute('tabindex');
+      if (tabindex !== null && Number(tabindex) < 0) return false;
+      return isShown(el, scope, seen);
+    });
+  }
+
+  // Tab and Shift+Tab wrap inside the dialog, or inside what is laid over it (a settings
+  // panel, the History sheet). The page behind is inert, so the wrap is what keeps focus
+  // from leaving for the browser's own controls.
+  function trapTab(container, event) {
+    const win = container.querySelector('.osa-chat-window');
+    const overlays = [...win.querySelectorAll('.osa-settings-overlay.open')];
+    const scope = overlays.length ? overlays[overlays.length - 1] : (historyOpen ? historySheet(container) : win);
+    if (!scope) return;
+    const list = focusablesIn(scope);
+    const active = document.activeElement;
+    if (list.length === 0) {
+      event.preventDefault();
+      win.focus();
+      return;
+    }
+    const at = list.indexOf(active);
+    if (at === -1 && active && scope.contains(active) && active !== scope) return;
+    if (event.shiftKey) {
+      if (at <= 0) {
+        event.preventDefault();
+        list[list.length - 1].focus();
+      }
+    } else if (at === -1 || at === list.length - 1) {
+      event.preventDefault();
+      list[0].focus();
+    }
+  }
+
+  // Escape closes what is on top first: the History sheet, then a settings or feedback
+  // panel, and only then docks. (The sheet's own handler, which sees the key first when
+  // focus is inside the widget, stops it reaching this one.)
+  function handleCenterKey(container, event) {
+    if (event.defaultPrevented) return;
+    if (event.key === 'Tab') {
+      trapTab(container, event);
+      return;
+    }
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    if (historyOpen) {
+      closeHistory(container);
+      return;
+    }
+    const overlays = [...container.querySelectorAll('.osa-settings-overlay.open')];
+    if (overlays.length) {
+      const top = overlays[overlays.length - 1];
+      if (top.classList.contains('osa-feedback-overlay')) closeFeedback(container);
+      else closeSettings(container);
+      return;
+    }
+    dockCenter(container);
+  }
+
+  // --- The center-stage dialog's header and start screen (boards C2 and C3) ---
+
+  // Every string the community sends is drawn as text, and held to the limits the server
+  // holds it to, so a config that is wrong (an older deploy, a page's own setConfig) is
+  // refused here too.
+  const CENTER_START_MAX_CARDS = 3;
+  function boundedText(value, max) {
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
+    return text && text.length <= max ? text : null;
+  }
+
+  function validCenterStart(raw) {
+    const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const cards = Array.isArray(source.capabilities) ? source.capabilities : [];
+    const capabilities = cards.slice(0, CENTER_START_MAX_CARDS)
+      .map((card) => (card && typeof card === 'object'
+        ? { title: boundedText(card.title, 40), text: boundedText(card.text, 160) }
+        : null))
+      .filter((card) => card && card.title && card.text);
+    return { capabilities, note: boundedText(source.note, 300) };
+  }
+
+  // The docs link: an https address with a host and no credentials, or nothing. It goes
+  // into an anchor on someone else's page, so nothing else gets that far.
+  function validAnalysisDocs(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const title = boundedText(raw.title, 80);
+    const address = boundedText(raw.url, 500);
+    if (!title || !address) return null;
+    try {
+      const url = new URL(address);
+      if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) return null;
+      return { title, url: url.href };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function docsAnchor(className, docs, text) {
+    const link = document.createElement('a');
+    link.className = className;
+    link.href = docs.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = text;
+    const hint = document.createElement('span');
+    hint.className = 'osa-sr-only';
+    hint.textContent = ' (opens in a new tab)';
+    link.appendChild(hint);
+    return link;
+  }
+
+  // The dialog's name for a screen reader, and the line under the AI Mode pill.
+  function syncCenterHeader(container) {
+    const win = container.querySelector('.osa-chat-window');
+    const context = container.querySelector('.osa-center-context');
+    if (!win || !context) return;
+    context.textContent = '';
+    if (currentDataset) {
+      const id = document.createElement('code');
+      id.textContent = currentDataset.id;
+      context.appendChild(id);
+      if (currentDataset.title) context.appendChild(document.createTextNode(` · ${currentDataset.title}`));
+    } else {
+      context.textContent = CONFIG.title;
+    }
+    if (hostMode === 'center') {
+      win.setAttribute('aria-label', currentDataset ? `AI Mode for ${currentDataset.id}` : 'AI Mode');
+    }
+  }
+
+  // The start screen's words that depend on the community and the dataset: the heading,
+  // the field, the cards, the footer, and the docs link in Settings. Drawn from CONFIG
+  // as it is now, so it is called again when the config or the dataset changes.
+  function renderCenterStart(container) {
+    const start = container.querySelector('.osa-center-start');
+    if (!start) return;
+    start.querySelector('.osa-center-heading').textContent = currentDataset
+      ? 'What would you like to know about this dataset?'
+      : 'What would you like to know?';
+    start.querySelector('.osa-sr-only').textContent = currentDataset ? `Ask about ${currentDataset.id}` : 'Ask a question';
+    start.querySelector('.osa-center-input').placeholder = CONFIG.placeholder;
+
+    const copy = validCenterStart(CONFIG.centerStart);
+    const docs = validAnalysisDocs(CONFIG.analysisDocs);
+    const cards = start.querySelector('.osa-center-cards');
+    cards.textContent = '';
+    for (const card of copy.capabilities) {
+      const el = document.createElement('div');
+      el.className = 'osa-center-card';
+      const title = document.createElement('div');
+      title.className = 'osa-center-card-title';
+      title.textContent = card.title;
+      const text = document.createElement('div');
+      text.className = 'osa-center-card-text';
+      text.textContent = card.text;
+      el.append(title, text);
+      cards.appendChild(el);
+    }
+
+    const footer = start.querySelector('.osa-center-footer');
+    footer.textContent = '';
+    if (copy.note) {
+      const note = document.createElement('span');
+      note.className = 'osa-center-note';
+      note.textContent = copy.note;
+      footer.appendChild(note);
+    }
+    if (docs) footer.appendChild(docsAnchor('osa-center-docs-link', docs, 'How it works'));
+    footer.hidden = !copy.note && !docs;
+    const win = container.querySelector('.osa-chat-window');
+    if (win) win.classList.toggle('osa-center-has-note', !!copy.note);
+
+    // A community with no docs page has no link in Settings either.
+    container.querySelectorAll('.osa-docs-field').forEach((row) => row.remove());
+    const body = container.querySelector('.osa-settings-body');
+    if (docs && body) {
+      const row = document.createElement('div');
+      row.className = 'osa-settings-field osa-docs-field';
+      const label = document.createElement('span');
+      label.className = 'osa-settings-label';
+      label.textContent = 'Learn more';
+      row.append(label, docsAnchor('osa-docs-link', docs, docs.title));
+      body.appendChild(row);
+    }
+    syncCenterHeader(container);
+  }
+
+  // The suggestion pills: what the chat's own suggestions show on an empty conversation.
+  function fillCenterPills(container, shown) {
+    const list = container.querySelector('.osa-center-pills');
+    if (!list) return;
+    list.textContent = '';
+    if (!shown || shown.compact) return;
+    for (const question of shown.questions) {
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = 'osa-center-suggestion';
+      pill.textContent = question;
+      list.appendChild(pill);
+    }
+  }
+
+  // The start screen is for an empty conversation in the dialog; any message, and the
+  // thread takes its place. The field it holds is the chat's own input, kept equal.
+  function syncCenterStart(container) {
+    const win = container.querySelector('.osa-chat-window');
+    const start = win && win.querySelector('.osa-center-start');
+    if (!start) return;
+    const show = hostMode === 'center' && activeTab === 'chat' && messages.length <= 1 && !isLoading;
+    const wasShown = !start.hidden;
+    if (show === wasShown) return;
+    start.hidden = !show;
+    win.classList.toggle('osa-center-empty', show);
+    if (show) {
+      start.querySelector('.osa-center-input').value = container.querySelector('.osa-chat-input input').value;
+    } else if (start.contains(document.activeElement)) {
+      // The field that had focus is gone: the window holds it until the reply is done.
+      win.focus();
+    }
+  }
+
+  function bindCenterStage(container) {
+    container.querySelector('.osa-center-dock-btn')?.addEventListener('click', () => dockCenter(container));
+    const field = container.querySelector('.osa-center-input');
+    const main = container.querySelector('.osa-chat-input input');
+    field?.addEventListener('input', () => { main.value = field.value; });
+    container.querySelector('.osa-center-form')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (isLoading || !field.value.trim()) return;
+      sendMessage(container, field.value).catch((error) => console.error('[OSA] send failed:', error));
+      field.value = main.value;
+    });
+    container.querySelector('.osa-center-pills')?.addEventListener('click', (event) => {
+      const pill = event.target && typeof event.target.closest === 'function' ? event.target.closest('.osa-center-suggestion') : null;
+      if (pill) sendMessage(container, pill.textContent).catch((error) => console.error('[OSA] send failed:', error));
+    });
+  }
+  // END host-api
 
   // Expose configuration for customization
   window.OSAChatWidget = {
@@ -16373,6 +17450,39 @@
     getBrowserRuntimeStatus: function() {
       return browserRuntimeStatus();
     },
+    // The host page's controls (E6.1, #701). A call made before init() is kept and runs,
+    // in order, once the widget is built; a bad one warns and does nothing.
+    // open({mode}?): show the window, as 'corner' (the default) or 'center' (the dialog).
+    open: function(options) {
+      const mode = modeOption('open', options);
+      if (mode === null) return;
+      hostDo(() => hostOpen(mode));
+    },
+    close: function() {
+      hostDo(hostClose);
+    },
+    // ask(text, {mode}?): open the window and send `text` as if it were typed. Refused,
+    // with a warning, for empty text or while a reply is loading.
+    ask: function(text, options) {
+      if (typeof text !== 'string' || !text.trim()) {
+        hostWarn('ask', 'the question must be a non-empty string, ignoring:', text);
+        return;
+      }
+      const mode = modeOption('ask', options);
+      if (mode === null) return;
+      hostDo(() => hostAsk(text, mode));
+    },
+    // setMode('corner' | 'center'): dock or undock the window. No effect in a pop-out.
+    setMode: function(mode) {
+      if (!HOST_MODES.includes(mode)) {
+        hostWarn('setMode', `mode must be one of ${HOST_MODES.join(', ')}, ignoring:`, mode);
+        return;
+      }
+      hostDo(() => hostSetMode(mode));
+    },
+    // on(event, handler): 'open' {mode}, 'close' {}, 'modechange' {mode}, 'send' {text}.
+    // Returns a function that stops listening.
+    on: hostOn,
     // Manually initialize the widget (use with data-no-auto-init on the script tag)
     init: function() {
       if (!initialized) {
@@ -16384,6 +17494,7 @@
 
   // Keep the state reducer testable without exposing it in normal embeds.
   if (window.__OSA_TEST__) {
+    window.OSAChatWidget.__center = { focusables: focusablesIn };
     window.OSAChatWidget.__firstPaint = {
       setWait(ms) {
         LAUNCHER_WAIT_MS = ms;

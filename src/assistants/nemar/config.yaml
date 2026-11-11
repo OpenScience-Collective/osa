@@ -123,6 +123,21 @@ widget:
   # the reader's own choice from nemar.org's theme button once the site passes it on
   # with setColorScheme (a website change, not yet made).
   color_scheme: auto
+  # The center-stage AI Mode dialog's start screen (E6.1, board C2): what the assistant
+  # can do, and what runs where. The widget carries no copy of its own about NEMAR.
+  center_start:
+    capabilities:
+      - title: Describe
+        text: "Summaries, methods and citations, from the dataset's own files."
+      - title: Look closer
+        text: "Events, channels and recordings, read live from NEMAR."
+      - title: Analyze
+        text: "Plans the steps with you, then runs Python in your browser."
+    note: "Code runs in your browser on NEMAR's streaming copy, which is lossy. Nothing you run is uploaded. AI can make mistakes."
+  # Linked from the start screen's "How it works" and from the widget's Settings.
+  analysis_docs:
+    title: Analyze data in your browser
+    url: https://docs.nemar.org/web/analyze-in-browser/
   suggested_questions:
     - Find EEG datasets with resting state recordings
     - What datasets have HED annotations?
