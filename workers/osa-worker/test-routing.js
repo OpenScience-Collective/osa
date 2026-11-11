@@ -349,14 +349,31 @@ try {
   assertEqual(notJson.status, 400, 'a body that is not JSON is a 400 at the edge');
   assertEqual(overviewSeen.length, 1, 'and is not forwarded');
 
-  const spent = new Map([[`rl:hour:unknown:${Math.floor(Date.now() / 1000 / 3600)}`, '100']]);
-  const spentKv = { get: async (key) => spent.get(key) ?? null, put: async (key, value) => { spent.set(key, value); } };
+  // A KV binding stands in for the platform's. No CF-Connecting-IP header, so the
+  // caller's key is "unknown"; development allows 100 chat requests and 500
+  // overviews an hour.
+  const hour = Math.floor(Date.now() / 1000 / 3600);
+  const kvOf = (entries) => {
+    const store = new Map(entries);
+    return { store, get: async (key) => store.get(key) ?? null, put: async (key, value) => { store.set(key, value); } };
+  };
+  const overviewAsk = (kv) =>
+    statusOf(`/${COMMUNITY}/overview`, { method: 'POST', body: payload, env: { ...overviewEnv, RATE_LIMITER_KV: kv } });
+
+  const chatSpent = kvOf([[`rl:hour:unknown:${hour}`, '100']]);
+  assertEqual(await overviewAsk(chatSpent), 200, "with the caller's /chat hour spent, the overview is still served");
+  assertEqual(chatSpent.store.get(`rl:hour:unknown:${hour}`), '100', 'and it did not add to the /chat count');
+  assertEqual(chatSpent.store.get(`rl:overview:hour:unknown:${hour}`), '1', 'it counted against its own');
+  assertEqual(overviewSeen.length, 2, 'and the request reached the backend');
+
+  const overviewSpent = kvOf([[`rl:overview:hour:unknown:${hour}`, '500']]);
+  assertEqual(await overviewAsk(overviewSpent), 429, "with the caller's overview hour spent, the overview is rate limited");
+  assertEqual(overviewSeen.length, 2, 'and the refused request never reached the backend');
   assertEqual(
-    await statusOf(`/${COMMUNITY}/overview`, { method: 'POST', body: payload, env: { ...overviewEnv, RATE_LIMITER_KV: spentKv } }),
-    429,
-    "with the caller's hour spent, the overview is rate limited like any counted route"
+    await statusOf('/hed/', { env: { ...overviewEnv, RATE_LIMITER_KV: overviewSpent } }),
+    200,
+    'while /chat is untouched by the overview budget'
   );
-  assertEqual(overviewSeen.length, 1, 'and the refused request never reached the backend');
 } finally {
   overviewBackend.stop(true);
 }
