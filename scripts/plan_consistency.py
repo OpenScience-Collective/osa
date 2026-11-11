@@ -136,17 +136,24 @@ VOCABULARY = (
 # neither matches is `other`. `load` also takes the inspection steps (check, find, list:
 # reading what the data is), which the vocabulary has no word for. A reviewer tunes the
 # reading by editing this table and re-renders a saved run with `--from-raw`; the report
-# prints raw titles to check it against.
+# prints raw titles to check it against. This table was edited once after the first live
+# run (inspection steps read as `load`, "tabulate epochs" read as `stats`), so the shares of
+# that run are post hoc; the titles that run settled are pinned in the tests.
 RULES: tuple[tuple[str, str], ...] = (
     ("plot", r"plot|figure|visuali[sz]|topograph|topomap|scalp map|chart|graph|display|draw"),
     ("export", r"export|\bsave\b|\bcsv\b|write (?:out|to)|store (?:the )?results?"),
     (
         "stats",
         r"statistic|t-?test|anova|signific|correlat|compar|summari[sz]|tally|tabulat|"
-        r"\bcounts?\b|number of|peak (?:latenc|amplitude)|latenc(?:y|ies)",
+        r"\bcounts?\b|number of|(?:epochs?|trials?|events?) per (?:event|condition|subject|type|class)|"
+        r"peak (?:latenc|amplitude)|latenc(?:y|ies)",
     ),
     ("spectrum", r"spectr|\bpsd\b|welch|\bfft\b|wavelet|time-frequency|band[- ]?power|\bpower\b"),
-    ("rereference", r"re-?referenc|common average|\bcar\b|linked mastoid"),
+    (
+        "rereference",
+        r"re-?referenc|(?:average|common)[- ]referenc|referenc\w*(?: \w+){0,3} to (?:the )?(?:average|mastoids?)|"
+        r"common average|\bcar\b|linked mastoid",
+    ),
     ("average", r"averag|grand mean|\bmean\b|\berps?\b|evoked|contrast"),
     (
         "reject",

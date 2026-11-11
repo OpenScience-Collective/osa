@@ -190,3 +190,39 @@ def test_raw_runs_round_trip_and_are_renormalized_with_the_current_rules():
     first, second = pc.records_from_raw(raw)[pc.REQUESTS[0]]
     assert first.sequence == record.sequence  # a plan is normalized again from its steps
     assert second.sequence == pc.ERROR  # a failed run keeps its outcome
+
+
+@pytest.mark.parametrize(
+    ("operation", "titles"),
+    [
+        (
+            "rereference",
+            [
+                "Apply average reference",
+                "Re-reference to the average",
+                "Reference the data to the average",
+                "Apply a common average reference",
+                "Re-reference to linked mastoids",
+            ],
+        ),
+        ("epoch", ["Baseline-correct", "Epoch around target onsets", "Cut trials"]),
+        (
+            "stats",
+            [
+                "Count trials per condition",
+                "Compute epochs per event type",
+                "Tabulate epochs per event type",
+            ],
+        ),
+        ("average", ["Average the epochs", "Compute the ERP"]),
+    ],
+)
+def test_wording_variants_of_one_operation_agree(operation, titles):
+    assert {pc.normalize_step({"title": t}) for t in titles} == {operation}
+
+
+def test_titles_audited_after_the_first_live_run_keep_their_operation():
+    # The two edits the first live run caused: an inspection step is `load`, and
+    # tabulating epoch counts is `stats`, not epoching.
+    assert pc.normalize_step({"title": "Check channel labels"}) == "load"
+    assert pc.normalize_step({"title": "Tabulate epochs per subject and event type"}) == "stats"
