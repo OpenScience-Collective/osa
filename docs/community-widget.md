@@ -772,6 +772,7 @@ The server appends it to the system prompt of an analysis turn, and only when th
 A quick turn, a request that does not declare the tool and a community that sets no text get none, so the prompt never names a tool the model was not given.
 NEMAR's text (`src/assistants/nemar/config.yaml`) applies to requests to analyze, plot or compute: inspect with `nemar_describe_dataset`, `nemar_get_events` and `nemar_list_recordings`, report what was found, call `propose_plan` with 3 to 6 steps, then run exactly one `execute_code` per step.
 A plain question gets a direct answer and no plan.
+The text also says how to cut the plan, so the same request gets the same steps (issue #714): one step per kind of work in a fixed order (read the recording, inspect only when the request depends on something unknown, preprocess as one step, epoch, compute, plot), never plotting folded into computing and never one kind of work split across steps, with each title opening on the plain verb of its kind.
 
 **The tool.**
 `propose_plan` is derived like `get_full_output`: a community never configures it (`propose_plan` is in `RESERVED_CLIENT_TOOL_NAMES`), and the server binds it only on an analysis turn, beside a python tool, for a request that declares it.
