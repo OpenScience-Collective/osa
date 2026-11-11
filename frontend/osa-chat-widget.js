@@ -3541,9 +3541,9 @@
     .osa-activity-status {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       margin-top: 6px;
-      font-size: 12px;
+      font-size: 12.5px;
       color: var(--osa-text-light);
     }
 
@@ -3555,6 +3555,11 @@
       border-radius: 50%;
       background: var(--osa-text-light);
       animation: osa-activity-pulse 1.4s infinite ease-in-out;
+    }
+
+    /* Board A3's status line: the accent-colored dot, as the run card's retry line has it. */
+    .osa-activity-status .osa-activity-pulse {
+      background: var(--osa-accent);
     }
 
     /* Not osa-pulse: keyframes of one name replace each other, and that one is the header
@@ -13208,6 +13213,7 @@
     validate: ['work', 'Validating'],
     check: ['work', 'Checking'],
     suggest: ['work', 'Suggesting'],
+    propose: ['work', 'Proposing'],
     render: ['render', 'Rendering'],
     // Running something is running code only if the name says it is code:
     // nemar_run_query and execute_sql run a query, and read "Working...".

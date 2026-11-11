@@ -416,6 +416,7 @@ console.log('\nthe label a tool call gets, from its name alone');
   assertEqual([label('exec'), label('run'), label('runTask')], ['Working...', 'Working...', 'Working...'], 'run, execute or exec alone: Working...');
   assertEqual(label('searchDatasets'), 'Searching datasets...', 'a camelCase name reads the same');
   assertEqual(label('look_up_thing'), 'Looking up thing...', 'look up, as two words');
+  assertEqual([label('propose_plan', 'writing'), kind('propose_plan')], ['Proposing plan...', 'work'], 'propose_plan, which the model writes for many seconds, names what it is doing');
   assertEqual(label('frobnicate_widgets'), 'Working...', 'an unknown verb is Working...');
   assertEqual(label(''), 'Working...', 'an empty name is Working...');
   assertEqual(label(undefined), 'Working...', 'no name at all is Working...');
@@ -1295,6 +1296,45 @@ console.log('\na browser run whose result the server refuses: the reply says it 
   runtime.terminate?.();
 }
 
+console.log('\nStop on a run in the browser: the run ends, the model reads what is left, and no status outlives the reply');
+for (const [name, second] of Object.entries({
+  'the reply then finishes': (s) => {
+    s.send({ event: 'content', content: 'You stopped the run, so I have nothing to report.' });
+    s.send({ event: 'done', session_id: 's', content: 'You stopped the run, so I have nothing to report.', citations: [] });
+    s.close();
+  },
+  'the reply then errors': (s) => { s.send({ event: 'error', message: 'the model went away' }); s.close(); },
+})) {
+  const loaded = loadWidget({ runtime: true });
+  const { container } = loaded;
+  const runtime = await withLocalRuntime(loaded);
+  const first = loaded.queue();
+  const resumed = loaded.queue({ hold: true });
+  const watch = sampler(container);
+  send(loaded, 'Plot the alpha power.');
+  first.send({ event: 'tool_call', name: 'execute_code' });
+  await handled(loaded, first);
+  assertEqual(view(container).loading, 'Writing code...', `${name}: while the code is written, the bubble says so`);
+  first.send({ ...CODE_REQUEST, args: { code: 'DELAY:30000\nprint(1)', description: 'A long run' } });
+  first.close();
+  await waitUntil(() => container.querySelector('.osa-tool-stop'), `${name}: the run panel, with Stop`);
+  assert(!container.querySelector('.osa-loading, .osa-activity-status'), `${name}: the panel stands for the run, and no status is beside it`);
+  container.querySelector('.osa-tool-stop').dispatchEvent(new loaded.window.Event('click', { bubbles: true }));
+  await waitUntil(() => loaded.requests.some((r) => r.url.endsWith('/chat/resume')), `${name}: the stopped run's result goes back`);
+  assert(!container.querySelector('.osa-tool-panel'), `${name}: Stop took the run panel away`);
+  assertEqual(view(container).loading, 'Analyzing results...', `${name}: the model reads what is left of the run, and the bubble says so`);
+  const resumeBody = JSON.parse(loaded.requests.find((r) => r.url.endsWith('/chat/resume')).body);
+  assertEqual(resumeBody.result.status, 'cancelled', `${name}: the result says the run was cancelled`);
+  resumed.release();
+  resumed.send({ event: 'session', session_id: 's' });
+  second(resumed);
+  await waitUntil(() => settled(loaded), `${name}: the send settles`, 10_000);
+  const run = await watch.stop();
+  assertEqual(run.problems, [], `${name}: no invariant broke in ${run.samples} samples`);
+  assertNothingLeft(loaded, `${name}: after Stop`);
+  runtime.terminate?.();
+}
+
 // --------------------------------------------------------- whitespace is not text
 
 // A reasoning model often streams "\n\n" before its first tool call. That is not a
@@ -1550,6 +1590,17 @@ console.log('\nthe status line takes the theme\'s muted text color, light and da
   const color = (holder, selector) => window.getComputedStyle(holder.querySelector(selector)).color;
   assertEqual([color(light, '.osa-activity-status'), color(light, '.osa-status-elapsed')], ['#6b7280', '#6b7280'], 'light: the muted text color');
   assertEqual([color(dark, '.osa-activity-status'), color(dark, '.osa-status-elapsed')], ['#9ca3af', '#9ca3af'], 'dark: the dark panel\'s own');
+  // Board A3's status line: the accent-colored dot and 12.5 px text, as the run card's retry line has them.
+  const retry = window.document.createElement('div');
+  retry.className = 'osa-chat-widget';
+  retry.innerHTML = '<div class="osa-run-card-retry"><span class="osa-activity-pulse"></span><span>x</span></div>';
+  window.document.body.appendChild(retry);
+  const styleOf = (holder, selector) => window.getComputedStyle(holder.querySelector(selector));
+  assertEqual(styleOf(light, '.osa-activity-status').fontSize, '12.5px', 'the line is 12.5 px, as the board draws it');
+  assertEqual([styleOf(light, '.osa-activity-status').gap, styleOf(retry, '.osa-run-card-retry').gap], ['8px', '8px'], 'with the retry line\'s 8 px gap');
+  const dot = styleOf(light, '.osa-activity-pulse').backgroundColor;
+  assert(dot && dot === styleOf(retry, '.osa-activity-pulse').backgroundColor, `and the same dot color as the retry line's (${dot})`);
+  assert(styleOf(light, '.osa-activity-pulse').backgroundColor !== styleOf(light, '.osa-activity-status').color, 'the dot takes the accent, not the muted text color');
   const stills = [];
   for (const sheet of window.document.styleSheets) {
     for (const rule of sheet.cssRules) {
