@@ -9279,10 +9279,11 @@
     // page's URL.
     const datasetId = currentDataset ? currentDataset.id : null;
     const movedFrom = pendingMovedFrom();
-    // The reader's memory budget goes with every request of a page that can run code in
-    // the browser (the controller exists), and with none of a page that cannot: there is
-    // nothing to size there. Like the dataset, it is about the chat, so it is sent whether
-    // or not the reader shares the page's URL.
+    // The reader's memory budget goes with a request that declares the client tools
+    // (`withBudget`) on a page that can run code in the browser (the controller exists),
+    // and with none of a page that cannot: there is nothing to size there. Like the
+    // dataset, it is about the chat, so it is sent whether or not the reader shares the
+    // page's URL.
     const memoryBudget = withBudget && browserTools ? normalizeMemoryBudget(userSettings.memoryBudgetMb) : null;
 
     if (!hasPageContext && !hasWidgetInstructions && !datasetId && !movedFrom && !memoryBudget) {

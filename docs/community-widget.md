@@ -72,8 +72,9 @@ widget:
 A question that runs code should stay within what the community's browser runtime preloads
 ([`docs/community-browser-runtime.md`](community-browser-runtime.md)).
 NEMAR's preloads numpy, SciPy, matplotlib, zarr and eegprep-lean,
-so its power-spectrum question is answered with `scipy.signal.welch`,
-one channel at a time and in chunks of at most `2**28 // nperseg` samples whose estimates are averaged by segment count,
+so its power-spectrum question is answered by reading the recording in pieces sized by the reader's memory budget and by welch's limit of `2**28 // nperseg` samples,
+calling `scipy.signal.welch` on one channel of a piece at a time,
+and averaging the estimates over the pieces by segment count,
 which is the spectrum of the whole recording,
 since past either limit it raises "array is too big" in 32-bit WebAssembly
 (see "SciPy in 32-bit WebAssembly" in `docs/community-browser-runtime.md`),
@@ -805,8 +806,8 @@ WebAssembly memory only grows, so the figure is the most the tab has had to give
 The run card says `Heap N MB of B MB` under the figures, with the same MB wording in every line (Settings' four choices alone read "1 GB" and "2 GB").
 Because the figure only grows, only the run that took it past the budget is blamed.
 That run's line takes a warning style and a second line names the step: "Step 2, Epoch the EEG, used more than the 512 MB budget. Ask for smaller pieces, or raise the budget in Settings." (a run no plan covers is "This run"), and so does a later run that grows an over-budget heap further.
-A run that reports the same figure as the run before it, `print(1)` after a large read included, says "The runtime is still holding N MB from earlier steps; its memory does not shrink between runs." and keeps the plain style.
-The widget decides this from the heap the run before it in the chat reported, which the run record keeps as `heapBeforeMb`; a smaller figure than that one belongs to a runtime started since (a reload), so its first over-budget run is blamed.
+A run that reports the same figure as the run before it, `print(1)` after a large read included, says "The runtime is still holding N MB from earlier steps; its memory does not shrink between runs." as a plain note, not in the amber box, and keeps the plain heap line.
+The widget decides this from the heap the runtime reported before the run, in whichever chat that was (the runtime is shared by every chat on the page, so a new chat or a conversation opened from History starts on what an earlier one left), which the run record keeps as `heapBeforeMb`; a smaller figure than that one belongs to a runtime started since (a reload, a restart after an out-of-memory crash), so its first over-budget run is blamed.
 A reload and the History sheet restore the line, against the budget the run had, whatever the setting is now.
 A run with no figure (one refused before it started, a timeout) has no line.
 
