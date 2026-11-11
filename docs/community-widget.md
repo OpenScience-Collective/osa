@@ -954,7 +954,7 @@ The record is `{version: 3, activeId, conversations: [...]}`.
 Each conversation has an id, a title (its first question, cut to 60 characters), a context (none, a dataset, or the search page), the server's session id, its two timestamps and its messages.
 When a 31st is saved, the one that last changed longest ago is dropped; the active conversation is never dropped.
 A conversation changes when a message is added or edited, a run is edited, or its session changes; a thumbs-up or thumbs-down does not count.
-A conversation with no question from the reader yet (only the greeting) does not use one of the 30 places, so starting a new chat never costs the oldest saved one.
+A conversation with no question from the reader and no reply the page seeded (only the greeting) does not use one of the 30 places, so starting a new chat never costs the oldest saved one.
 
 - **The widget shows the active conversation**, as it always showed its one chat, except on [a fresh chat on return](#a-fresh-chat-on-return). The History panel is built on this store.
 - **Older records are migrated on load.** A record any earlier widget wrote (version 2, version 1, or a bare list of messages) becomes one conversation, with its messages and session kept.
@@ -982,7 +982,7 @@ When the widget loads and the active conversation holds a question from the read
 - **A new browser session.** The first load in a tab sets a marker, `<storageKey>-session`, in `sessionStorage` (so a reload or a second page of the same tab keeps its chat, and a new tab or a restarted browser does not).
 - **The chat is older than the server's session.** Its last change was more than 24 hours ago, the same `SESSION_TTL_HOURS` after which the server forgets a session (`tests/test_frontend/test_widget_drift.py` keeps the two equal).
 
-A conversation with no question from the reader is never replaced.
+A conversation with no question from the reader and no reply the page seeded is never replaced.
 A browser that refuses `sessionStorage` reads as "the marker is there", so such a reader is not reset on every load; the 24 hour rule still applies.
 The [pop-out](#the-pop-out-window) never does this: it has a `sessionStorage` of its own and must show the same chat as its opener.
 
@@ -1006,7 +1006,7 @@ Once the server has confirmed the session in a page load the widget stops sendin
   The confirmation is not stored.
   The pop-out is a page load of its own, so its first request carries the chat too.
 - **What it carries.**
-  `prior_turns` is `[{role: "user" | "assistant", text}]`, oldest first, the conversation before the message being sent: the text of the reader's messages and the assistant's replies, never a code run, tool result, image or figure, and never the greeting.
+  `prior_turns` is `[{role: "user" | "assistant", text}]`, oldest first, the conversation before the message being sent: the text of the reader's messages and the assistant's replies, never a code run, tool result, image or figure, and never the greeting; a reply the page put at the head of the chat with [`seed`](#seed) is not the greeting and is carried.
   The newest 12 turns that fit 12,000 characters in all (the most the server keeps), whole oldest turns left out first, each turn cut from the middle to 2,000 characters with an ellipsis.
   `tests/test_frontend/test_reseed_limits.py` keeps these limits within the server's.
   `mode` is `quick` or `analysis`, taken from the newest reply that carries one (stored by the [handover](#quick-answers-and-analysis-the-handover-events) work), so the tier survives.
@@ -1056,7 +1056,8 @@ The page's context is:
 The widget compares the two when it loads, whenever `setDataset` is called, when the community config arrives (it may name a search path), when the browser reports `popstate` (the back and forward buttons), and just before a message is sent (a single-page site can move without telling the widget).
 A move made with `history.pushState` and no `setDataset` reports nothing, so it is found only at the send, and the new chat then starts without offering "Continue"; a single-page host that wants the notice calls `setDataset` (or `setDataset(null)`) on each navigation.
 
-- **A chat with no question from the reader switches silently.** The decision: with nothing the reader has said, there is nothing the new context could be confused with, so the chat takes the page's context and no notice is shown.
+- **A chat with no question from the reader and no reply the page seeded switches silently.** The decision: with nothing the reader has said and nothing the page said for them, there is nothing the new context could be confused with, so the chat takes the page's context and no notice is shown.
+  A chat holding a seeded reply (see [seed](#seed)) counts as one with content and shows the notice.
   A chat that has questions but no context at all (one saved by an earlier widget) also takes the page's context silently.
 - **Otherwise the old chat stays on screen** and a notice sits above the input: "You're on a new dataset, `<id>`. **Your next message starts a new chat;** the `<old>` chat is saved." (for the search page, "You're on the dataset search.").
   The next message starts a new conversation in the page's context; the old one stays saved with its messages and server session.
@@ -1170,6 +1171,7 @@ The calls are on `OSAChatWidget`, next to `setDataset`.
 ```js
 OSAChatWidget.open({ mode: 'center' });          // the AI Mode dialog
 OSAChatWidget.ask('What events are annotated?'); // open, then send as if typed
+OSAChatWidget.seed('This dataset has 64 channels.', { mode: 'center' }); // open with a first message, send nothing
 OSAChatWidget.setMode('corner');                 // dock the dialog
 const stop = OSAChatWidget.on('modechange', ({ mode }) => console.log(mode));
 stop();                                          // stop listening
@@ -1181,15 +1183,16 @@ OSAChatWidget.close();
 | `open({mode}?)` | Shows the window, in `mode` when one is given (`'corner'` or `'center'`), on the chat tab, with History and Settings closed. An open window stays open; the mode, if given, changes. |
 | `close()` | Closes the window, as the Close button does. |
 | `ask(text, {mode}?)` | Opens the window (in `mode` if given), then sends `text` through the same path as a typed question: it is in the saved conversation and History, the page-context reset of [A context change starts a new chat](#a-context-change-starts-a-new-chat) applies, and the browser runtime is preloaded as for any first message. `text` must be a non-empty string; a reply that is still loading refuses it. What the reader had typed in the chat's input and not sent is theirs: it stays there (and in the start screen's field) after `ask`. |
+| `seed(text, {mode}?)` | Opens the window (in `mode` if given) with `text` as the assistant's first message, and sends nothing; see [seed](#seed) below. |
 | `setMode(mode)` | `'center'` makes the window the dialog; `'corner'` docks it. On a closed window the mode is kept for the next open. The dialog is the chat's: a capsule community's window that is on the notebook tab is taken to the chat tab when it becomes the dialog, and the dialog docks to the corner (with a `modechange` event) when the notebook tab is opened from it, for example by the **Continue in notebook** or **Open notebook** button under a reply. |
 | `on(event, handler)` | Listens for an event, below, and returns a function that stops listening. |
 
 - **Before `init()`.**
-  `open`, `close`, `ask` and `setMode` may be called before `OSAChatWidget.init()`, as `setDataset` may.
+  `open`, `close`, `ask`, `seed` and `setMode` may be called before `OSAChatWidget.init()`, as `setDataset` may.
   They are kept and run, in the order they were made, once the widget is built, so a page need not wait for the script to be ready.
   `on` takes effect at once.
 - **A bad call does nothing.**
-  An unknown `mode`, an `event` that is not one of the four, a handler that is not a function, an `options` that is not an object, or an empty question each log a `console.warn` and change nothing.
+  An unknown `mode`, an `event` that is not one of the four, a handler that is not a function, an `options` that is not an object, or an empty question (or, for `seed`, a text of more than 2,000 characters) each log a `console.warn` and change nothing.
   A bad `on` still returns a function, which does nothing, so a page that keeps and later calls it does not throw.
   A call checked before `init()` is refused at once, not queued.
 - **Calls before `init()` are bounded.**
@@ -1198,7 +1201,7 @@ OSAChatWidget.close();
 - **The mode is in memory only.**
   It is `'corner'` after a load, and a dialog that is closed is `'corner'` again, so the launcher always opens the panel it always has.
 - **A pop-out has no corner.**
-  In the pop-out window (`fullscreen`), `setMode`, `open` and `close` do nothing, each with a `console.warn`; `ask` still sends.
+  In the pop-out window (`fullscreen`), `setMode`, `open`, `close` and `seed` do nothing, each with a `console.warn`; `ask` still sends.
 
 ### Events
 
@@ -1239,7 +1242,42 @@ Center is the same `.osa-chat-window`, with an `osa-center` class and a scrim be
 - **Narrow screens.**
   At 600 px and under the dialog fills the screen, and the header's buttons keep their icons only; at 900 px and under there is no plan rail.
 - **Looks.**
-  Colors come from the widget's own tokens, so the dark scheme and the community's theme carry over, and the one transition, the pills' hover, is covered by the widget's `prefers-reduced-motion` rule.
+  Colors come from the widget's own tokens, so the dark scheme and the community's theme carry over.
+  **Move to corner** shows an arrow pointing to the bottom right, where the window goes.
+- **Motion.**
+  Opening the dialog fades the scrim in and fades the window in from 98% of its size, in 120 ms; docking (Move to corner, Escape, `setMode('corner')`) fades the corner window in the same way and the scrim out.
+  They are CSS keyframe animations on the opened state (the dialog's rules force `transition: none`, and the scrim goes from `display: none` to `block`, which no transition crosses).
+  The state changes at once, as it always did: the page is inert or not, the scroll is locked or not, focus has moved and the events have fired before the first frame of the effect.
+  The few cosmetic classes a dock leaves (`osa-dock-in`, `closing`) are taken off by a 150 ms timer, and nothing listens for `animationend` or `transitionend`.
+  Under `prefers-reduced-motion: reduce` there is no motion at all: the widget's one reduced-motion block sets `animation: none` for each of them, and the fading scrim is not shown.
+  The pills' hover transition is covered by the same block.
+
+### seed
+
+`OSAChatWidget.seed(text, {mode}?)` is for a host page that has something to say before the reader asks: a summary of the dataset on screen, say.
+The nemarOrg website calls `OSAChatWidget.seed(text, {mode: 'center'})` and checks that `seed` is a function first, so an older widget is skipped.
+
+- **What it does.**
+  The chat becomes one message, `text` as the assistant's reply (in place of the greeting), and the window opens, in `mode` when one is given.
+  `text` is Markdown, drawn like any reply: links work (an `https` address or a relative path such as `/dataset/nm000241`), and a `<script>`, an event handler or a `javascript:` link is inert.
+  The seeded reply has no thumbs row, since it is not a model's answer, and it can be copied.
+- **It sends nothing.**
+  No request, no `send` event, no Turnstile token and no usage.
+  The `open` and `modechange` events fire as `open({mode})` fires them.
+- **The chat.**
+  A chat with no message from the reader (only the greeting, or an earlier seed) is reused and its message replaced; a chat the reader has written in stays in History, and a new chat, in the page's current context, takes the seeded reply, as in [A context change starts a new chat](#a-context-change-starts-a-new-chat).
+  The conversation is saved, so it is in History (titled by the first 60 characters of the text, or **Untitled chat** when stored with no title) and survives a reload.
+  The stored message carries `seeded: true`, which is what keeps it out of the places that treat a chat of one message as empty: the center-stage start screen, the reset button, the suggestions and `setConfig({initialMessage})`.
+  A seeded chat counts as one with content everywhere else too: the page's context at the time of the seed becomes the chat's, a later move to another page or search shows the "next message starts a new chat" notice instead of adopting the new context silently, and a return after the session has expired starts a new chat, with the seeded one kept in History.
+  A host page that reseeds on every navigation therefore replaces the seeded reply under the new context, as before.
+- **The first message the reader sends.**
+  The request carries `prior_turns: [{role: "assistant", text}]` and no session, so the server, which makes a new session, gives the model the text as the earlier conversation; see [A conversation the server forgot](#a-conversation-the-server-forgot).
+  That request has no `expect_session`, as there is no session for the server to lose.
+  The next one names the session the server returned and carries no turns, as any chat does.
+- **Limits and refusals.**
+  `text` must be a non-empty string of at most 2,000 characters once trimmed (the most a turn carries, `RESEED_TURN_MAX_CHARS`).
+  A bad `text`, `mode` or `options`, and a call made while a reply is loading, each log `console.warn('[OSA] seed: ...')` and change nothing.
+  Before `init()` the call is queued with the others, in order.
 
 ### The start screen
 

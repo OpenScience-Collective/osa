@@ -355,6 +355,22 @@ console.log('\nthe pure part');
     { role: 'tool', content: 'result' },
     { role: 'assistant', content: 'hello' },
   ]), [{ role: 'user', text: 'hi' }, { role: 'assistant', text: 'hello' }], 'the greeting, blanks and other roles are left out, text is trimmed');
+  // A reply the host page seeded (seed(), #730) is the one assistant message that comes
+  // before the reader's first, and it is a turn: the reader has seen it.
+  assertEqual(pure.selectReseedTurns([
+    { role: 'assistant', content: 'greeting' },
+    { role: 'assistant', content: '  Seeded **summary**.  ', seeded: true },
+    { role: 'user', content: 'hi' },
+  ]), [{ role: 'assistant', text: 'Seeded **summary**.' }, { role: 'user', text: 'hi' }],
+  'a seeded assistant message before any reader message is kept, and the greeting is still dropped');
+  assertEqual(pure.selectReseedTurns([{ role: 'assistant', content: 'greeting', seeded: 'yes' }]), [],
+    'only seeded: true marks one, anything else is the greeting');
+  assertEqual(pure.selectReseedTurns([{ role: 'user', content: 'u', seeded: true }]), [{ role: 'user', text: 'u' }],
+    'and only an assistant message can be seeded');
+  assertEqual(pure.reseedFields({
+    list: [{ role: 'assistant', content: 'Seeded.', seeded: true }],
+    confirmedAt: null, now: 10 * SESSION_TTL_MS, ttlMs: SESSION_TTL_MS,
+  }), { prior_turns: [{ role: 'assistant', text: 'Seeded.' }] }, 'a chat that is only the seeded reply carries it as the one earlier turn');
   assertEqual(pure.lastReplyMode([
     { role: 'assistant', content: 'a', mode: 'analysis' },
     { role: 'user', content: 'b' },

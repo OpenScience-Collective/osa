@@ -44,7 +44,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { connect, findChrome, launch } from './chrome.js';
+import { connect, evaluate, findChrome, launch } from './chrome.js';
 import { run } from '../test-support/notebook-conversations.js';
 
 const WIDGET = readFileSync(new URL('../osa-chat-widget.js', import.meta.url), 'utf8');
@@ -265,14 +265,6 @@ function startServer() {
 }
 
 // ------------------------------------------------------------------ the driver
-
-async function evaluate(cdp, sessionId, expression, { userGesture = false } = {}) {
-  const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', {
-    expression, returnByValue: true, awaitPromise: true, userGesture,
-  }, sessionId);
-  if (exceptionDetails) throw new Error(`page exception: ${exceptionDetails.exception?.description || exceptionDetails.text}`);
-  return result.value;
-}
 
 async function waitFor(cdp, sessionId, expression, label, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
@@ -505,6 +497,14 @@ async function checkViewport(cdp, base, screenshotDir, viewport) {
     window.__session = OSAChatWidget.__browser.getSessionId();
   })()`);
   await press(ESCAPE);
+  // Read at once, not through evaluate (which waits for the animations to end): the dock
+  // follows an open that has long settled, and the corner window's fade must start anyway.
+  // Two rules with the same animation-name would leave the settled one in place, and
+  // nothing would play.
+  const dockFade = await cdp.send('Runtime.evaluate', {
+    expression: `document.getAnimations().some((a) => a.animationName === 'osa-dock-in')`, returnByValue: true,
+  }, sessionId);
+  report(dockFade.result.value === true, `${name}: the corner window's fade starts after a dock that follows a settled open`);
   report(await waitFor(cdp, sessionId, `!document.querySelector('.osa-chat-window').classList.contains('osa-center')`, 'docks'), `${name}: Escape docks the window`);
   const docked = await call(`(() => {
     const win = document.querySelector('.osa-chat-window');
