@@ -10458,6 +10458,8 @@
     // the reader's attention was.
     planFocusAfterRender = `[data-msg-index="${msgIndex}"] .osa-plan-title`;
     wait.resolve(decision);
+    // Drawn now, so the pending focus is used by this render and cannot outlive it.
+    renderMessages(container, { follow: false });
   }
 
   // What a click on one of the live card's controls does. `step` is the 0-based step it
@@ -10718,6 +10720,9 @@
     if (name === 'stop') {
       stopPlan(container);
     } else if (name === 'run') {
+      // sendMessage returns without drawing while a reply is going on; nothing is then
+      // pending, so focus is not moved by some later, unrelated render.
+      if (isLoading) return;
       // The bar the button was in is replaced; focus goes to the strip, which says what runs.
       planFocusAfterRender = '.osa-plan-strip';
       sendMessage(container, `Continue with step ${progress.step}.`);
@@ -10736,7 +10741,9 @@
     // stands after each step, which the strip and the bar (rebuilt every time) cannot say.
     const announcer = container.querySelector('.osa-plan-announcer');
     if (announcer) {
-      const spoken = progress ? `${planStripLabel(progress)}. ${planBarParts(progress).text}` : '';
+      // A finished or stopped plan has no bar, so there is nothing to add to the strip's words.
+      const ended = progress && (progress.state === 'done' || progress.state === 'stopped');
+      const spoken = !progress ? '' : ended ? `${planStripLabel(progress)}.` : `${planStripLabel(progress)}. ${planBarParts(progress).text}`;
       if (announcer.textContent !== spoken) announcer.textContent = spoken;
     }
     if (progress) {

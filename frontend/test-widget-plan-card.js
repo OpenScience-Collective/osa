@@ -638,6 +638,7 @@ console.log('\nrun all: the steps follow one another, and the strip says it runs
   assertEqual(page.qa('.osa-run-card .osa-run-card-title').map(text), ['Step 1 · Count face onsets', 'Step 2 · Epoch the EEG', 'Step 3 · Average per condition'], 'three step headers');
   assertEqual(text(page.q('.osa-plan-strip-label')), 'Plan · all 3 steps done', 'the strip says all three are done');
   assert(page.q('.osa-plan-bar') === null, 'and the bar is gone');
+  assertEqual(text(page.q('.osa-plan-announcer')), 'Plan · all 3 steps done.', 'the live region says the plan is done, not that it is working on a step');
 }
 
 console.log('\na failed step: its header, the retry line, what waits, and the second attempt');
@@ -1011,6 +1012,25 @@ console.log('\nthe plan card is announced, focused and sized for a touch');
   go.close();
   await waitUntil(() => settled(page), 'the reply ends');
   assert(/\.osa-plan-card button\.osa-plan-icon-btn \{[^}]*width: 44px;[^}]*height: 44px;/.test(SOURCE), 'the Edit and Remove buttons are 44 px');
+}
+
+console.log('\nthe live region reads the end of a plan as an end: no "Working on step" once the bar is gone');
+{
+  const page = await start();
+  await proposeFirst(page);
+  const first = await approve(page);
+  const afterStop = page.queue();
+  first.send(codeRequest('x1', 'NEVER\nwhile True: pass', 'A step that does not end'));
+  first.close();
+  await waitUntil(() => page.api.getBrowserTools().busy, 'step 1 is running');
+  click(page, page.q('.osa-plan-bar-stop'));
+  await waitUntil(() => page.requests.length === 3, 'the cancelled run is answered');
+  afterStop.send(doneEvent('Stopped.'));
+  afterStop.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+  const spoken = text(page.q('.osa-plan-announcer'));
+  assertEqual(spoken, 'Plan stopped · step 1 of 3.', 'after Stop plan it says the plan stopped, and nothing about working');
+  assert(!spoken.includes('Working on'), 'with no "Working on"');
 }
 
 console.log('\nformatStepElapsed never prints 60 seconds');
