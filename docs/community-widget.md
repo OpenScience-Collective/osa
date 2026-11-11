@@ -582,7 +582,9 @@ A reply is rendered from markdown by the widget itself, never as raw HTML (issue
 The widget never loads an image a reply names, since the address is the model's and the server behind it is somebody else's.
 `![Welch PSD](https://example.org/psd.png)` therefore renders as its alt text, "Welch PSD", in a span (`osa-image-reference`), with no `img`, no link and no address;
 and when the reply's message has a figure from a run, as "Welch PSD (see the figure above)", pointing to the run card's own figure.
+The pointer is shown only for a figure drawn by the same message's run, so a model-invented image never claims a figure that is not there; a figure from an earlier message gets none.
 An image with no alt text renders as the pointer alone, or as nothing when there is no figure to point to.
+A linked image, `[![badge](https://example.org/b.svg)](https://example.org)`, renders as a link whose text is the alt text (no pointer inside a link), and an image address may hold one level of balanced parentheses (`y_(1).png`).
 Bold and italic render their content as markdown again, so `**[text](https://example.org)**` is a link inside bold, and code and image references inside them render too.
 Every address still goes through the same check (`http:` and `https:` only), so `**[x](javascript:alert(1))**` renders its text and no link.
 `frontend/test-markdown.js` runs the shipped functions over these cases, and `frontend/test-widget-run-card.js` checks the figure pointer on the real widget.
