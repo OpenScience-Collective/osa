@@ -361,19 +361,23 @@ function codeSpan(text) {
  * a link, emphasis or a tag. A notebook's markdown cells render HTML and links.
  */
 function escapeMarkdown(text) {
-  return text.replace(/[\\`*_[\]<>|#&~]/g, '\\$&').replace(/:\/\//g, '\\://');
+  return text.replace(/[\\`*_[\]<>|#&~$]/g, '\\$&').replace(/:\/\//g, '\\://').replace(/\b(www)\./gi, '$1\\.');
 }
 
 function setupSource({ datasetId, zarrBase, imports }) {
-  const lines = ['%pip install eegprep-lean scipy', '%matplotlib inline'];
-  for (const item of imports) lines.push(...neutralizeMarkers(item.text.split('\n')));
-  lines.push(SETUP_IMPORT, '');
+  const lines = ['%pip install eegprep-lean scipy', '%matplotlib inline', SETUP_IMPORT, ''];
   const dataset = JSON.stringify(datasetId);
   if (zarrBase) {
     const indexUrl = JSON.stringify(`${zarrBase.replace(/\/+$/, '')}/${datasetId}/zarr/index.json`);
     lines.push('index = await eegprep_lean.read_index(', `    ${dataset}, index_url=${indexUrl}`, ')');
   } else {
     lines.push(`index = await eegprep_lean.read_index(${dataset})`);
+  }
+  // The steps' own imports come last: a package the kernel lacks stops the
+  // cell there, after `index` exists, so only the steps that need it fail.
+  if (imports.length > 0) {
+    lines.push('');
+    for (const item of imports) lines.push(...neutralizeMarkers(item.text.split('\n')));
   }
   return lines.join('\n');
 }
@@ -446,7 +450,8 @@ function planCells({ datasetId, title, createdAt, communityName, zarrBase, execu
   if (leftOut.length > 0) {
     const items = leftOut.map((entry) => {
       const reason = entry.error ? `: ${codeSpan(entry.error)}` : '';
-      return `- Run ${entry.position} · ${escapeMarkdown(entry.title)} (${entry.status})${reason}`;
+      const name = entry.title === `Run ${entry.position}` ? '' : ` · ${escapeMarkdown(entry.title)}`;
+      return `- Run ${entry.position}${name} (${entry.status})${reason}`;
     });
     cells.push({
       type: 'markdown',

@@ -94,13 +94,15 @@ console.log('\nThe setup cell');
   const setupLines = lines(setup.source);
   assertEqual(setupLines.slice(0, 2), ['%pip install eegprep-lean scipy', '%matplotlib inline'], 'it installs and sets up plotting first');
   assert(setup.source.includes('import eegprep_lean\n'), 'it imports eegprep_lean');
+  const indexAt = setupLines.indexOf('index = await eegprep_lean.read_index(');
   assertEqual(
-    setupLines.slice(-3),
+    setupLines.slice(indexAt, indexAt + 3),
     ['index = await eegprep_lean.read_index(', '    "on002718", index_url="https://zarr.nemar.org/on002718/zarr/index.json"', ')'],
     'read_index takes the index_url, as the starter notebook does'
   );
+  assert(setupLines.indexOf('import eegprep_lean') < indexAt, 'and it follows import eegprep_lean');
   const noBase = build({ ...NOTEBOOK_CONVERSATIONS.erp(), zarrBase: undefined });
-  assert(noBase.notebook.cells[1].source.endsWith('index = await eegprep_lean.read_index("on002718")'), 'without zarrBase there is no index_url');
+  assert(lines(noBase.notebook.cells[1].source).includes('index = await eegprep_lean.read_index("on002718")'), 'without zarrBase there is no index_url');
   const slash = build({ ...NOTEBOOK_CONVERSATIONS.erp(), zarrBase: 'https://zarr.nemar.org///' });
   assert(slash.notebook.cells[1].source.includes('"https://zarr.nemar.org/on002718/zarr/index.json"'), 'a trailing slash on zarrBase does not double up');
   let thrown = null;
@@ -128,7 +130,10 @@ console.log('\nImport hoisting');
   assertEqual(setup.split(same).length - 1, 1, 'an import repeated in three runs appears once in the setup cell');
   const stepCode = notebook.cells.filter((c) => c.id.endsWith('-code') && c.id !== 'setup').map((c) => c.source);
   assertEqual(stepCode, ['x = 1', 'y = x + 1', 'z = y + 1'], 'and is gone from the step cells');
-  assert(setup.indexOf(same) < setup.indexOf('import eegprep_lean'), 'hoisted imports come before import eegprep_lean');
+  assert(
+    setup.indexOf('import eegprep_lean') < setup.indexOf('index = await') && setup.indexOf('index = await') < setup.indexOf(same),
+    'hoisted imports come after index is defined, so a package the kernel lacks cannot leave every step without it'
+  );
 }
 {
   const { notebook } = build(
@@ -139,7 +144,7 @@ console.log('\nImport hoisting');
   );
   const setupLines = lines(notebook.cells[1].source);
   assertEqual(
-    setupLines.slice(2, 5),
+    setupLines.slice(setupLines.indexOf('import zlib')),
     ['import zlib', 'import numpy as np', 'from math import floor'],
     'imports keep the order in which they were first seen'
   );
@@ -152,7 +157,7 @@ console.log('\nImport hoisting');
     ])
   );
   const setup = notebook.cells[1].source;
-  assert(setup.includes('import numpy as np') && setup.includes('import numpy\n'), 'a different alias of one module is a different import');
+  assert(setup.includes('import numpy as np') && lines(setup).includes('import numpy'), 'a different alias of one module is a different import');
   assertEqual(setup.split('import numpy as np').length - 1, 1, 'whitespace differences do not defeat the deduplication');
 }
 {
@@ -294,11 +299,11 @@ console.log('\nStep numbers and headings');
 
 console.log('\nText from the chat in markdown');
 {
-  const nasty = 'a|b *x* [l](http://e.com) <b>bold</b> `code` #1 snake_case';
+  const nasty = 'a|b *x* [l](http://e.com) <b>bold</b> `code` #1 snake_case $x$ www.e.com';
   const { notebook } = build(
     conversation([run({ code: 'a = 1', description: nasty }), run({ code: 'b', status: 'error', description: nasty, stderr: 'boom' })], { title: nasty })
   );
-  const escaped = 'a\\|b \\*x\\* \\[l\\](http\\://e.com) \\<b\\>bold\\</b\\> \\`code\\` \\#1 snake\\_case';
+  const escaped = 'a\\|b \\*x\\* \\[l\\](http\\://e.com) \\<b\\>bold\\</b\\> \\`code\\` \\#1 snake\\_case \\$x\\$ www\\.e.com';
   assertEqual(notebook.cells[2].source, `## Step 1 · ${escaped}`, 'a step title with emphasis, a link and a tag is escaped so none of them renders');
   assert(notebook.cells[0].source.startsWith(`# ${escaped}\n`), 'so is the notebook title');
   assert(notebook.cells.at(-1).source.includes(`- Run 2 · ${escaped} (error)`), 'and a title in the closing note');
@@ -328,12 +333,12 @@ console.log('\nThe closing note');
     [
       "- Run 2 · Bad one (error): `KeyError: 'Scrambled'`",
       '- Run 3 · Not allowed (denied)',
-      '- Run 4 · Run 4 (timeout)',
-      '- Run 5 · Run 5 (cancelled)',
-      '- Run 6 · Run 6 (oom)',
-      '- Run 7 · Run 7 (error)',
+      '- Run 4 (timeout)',
+      '- Run 5 (cancelled)',
+      '- Run 6 (oom)',
+      '- Run 7 (error)',
     ],
-    'each left-out run is listed with its position, title and status; an error adds its first stderr line'
+    'each left-out run is listed with its position, its title when it has one, and status; an error adds its first stderr line'
   );
   assertEqual(stats.steps, 1, 'one run went in');
   assertEqual(stats.leftOut.map((e) => e.status), ['error', 'denied', 'timeout', 'cancelled', 'oom', 'error'], 'stats.leftOut carries the statuses');
