@@ -252,6 +252,10 @@ async function openPage(cdp, base, { reducedMotion }) {
   if (reducedMotion) {
     await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] }, sessionId);
   }
+  // Opt-in, to reproduce a starved runner on a quiet machine: PACED_REVEAL_CPU_THROTTLE=6
+  // runs the page's main thread six times slower (CDP Emulation.setCPUThrottlingRate).
+  const throttle = Number(process.env.PACED_REVEAL_CPU_THROTTLE || 1);
+  if (throttle > 1) await cdp.send('Emulation.setCPUThrottlingRate', { rate: throttle }, sessionId);
   await cdp.send('Page.navigate', { url: `${base}/` }, sessionId);
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
