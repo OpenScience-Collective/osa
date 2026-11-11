@@ -1611,7 +1611,7 @@ console.log('\nevery classified surface and foreground resolves to the color thi
   const FOREGROUNDS = [
     { label: 'message links (.osa-message-content a)', html: '<div class="osa-message-content"><a href="#">x</a></div>', selector: 'a', property: 'color' },
     { label: 'citation links (.osa-citation a)', html: '<span class="osa-citation"><a href="#">x</a></span>', selector: 'a', property: 'color' },
-    { label: "the reader's own page-context checkbox (.osa-combined-footer input[type=checkbox])", html: '<div class="osa-combined-footer"><input type="checkbox"></div>', selector: 'input', property: 'accentColor' },
+    { label: "the reader's own privacy choices (.osa-privacy-row input[type=checkbox])", html: '<div class="osa-privacy-row"><input type="checkbox"></div>', selector: 'input', property: 'accentColor' },
     { label: 'the local-run note (.osa-execution-local-note)', html: '<div class="osa-execution-local-note">x</div>', selector: '.osa-execution-local-note', property: 'color' },
     { label: 'the run card\'s Show code text (.osa-run-card-code-toggle)', html: '<div class="osa-run-card"><button class="osa-run-card-button osa-run-card-code-toggle">x</button></div>', selector: '.osa-run-card-code-toggle', property: 'color' },
     { label: 'the run card\'s Show code border (.osa-run-card-code-toggle)', html: '<div class="osa-run-card"><button class="osa-run-card-button osa-run-card-code-toggle">x</button></div>', selector: '.osa-run-card-code-toggle', property: 'borderTopColor' },
