@@ -1868,6 +1868,11 @@
       display: none;
     }
 
+    .osa-nb-entry-list {
+      display: flex;
+      flex-direction: column;
+    }
+
     .osa-nb-entry-menu button {
       text-align: left;
       border-color: transparent;
@@ -1893,6 +1898,7 @@
        cannot be used is text under it, and the menu is as wide as that needs. */
     .osa-history-menu {
       max-width: min(260px, calc(100% - 16px));
+      overflow-y: auto;
     }
 
     .osa-history-menu .osa-history-menu-reason {
@@ -5250,9 +5256,17 @@
   // Opens the notebook tab, and the panel, and waits for the notebook to be ready;
   // resolves with the page's answer {ok, path?, error?}. Never throws.
   function importNotebookToTab(input) {
+    return startNotebookImport(input).pending;
+  }
+
+  // importNotebookToTab, with the banner's record it made ({record, pending}):
+  // `record` is null when the import was refused before it began. For a caller
+  // that must know its own record (the card), not read it back from the shared
+  // state, where a refusal leaves another import's.
+  function startNotebookImport(input) {
     const refuse = (reason) => {
       console.warn(`[OSA] importNotebookToTab: ${reason}`);
-      return Promise.resolve({ ok: false, error: reason });
+      return { record: null, pending: Promise.resolve({ ok: false, error: reason }) };
     };
     const container = document.querySelector('.osa-chat-widget');
     if (!container || !container.classList.contains('osa-capsule')) return refuse('this widget has no notebook tab');
@@ -5272,7 +5286,7 @@
     const record = { state: 'importing', title, steps, leftOut, path: null, undoable: false, error: null };
     notebookEmbed.import = record;
     renderNotebookBanner(container);
-    return sendNotebookRequest('import-notebook', { datasetId, title, notebook }, (result) => {
+    const pending = sendNotebookRequest('import-notebook', { datasetId, title, notebook }, (result) => {
       if (notebookEmbed.import !== record || record.state !== 'importing') return;
       // An answer that is not ok but names a path means the file was saved and
       // only showing it failed: the notebook is there, so Run all and Undo are
@@ -5288,6 +5302,7 @@
       }
       renderNotebookBanner(container);
     });
+    return { record, pending };
   }
 
   // Run all and Undo: the banner's two buttons.
@@ -6888,6 +6903,8 @@
     { id: 'py', label: 'Python script with cells (.py)' }
   ];
   const NOTEBOOK_ENTRY_NOTE = 'Opens as cells in VS Code, Spyder and Jupytext.';
+  const NOTEBOOK_ENTRY_MENU_ID = 'osa-nb-entry-menu';
+  const NOTEBOOK_ENTRY_NOTE_ID = 'osa-nb-entry-note';
 
   // The card's memory, per conversation id, for the life of the page: imports
   // under way, imports that finished (with the step count they held and the
@@ -6915,7 +6932,9 @@
   }
 
   // Pure: whether any of those runs succeeded and has code, which is what the
-  // builder counts as a step.
+  // builder counts as a step. This must track planCells in osa-notebook-builder.js
+  // (status 'ok' and non-blank code): a drift shows an item the builder then
+  // refuses, which is said as an error, not a wrong notebook.
   function hasSuccessfulRun(conversation) {
     return conversationRuns(conversation).some((run) => run.status === 'ok' && typeof run.code === 'string' && run.code.trim() !== '');
   }
@@ -6977,6 +6996,28 @@
     }
   }
 
+  // The card's build, kept for the last conversation it drew: the card is redrawn
+  // on every message render and every launcher refresh, and the builder parses
+  // every run. The key holds everything the builder reads, so a run added, a
+  // status changed or a title edited builds again; a failure is kept too, so it is
+  // logged once, not on every redraw. Clicks build fresh, not from here.
+  let cardBuild = { key: null, builder: null, built: null };
+
+  function cachedConversationCode(conversation) {
+    const key = JSON.stringify([
+      conversation.id, conversation.title, conversation.createdAt, conversation.context,
+      conversationRuns(conversation).map((run) => [
+        run.status, run.code, run.description, run.stepTitle, run.local === true, run.status === 'error' ? run.stderr : null
+      ])
+    ]);
+    // The builder too: a bundle loaded late, or replaced, is a different builder.
+    const builder = runtimeApi && runtimeApi.buildConversationNotebook;
+    if (cardBuild.key !== key || cardBuild.builder !== builder) {
+      cardBuild = { key, builder, built: buildConversationCode(conversation) };
+    }
+    return cardBuild.built;
+  }
+
   // Whether the chat's notebook can be continued in the notebook on screen:
   // `offered` is false for a widget with no notebook tab (nothing to continue
   // in), and `reason` says why not when it is offered but cannot be done now.
@@ -7001,29 +7042,39 @@
   // Continue in notebook, for a conversation the caller already built: marks it
   // importing, imports, and records the outcome for the card. Resolves with the
   // import's answer; never throws.
-  async function runNotebookImport(conversationId, built) {
+  // `refocus` is true when the reader started it from the card's Continue button
+  // (which is disabled while it waits, so focus leaves it): a failure puts focus
+  // back on the card, on Continue to try again.
+  async function runNotebookImport(conversationId, built, { refocus = false } = {}) {
     if (notebookEntry.importing.has(conversationId)) return { ok: false, error: 'This chat is already being sent to the notebook.' };
     const container = document.querySelector('.osa-chat-widget');
     notebookEntry.importing.add(conversationId);
     notebookEntry.errors.delete(conversationId);
     if (container) refreshNotebookEntry(container);
-    let result;
-    let record = null;
+    let started;
     try {
-      const pending = importNotebookToTab({
+      started = startNotebookImport({
         datasetId: built.datasetId,
         title: built.title,
         notebook: built.notebook,
         stats: built.stats
       });
-      // importNotebookToTab makes its record before it first waits.
-      record = notebookEmbed.import;
-      result = await pending;
+    } catch (err) {
+      started = { record: null, pending: Promise.resolve({ ok: false, error: (err && err.message) || String(err) }) };
+    }
+    let result;
+    try {
+      result = await started.pending;
     } catch (err) {
       result = { ok: false, error: (err && err.message) || String(err) };
     }
     notebookEntry.importing.delete(conversationId);
-    if (result && (result.ok || result.path)) {
+    const succeeded = !!result && (result.ok || !!result.path);
+    if (succeeded) {
+      // A later import (another chat's) took the banner's record: this one's was
+      // never finished by the page, so what is known of it is the answer's path.
+      const superseded = !started.record || notebookEmbed.import !== started.record;
+      const record = superseded ? { state: 'imported', path: result.path || null } : started.record;
       notebookEntry.imported.set(conversationId, { datasetId: built.datasetId, steps: built.stats.steps, record });
     } else {
       notebookEntry.errors.set(conversationId, {
@@ -7032,7 +7083,13 @@
       });
     }
     const live = document.querySelector('.osa-chat-widget');
-    if (live) refreshNotebookEntry(live);
+    if (live) {
+      // Focus is put back only if it is nowhere (the page body, or the card).
+      const active = document.activeElement;
+      const free = !active || active === document.body || live.querySelector('.osa-nb-entry')?.contains(active);
+      if (!succeeded && refocus && free) refreshNotebookEntry(live, { focus: '[data-focus="continue"]', fallbackFocus: '[data-focus="download"]' });
+      else refreshNotebookEntry(live);
+    }
     return result || { ok: false };
   }
 
@@ -7059,7 +7116,7 @@
     if (msgIndex !== messages.map((message) => message && message.role).lastIndexOf('assistant')) return null;
     const conversation = activeConversationRecord();
     if (!hasSuccessfulRun(conversation)) return null;
-    const built = buildConversationCode(conversation);
+    const built = cachedConversationCode(conversation);
     if (built.error) return null;
     const id = conversation.id;
     const steps = built.stats.steps;
@@ -7108,13 +7165,14 @@
       actions.appendChild(button('osa-nb-entry-open', 'open', 'Open notebook', () => openImportedNotebook(container, id)));
     } else if (canContinue) {
       const go = button('osa-nb-entry-continue', 'continue', 'Continue in notebook', () => {
+        const refocus = document.activeElement === go;
         const fresh = freshCode();
         if (fresh.error) {
           notebookEntry.errors.set(id, { steps, text: fresh.error });
           refreshNotebookEntry(container);
           return;
         }
-        runNotebookImport(id, fresh);
+        runNotebookImport(id, fresh, { refocus });
       });
       go.disabled = importing;
       if (importing) go.setAttribute('aria-busy', 'true');
@@ -7125,14 +7183,20 @@
       refreshNotebookEntry(container, { focus: notebookEntry.menuFor === id ? '[data-focus="ipynb"]' : '[data-focus="download"]' });
     });
     download.setAttribute('aria-haspopup', 'menu');
+    download.setAttribute('aria-controls', NOTEBOOK_ENTRY_MENU_ID);
     download.setAttribute('aria-expanded', menuOpen ? 'true' : 'false');
     actions.appendChild(download);
     card.appendChild(actions);
 
-    const menu = make('div', 'osa-nb-entry-menu');
+    // The panel the button opens holds the menu, which is only its two items (a
+    // menu may hold nothing else), and the note beside it, which describes it.
+    const panel = make('div', 'osa-nb-entry-menu');
+    panel.id = NOTEBOOK_ENTRY_MENU_ID;
+    panel.hidden = !menuOpen;
+    const menu = make('div', 'osa-nb-entry-list');
     menu.setAttribute('role', 'menu');
     menu.setAttribute('aria-label', 'Download code');
-    menu.hidden = !menuOpen;
+    menu.setAttribute('aria-describedby', NOTEBOOK_ENTRY_NOTE_ID);
     for (const format of NOTEBOOK_ENTRY_FORMATS) {
       const item = button('osa-nb-entry-item', format.id, format.label, () => {
         notebookEntry.menuFor = null;
@@ -7150,8 +7214,11 @@
       item.setAttribute('role', 'menuitem');
       menu.appendChild(item);
     }
-    menu.appendChild(make('p', 'osa-nb-entry-note', NOTEBOOK_ENTRY_NOTE));
-    card.appendChild(menu);
+    panel.appendChild(menu);
+    const note = make('p', 'osa-nb-entry-note', NOTEBOOK_ENTRY_NOTE);
+    note.id = NOTEBOOK_ENTRY_NOTE_ID;
+    panel.appendChild(note);
+    card.appendChild(panel);
 
     if (importing) {
       const status = make('p', 'osa-nb-entry-status', 'Sending the code to the notebook…');
@@ -7171,12 +7238,19 @@
         event.stopPropagation();
         notebookEntry.menuFor = null;
         refreshNotebookEntry(container, { focus: '[data-focus="download"]' });
-      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
         const items = [...menu.querySelectorAll('.osa-nb-entry-item')];
         if (items.length === 0) return;
         event.preventDefault();
-        const step = event.key === 'ArrowDown' ? 1 : -1;
-        items[(items.indexOf(document.activeElement) + step + items.length) % items.length].focus();
+        const at = items.indexOf(document.activeElement);
+        let to;
+        if (event.key === 'Home') to = 0;
+        else if (event.key === 'End') to = items.length - 1;
+        // From outside the items (the button that opened them), Down goes to the
+        // first and Up to the last.
+        else if (at === -1) to = event.key === 'ArrowDown' ? 0 : items.length - 1;
+        else to = (at + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+        items[to].focus();
       }
     });
     // Tabbing away closes the menu. A null target is no evidence (some browsers
@@ -7194,7 +7268,7 @@
   // Redraw the card in place when what it says has changed (a dataset arriving,
   // a tab switch, an import ending), keeping focus on the same control. A no-op
   // when there is no card on screen, or its state is the same.
-  function refreshNotebookEntry(container, { focus = null } = {}) {
+  function refreshNotebookEntry(container, { focus = null, fallbackFocus = null } = {}) {
     const slot = container.querySelector('.osa-nb-entry');
     if (!slot) return;
     let next = null;
@@ -7212,7 +7286,7 @@
     const kept = !focus && slot.contains(active) && active.dataset ? active.dataset.focus : null;
     slot.replaceWith(next);
     const target = focus
-      ? next.querySelector(focus)
+      ? (next.querySelector(focus) || (fallbackFocus && next.querySelector(fallbackFocus)))
       : (kept ? [...next.querySelectorAll('[data-focus]')].find((node) => node.dataset.focus === kept) : null);
     if (target && !target.disabled) target.focus();
   }
@@ -7261,6 +7335,9 @@
     // A refusal that left the reader on the chat has nowhere else to say so.
     if (!result.ok && !result.path && activeTab !== 'notebook') {
       showError(container, `Could not continue in the notebook: ${result.error || 'it did not open here'}`);
+      // The sheet closed without returning focus, and the menu item that had it is
+      // gone: put it on the History button, where the reader opened this from.
+      (container.querySelector('.osa-history-btn') || container.querySelector('.osa-chat-input input'))?.focus();
     }
   }
 
@@ -7664,6 +7741,17 @@
     evaluateContextSwitch();
   }
 
+  // A row's menu is drawn under its row, inside the scrolling list, and with the
+  // notebook items it can be taller than the list (and a list clips what runs past
+  // it): cap it at the list's height, where it scrolls on its own, and scroll the
+  // list so the menu is in view.
+  function revealHistoryMenu(menu) {
+    if (!menu) return;
+    const list = menu.closest('.osa-history-list');
+    if (list && list.clientHeight > 0) menu.style.maxHeight = `${Math.max(120, list.clientHeight - 8)}px`;
+    if (typeof menu.scrollIntoView === 'function') menu.scrollIntoView({ block: 'nearest' });
+  }
+
   function closeHistoryMenus(sheet) {
     sheet.querySelectorAll('.osa-history-menu').forEach((menu) => { menu.hidden = true; });
     sheet.querySelectorAll('.osa-history-more[aria-expanded="true"]').forEach((button) => button.setAttribute('aria-expanded', 'false'));
@@ -7740,7 +7828,10 @@
         const opening = choices.hidden;
         choices.hidden = !opening;
         hit.setAttribute('aria-expanded', opening ? 'true' : 'false');
-        if (opening) choices.querySelector('button')?.focus();
+        if (opening) {
+          choices.querySelector('button')?.focus();
+          revealHistoryMenu(hit.closest('.osa-history-menu'));
+        }
       } else if ((hit = control('.osa-history-menu-save'))) {
         saveHistoryConversationCode(container, hit.getAttribute('data-id'), hit.getAttribute('data-format'));
       } else if ((hit = control('.osa-history-more'))) {
@@ -7751,6 +7842,7 @@
           menu.hidden = false;
           hit.setAttribute('aria-expanded', 'true');
           menu.querySelector('button')?.focus();
+          revealHistoryMenu(menu);
         }
       } else if (!control('.osa-history-menu')) {
         closeHistoryMenus(sheet);
@@ -14092,7 +14184,8 @@
         ...notebookEmbed, frame: undefined, loadTimer: undefined, readyTimer: undefined,
         outbox: [...notebookEmbed.outbox], requests: notebookEmbed.requests.size
       }),
-      // What E4.3's "Continue in notebook" card calls.
+      // What the notebook card and the History item call, through runNotebookImport
+      // (E4.3); exposed so the import's own suite can drive it directly.
       importNotebookToTab,
       setTimeouts: (afterLoadMs, totalMs) => {
         NOTEBOOK_AFTER_LOAD_MS = afterLoadMs;
@@ -14141,6 +14234,8 @@
       getMessages: () => messages,
       setMessages: (list) => { messages = list; },
       setLoading: (value) => { isLoading = value; },
+      // The reply being paced onto the screen, as the stream sets it (-1 for none).
+      setRevealingIndex: (index) => { revealingIndex = index; },
       // The Settings workspace panel (#433): workspaceStore is normally
       // set only by setUpBrowserTools once a runtime bundle loads, which
       // needs IndexedDB behind it to mean anything; a test sets it directly
