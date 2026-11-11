@@ -475,6 +475,11 @@ The dialog it opens must sit inside the viewport and the chat window with nothin
 The real Tab key, as trusted key events through the DevTools protocol, is pressed 20 times each way and must never leave the dialog and must cycle through exactly its four controls; the real Space key must toggle the checkbox it is on and store the choice; the real Escape key must close only the dialog, leave the window where it was, and give focus back to the button (in the center, a second Escape docks it).
 It is what CI runs, beside the center-stage check; with a screenshot directory (or `PRIVACY_CHECK_SCREENSHOTS`) it writes the open dialog for each of the eight combinations.
 
+The plan rail (board C3, E6.1) is checked on a second page, `/plan`, whose community has the runtime bundle and a stored conversation with an approved plan, three of five steps done.
+At 1280 x 900, on a capsule launcher (what NEMAR uses) and on a bubble: the rail is 280 px wide at the window's left edge with the header across the top and the footer across both columns, the thread and its input are in the right column, nothing scrolls sideways, the rows and "change" are at least 36 px tall, the heading reads `PLAN · 3 OF 5 DONE`, the strip in the thread is hidden and the paused bar stays, text reaches 4.5:1 (the check mark 3:1) in both schemes, the real Tab key goes header, rail, thread, input, a row's click focuses its run card without changing the address, "change" opens Settings on the memory choice, and docking removes the rail while the thread and its cards stay the same nodes.
+The capsule page also has **Continue in notebook** in the header.
+At 390 x 844 there is no rail, the strip and the bar show, nothing scrolls sideways, and the header's notebook button is an icon at least 36 px square.
+
 ### The notebook card and the History row menu's notebook items
 
 ```bash

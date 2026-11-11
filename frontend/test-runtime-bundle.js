@@ -67,6 +67,7 @@ console.log('\nthe bundle loads as a classic script and exposes one global');
     'highlightPython',
     'buildConversationNotebook',
     'plan',
+    'planRail',
   ]) {
     assert(api && api[name] !== undefined, `it exposes ${name}`);
   }
@@ -120,6 +121,19 @@ console.log('\nthe plan logic the BUNDLE carries gives what the source gives');
   const runs = [{ step: 1, attempt: 1, status: 'error' }];
   same(api.plan.nextRun(approved, runs), source.nextRun(approved, runs), 'the next run is attributed the same');
   same(api.plan.progressOf(approved, runs, { active: true }), source.progressOf(approved, runs, { active: true }), 'progress is the same');
+}
+
+console.log('\nthe plan rail logic the BUNDLE carries gives what the source gives');
+{
+  const source = await import('./osa-plan-rail.js');
+  assert(Object.isFrozen(api.planRail), 'the rail logic is frozen with the rest');
+  assert(JSON.stringify(Object.keys(api.planRail).sort()) === JSON.stringify(Object.keys(source).sort()), 'the bundle exposes every export of osa-plan-rail.js');
+  const plan = {
+    callId: 'c1', findings: '', estPeakMb: 0, runMode: 'pause', status: 'approved',
+    steps: [{ title: 'Load', detail: '' }, { title: 'Plot', detail: '' }],
+  };
+  const messages = [{ role: 'assistant', content: 'Plan', plan }, { role: 'assistant', content: 'Ran', executions: [{ step: 1, attempt: 1, status: 'ok', callId: 'a' }] }];
+  assert(JSON.stringify(api.planRail.planRailOf(messages)) === JSON.stringify(source.planRailOf(messages)), 'the minified rail reads a conversation as the source does');
 }
 
 console.log('\nthe worker source the BUNDLE builds is real JavaScript');

@@ -1,7 +1,7 @@
 """Version information for OSA."""
 
-__version__ = "0.8.20.dev26"
-__version_info__ = (0, 8, 20, "dev26")
+__version__ = "0.8.20.dev27"
+__version_info__ = (0, 8, 20, "dev27")
 
 
 def get_version() -> str:

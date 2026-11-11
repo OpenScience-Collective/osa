@@ -567,6 +567,20 @@ jobs:
       - name: Run the plan card tests on a real DOM
         run: bun frontend/test-widget-plan-card.js
 
+      # The plan rail beside the center-stage conversation (E6.1, board C3). The logic
+      # (frontend/osa-plan-rail.js, reading the plan the way the strip does): none, draft,
+      # approved, paused, failed, stopped, done, a re-proposed plan, the run mode.
+      - name: Run the plan rail logic tests
+        run: bun frontend/test-plan-rail.js
+
+      # The rail on a real DOM, the real widget and the runtime bundle as built: the aside
+      # and its rows as steps run, the rows that go to a run card without touching the
+      # address, the read-only run mode, "change" opening Settings, the hidden strip, docking
+      # without redrawing the thread, Tab order, Escape; and the header's Continue in
+      # notebook (visibility rules, the card's import, a busy button).
+      - name: Run the plan rail and Continue in notebook tests on a real DOM
+        run: bun frontend/test-widget-plan-rail.js
+
       # The browser memory budget (E5.1): the Settings field and its stored value, the
       # budget on /chat and /chat/resume only from a page with the runtime, the run card's
       # "Heap N MB of B MB" and its warning by step, the plan card's warning, and a reload
