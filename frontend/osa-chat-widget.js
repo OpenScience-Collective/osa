@@ -6092,7 +6092,10 @@
   // The elements the sheet made inert while it is open, to give back on close.
   let historyInerted = [];
 
-  const HISTORY_FOOTER = 'Saved in this browser only, the last 30 chats with their figures.';
+  // What Delete and Clear all history remove is the chats: the runs, code and figures
+  // they made stay in the workspace (IndexedDB) until the workspace is deleted in Settings.
+  const HISTORY_FOOTER = `Saved in this browser only, the last ${MAX_CONVERSATIONS} chats. Figures and code stay in this browser's workspace until you delete it in Settings.`;
+  const HISTORY_CLEAR_NOTE = 'This removes the chats only. Their figures and code stay in this browser\'s workspace until you delete it in Settings.';
   const HISTORY_BUSY_NOTE = 'History is not available while a reply is loading.';
 
   function historySheet(container) {
@@ -6158,7 +6161,7 @@
           <h3 class="osa-history-day-label">${escapeHtml(group.label)}</h3>
           <ul class="osa-history-rows">${group.items.map((summary) => historyRowHtml(summary, extras.get(summary.id), group.key, now, locked)).join('')}</ul>
         </section>`).join('');
-    const note = locked ? HISTORY_BUSY_NOTE : historyNote;
+    const note = locked ? HISTORY_BUSY_NOTE : (historyClearConfirming ? HISTORY_CLEAR_NOTE : historyNote);
     sheet.querySelector('.osa-history-note').textContent = note;
     const newBtn = sheet.querySelector('.osa-history-new');
     const clearBtn = sheet.querySelector('.osa-history-clear');

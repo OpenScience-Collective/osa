@@ -318,7 +318,8 @@ console.log('\nthe History button, and the sheet it opens');
   const factsC = text(rowFor(ctx, 'chat-c').querySelector('.osa-history-meta'));
   assert(!/step|figure/.test(factsC) && /Dataset search/.test(factsC), `a chat with no runs says neither, and a search chat says so (${factsC})`);
   assert(/[A-Z][a-z]{2}\s\d{1,2}/.test(factsC), 'an earlier chat has its date');
-  assertEqual(text(ctx.q('.osa-history-footer')), 'Saved in this browser only, the last 30 chats with their figures.', 'the footer');
+  assertEqual(text(ctx.q('.osa-history-footer')), `Saved in this browser only, the last ${ctx.hooks.conversationStore.MAX_CONVERSATIONS} chats. Figures and code stay in this browser's workspace until you delete it in Settings.`,
+    'the footer, with the cap from the store and the truth about figures');
   assert(rowFor(ctx, 'chat-a').querySelector('.osa-history-open').getAttribute('aria-current') !== 'true', 'no row is current: the open chat is the empty one');
   assert(ctx.rows().every((row) => {
     const more = row.querySelector('.osa-history-more');
@@ -464,8 +465,11 @@ console.log('\nClear all needs two clicks, and leaves one empty chat');
   clear.click();
   assert(/Confirm/.test(text(clear)), 'a first click asks to confirm');
   assertEqual(ctx.rows().length, 3, 'and deletes nothing');
+  assert(/removes the chats only/.test(text(ctx.q('.osa-history-note'))) && /figures and code stay in this browser's workspace/.test(text(ctx.q('.osa-history-note'))),
+    'and says that the figures and code stay in the workspace');
   ctx.q('.osa-history-day-label').click();
   assertEqual(text(ctx.q('.osa-history-clear')), 'Clear all history', 'a click elsewhere puts it back');
+  assertEqual(text(ctx.q('.osa-history-note')), '', 'with the note');
   ctx.q('.osa-history-clear').click();
   ctx.q('.osa-history-clear').click();
   assertEqual(ctx.rows().length, 0, 'the second click clears the list');
