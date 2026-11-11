@@ -27,7 +27,7 @@ from src.metrics.db import RequestLogEntry, log_request, now_iso
 logger = logging.getLogger(__name__)
 
 # Path suffixes that indicate a community-scoped route
-_COMMUNITY_SUFFIXES = {"ask", "chat", "sessions", "metrics", "config"}
+_COMMUNITY_SUFFIXES = {"ask", "chat", "overview", "sessions", "metrics", "config"}
 
 # Top-level path prefixes that are NOT community IDs
 _RESERVED_PREFIXES = {"health", "metrics", "sync", "docs", "redoc", "openapi.json", "frontend"}

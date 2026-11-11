@@ -58,6 +58,16 @@ from src.agents.model_routing import (
 from src.agents.plan_first import plan_first_section
 from src.api.config import Settings, get_settings
 from src.api.handover import stream_handover
+from src.api.overview import (
+    OVERVIEW_MAX_TOKENS,
+    OVERVIEW_REASONING_EFFORT,
+    OverviewRequest,
+    OverviewResponse,
+    OverviewUnanswered,
+    cache_key,
+    generate_overview,
+    overview_caches,
+)
 from src.api.routers.health import compute_community_health
 from src.api.security import (
     AuthScope,
@@ -133,6 +143,7 @@ from src.knowledge.search import FAQResult, get_citation_stats, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
     RequestLogEntry,
+    TokenUsage,
     extract_token_usage,
     extract_tool_names,
     log_request,
@@ -2837,6 +2848,54 @@ def _set_metrics_on_request(
     }
 
 
+def _set_overview_metrics(
+    http_request: Request,
+    route: RequestRoute,
+    usage: TokenUsage | None,
+    *,
+    error_message: str | None = None,
+) -> None:
+    """Store an overview request's metrics on request.state for the middleware's row.
+
+    The row is what the community's budget sums (``src.metrics.budget``), so it carries
+    the model, the key source, the tokens and the cost, and the quick tier. ``usage`` is
+    None for a request that called no model (a cache hit, or one that shared another's
+    call): it spent nothing, which is zero and not missing. A call that reported no usage
+    is NULL, as for every other request (see ``_set_metrics_on_request``).
+    """
+    if usage is None:
+        tokens: tuple[int | None, int | None, int | None] = (0, 0, 0)
+        cost: float | None = 0.0
+    elif usage.input_tokens + usage.output_tokens > 0:
+        tokens = (usage.input_tokens, usage.output_tokens, usage.total_tokens)
+        cost = estimate_cost(
+            route.model,
+            usage.input_tokens,
+            usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_creation_tokens=usage.cache_creation_tokens,
+            longest_prompt_tokens=usage.longest_prompt_tokens,
+        )
+    else:
+        tokens = (None, None, None)
+        cost = None
+    http_request.state.metrics_agent_data = {
+        "model": route.model,
+        "key_source": route.choice.key_source,
+        "input_tokens": tokens[0],
+        "output_tokens": tokens[1],
+        "total_tokens": tokens[2],
+        "estimated_cost": cost,
+        "tools_called": [],
+        "tool_call_count": 0,
+        "langfuse_trace_id": None,
+        "stream": False,
+        "tier": "quick",
+        "conversation_id": None,
+        "error_message": error_message,
+    }
+
+
 class UnansweredReply(Exception):
     """A request that is not streamed ended with no answer: the 502 to send instead.
 
@@ -3149,6 +3208,121 @@ def create_community_router(community_id: str) -> APIRouter:
                 status_code=500,
                 detail="Internal server error. Please contact support if the issue persists.",
             ) from e
+
+    @router.post(
+        "/overview",
+        response_model=OverviewResponse,
+        responses={
+            200: {"description": "The overview, as text and result-id segments"},
+            403: {"description": "No authorized origin and no BYOK key"},
+            404: {"description": "The community has no quick model"},
+            422: {"description": "The query, filters or results are out of bounds"},
+            502: {"description": "The model wrote nothing that could be shown"},
+        },
+    )
+    async def overview(
+        body: OverviewRequest,
+        http_request: Request,
+        _auth: RequireAuth,
+        x_anthropic_key: Annotated[
+            str | None, Header(alias=anthropic_key_header.model.name)
+        ] = None,
+        x_openrouter_key: Annotated[
+            str | None, Header(alias=openrouter_key_header.model.name)
+        ] = None,
+        x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
+    ) -> OverviewResponse:
+        """A short, cited overview of the top results of a search, on the quick model.
+
+        The caller sends the query, its filters and up to 10 results; the community's
+        quick model writes a summary of at most about 100 words, as text and result-id
+        segments, with up to 3 picks. Only ids from the request's results can appear.
+
+        The overview is cached in memory for 24 hours, keyed on the normalized query, the
+        filters and the results, and identical requests in flight share one model call.
+        See `.context/api-structure.md`.
+        """
+        config = info.community_config
+        if config is None or not config.quick_model:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Community '{community_id}' has no quick model, so no search overview.",
+            )
+        origin = http_request.headers.get("origin")
+        byok = resolve_byok(x_anthropic_key, x_openrouter_key)
+        route = _route_request(info, community_id, byok, origin, None, tier="quick")
+        _check_model_cost(route.model, route.choice.key_source)
+
+        spent: dict[str, TokenUsage] = {}
+        called = False
+
+        async def compute() -> OverviewResponse:
+            nonlocal called
+            called = True
+            chat_model = _build_chat_model(
+                route,
+                community_id,
+                byok=byok,
+                user_id=x_user_id,
+                reasoning_effort=OVERVIEW_REASONING_EFFORT,
+                max_tokens=OVERVIEW_MAX_TOKENS,
+            )
+            try:
+                run = await generate_overview(chat_model, body, model=route.model)
+            except OverviewUnanswered as unanswered:
+                if unanswered.usage is not None:
+                    spent["usage"] = unanswered.usage
+                raise
+            spent["usage"] = run.usage
+            return run.response
+
+        def usage_of_this_request() -> TokenUsage | None:
+            # None when this request called no model (it hit the cache or joined a call);
+            # zero tokens, read as missing, when its call reported none.
+            if not called:
+                return None
+            return spent.get("usage", TokenUsage(0, 0, 0))
+
+        try:
+            answer, source = await overview_caches.for_community(community_id).get_or_compute(
+                cache_key(body), compute
+            )
+        except OverviewUnanswered as unanswered:
+            logger.warning(
+                "Search overview for community %s had no sentence to show: %s",
+                community_id,
+                unanswered.reason,
+                extra={"community_id": community_id, "model": route.model},
+            )
+            _set_overview_metrics(
+                http_request, route, usage_of_this_request(), error_message=unanswered.reason
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="The model wrote no overview that could be shown. Try again.",
+            ) from unanswered
+        except Exception as error:
+            failure = classify_model_error(error)
+            error_id = str(uuid.uuid4())
+            logger.error(
+                "Search overview failed for community %s (ID: %s): %s [%s]: %s",
+                community_id,
+                error_id,
+                failure.detail,
+                failure.kind,
+                exception_text(error),
+                extra={"community_id": community_id, "error_id": error_id, "model": route.model},
+            )
+            _set_overview_metrics(
+                http_request, route, usage_of_this_request(), error_message=failure.detail
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"The model could not write an overview (ID: {error_id}). Try again.",
+            ) from error
+
+        _set_overview_metrics(http_request, route, usage_of_this_request())
+        return answer if source == "computed" else answer.model_copy(update={"cached": True})
 
     @router.post(
         "/chat",
