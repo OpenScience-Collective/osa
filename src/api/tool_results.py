@@ -384,15 +384,29 @@ def _placeholder_tool_message(
     )
 
 
-def build_unanswered_tool_message(call_id: str, reason: str) -> ToolMessage:
+def build_unanswered_tool_message(
+    call_id: str, reason: str, *, tool: str | None = None
+) -> ToolMessage:
     """Stand in for a browser call that never came back.
 
     Without this the session holds an assistant message carrying `tool_calls` and no
     matching tool result, which the provider rejects outright, so the session is not
     merely missing a turn: it is unusable for every turn after it.
+
+    A plan the reader did not decide on is not code that failed to run, so for
+    `propose_plan` the text says so: the model must not run code from a plan nobody
+    approved, and should re-plan or ask before it does.
     """
+    if tool == PROPOSE_PLAN_TOOL_NAME:
+        text = (
+            f"The reader did not decide on the plan ({reason}), so it was not approved. "
+            "Run no code from it. If the reader's next message still needs an analysis, "
+            "propose a plan again or ask what they want."
+        )
+    else:
+        text = f"Browser execution did not complete: {reason}."
     return ToolMessage(
-        content=[{"type": "text", "text": f"Browser execution did not complete: {reason}."}],
+        content=[{"type": "text", "text": text}],
         tool_call_id=call_id,
         status="error",
     )
@@ -563,7 +577,10 @@ class PendingClientCall:
         records `message.executions` only when the tool is not `FULL_OUTPUT_TOOL_NAME`),
         and the plan tool, which runs nothing and is answered by a decision, not a run.
         The widget drops a reply with no text and no such record, so the rule is one the
-        server has to match exactly.
+        server has to match exactly. Today `runsCode` in the widget is
+        `tool !== FULL_OUTPUT_TOOL_NAME`, which differs from this for the plan tool; that
+        is inert only while the widget never declares `propose_plan`. The widget change
+        that adds the plan card (#662) must exclude the plan tool from `runsCode` too.
         """
         return self.tool not in (FULL_OUTPUT_TOOL_NAME, PROPOSE_PLAN_TOOL_NAME)
 

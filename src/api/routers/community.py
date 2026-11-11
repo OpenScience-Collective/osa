@@ -943,7 +943,9 @@ class ChatSession:
         if pending is None:
             return False
         self.pending_call = None
-        self.messages.append(build_unanswered_tool_message(pending.call_id, reason))
+        self.messages.append(
+            build_unanswered_tool_message(pending.call_id, reason, tool=pending.tool)
+        )
         self.last_active = datetime.now(UTC)
         return True
 
@@ -3240,12 +3242,11 @@ def create_community_router(community_id: str) -> APIRouter:
         # the re-park is here so that stays true when someone adds something that can.
         try:
             if isinstance(body.result, PlanDecision):
-                # A decision carries no image, so the live and the stored message are one.
-                live_messages = [
-                    *session.messages,
-                    build_plan_tool_message(body.result, pending.args),
-                ]
-                session.messages.append(build_plan_tool_message(body.result, pending.args))
+                # A decision carries no image, so the live and the stored message are one
+                # object, built once.
+                decision_message = build_plan_tool_message(body.result, pending.args)
+                live_messages = [*session.messages, decision_message]
+                session.messages.append(decision_message)
             else:
                 live_messages = [
                     *session.messages,

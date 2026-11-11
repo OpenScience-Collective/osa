@@ -227,6 +227,25 @@ class TestUnansweredCall:
         assert message.status == "error"
         assert "the conversation moved on" in _text(message)
 
+    def test_an_undecided_plan_is_not_described_as_code_that_failed_to_run(self) -> None:
+        """The model reads this as the answer to its plan; "Browser execution did not
+        complete" would tell it code was started, not that the reader never approved."""
+        message = build_unanswered_tool_message(
+            CALL_ID, "the conversation moved on", tool=PROPOSE_PLAN_TOOL_NAME
+        )
+
+        text = _text(message)
+        assert message.tool_call_id == CALL_ID and message.status == "error"
+        assert "did not decide on the plan" in text
+        assert "the conversation moved on" in text
+        assert "Run no code from it" in text
+        assert "Browser execution" not in text
+
+    def test_any_other_tool_keeps_the_generic_wording(self) -> None:
+        text = _text(build_unanswered_tool_message(CALL_ID, "late", tool="execute_code"))
+
+        assert text == "Browser execution did not complete: late."
+
 
 def _payload(**overrides) -> dict:
     fields = {
