@@ -991,7 +991,10 @@ Once the server has confirmed the session in a page load the widget stops sendin
   `mode` is `quick` or `analysis`, taken from the newest reply that carries one (stored by the [handover](#quick-answers-and-analysis-the-handover-events) work), so the tier survives.
 - **What the server does.**
   `POST /{community}/chat` accepts `prior_turns` (at most 24 turns of at most 4,000 characters, a role of `user` or `assistant`, no blank text, no other field; anything else is a 422) and `mode`.
-  When the session this request names is new (it has no messages) the server builds one message from the transcript, whole oldest turns dropped to fit 12,000 characters (it then opens with `[earlier turns omitted]`), and the reader's message: the transcript is framed as background and fenced in `<earlier_conversation>`, the message in `<researcher_message>`, and a fence written into a turn is removed so it cannot close its section.
+  When the session this request names is new (it has no messages) the server builds one message from the transcript, whole oldest turns dropped to fit 12,000 characters (it then opens with `[earlier turns omitted]`), and the reader's message.
+  The transcript is framed as background, in the reader's voice, and fenced in `<earlier_conversation>`; the message goes in `<researcher_message>`.
+  The framing says the browser restored the conversation automatically and asks the assistant to continue it as its own, without mentioning a transcript, a paste, a restore or a server.
+  A fence written into a turn is removed so it cannot close its section.
   A session that already has messages ignores both fields.
   On a request that is routed between a quick and an analysis model, `mode` sets the new session's tier before the turn, so an analysis chat continues on the analysis model with no handover and no summary; elsewhere `mode` is ignored.
   A keyword in the transcript is not a request for analysis; only the reader's own message is read for one.
@@ -1084,13 +1087,13 @@ What `share_usage: false` changes on the server, and what it leaves:
 `POST /{community}/ask` and `/chat/resume` accept the same `share_usage` field (default `true`).
 The Cloudflare worker forwards the JSON body unchanged, so the field needs no header or allowlist entry.
 
-The link goes to `privacy_url` from the community's `widget` block, or, when that is unset or not valid, to `https://github.com/OpenScience-Collective/osa/blob/develop/PRIVACY.md`.
+The link goes to `privacy_url` from the community's `widget` block, or, when that is unset or not valid, to `https://docs.osc.earth/osa/privacy/`, the reader-facing copy of the repository's `PRIVACY.md`.
 It is validated twice, as `analysis_docs` is: `WidgetConfig` refuses a value that is not an `https://` URL with a host, no credentials and no whitespace (at most 500 characters) when the config loads, and the widget checks again before drawing, falling back to the default.
 It opens in a new tab (`target="_blank"`, `rel="noopener noreferrer"`, with a visually hidden "(opens in a new tab)").
 
 ```yaml
 widget:
-  privacy_url: https://nemar.org/privacy/
+  privacy_url: https://docs.nemar.org/policies/privacy/#the-open-science-assistant
 ```
 
 ## The first paint: remembering the community's look
