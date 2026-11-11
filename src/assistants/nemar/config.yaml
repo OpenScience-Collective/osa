@@ -49,15 +49,15 @@ plan_first_instructions: |
      steps. Use one step per kind, in this order, and leave out every kind the request does not
      need: read the recording; inspect; preprocess; epoch; compute; plot.
      - Inspect is a step only when the request depends on something you cannot know yet,
-       such as channel or event names; otherwise there is no inspection step.
-       This is about what the `nemar_*` calls in item 1 could not answer: names they already
-       returned are known, so they need no inspect step.
+       such as channel or event names the `nemar_*` calls in item 1 did not return;
+       otherwise there is no inspection step.
      - Preprocess is ONE step for all filtering, re-referencing and artifact rejection.
        Whatever it contains, title it "Filter and clean the recording" and put the specifics
        (re-referencing, rejection) in its `detail`.
      - Never fold plotting into computing, and never fold preparation (read, preprocess,
        epoch) into the step that follows it.
-     - Never split one kind of work across steps.
+       Never split one kind of work across steps, except as item 4 requires to fit the
+       memory budget.
      - The 3 to 6 steps of item 4 is applied after the kinds are chosen: a request that needs
        only two kinds, such as read and plot, gets two steps, and you never split a kind of
        work to reach 3.

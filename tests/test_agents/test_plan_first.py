@@ -90,6 +90,15 @@ class TestPlanFirstSection:
 
 
 class TestNemarPlanFirstText:
+    @pytest.fixture
+    def flat_nemar_text(self) -> str:
+        """The NEMAR plan-first section as the prompt gets it, whitespace collapsed."""
+        config = CommunityConfig.from_yaml(NEMAR_YAML)
+        text = plan_first_section(config, "analysis", DECLARED)
+
+        assert text is not None
+        return " ".join(text.split())
+
     def test_it_names_the_tools_the_model_must_use(self) -> None:
         config = CommunityConfig.from_yaml(NEMAR_YAML)
         text = plan_first_section(config, "analysis", DECLARED)
@@ -124,19 +133,16 @@ class TestNemarPlanFirstText:
         # The heading it points at is the one the prompt renders for a request with a budget.
         assert "Browser memory budget" in flat
 
-    def test_it_says_how_to_cut_a_plan_into_steps(self) -> None:
+    def test_it_says_how_to_cut_a_plan_into_steps(self, flat_nemar_text: str) -> None:
         """One step per kind of work, in a fixed order, so a request gets the same steps (#714)."""
-        config = CommunityConfig.from_yaml(NEMAR_YAML)
-        text = plan_first_section(config, "analysis", DECLARED)
-
-        assert text is not None
-        flat = " ".join(text.split())
+        flat = flat_nemar_text
         assert "Use one step per kind, in this order" in flat
         assert "read the recording; inspect; preprocess; epoch; compute; plot" in flat
         assert "leave out every kind the request does not need" in flat
         assert (
             "Inspect is a step only when the request depends on something you cannot know yet, "
-            "such as channel or event names; otherwise there is no inspection step." in flat
+            "such as channel or event names the `nemar_*` calls in item 1 did not return; "
+            "otherwise there is no inspection step." in flat
         )
         assert (
             "Preprocess is ONE step for all filtering, re-referencing and artifact rejection."
@@ -146,14 +152,20 @@ class TestNemarPlanFirstText:
         assert (
             "never fold preparation (read, preprocess, epoch) into the step that follows it" in flat
         )
-        assert "Never split one kind of work across steps." in flat
 
-    def test_the_text_quotes_exactly_the_example_titles(self) -> None:
+    def test_a_kind_is_split_only_to_fit_the_memory_budget(self, flat_nemar_text: str) -> None:
+        """The never-split rule defers to item 4, so the two do not contradict (#714 review)."""
+        flat = flat_nemar_text
+        assert (
+            "Never split one kind of work across steps, except as item 4 requires to fit the "
+            "memory budget." in flat
+        )
+        # The exception points at a rule that exists and says what it requires.
+        assert "split it into steps that read the data in pieces, so each fits" in flat
+
+    def test_the_text_quotes_exactly_the_example_titles(self, flat_nemar_text: str) -> None:
         """The titles quoted in the cutting block are the ones the normalizer test covers."""
-        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
-
-        assert text is not None
-        flat = " ".join(text.split())
+        flat = flat_nemar_text
         block = flat[flat.index("name each step for what it actually does:") :]
         block = block[: block.index("4. **Call")]
         assert re.findall(r'"([^"]+)"', block) == list(EXAMPLE_TITLE_OPERATIONS)
@@ -162,50 +174,27 @@ class TestNemarPlanFirstText:
     def test_each_example_title_normalizes_to_its_operation(self, title, operation) -> None:
         assert pc.normalize_step({"title": title, "detail": ""}) == operation
 
-    def test_the_preprocess_title_is_pinned(self) -> None:
+    def test_the_preprocess_title_is_pinned(self, flat_nemar_text: str) -> None:
         """'Filter and re-reference...' would normalize to rereference, so the text pins the title."""
-        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
-
-        assert text is not None
-        flat = " ".join(text.split())
         assert (
             'Whatever it contains, title it "Filter and clean the recording" and put the '
-            "specifics (re-referencing, rejection) in its `detail`." in flat
+            "specifics (re-referencing, rejection) in its `detail`." in flat_nemar_text
         )
 
-    def test_a_short_request_keeps_its_own_kinds_and_is_not_padded_to_three(self) -> None:
-        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
-
-        assert text is not None
-        flat = " ".join(text.split())
+    def test_a_short_request_keeps_its_own_kinds_and_is_not_padded_to_three(
+        self, flat_nemar_text: str
+    ) -> None:
         assert (
             "The 3 to 6 steps of item 4 is applied after the kinds are chosen: a request that "
             "needs only two kinds, such as read and plot, gets two steps, and you never split "
-            "a kind of work to reach 3." in flat
+            "a kind of work to reach 3." in flat_nemar_text
         )
 
-    def test_inspect_means_what_the_nemar_calls_could_not_answer(self) -> None:
-        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
+    def test_the_three_to_six_steps_rule_is_kept(self, flat_nemar_text: str) -> None:
+        assert "as `findings`, 3 to 6 steps, each a short `title` and a `detail`" in flat_nemar_text
 
-        assert text is not None
-        flat = " ".join(text.split())
-        assert (
-            "This is about what the `nemar_*` calls in item 1 could not answer: names they "
-            "already returned are known, so they need no inspect step." in flat
-        )
-
-    def test_the_three_to_six_steps_rule_is_kept(self) -> None:
-        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
-
-        assert text is not None
-        flat = " ".join(text.split())
-        assert "as `findings`, 3 to 6 steps, each a short `title` and a `detail`" in flat
-
-    def test_the_earlier_rules_survive_the_renumbering(self) -> None:
-        text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
-
-        assert text is not None
-        flat = " ".join(text.split())
+    def test_the_earlier_rules_survive_the_renumbering(self, flat_nemar_text: str) -> None:
+        flat = flat_nemar_text
         assert "you may fix it once and run it again" in flat
         assert "Never run code that is not a step of the approved plan." in flat
         assert "Calling it ends your turn; write nothing after the call." in flat
