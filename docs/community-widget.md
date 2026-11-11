@@ -544,6 +544,7 @@ It cuts those from the middle too, keeping both ends, because a run's error is w
   where that fails too, it opens the code, selects it, and says which keys copy it.
   It never opens a browser dialog.
   The permission gate's Copy, an icon over the code it asks about, and a failed run's, in the code's panel, work the same way, and copying neither runs nor denies anything.
+  They are not a second copy of the logic: every copy in the widget, the reply's own buttons below included, goes through the same function.
 - **Download** in the code's panel saves the code as a `.py` file built in the page, named for the dataset the question was about and the run's place in the conversation, counted from 1: `nm000132-run-3.py`.
   The dataset is the one the page named with `setDataset` when the reader sent the question; a question sent from a page that named none takes the community's id instead (`nemar-run-3.py`).
   The count is of every run the conversation shows, one that was declined, stopped, timed out or ran out of memory included.
@@ -565,6 +566,48 @@ Testing:
 `frontend/test-widget-color-scheme.js`, the card's dark colors;
 `frontend/test-widget-popout.js`, the card in the pop-out.
 `frontend/browser-harness/run-card-check.mjs [screenshot-dir]` draws every state at 400 px in headless Chrome, light and dark, checks the layout (inside the panel, nothing scrolls sideways, every button 36 px tall) and writes a screenshot of each.
+
+### Copying from a reply
+
+A reply's code blocks and the whole reply have a copy button too (issue #665), and they copy the way the run card does:
+the Clipboard API, then the browser's older copy command, then the text selected in place with the keys that copy it named.
+A copy that worked turns the button into a check with "Copied" beside it for two seconds, and the widget's status announcer (one polite live region, kept outside the conversation) says "Copied" for a screen reader.
+A block's button copies the block's code as written; the reply's button copies the reply's markdown source.
+Where the browser refuses both ways, a code block's code is selected where it stands, and the reply's source is shown in a block under the reply and selected there, since the page as drawn is not what the button promised;
+a line says "This page cannot copy for you: the text is selected, so press Ctrl+C" (Cmd on an Apple platform), and the announcer says it too.
+The reference on a failed request's banner copies the same way.
+`frontend/test-widget-copy.js` runs the real widget through all three paths for each button.
+
+### Image references and links in bold
+
+A reply is rendered from markdown by the widget itself, never as raw HTML (issue #666).
+The widget never loads an image a reply names, since the address is the model's and the server behind it is somebody else's.
+`![Welch PSD](https://example.org/psd.png)` therefore renders as its alt text, "Welch PSD", in a span (`osa-image-reference`), with no `img`, no link and no address;
+and when the reply's message has a figure from a run, as "Welch PSD (see the figure above)", pointing to the run card's own figure.
+The pointer is shown only for a figure drawn by the same message's run, so a model-invented image never claims a figure that is not there; a figure from an earlier message gets none.
+An image with no alt text renders as the pointer alone, or as nothing when there is no figure to point to.
+A linked image, `[![badge](https://example.org/b.svg)](https://example.org)`, renders as a link whose text is the alt text (no pointer inside a link), and an image address may hold one level of balanced parentheses (`y_(1).png`).
+Bold and italic render their content as markdown again, so `**[text](https://example.org)**` is a link inside bold, and code and image references inside them render too.
+Every address still goes through the same check (`http:` and `https:` only), so `**[x](javascript:alert(1))**` renders its text and no link.
+`frontend/test-markdown.js` runs the shipped functions over these cases, and `frontend/test-widget-run-card.js` checks the figure pointer on the real widget.
+Highlighting a reply's code blocks (#598) and the host page's CSS reaching a reply (#597) are separate work.
+
+## What a pending reply says it is doing
+
+While a reply is pending the widget names what it is doing, from the tool's name alone (issues #538 and #494):
+"Thinking..." while the model reasons, "Writing code..." from the moment the model starts composing a call to run code until the browser is asked to run it,
+a readable label for a server tool from the moment its call is written ("Searching datasets...", "Looking up events...", "Looking up documentation..."),
+"Running Python in your browser..." in the run card while the code runs,
+and "Analyzing results..." while the model reads a tool's or a run's result, including while the result is on its way back on `/chat/resume`.
+A tool whose name the widget cannot read is "Working...", and a plan being written is "Proposing plan...".
+Before the reply has any text the status is the loading bubble's label; once it has text, a later activity is a line under that text, with the accent-colored dot and 12.5 px text of board A3 (the run card's retry line is drawn the same way).
+It clears when the next text streams, when the reply ends, on an error, and once a run is stopped and the reply is over; no event is left to outlive the stream.
+The label is announced once through the status announcer, and the elapsed time (after 5 seconds) never is.
+
+The server half is the `tool_call` event, `{"event": "tool_call", "name": "..."}`, sent once per client-tool or server-tool call from each streaming loop as the model begins writing it.
+There is no second event for it (the `tool_composing` proposed in issue #494 would only have duplicated `tool_call`):
+a widget that predates it labels from `tool_start` and `tool_end`, and a server that predates it simply shows no "Writing code...".
+`tests/test_api/test_tool_call_streaming.py` drives the real streaming functions with chunked calls, and `frontend/test-widget-activity-status.js` and `frontend/browser-harness/activity-status-check.mjs` hold the widget side.
 
 ### Taking a chat's code out: the notebook card and Download code
 

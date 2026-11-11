@@ -354,6 +354,30 @@ console.log('\nShow code opens the code and keeps it open; Copy code puts the ex
   assert(!container.querySelector('.osa-execution-output').closest('[hidden]'), 'showing the output');
 }
 
+console.log('\na reply\'s image reference points to the figure above only when its message has a run figure (#666)');
+{
+  const { window, api } = loadWidget();
+  const reference = '![Welch PSD](https://x/y.png)\n\n**[the docs](https://x.org)**';
+  api.setMessages([
+    { role: 'assistant', content: 'Hi' },
+    { role: 'assistant', content: reference, executions: [FIGURE_RUN()] },
+    { role: 'assistant', content: reference, executions: [run({ stdout: '3\n' })] },
+    { role: 'assistant', content: reference },
+  ]);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  const contents = container.querySelectorAll('.osa-message-content');
+  const [withFigure, noFigure, noRun] = [contents[1], contents[2], contents[3]];
+  assertEqual(withFigure.querySelector('.osa-image-reference').textContent, 'Welch PSD (see the figure above)', 'with a run figure the reply points to it');
+  assertEqual(noFigure.querySelector('.osa-image-reference').textContent, 'Welch PSD', 'a run that drew nothing leaves the alt text alone');
+  assertEqual(noRun.querySelector('.osa-image-reference').textContent, 'Welch PSD', 'so does a reply with no run');
+  for (const content of [withFigure, noFigure, noRun]) {
+    assert(!content.querySelector('img') && content.querySelectorAll('a').length === 1, 'the reference is no image and no link; the link in bold is the only anchor');
+    assertEqual(content.querySelector('strong a').getAttribute('href'), 'https://x.org', 'and it renders inside the bold');
+  }
+  assertEqual(withFigure.closest('.osa-message').querySelectorAll('img').length, 1, 'the only image in the reply is the run\'s own figure');
+}
+
 console.log('\nEdit and run puts its editor inside the card');
 {
   const { window, api } = loadWidgetWithRealBundle();
