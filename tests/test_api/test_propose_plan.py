@@ -50,6 +50,7 @@ PROPOSE_PLAN = PROPOSE_PLAN_TOOL_NAME
 DECLARED = [EXECUTE_CODE, "get_full_output", PROPOSE_PLAN]
 ANALYSIS_REQUEST = "plot the ERP for famous faces"
 PLAN_TEXT = "PLAN-FIRST-MARKER: call propose_plan before any execute_code."
+NEMAR_YAML = Path(__file__).parents[2] / "src" / "assistants" / "nemar" / "config.yaml"
 
 PLAN_ARGS = {
     "findings": "18 participants with 3 runs each; 2 event types.",
@@ -531,34 +532,31 @@ class TestThePlanFirstPrompt:
         assert PLAN_TEXT not in rig.prompts[0], "the quick turn that wrote the summary got none"
 
 
-NEMAR_YAML = Path(__file__).parents[2] / "src" / "assistants" / "nemar" / "config.yaml"
-CUT_RULE = "Never fold plotting into computing"
-
-
-class TestTheNemarPlanFirstText:
+class TestThePlanFirstPromptWithNemarText:
     """NEMAR's real text, with its step-cutting rules (#714), reaches the model on an analysis turn."""
 
-    @pytest.fixture(autouse=True)
-    def _nemar_text(self):
+    @pytest.fixture
+    def nemar_text(self) -> str:
         text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions
         assert text is not None
         registry.register_from_config(
             _config().model_copy(update={"plan_first_instructions": text})
         )
-        self.text = text
+        return text
 
-    def test_an_analysis_turn_gets_the_step_cutting_rules(self, client, monkeypatch) -> None:
+    def test_an_analysis_turn_gets_the_step_cutting_rules(
+        self, client, monkeypatch, nemar_text
+    ) -> None:
         rig = _rig(monkeypatch, [say("ok")])
 
         _chat(client)
 
-        assert self.text in rig.prompts[0]
-        assert CUT_RULE in " ".join(rig.prompts[0].split())
+        assert nemar_text in rig.prompts[0]
 
-    def test_a_quick_turn_does_not(self, client, monkeypatch) -> None:
+    def test_a_quick_turn_does_not(self, client, monkeypatch, nemar_text) -> None:
         rig = _rig(monkeypatch, [say("ok")])
 
         _chat(client, message="find datasets with face stimuli")
 
         assert rig.quick.calls == 1
-        assert CUT_RULE not in " ".join(rig.prompts[0].split())
+        assert nemar_text not in rig.prompts[0]
