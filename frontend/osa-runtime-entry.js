@@ -9,6 +9,7 @@ import { highlightPython } from './osa-highlight.js';
 import * as memory from './osa-memory.js';
 import { buildConversationNotebook } from './osa-notebook-builder.js';
 import * as plan from './osa-plan.js';
+import * as planRail from './osa-plan-rail.js';
 import { buildWorkerConfig, buildWorkerSource, PyodideRuntime, RUNTIME_STATE } from './osa-runtime.js';
 import { createWorkerRuntime } from './osa-worker-core.js';
 import {
@@ -48,6 +49,9 @@ globalThis.OSARuntime = Object.freeze({
   // The plan card's and the step progress's pure logic (E2.3, E2.4): the widget declares
   // `propose_plan` only when this is here, since only then can it answer one.
   plan: Object.freeze({ ...plan }),
+  // The plan rail's rows beside the center-stage conversation (E6.1, board C3), read from
+  // the same plan state as the progress strip.
+  planRail: Object.freeze({ ...planRail }),
   // The browser memory budget and the heap report (E5.1): the same, for the Settings field,
   // the run card's heap line and the plan card's warning.
   memory: Object.freeze({ ...memory }),
