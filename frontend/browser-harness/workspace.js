@@ -250,6 +250,7 @@ async function runWritePhase(rt) {
   // files), so the real total grows again here, same as the second session
   // did above.
   await runLocalRunChecks(controller, workspace);
+  const figures = await runFigureChecks(workspace);
 
   // The FINAL size, after every write into this community, including the
   // reader's own run just above: the read phase's own sizeUsed() reflects
@@ -258,11 +259,66 @@ async function runWritePhase(rt) {
   const usedFinal = await workspace.sizeUsed();
   localStorage.setItem(
     EXPECTATION_KEY,
-    JSON.stringify({ used: usedFinal, runCount: manifest ? manifest.runs.length : 0 })
+    JSON.stringify({ used: usedFinal, runCount: manifest ? manifest.runs.length : 0, figures })
   );
 }
 
 const SESSION_ID_LOCAL = 'harness-session-local';
+const SESSION_ID_FIGURES = 'harness-session-figures';
+
+/**
+ * A real PNG, drawn by the browser's own canvas, as base64: what a run's
+ * figure is, bytes a decoder can read, so the read back below compares exact
+ * bytes of a real image rather than of a stand-in.
+ */
+function drawFigure(label, hue) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 160;
+  canvas.height = 90;
+  const g = canvas.getContext('2d');
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, 160, 90);
+  g.strokeStyle = `hsl(${hue}, 70%, 40%)`;
+  g.lineWidth = 3;
+  g.beginPath();
+  g.moveTo(5, 60);
+  g.bezierCurveTo(40, 5, 80, 85, 155, 30);
+  g.stroke();
+  g.fillStyle = '#334155';
+  g.font = '12px sans-serif';
+  g.fillText(label, 8, 14);
+  return canvas.toDataURL('image/png').split(',')[1];
+}
+
+function bytesOf(base64) {
+  return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+}
+
+function sameBytes(a, b) {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/**
+ * `figuresForCalls`, against a REAL IndexedDB: a run saves two figures and
+ * another none, and the figures are read back by call id as the exact bytes.
+ * Its own session, so the run counts the other checks leave for the read
+ * phase are not touched. Returns what the read phase must find, base64 by
+ * call id, after the reload.
+ */
+async function runFigureChecks(workspace) {
+  const withFigures = [drawFigure('figure 1', 200), drawFigure('figure 2', 20)];
+  const base = { session: SESSION_ID_FIGURES, status: 'ok', code: 'plot()', stdout: '', stderr: '', summary: '', explicitFiles: [] };
+  const first = await workspace.recordRun({ ...base, callId: 'call-with-figures', description: 'two figures', images: withFigures.map((data_base64) => ({ data_base64 })) });
+  const second = await workspace.recordRun({ ...base, callId: 'call-without-figures', description: 'none', images: [] });
+  check('two runs with and without figures were recorded', first.ordinal !== null && second.ordinal !== null && first.failures.length === 0, JSON.stringify([first, second]));
+
+  const found = await workspace.figuresForCalls(['call-with-figures', 'call-without-figures', 'call-unknown']);
+  const got = found.get('call-with-figures') || [];
+  check('figuresForCalls returns both figures of the run, in order', got.length === 2, `got ${got.length}`);
+  check('and they are the exact bytes saved', got.length === 2 && got.every((bytes, i) => sameBytes(bytes, bytesOf(withFigures[i]))), `${got.map((b) => b.length)}`);
+  check('a run with no figures, and a call id with no run, are left out', !found.has('call-without-figures') && !found.has('call-unknown'), JSON.stringify([...found.keys()]));
+  return { 'call-with-figures': withFigures };
+}
 
 /**
  * ClientToolController#runLocal, against a REAL IndexedDB: the reader's own
@@ -509,7 +565,7 @@ async function runDirectStoreChecks() {
 
 async function runReadPhase() {
   const expectedRaw = localStorage.getItem(EXPECTATION_KEY);
-  check('the write phase left an expectation in localStorage on this origin', !!expectedRaw, expectedRaw || '(none)');
+  check('the write phase left an expectation in localStorage on this origin', !!expectedRaw, expectedRaw ? `${expectedRaw.length} characters` : '(none)');
   if (!expectedRaw) return;
   const expected = JSON.parse(expectedRaw);
 
@@ -537,6 +593,19 @@ async function runReadPhase() {
   const localManifest = manifests[SESSION_ID_LOCAL];
   check("the reader's own run survives a fresh page load", !!localManifest && localManifest.runs.length === 1, JSON.stringify(localManifest));
   check("and is still marked local: true after the reload", !!localManifest && localManifest.runs[0].local === true, JSON.stringify(localManifest));
+
+  // The figures, read back through a FRESH store after the reload: the exact bytes
+  // the first page saved, by call id.
+  const figureStore = await workspace.figuresForCalls([...Object.keys(expected.figures || {}), 'call-without-figures']);
+  for (const [callId, saved] of Object.entries(expected.figures || {})) {
+    const got = figureStore.get(callId) || [];
+    check(
+      `after a fresh page load, figuresForCalls returns the exact PNG bytes of ${callId} (${saved.length} figures)`,
+      got.length === saved.length && got.every((bytes, i) => sameBytes(bytes, bytesOf(saved[i]))),
+      `got ${got.length} figures`
+    );
+  }
+  check('and still nothing for the run that saved none', !figureStore.has('call-without-figures'), JSON.stringify([...figureStore.keys()]));
 
   // Ordinals continue correctly across a reload. Recorded directly
   // against this FRESH store -- an ordinal is a WorkspaceStore/IndexedDB

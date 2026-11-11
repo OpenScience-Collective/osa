@@ -305,6 +305,8 @@ const DB_VERSION = 1;
 const FILES_STORE = 'files';
 const RUNS_STORE = 'runs';
 const KEY_SEP = '\u0000';
+/** The most figures `figuresForCalls` reads for one run; a run saves at most a handful. */
+const MAX_FIGURES_READ = 32;
 
 /**
  * The default for how long any single WorkspaceStore operation may take
@@ -824,6 +826,59 @@ export class WorkspaceStore {
       result[session] = deriveManifest(sessionRuns);
     }
     return result;
+  }
+
+  /**
+   * The figures each of the given runs saved, by the run's call id: a Map of
+   * callId to the PNG bytes of figure-1, figure-2, and so on, in order.
+   *
+   * What the History panel and a restored or opened chat read to draw a run's
+   * figures again after a reload (the chat's own storage never holds them, see
+   * saveHistory in osa-chat-widget.js). A run's figures are the files
+   * `autoFigurePath(ordinal, 1..)` that `recordRun` wrote; they are read from
+   * figure 1 up until one is missing, so a figure that failed to save (a
+   * quota) ends the list there rather than leaving a gap.
+   *
+   * A call id with no figure saved is left out of the map. So is one that two
+   * run records share: the reader's own runs are named `person-run-N` from a
+   * counter that starts over with each page load, so across loads that name is
+   * not unique, and the figures of the wrong run are worse than none.
+   *
+   * Like `manifests()`, bounded by the operation deadline and throws on
+   * failure (an unavailable IndexedDB, a deadline), which the caller turns
+   * into "figures not available".
+   *
+   * @param {string[]} callIds
+   * @returns {Promise<Map<string, Uint8Array[]>>}
+   */
+  async figuresForCalls(callIds) {
+    return raceDeadline(this._figuresForCalls(callIds), 'figuresForCalls', this._operationTimeoutMs);
+  }
+
+  async _figuresForCalls(callIds) {
+    const wanted = new Set((Array.isArray(callIds) ? callIds : []).filter((id) => typeof id === 'string' && id !== ''));
+    const found = new Map();
+    if (wanted.size === 0) return found;
+    const runs = (await this._allRuns()).filter((run) => run.status !== RESERVED_RUN_STATUS && wanted.has(run.callId));
+    const seen = new Set();
+    const ambiguous = new Set();
+    for (const run of runs) {
+      if (seen.has(run.callId)) ambiguous.add(run.callId);
+      seen.add(run.callId);
+    }
+    const db = await this._open();
+    for (const run of runs) {
+      if (ambiguous.has(run.callId)) continue;
+      const figures = [];
+      for (let k = 1; k <= MAX_FIGURES_READ; k++) {
+        const tx = db.transaction(FILES_STORE, 'readonly');
+        const row = await requestToPromise(tx.objectStore(FILES_STORE).get(this._fileKey(run.session, autoFigurePath(run.ordinal, k))));
+        if (!row || !row.data) break;
+        figures.push(row.data);
+      }
+      if (figures.length > 0) found.set(run.callId, figures);
+    }
+    return found;
   }
 
   /**
