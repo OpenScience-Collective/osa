@@ -82,7 +82,8 @@ const pure = new Function(`${BLOCK[1]}
 // answers like the backend: a `session` event first, then the reply; and, for a request that
 // expects a session it does not hold and carries no turns, the 409 of the shared fixture.
 // `behavior`, which a test can change between messages, can make it refuse even a request
-// that carries turns (`alwaysRefuse`, so the resend fails too) or change the refusal's code
+// that carries turns (`alwaysRefuse`, which models a defective server, not the contract: the
+// real one reseeds a request that carries turns, so the resend fails too) or change the refusal's code
 // (`refusalCode`). A Turnstile token is accepted once.
 function makeServer(behavior = {}) {
   const sessions = new Map();
@@ -109,13 +110,17 @@ function makeServer(behavior = {}) {
       spentTokens.add(token);
     }
     const held = body.session_id && sessions.has(body.session_id);
-    const refuse = behavior.alwaysRefuse ||(body.expect_session && !(body.prior_turns && body.prior_turns.length) && !held);
+    const refuse = behavior.alwaysRefuse || (body.expect_session && !(body.prior_turns && body.prior_turns.length) && !held);
     if (refuse) {
       const refusal = behavior.refusalCode ? { ...SESSION_UNKNOWN_409, code: behavior.refusalCode } : SESSION_UNKNOWN_409;
       return new Response(JSON.stringify(refusal), { status: 409, headers: JSON_HEADERS });
     }
     const id = body.session_id || `server-${requests}`;
     sessions.set(id, true);
+    // A request that does not ask for a stream is answered with JSON, as the backend does.
+    if (!body.stream) {
+      return new Response(JSON.stringify({ session_id: id, message: { role: 'assistant', content: `Answer ${requests}.` } }), { headers: JSON_HEADERS });
+    }
     const events = [
       { event: 'session', session_id: id },
       { event: 'content', content: `Answer ${requests}.` },
@@ -353,6 +358,25 @@ console.log('\nno fresh token in time: the plain message, the question back, the
   const [next] = await sendAndSettle(ctx, 'and how many participants');
   assert('prior_turns' in next && !('expect_session' in next), 'the next send carries the turns, as for a page just loaded');
   assertEqual(errorText(ctx), '', 'and is answered');
+}
+
+console.log('\nwith streaming off, a forgotten session is sent again once and the JSON reply is read');
+{
+  const server = makeServer();
+  const stored = conversation('c1', [['find datasets with face stimuli', 'The closest match is on002718.', 'quick']]);
+  const ctx = start({ server, storage: { [KEY]: envelope([stored], 'c1') } });
+  ctx.api.setConfig({ streamingEnabled: false });
+  const [first] = await sendAndSettle(ctx, 'ask once');
+  assert(!('stream' in first), 'the request does not ask for a stream');
+  assert(ctx.hooks.getServerConfirmedAt() !== null, 'the JSON reply confirmed the session');
+  ctx.server.forget();
+  const requests = await sendAndSettle(ctx, 'and how many participants');
+  assertEqual(requests.length, 2, 'the refused request and one resend');
+  assert(requests[0].expect_session === true && !('prior_turns' in requests[0]), 'the first expected the session and carried no turns');
+  assert(!('expect_session' in requests[1]) && 'prior_turns' in requests[1], 'the resend carried the turns and expected nothing');
+  assertEqual(errorText(ctx), '', 'the reader sees no error');
+  assert(bubbles(ctx).some((b) => b.startsWith('assistant: Answer')), 'the JSON reply is in the conversation');
+  assert(ctx.hooks.getServerConfirmedAt() !== null, 'and the server has confirmed the session again');
 }
 
 console.log('\na second session_unknown shows the plain text and puts the question back');

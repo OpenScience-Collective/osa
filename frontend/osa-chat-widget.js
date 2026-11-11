@@ -16537,9 +16537,12 @@
 
       // The server holds no session for the id the request named (it restarted, or let the
       // session go), and refused to start an empty one. Send the request once more with the
-      // conversation, as a first request after a page load does. Nothing was run or counted.
+      // conversation, as a first request after a page load does. Nothing was run; the
+      // worker's limits still count the refused request.
       if (body.expect_session && await refusedAsSessionUnknown(response)) {
         if (idle) idle.stop();
+        // Only its clone was read; let go of the original body.
+        response.body?.cancel().catch(() => {});
         serverConfirmedAt = null;
         delete body.expect_session;
         Object.assign(body, reseedFields({
