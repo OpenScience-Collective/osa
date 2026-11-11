@@ -1792,8 +1792,9 @@
     .osa-chat-title,
     .osa-notebook-heading {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
-      gap: 8px;
+      gap: 2px 8px;
       font-size: 15px;
       font-weight: 600;
       margin: 0;
@@ -4218,6 +4219,11 @@
 
     /* The History sheet on the dark panel: a heavier scrim, and the delete reds
        lightened to read on it. */
+    .osa-chat-widget.osa-dark .osa-history-btn[aria-pressed="true"] {
+      color: var(--osa-on-primary);
+      background: rgba(255, 255, 255, 0.28);
+    }
+
     .osa-chat-widget.osa-dark .osa-history-scrim {
       background: rgba(0, 0, 0, 0.55);
     }
@@ -6109,21 +6115,20 @@
     if (when) facts.push(when);
     const factsText = facts.join(' · ');
     const title = summary.title || 'Untitled chat';
-    const id = escapeHtml(summary.id);
     const off = locked ? ' disabled' : '';
     return `
-      <li class="osa-history-row${extra.active ? ' osa-history-row-active' : ''}" data-id="${id}">
-        <button type="button" class="osa-history-open" data-id="${id}"${extra.active ? ' aria-current="true"' : ''}${off}>
+      <li class="osa-history-row${extra.active ? ' osa-history-row-active' : ''}" data-id="${escapeHtml(summary.id)}">
+        <button type="button" class="osa-history-open" data-id="${escapeHtml(summary.id)}"${extra.active ? ' aria-current="true"' : ''}${off}>
           ${historyThumbHtml(extra.thumbCallId)}
           <span class="osa-history-text">
             <span class="osa-history-title">${escapeHtml(title)}</span>
             <span class="osa-history-meta">${dataset}<span class="osa-history-facts">${dataset && factsText ? ' &middot; ' : ''}${escapeHtml(factsText)}</span></span>
           </span>
         </button>
-        <button type="button" class="osa-history-more" data-id="${id}" aria-label="More actions for ${escapeHtml(title)}" aria-haspopup="menu" aria-expanded="false"${off}>${ICONS.more}</button>
+        <button type="button" class="osa-history-more" data-id="${escapeHtml(summary.id)}" aria-label="More actions for ${escapeHtml(title)}" aria-haspopup="menu" aria-expanded="false"${off}>${ICONS.more}</button>
         <div class="osa-history-menu" role="menu" aria-label="Actions for ${escapeHtml(title)}" hidden>
-          <button type="button" role="menuitem" class="osa-history-menu-open" data-id="${id}"${off}>Open</button>
-          <button type="button" role="menuitem" class="osa-history-menu-delete" data-id="${id}"${off}>Delete</button>
+          <button type="button" role="menuitem" class="osa-history-menu-open" data-id="${escapeHtml(summary.id)}"${off}>Open</button>
+          <button type="button" role="menuitem" class="osa-history-menu-delete" data-id="${escapeHtml(summary.id)}"${off}>Delete</button>
         </div>
       </li>`;
   }

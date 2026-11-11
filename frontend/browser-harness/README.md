@@ -434,3 +434,16 @@ whitespace drawn as the reply, whitespace kept as a finished reply, whitespace e
 an announcer rewritten on every redraw, a visible label that is a live region, a new label restarting the time,
 and text that does not begin a new wait.
 A whitespace placeholder is reachable only by writing one into a message directly, which the Bun suite does.
+
+### The History sheet and saved figures
+
+```bash
+bun frontend/browser-harness/history-check.mjs [screenshot-dir]
+```
+
+stands up its own server (the widget, the runtime bundle, the test worker and a community config that declares the Python tool) and drives headless Chrome at 390 x 844 (#657, #658, #493).
+A run that draws a figure (a PNG drawn by the page's canvas, returned by `test-workers/executing.js` for `IMAGE:<base64>`) goes through a real `ClientToolController` and `WorkspaceStore` into the real IndexedDB.
+After a reload the figure has to come back, as an image the browser decoded, three ways: in the chat the reload restores, in the chat opened from the History sheet (whose row also carries it as its thumbnail, an object URL revoked when the sheet closes), and in the pop-out, which reads the same database through its own init.
+The stored history must hold no figure, only `images: []` and the run's `figureCount`.
+The sheet must sit inside the window with nothing scrolling sideways and every button at least 44 px; in the dark scheme it takes the dark panel's color, and Escape closes it and returns focus to the History button.
+It is what CI runs, beside the run card check; with a screenshot directory it writes the light and dark sheet, the opened and restored chats and the pop-out.

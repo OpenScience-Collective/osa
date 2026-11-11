@@ -63,8 +63,11 @@ self.onmessage = (event) => {
     const errMatch = code.match(/^ERR:(\d+)/);
     const fullStderr = errMatch ? 'e'.repeat(Number(errMatch[1])) : '';
     const fullTraceback = errMatch ? 'Traceback (most recent call last):\n  File "<cell>", line 1\nValueError: boom' : '';
+    // IMAGE:<base64> adds one image of those PNG bytes (a harness that needs a
+    // figure a browser can decode); a bare IMAGE adds the 8-byte PNG signature.
+    const imageMatch = code.match(/^IMAGE:([A-Za-z0-9+/]+=*)/);
     const images = code.startsWith('IMAGE')
-      ? [{ mime: 'image/png', data_base64: 'iVBORw0KGgo=', width: 1, height: 1 }]
+      ? [{ mime: 'image/png', data_base64: imageMatch ? imageMatch[1] : 'iVBORw0KGgo=', width: 1, height: 1 }]
       : [];
 
     // FILES:<n> saves n explicitly-named artifacts, the way a real run's
