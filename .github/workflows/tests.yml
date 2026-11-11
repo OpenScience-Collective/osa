@@ -532,6 +532,12 @@ jobs:
       - name: Run the reseed tests on a real DOM
         run: bun frontend/test-widget-reseed.js
 
+      # A chat the server forgot while the page stayed open: a request with no turns for a
+      # session it names says it expects the session, and the widget sends it once more
+      # with the turns when the server answers 409 session_unknown.
+      - name: Run the session-lost tests on a real DOM
+        run: bun frontend/test-widget-session-lost.js
+
       # General feedback carries the page's address only when the reader shares the page,
       # as a question does.
       - name: Run the feedback page-address tests on a real DOM
