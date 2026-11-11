@@ -214,6 +214,8 @@ widget:
       needs_zarr: true
     - text: "Plot an ERP image of sub-{subject}'s {task} recording from {dataset_id}, one panel per condition"
       needs_zarr: true
+    - text: "Plot a scalp map of the alpha power of sub-{subject}'s {task} recording from {dataset_id}"
+      needs_zarr: true
     - text: "Plot 10 seconds of sub-{subject}'s {task} recording from {dataset_id}"
       needs_zarr: true
     - text: "What events are annotated in {dataset_id}?"
