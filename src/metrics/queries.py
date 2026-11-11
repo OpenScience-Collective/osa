@@ -768,11 +768,16 @@ _SIDES = (*_TIERS, "other")
 
 
 def _empty_bucket() -> dict[str, Any]:
-    return {"turns": 0, "input_tokens": 0, "output_tokens": 0, "cost": 0.0}
+    return {"turns": 0, "errors": 0, "input_tokens": 0, "output_tokens": 0, "cost": 0.0}
+
+
+def _failed(row: sqlite3.Row) -> bool:
+    """Whether a logged request ended in an error: an error status or an error message."""
+    return (row["status_code"] or 0) >= 400 or bool(row["error_message"])
 
 
 def _add_to_bucket(bucket: dict[str, Any], row: sqlite3.Row) -> None:
-    bucket["turns"] += 1
+    bucket["errors" if _failed(row) else "turns"] += 1
     bucket["input_tokens"] += row["input_tokens"] or 0
     bucket["output_tokens"] += row["output_tokens"] or 0
     bucket["cost"] += row["estimated_cost"] or 0.0
@@ -789,7 +794,10 @@ def get_conversation_costs(
     server session, and each row's stored ``estimated_cost`` is added to the side its
     ``tier`` names. A request that hands over writes two rows, the quick model's (the
     summary and any quick run) and the analysis run's, so it counts as one turn on each
-    side: a turn here is one model's work on one request.
+    side: a turn here is one model's work on one request. A request that failed (a status
+    of 400 or more, or an error message) is not a turn: it is counted under ``errors``
+    instead, so retries after a failure do not inflate the turns or the quick/analysis
+    ratio. Any tokens and cost it did log are still added, since they were spent.
 
     The metrics middleware's stub rows (no model, no tokens) are ignored. Rows written
     before ``conversation_id`` existed, and ``/ask`` rows, which belong to no conversation,
@@ -800,27 +808,32 @@ def get_conversation_costs(
         conn: SQLite connection with ``row_factory = sqlite3.Row``; only read from.
         community_id: The community to report on.
         since: Only rows logged at or after this time (an ISO 8601 string or a datetime;
-            a naive datetime is taken as UTC).
+            a naive datetime is taken as UTC, and an aware one is converted to UTC, since
+            the stored timestamps are UTC and compared as text).
 
     Returns:
         A dict with ``conversations`` (oldest first; each has ``conversation_id``,
         ``started``, the ``quick``, ``analysis`` and ``other`` buckets of ``turns``,
-        ``input_tokens``, ``output_tokens`` and ``cost``, and ``total_cost``), ``totals``
-        (the same buckets over every conversation, and ``total_cost``) and ``unassigned``
-        (per model: ``model``, ``turns``, ``input_tokens``, ``output_tokens``, ``cost``).
+        ``errors``, ``input_tokens``, ``output_tokens`` and ``cost``, and ``total_cost``),
+        ``totals`` (the same buckets over every conversation, and ``total_cost``) and
+        ``unassigned`` (per model: ``model``, ``turns``, ``errors``, ``input_tokens``,
+        ``output_tokens``, ``cost``).
         ``other`` holds the rows of a conversation that carry no tier (a request that was
         not routed).
     """
     if isinstance(since, datetime):
-        since = (since if since.tzinfo else since.replace(tzinfo=UTC)).isoformat()
+        since = (since if since.tzinfo else since.replace(tzinfo=UTC)).astimezone(UTC).isoformat()
     present = {r["name"] for r in conn.execute("PRAGMA table_info(request_log)")}
     tier_column = "tier" if "tier" in present else "NULL AS tier"
     conversation_column = (
         "conversation_id" if "conversation_id" in present else "NULL AS conversation_id"
     )
+    status_column = "status_code" if "status_code" in present else "NULL AS status_code"
+    error_column = "error_message" if "error_message" in present else "NULL AS error_message"
     rows = conn.execute(
         f"""
         SELECT timestamp, model, {tier_column}, {conversation_column},
+               {status_column}, {error_column},
                input_tokens, output_tokens, estimated_cost
         FROM request_log
         WHERE community_id = ? AND timestamp >= ? AND model IS NOT NULL

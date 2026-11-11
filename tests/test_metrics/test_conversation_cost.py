@@ -35,9 +35,14 @@ def _row(
     output_tokens: int = 100,
     age_days: float = 1.0,
     community: str = "nemar",
+    failed: bool = False,
 ) -> float | None:
-    """Log one row as the chat path does; returns the cost it priced the row at."""
-    has_tokens = model is not None
+    """Log one row as the chat path does; returns the cost it priced the row at.
+
+    A failed row is what the streaming path logs for a request that raised: a model, an
+    error status and message, and no tokens.
+    """
+    has_tokens = model is not None and not failed
     cost = estimate_cost(model, input_tokens, output_tokens) if has_tokens else None
     log_request(
         RequestLogEntry(
@@ -47,6 +52,8 @@ def _row(
             method="POST",
             community_id=community,
             model=model,
+            status_code=500 if failed else 200,
+            error_message="the model call failed" if failed else None,
             input_tokens=input_tokens if has_tokens else None,
             output_tokens=output_tokens if has_tokens else None,
             total_tokens=input_tokens + output_tokens if has_tokens else None,
@@ -205,3 +212,63 @@ class TestConversationCosts:
             conn.close()
 
         assert len(naive["conversations"]) == 1
+
+    def test_since_with_an_offset_is_converted_to_utc(self, db) -> None:
+        """23:00 at UTC-8 is 07:00 UTC the next day: the window starts there, not at 23:00."""
+        _row(db, "early", model=HAIKU, tier="quick", conversation_id="conv-a", age_days=1.0)
+        # Logged 2026-11-09T12:00Z. A since of 2026-11-09T05:00-08:00 is 13:00Z, so it is out;
+        # compared as text without conversion, "2026-11-09T05:00:00-08:00" < "2026-11-09T12:00"
+        # would wrongly keep it.
+        since = datetime.fromisoformat("2026-11-09T05:00:00-08:00")
+        conn = get_metrics_connection(db)
+        try:
+            as_datetime = get_conversation_costs(conn, "nemar", since)
+            as_text = get_conversation_costs(conn, "nemar", since.isoformat())
+        finally:
+            conn.close()
+
+        assert as_datetime["conversations"] == []
+        assert as_datetime["since"] == "2026-11-09T13:00:00+00:00"
+        assert as_text["since"] == since.isoformat()
+
+    def test_failed_requests_are_errors_not_turns(self, db) -> None:
+        ok = _row(db, "r1", model=HAIKU, tier="quick", conversation_id="conv-a", age_days=2)
+        _row(db, "r2", model=HAIKU, tier="quick", conversation_id="conv-a", failed=True)
+        _row(db, "r3", model=HAIKU, tier="quick", conversation_id="conv-a", failed=True)
+        _row(db, "r4", model=SONNET, tier="analysis", conversation_id="conv-a", failed=True)
+        _row(db, "old", model=HAIKU, tier=None, conversation_id=None, failed=True)
+
+        report = _report(db)
+        (conversation,) = report["conversations"]
+
+        assert conversation["quick"]["turns"] == 1
+        assert conversation["quick"]["errors"] == 2
+        assert conversation["analysis"]["turns"] == 0
+        assert conversation["analysis"]["errors"] == 1
+        assert conversation["quick"]["cost"] == pytest.approx(ok)
+        assert report["totals"]["quick"]["errors"] == 2
+        assert report["totals"]["analysis"]["errors"] == 1
+        assert report["unassigned"][0]["turns"] == 0
+        assert report["unassigned"][0]["errors"] == 1
+
+    def test_a_row_with_an_error_message_but_a_200_status_is_an_error(self, db) -> None:
+        log_request(
+            RequestLogEntry(
+                request_id="soft",
+                timestamp=(NOW - timedelta(days=1)).isoformat(),
+                endpoint="/nemar/chat",
+                method="POST",
+                community_id="nemar",
+                model=HAIKU,
+                status_code=200,
+                error_message="empty reply",
+                tier="quick",
+                conversation_id="conv-a",
+            ),
+            db,
+        )
+
+        (conversation,) = _report(db)["conversations"]
+
+        assert conversation["quick"]["turns"] == 0
+        assert conversation["quick"]["errors"] == 1
