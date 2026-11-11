@@ -17586,12 +17586,14 @@
     return shareUsageEnabled ? {} : { share_usage: false };
   }
 
-  // Say so in the dialog when a choice could not be saved: it holds until the page reloads
-  // and then goes back to the default, which for usage sharing is sharing.
-  function showPrivacySaveNote(container, saved) {
+  // Say so in the dialog while any choice could not be saved: it holds until the page
+  // reloads and then goes back to the default, which for usage sharing is sharing. The note
+  // follows every unsaved choice, not the last save, so one choice saving cleanly does not
+  // hide another that did not.
+  function showPrivacySaveNote(container) {
     const note = privacyOverlay(container)?.querySelector('.osa-privacy-save-note');
     if (!note) return;
-    note.textContent = saved
+    note.textContent = unsavedChoices.size === 0
       ? ''
       : 'Your choice could not be saved in this browser. It applies until you reload this page, then goes back to the default.';
   }
@@ -17608,7 +17610,7 @@
     syncPrivacyChoices();
     const pageBox = overlay.querySelector('#osa-privacy-page');
     const usageBox = overlay.querySelector('#osa-privacy-usage');
-    showPrivacySaveNote(container, true);
+    showPrivacySaveNote(container);
     pageBox.checked = CONFIG.allowPageContext && pageContextEnabled;
     usageBox.checked = shareUsageEnabled;
     // A community that turns page context off has no choice to make about it.
@@ -17669,11 +17671,13 @@
     overlay.addEventListener('keydown', (event) => privacyKeydown(container, event));
     overlay.querySelector('#osa-privacy-page')?.addEventListener('change', (event) => {
       pageContextEnabled = event.target.checked;
-      showPrivacySaveNote(container, savePageContextPreference());
+      savePageContextPreference();
+      showPrivacySaveNote(container);
     });
     overlay.querySelector('#osa-privacy-usage')?.addEventListener('change', (event) => {
       shareUsageEnabled = event.target.checked;
-      showPrivacySaveNote(container, saveShareUsagePreference());
+      saveShareUsagePreference();
+      showPrivacySaveNote(container);
     });
   }
   // END privacy-choices

@@ -101,7 +101,7 @@ function serverFetch(widget) {
 
 // A page load. `storage` seeds localStorage; `widget` is the community config's widget
 // block; `config` is what the embedding page passes to setConfig.
-async function start({ storage = {}, widget = {}, config = {}, dataset = { id: DATASET }, saves = true } = {}) {
+async function start({ storage = {}, widget = {}, config = {}, dataset = { id: DATASET }, saves = true, blockedKeys = [] } = {}) {
   const window = new Window({
     url: 'http://localhost/dataset/x',
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
@@ -122,9 +122,13 @@ async function start({ storage = {}, widget = {}, config = {}, dataset = { id: D
     'TextDecoder', 'setTimeout', 'clearTimeout', 'console', SOURCE
   );
   // `saves` false is a browser that reads storage but will not write it (a quota, a policy).
-  const localStorage = saves ? window.localStorage : {
+  // `blockedKeys` is a browser that will not write only those keys.
+  const localStorage = saves && blockedKeys.length === 0 ? window.localStorage : {
     getItem: (key) => window.localStorage.getItem(key),
-    setItem: () => { throw new Error('QuotaExceededError'); },
+    setItem: (key, value) => {
+      if (!saves || blockedKeys.includes(key)) throw new Error('QuotaExceededError');
+      window.localStorage.setItem(key, value);
+    },
   };
   run(window, window.document, localStorage, server.fetch, window.navigator, AbortSignal, URL,
     TextDecoder, setTimeout, clearTimeout, console);
@@ -456,6 +460,26 @@ console.log('\na choice the browser will not save is said so, and still holds un
   assertEqual(note.getAttribute('role'), 'status', 'in a status region, so a screen reader hears it');
   // Storage still holds the older answer (sharing); the reader's newer choice outranks it.
   assertEqual((await send(ctx, 'After a failed save')).body.share_usage, false, 'the request still follows the choice the reader made');
+}
+
+console.log('\nthe note follows every unsaved choice, not the last save');
+{
+  // Only the page choice cannot be saved; the usage choice saves cleanly afterwards.
+  const ctx = await opened({ blockedKeys: [PAGE_KEY] });
+  const warn = console.warn;
+  console.warn = () => {};
+  choose(ctx, ctx.page(), false);
+  console.warn = warn;
+  const note = () => ctx.q('.osa-privacy-save-note').textContent;
+  assert(note().includes('could not be saved'), 'sanity: the failed page save is noted');
+  choose(ctx, ctx.usage(), false);
+  assertEqual(ctx.stored(USAGE_KEY), 'false', 'sanity: the usage choice did save');
+  assert(note().includes('could not be saved'), 'a later clean save does not clear the note for the page choice that did not save');
+  // Closing and reopening the dialog does not clear it either.
+  ctx.q('.osa-privacy-close-btn').click();
+  ctx.button().click();
+  assert(ctx.isDialogOpen(), 'sanity: the dialog reopens');
+  assert(note().includes('could not be saved'), 'and a reopened dialog still says so');
 }
 
 console.log('\na choice that saves leaves no note');
