@@ -756,6 +756,62 @@ console.log('\nthe CORS preflight allows the demo hosts but not the demo\'s *.pa
   }
 }
 
+// A /chat the backend refuses with 409 session_unknown (#698) must reach the
+// widget with that status and that exact body, because the widget keys its one
+// resend on both. The backend here is a real socket that answers the shared
+// fixture tests/fixtures/session_unknown_409.json, the file the backend's own
+// test asserts the real server produces. An X-Anthropic-API-Key header skips
+// Turnstile, so the request goes straight through to the proxy.
+console.log('\na 409 session_unknown from the backend reaches the caller unchanged');
+{
+  const fixture = await Bun.file(new URL('../../tests/fixtures/session_unknown_409.json', import.meta.url)).json();
+  const seen = [];
+  const refusing = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      seen.push({ path: new URL(request.url).pathname, body: await request.json() });
+      return new Response(JSON.stringify(fixture), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  const refusingEnv = { BACKEND_URL: `http://localhost:${refusing.port}`, BACKEND_API_KEY: 'test-key' };
+  try {
+    for (const route of ['chat', 'chat/resume']) {
+      seen.length = 0;
+      const response = await worker.fetch(
+        new Request(`https://${MOUNTED_HOST}/osa/nemar/${route}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Anthropic-API-Key': 'sk-ant-test' },
+          body: JSON.stringify({
+            message: 'and how many participants',
+            session_id: 'gone',
+            expect_session: true,
+            cf_turnstile_response: 'spent-token',
+          }),
+        }),
+        stubEnv(refusingEnv),
+        {}
+      );
+      assertEqual(response.status, 409, `POST /nemar/${route} keeps the backend's 409`);
+      assertEqual(
+        JSON.stringify(await response.json()),
+        JSON.stringify(fixture),
+        `POST /nemar/${route} returns the backend's body, detail and code, unchanged`
+      );
+      assertEqual(seen[0]?.path, `/nemar/${route}`, `POST /nemar/${route} reached the backend`);
+      assertEqual(seen[0]?.body.expect_session, true, `/nemar/${route} forwards expect_session untouched`);
+      // Only /chat is Turnstile-gated; /chat/resume forwards its body as sent.
+      if (route === 'chat') {
+        assert(!('cf_turnstile_response' in seen[0].body), '/nemar/chat still strips the Turnstile token');
+      }
+    }
+  } finally {
+    refusing.stop(true);
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log('Test Summary');
 console.log('='.repeat(60));
