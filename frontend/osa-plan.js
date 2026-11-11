@@ -328,6 +328,43 @@ export function progressOf(plan, runs, { active = false } = {}) {
   };
 }
 
+/**
+ * Whether the plan is running by itself, as a run-all plan does: a step running, being
+ * tried again, or about to start, with the reply going on.
+ *
+ * @param {{mode: string, state: string} | null} progress as progressOf gives it
+ */
+export function runsOnItsOwn(progress) {
+  return Boolean(progress) && progress.mode === RUN_MODE.RUN_ALL
+    && (progress.state === PROGRESS_STATE.RUNNING || progress.state === PROGRESS_STATE.RETRYING);
+}
+
+/**
+ * Whether the bar offers Pause: the plan runs on its own and a later step is left to
+ * hold. On the last step there is nothing to pause before, so the bar would announce a
+ * pause that never happens. A plan that pauses after each step has nothing to add, and
+ * one waiting, failed, done or stopped is not running.
+ *
+ * @param {{mode: string, state: string, step: number, total: number} | null} progress
+ *   as progressOf gives it
+ */
+export function canPause(progress) {
+  return runsOnItsOwn(progress) && progress.step < progress.total;
+}
+
+/**
+ * Whether the reply, asked to Pause, must hold the request for code that has just
+ * arrived: the plan is approved and the request is the first attempt of a step, so
+ * every step before it is done. Pressed while a step runs, that is the step after it; a
+ * step that failed is tried again first, since it has not finished.
+ *
+ * @param {Array<{role?: string, plan?: object, executions?: object[]}>} messages
+ */
+export function pauseDue(messages) {
+  const next = nextRunOf(messages);
+  return Boolean(next) && next.attempt === 1;
+}
+
 /** The progress of a conversation's newest plan, or null: see currentPlan and progressOf. */
 export function progressOfConversation(messages, options) {
   const current = currentPlan(messages);

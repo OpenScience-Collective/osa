@@ -115,6 +115,13 @@ class TestNemarPlanFirstText:
         for outcome in ("approved", "changes_requested", "pause", "run_all"):
             assert outcome in text
 
+    def test_run_all_says_not_to_end_the_reply_between_steps(self, flat_nemar_text: str) -> None:
+        """The reader is not asked to continue in run_all, so a reply must not stop (#731)."""
+        flat = flat_nemar_text
+        assert "call `execute_code` for the next step in the same turn" in flat
+        assert "write no closing message until the last step has run" in flat
+        assert "Summarize the results once, after the last step." in flat
+
     def test_it_names_no_memory_number(self) -> None:
         """The reader's budget is the one figure (E5.1), stated by the request's own section."""
         text = CommunityConfig.from_yaml(NEMAR_YAML).plan_first_instructions

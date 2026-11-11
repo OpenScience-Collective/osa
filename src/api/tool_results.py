@@ -253,6 +253,16 @@ _PLAN_RUN_MODE_TEXT: Final = {
 }
 
 
+# Said once more, beside the decision, because a reply that ends after a step is the one
+# thing run_all must not do: the reader was told they would not be asked (issue #731).
+_RUN_ALL_NEXT: Final = (
+    "In run_all mode, after each step's result call execute_code for the next step in the "
+    "same turn, and write no closing message until the last step has run. An execute_code "
+    "call left unanswered during a run_all plan was not run (most likely the reader paused "
+    "before that step started); it is not a failed attempt."
+)
+
+
 def _plan_step_pairs(steps: Any) -> list[tuple[str, str]]:
     """`(title, detail)` for each step of a proposal, or an empty list for a shape that
     is not one, so a malformed stored call reads as "changed" rather than raising."""
@@ -295,6 +305,8 @@ def build_plan_tool_message(
             "Next: run exactly one execute_code per step, in order, using the steps "
             "above as written, in the run mode above. Run no code outside this plan."
         )
+        if decision.run_mode == "run_all":
+            lines.append(_RUN_ALL_NEXT)
     else:
         lines.append(
             "Next: the reader asked for changes. Revise the plan and call propose_plan "

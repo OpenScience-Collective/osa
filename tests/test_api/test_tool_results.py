@@ -615,6 +615,20 @@ class TestPlanToolMessage:
         assert "2. Plot: Plot the ERP." in text
         assert "exactly one execute_code per step" in text
 
+    def test_run_all_tells_the_model_not_to_end_its_reply_between_steps(self) -> None:
+        """A reply that ends after a step leaves a run-all plan waiting for a click (#731)."""
+        run_all = build_plan_tool_message(_decision(run_mode="run_all"), PLAN_ARGS).content
+        pause = build_plan_tool_message(_decision(run_mode="pause"), PLAN_ARGS).content
+
+        assert "call execute_code for the next step in the same turn" in run_all
+        assert "no closing message until the last step has run" in run_all
+        # A step the reader paused before was never run: the parked call is repaired as an
+        # error, and the model must not count it as a failed attempt.
+        assert "left unanswered during a run_all plan was not run" in run_all
+        assert "most likely the reader paused" in run_all
+        assert "not a failed attempt" in run_all
+        assert "same turn" not in pause
+
     def test_edits_are_detected_on_the_server_and_the_edited_steps_are_what_is_shown(self) -> None:
         edited = [
             {"title": "Load", "detail": "Load only the first run."},

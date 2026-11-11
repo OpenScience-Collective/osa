@@ -852,11 +852,36 @@ A bar at the bottom says what the plan is waiting for:
 
 | State | Bar |
 |-------|-----|
-| The reply is running | `Working on step N of M.` and **Stop plan** |
-| A step failed and has an attempt left, and the reply goes on | `Step N+1 waits until step N works.` and **Stop plan** |
-| Paused after a step | **Run step N** (sends the message `Continue with step N.`), **Change step N** (focuses the input with `Change step N: ` typed in; the model must propose a new plan) and **Stop plan** |
+| The reply is running, the plan pauses after each step | `Working on step N of M.` and **Stop plan** |
+| The reply is running, the plan runs all steps (a step is running, or the next is being worked out) | `Working on step N of M.`, **Pause** and **Stop plan**; no **Run step N** |
+| A step failed and has an attempt left, and the reply goes on | `Step N+1 waits until step N works.` and **Stop plan** (with **Pause** before it for a run-all plan) |
+| Pause asked on a run-all plan | `Pausing: the plan will wait before the next step starts.` and **Stop plan** |
+| Paused after a step (the reader's Pause, a plan that pauses after each step, or a run-all reply that ended with steps left) | **Run step N** (sends the message `Continue with step N.`, or for a run-all plan `Continue with step N, then run the remaining steps without stopping.`), **Change step N** (focuses the input with `Change step N: ` typed in; the model must propose a new plan) and **Stop plan** |
 | A step has failed with no attempt left | **Change step N** and **Stop plan** |
 | Done or stopped | none; the strip says `Plan · all M steps done` or `Plan stopped · step N of M` |
+
+**Run step N is left out, not disabled, while a run-all plan runs.**
+The plan goes on by itself, so the button would be one to wait out, never one to press, and a grayed button between every pair of steps reads as something the plan is missing.
+While a reply is in flight, `progressOf` is called with `active` true, and the bar is the running one.
+That is a tool activity, or `currentReply !== null` for a reply that is the plan's (`currentReply.forPlan`: the reply that proposed the plan and went on after its approval, one the bar's **Run step N** started, or one in which a run of the approved plan arrived), not `isLoading`: `isLoading` means "no visible text yet" and is cleared as soon as the reply shows any, so between two steps, once the model had written a sentence, it was false while the reply went on, and the bar read as paused with a **Run step N** button whose click sent a second request alongside the first.
+An unrelated question asked while the plan waits is not the plan's reply, so the bar stays the waiting one for the length of the answer, with **Run step N** `aria-disabled` (grayed) because a second request cannot start alongside it; a click does nothing.
+The send guard, the retry line of a failed run card, the notebook card and the host's `ask()` read `currentReply` as well, for the same reason.
+A run-all plan whose reply has ended with steps left is waiting, and the bar then offers **Run step N** because pressing it is what the plan needs.
+
+**Pause** (run-all plans only, while the reply goes on and a later step is left to hold, so not on the last step) sets a flag on the reply being sent; the widget sends nothing to the model.
+The step that is running finishes and its result goes back as usual (a step that failed is tried again first, since it has not finished); the request for the next step that arrives is then left parked, as **Stop plan** leaves one, and the reply ends with the plan still approved.
+The bar is then the paused one, and **Run step N+1** continues in run-all mode: its message tells the model to carry on to the last step, and the plan's run mode, `run_all`, is still the one in the model's history.
+Pressed before step 1 has started, it holds step 1; pressed between two steps, it holds the next.
+The held step is kept on the plan (`held`, stored with it), and **Run step N** then says so to the model: `Continue with step N. It has not run: I paused before it started, so it is not a failed attempt. Run it now, then run the remaining steps without stopping.` (without the last clause on the last step), because the server repairs the parked call as an error and the model would otherwise count it as an attempt.
+The note is dropped from the plan only once the server has the message, so a send that fails keeps it for the next click.
+The decision's `Next:` line says that an unanswered `execute_code` in a run-all plan was not run (most likely the reader paused) and is not a failed attempt.
+A new plan in the same reply clears the pause.
+The rules are `canPause` and `pauseDue` in `frontend/osa-plan.js`.
+
+**Why a run-all plan reaches the last step.**
+Each step is one `execute_code` request, which ends the server's run and is answered on `/chat/resume`, whose stream continues the same reply; the reply ends only when the model answers in text without another call.
+So there were two causes of a bar that waited for a click in a run-all plan: the `active` computation above (the main one, which showed the paused bar while the reply was still running), and a model that ends its reply after a step.
+In run-all mode NEMAR's `plan_first_instructions` and the plan decision's own message (`Next:` line, `build_plan_tool_message`) tell the model to call `execute_code` for the next step in the same turn after each result, and to write no closing message until the last step has run.
 
 A polite live region of its own, outside the conversation, says where the plan stands (`Plan · step 2 of 3. Paused after step 1.`) each time that changes, since the strip and the bar are redrawn with the conversation.
 After Approve, focus moves to the card's heading; after **Run step N**, to the strip (or, in the center-stage dialog while the rail hides the strip, to the rail, then the thread).
@@ -875,7 +900,8 @@ A row is `done`, `current` (the step the plan is on or waiting to run, highlight
 A row whose step has a run card is a button that scrolls to and focuses the newest card of that step (the card has `data-plan-step`); the others are plain text; if a card is not in the thread, the click goes to the newest card, or the thread, so it always does something.
 It uses buttons, not `#` links, so the host page's address and history never change.
 The foot shows the run mode, read-only (the mode goes to the model once, in the decision, and there is no way to change it afterwards), and `Memory budget 512 MB · change`, a button that opens Settings with focus on the memory choice that is on.
-While the rail shows, the progress strip in the thread is hidden (the rail says the same) and the paused bar stays, with **Run step N** and **Change step N**.
+The rail has no run buttons of its own, and follows the bar's rules: its current row is the step the plan is on or waiting to run, its foot says `Runs all steps` for a run-all plan, and the plan controls stay in the bar under the thread.
+While the rail shows, the progress strip in the thread is hidden (the rail says the same) and the bar stays: a run-all plan that is running has **Pause** and **Stop plan** and no **Run step N**; a paused one has **Run step N**, **Change step N** and **Stop plan**.
 At 900 px and under the rail is not drawn and the strip carries the plan, as in the corner.
 It is 280 px wide, in the panel's own colors, and the window (or, for a capsule community, the chat view in it) is a grid only while it has a rail: the header across the top, the rail down the left, the thread and its input on the right, the disclaimer and footer across both.
 The rail is inserted before the thread and removed again on docking; the thread's nodes are never redrawn or moved, and Tab runs header, rail, thread, input.

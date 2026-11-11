@@ -79,8 +79,16 @@ plan_first_instructions: |
        yours). Do not merge steps, split them or add new ones.
        If the run mode is `pause`, report what the step showed in a sentence or two and
        stop; the reader will tell you to continue.
-       If the run mode is `run_all`, continue to the next step without stopping, and
-       summarize the results after the last.
+       If the run mode is `run_all`, the reader will not tell you to continue: the plan
+       is shown to them as running, and a reply that ends after a step leaves it waiting
+       for a click they were told they would not have to make.
+       So after each step's result, call `execute_code` for the next step in the same turn,
+       and write no closing message until the last step has run.
+       A single sentence of what the step showed may come with the next call, never in
+       place of it.
+       Summarize the results once, after the last step.
+       If a step fails twice, or the plan needs a step it does not have, stop and say so as
+       item 6 and the rule below require.
      - `changes_requested`: read the reader's feedback and any edits to the steps, revise the
        plan and call `propose_plan` again. Run no code.
   6. **When a step fails**, you may fix it once and run it again. If it fails again, stop,

@@ -832,7 +832,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-vB7j6hj+E/nfpdAfFnqCSsO7rs/SDnMaWXCghT4fMT0XL+75kk6rs+NCtpvXgCGo';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-DPWudLIV/KQb04Ao0aPcMlgSwVyROQswEmlaOo3LLL5YSW44XfY0UYx1kafbrEEJ';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -5228,6 +5228,15 @@
       font-weight: 600;
     }
 
+    .osa-plan-bar button[aria-disabled="true"] {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .osa-plan-bar button.osa-plan-bar-pause {
+      border-color: var(--osa-primary);
+    }
+
     .osa-plan-bar button.osa-plan-bar-stop {
       color: var(--osa-plan-danger);
       border-color: var(--osa-plan-danger);
@@ -8999,7 +9008,8 @@
   // The card for the reply at msgIndex, or null: only under the last assistant
   // reply, once it is whole, when a run succeeded and the builder found a step.
   function notebookEntryCard(msgIndex) {
-    if (!runtimeApi || isLoading || !activeConversation || msgIndex === revealingIndex) return null;
+    // Once it is whole: not while a reply that has shown text still has runs to come.
+    if (!runtimeApi || isLoading || currentReply !== null || !activeConversation || msgIndex === revealingIndex) return null;
     // Scan back from the end and stop at the first assistant reply: O(1) for the
     // usual transcript, and no array built per rendered message.
     let lastAssistant = -1;
@@ -11710,6 +11720,7 @@
     const runsCode = request.tool !== runtimeApi.FULL_OUTPUT_TOOL_NAME;
     // The step of the approved plan this run is, read before the gate asks about it.
     const planned = runsCode && runtimeApi.plan ? runtimeApi.plan.nextRunOf(messages) : null;
+    if (planned && currentReply) currentReply.forPlan = true;
     let result;
     try {
       if (runsCode) toolActivity = runningActivity(requestPrompt(request));
@@ -11758,6 +11769,16 @@
       // Stop plan: this request is left unanswered on purpose, like the one past the cap
       // below, and the next message abandons it. The reply ends here without an error.
       if (currentReply && currentReply.stopped) {
+        if (typeof steps.stopped === 'function') steps.stopped(messageIndex);
+        return;
+      }
+      // Pause: the step that was running has finished and been answered; the next one is
+      // left unanswered, like Stop plan's, and the next message ("Run step N") abandons
+      // it. The plan stays approved, so it waits as a paused plan does.
+      if (planPauseDue(toolRequest)) {
+        const current = runtimeApi.plan.currentPlan(messages);
+        const next = runtimeApi.plan.nextRunOf(messages);
+        if (current && next) current.plan.held = next.step;
         if (typeof steps.stopped === 'function') steps.stopped(messageIndex);
         return;
       }
@@ -12669,8 +12690,13 @@
 
   // The decision being waited for: {callId, messageIndex, resolve}, or null.
   let planWait = null;
-  // The reply being sent, for Stop plan to reach: {stopped}. Set by sendMessage.
+  // The reply being sent, for Stop plan and Pause to reach: {stopped, pausing}. Set by
+  // sendMessage. `pausing` is the reader's Pause on a run-all plan: the next step's
+  // request is left parked (see continueBrowserReply). It is not stored: a reply that
+  // has ended has either paused or finished, and the plan's own state says which.
   let currentReply = null;
+  // Set by the bar's Run step N just before it sends: {plan, held}, read once by sendMessage.
+  let pendingPlanSend = null;
   // The selector of the control that should have focus once the card has been redrawn.
   let planFocusAfterRender = null;
 
@@ -12713,6 +12739,8 @@
       runMode: raw.runMode === 'run_all' ? 'run_all' : 'pause',
       status: status === 'draft' ? 'unanswered' : status,
       ...(feedback ? { feedback } : {}),
+      // The step the reader's Pause held, until Run step says so to the model.
+      ...(planCount(raw.held, PLAN_STORAGE_LIMITS.steps) ? { held: planCount(raw.held, PLAN_STORAGE_LIMITS.steps) } : {}),
     };
   }
 
@@ -12743,7 +12771,14 @@
   function notePlanProposal(message, event) {
     if (!message || !event || event.tool !== PROPOSE_PLAN_TOOL || !runtimeApi || !runtimeApi.plan) return;
     const plan = runtimeApi.plan.normalizeProposal(event.args, event.call_id);
-    if (plan) message.plan = plan;
+    if (plan) {
+      message.plan = plan;
+      // A pause was asked of the plan that was running; this is another plan.
+      if (currentReply) {
+        currentReply.pausing = false;
+        currentReply.forPlan = true;
+      }
+    }
   }
 
   // Answer a `propose_plan` request: the card is the question, and this resolves with
@@ -13124,7 +13159,22 @@
   // to follow (none, still a draft, or asked to change) or the runtime has not loaded.
   function planProgressNow() {
     if (!runtimeApi || !runtimeApi.plan) return null;
-    return runtimeApi.plan.progressOfConversation(messages, { active: isLoading || toolActivity !== null });
+    return runtimeApi.plan.progressOfConversation(messages, { active: planReplyActive() });
+  }
+
+  // Whether a reply is in flight, for where the plan stands. Not `isLoading`: that means
+  // "no visible text yet" and is cleared as soon as the reply shows any, so between two
+  // steps, once the model has written a sentence, it is false while the reply goes on
+  // and the plan would read as paused, with a Run step button that sends a second
+  // request alongside the one running (#731). `currentReply` is set when a message is
+  // sent and cleared when the whole reply, every run of it, has ended.
+  //
+  // Only a reply that is the plan's counts: one that proposed the plan and went on after
+  // its approval, one the bar's Run step N started, or one in which a run of the approved
+  // plan arrived (`forPlan`). An unrelated question asked while the plan waits is not,
+  // so the bar stays the waiting one for the length of its answer.
+  function planReplyActive() {
+    return (currentReply !== null && currentReply.forPlan === true) || toolActivity !== null;
   }
 
   function planStripLabel(progress) {
@@ -13146,8 +13196,23 @@
   }
 
   // The words in the bar under the conversation, and which of its buttons show.
+  //
+  // A plan that runs all steps goes on by itself, so while its reply is going the bar
+  // does not offer Run step N: it would be a button for a click the plan does not wait
+  // for, and left out is clearer than a disabled one that looks like something to wait
+  // out. Pause takes its place beside Stop plan (osa-plan.js canPause). A plan that
+  // pauses after each step already does, so it is offered no Pause.
   function planBarParts(progress) {
     const { state, step, total, attempt } = progress;
+    const planApi = runtimeApi && runtimeApi.plan ? runtimeApi.plan : null;
+    const canPause = Boolean(planApi) && planApi.canPause(progress);
+    // Shown for as long as the pause is pending, so also once the running step was the
+    // second to last and the held one is the last, where Pause is no longer offered.
+    const pausing = Boolean(planApi) && planApi.runsOnItsOwn(progress) && Boolean(currentReply && currentReply.pausing);
+    // Asked, not yet done: the step that is running finishes first.
+    if (pausing) {
+      return { text: 'Pausing: the plan will wait before the next step starts.', buttons: ['stop'] };
+    }
     if (state === 'paused') {
       return {
         text: step > 1 ? `Paused after step ${step - 1}.` : 'Approved. Step 1 has not run yet.',
@@ -13157,7 +13222,7 @@
     if (state === 'retrying') {
       return {
         text: step < total ? `Step ${step + 1} waits until step ${step} works.` : `The plan finishes when step ${step} works.`,
-        buttons: ['stop'],
+        buttons: canPause ? ['pause', 'stop'] : ['stop'],
       };
     }
     if (state === 'failed') {
@@ -13166,18 +13231,23 @@
         buttons: ['change', 'stop'],
       };
     }
-    return { text: `Working on step ${step} of ${total}.`, buttons: ['stop'] };
+    return { text: `Working on step ${step} of ${total}.`, buttons: canPause ? ['pause', 'stop'] : ['stop'] };
   }
 
   function planBarHtml(progress) {
     const { text, buttons } = planBarParts(progress);
     const labels = {
       run: `Run step ${progress.step}`,
+      pause: 'Pause',
       change: `Change step ${progress.step}`,
       stop: 'Stop plan',
     };
+    // Run step N while a reply that is not the plan's is going (a question asked while the
+    // plan waits): a second request cannot start, so the button says so rather than
+    // doing nothing when pressed.
+    const busy = currentReply !== null;
     const buttonHtml = buttons.map((name) =>
-      `<button type="button" class="osa-plan-bar-btn osa-plan-bar-${escapeHtml(name)}" data-plan-bar="${escapeHtml(name)}">${escapeHtml(labels[name])}</button>`
+      `<button type="button" class="osa-plan-bar-btn osa-plan-bar-${escapeHtml(name)}" data-plan-bar="${escapeHtml(name)}"${name === 'run' && busy ? ' aria-disabled="true"' : ''}>${escapeHtml(labels[name])}</button>`
     ).join('');
     return `<span class="osa-plan-bar-text">${escapeHtml(text)}</span><span class="osa-plan-bar-buttons">${buttonHtml}</span>`;
   }
@@ -13199,6 +13269,44 @@
     renderMessages(container, { follow: false });
   }
 
+  // Pause: the plan waits before the next step starts. The step that is running finishes
+  // and goes back to the model as usual; the request for the next one is then left
+  // parked, as Stop plan leaves it, and the reply ends with the plan approved and
+  // waiting, so the bar is the paused one: Run step N, Change step N, Stop plan.
+  function pausePlan(container) {
+    const progress = planProgressNow();
+    if (!currentReply || !runtimeApi || !runtimeApi.plan || !runtimeApi.plan.canPause(progress)) return;
+    currentReply.pausing = true;
+    // The bar the button was in is replaced; focus goes to the strip, as after Run step.
+    planFocusAfterRender = '.osa-plan-strip';
+    renderMessages(container, { follow: false });
+  }
+
+  // Whether the reply must leave this request for code unanswered because the reader
+  // paused it. Not a request that only reads a run's output, which is part of a step.
+  function planPauseDue(request) {
+    if (!currentReply || !currentReply.pausing || !runtimeApi || !runtimeApi.plan) return false;
+    if (request.tool === PROPOSE_PLAN_TOOL || request.tool === runtimeApi.FULL_OUTPUT_TOOL_NAME) return false;
+    return runtimeApi.plan.pauseDue(messages);
+  }
+
+  // What Run step N says. A plan that runs all steps goes on in that mode, so the reply
+  // must not stop again. After the reader's Pause the model's request for step N was left
+  // unanswered and the server repaired it as a call that did not complete; the message
+  // says the step never ran, so it is not counted as a failed attempt.
+  // Returns {text, plan, held}: `held` is the step the note is about, which sendMessage
+  // forgets only once the server has the message, so a send that fails keeps the note.
+  function planContinueMessage(progress) {
+    const current = runtimeApi && runtimeApi.plan ? runtimeApi.plan.currentPlan(messages) : null;
+    const plan = current ? current.plan : null;
+    const held = plan && plan.held === progress.step ? progress.step : 0;
+    const rest = progress.step < progress.total ? ', then run the remaining steps without stopping' : '';
+    const text = held
+      ? `Continue with step ${progress.step}. It has not run: I paused before it started, so it is not a failed attempt. Run it now${rest}.`
+      : `Continue with step ${progress.step}${progress.mode === 'run_all' ? rest : ''}.`;
+    return { text, plan, held };
+  }
+
   function fillChatInput(container, text) {
     const input = container.querySelector('.osa-chat-input input');
     if (!input) return;
@@ -13210,13 +13318,20 @@
   function onPlanBarClick(container, name, progress) {
     if (name === 'stop') {
       stopPlan(container);
+    } else if (name === 'pause') {
+      pausePlan(container);
     } else if (name === 'run') {
-      // sendMessage returns without drawing while a reply is going on; nothing is then
-      // pending, so focus is not moved by some later, unrelated render.
-      if (isLoading) return;
+      // sendMessage returns without drawing while a reply is going on (`isLoading` is
+      // not that: it is false once text shows); nothing is then pending, so focus is not
+      // moved by some later, unrelated render.
+      if (currentReply) return;
       // The bar the button was in is replaced; focus goes to the strip, which says what runs.
       planFocusAfterRender = '.osa-plan-strip';
-      sendMessage(container, `Continue with step ${progress.step}.`);
+      const next = planContinueMessage(progress);
+      pendingPlanSend = { plan: next.plan, held: next.held };
+      sendMessage(container, next.text);
+      // sendMessage reads it before its first await; a send that was refused leaves none.
+      pendingPlanSend = null;
     } else if (name === 'change') {
       fillChatInput(container, `Change step ${progress.step}: `);
     }
@@ -14787,7 +14902,8 @@
   function replyWaitingOnAssistant(msgIndex) {
     if (toolActivity) return false;
     if (activity) return activity.messageIndex === msgIndex;
-    return isLoading && msgIndex === messages.length - 1;
+    // `isLoading` is false once the reply shows text, while it may still run the step again.
+    return currentReply !== null && msgIndex === messages.length - 1;
   }
 
   // The status the conversation shows, or null. While the reply has no text on screen
@@ -16471,8 +16587,13 @@
   // Send message to API. `options.model` runs this one request on another model than the
   // saved setting (the button on a failed reply uses it); the setting is not changed.
   async function sendMessage(container, question, options = {}) {
-    if (isLoading || !question.trim()) return;
+    // `currentReply` as well as `isLoading`: the latter is false once text shows.
+    if (isLoading || currentReply !== null || !question.trim()) return;
     modelOverride = options.model || null;
+    // Whether this send continues the plan (the bar's Run step N), consumed here, before
+    // anything awaits, so a send that does nothing leaves no trace for the next.
+    const planSend = pendingPlanSend;
+    pendingPlanSend = null;
 
     // Commit any open thumbs-down comment box before the conversation moves on.
     flushPendingResponseFeedback(container);
@@ -16486,7 +16607,7 @@
 
     isLoading = true;
     isThinking = false;
-    currentReply = { stopped: false };
+    currentReply = { stopped: false, pausing: false, forPlan: planSend !== null };
     beginWait();
 
     // Boot the browser runtime now if this community preloads on first message,
@@ -16660,6 +16781,9 @@
         }
       }
       serverAnswered = true;
+      // The server has the message that says the held step never ran: the note is spent.
+      // A send that fails before this keeps it, for the next click on Run step.
+      if (planSend && planSend.held && planSend.plan.held === planSend.held) delete planSend.plan.held;
       markContextMoveTold(carried);
       if (idle) idleTimers.set(response, idle);
 
@@ -16682,7 +16806,7 @@
           answer: (request, index) => answerToolRequest(container, request, index),
           resume: postResume,
           stream: (resumed, index) => handleStreamingResponse(resumed, container, { messageIndex: index }),
-          // Stop plan ended the reply: what it ran is kept, as a finished reply's is.
+          // Stop plan or Pause ended the reply: what it ran is kept, as a finished reply's is.
           stopped: () => {
             try {
               saveHistory();
@@ -17511,7 +17635,7 @@
   function hostAsk(text, mode) {
     const container = widgetContainer();
     if (!container) return;
-    if (isLoading) {
+    if (isLoading || currentReply !== null) {
       hostWarn('ask', 'a reply is still loading, ignoring the question');
       return;
     }
@@ -18226,7 +18350,7 @@
   function planRailModel() {
     if (hostMode !== 'center' || !runtimeApi || !runtimeApi.plan || !runtimeApi.planRail) return null;
     try {
-      return runtimeApi.planRail.planRailOf(messages, { active: isLoading || toolActivity !== null });
+      return runtimeApi.planRail.planRailOf(messages, { active: planReplyActive() });
     } catch (error) {
       console.error('[OSA] Could not read the plan for the rail:', error);
       return null;
