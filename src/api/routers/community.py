@@ -40,9 +40,18 @@ from src.agents.content import (
     normalize_citation_markers,
 )
 from src.agents.model_routing import (
+    OMITTED_TURNS_MARKER,
     QUICK_MODE_INSTRUCTIONS,
+    RESEED_TURN_MAX_CHARS,
+    RESEED_TURNS_MAX,
+    SUMMARY_INPUT_MAX_CHARS,
     Summary,
+    fit_turns,
+    history_transcript,
     reader_turn,
+    reseeded_message,
+    routing_applies,
+    strip_fences,
     tier_for_turn,
 )
 from src.agents.plan_first import plan_first_section
@@ -205,6 +214,26 @@ class MovedFrom(BaseModel):
         return self
 
 
+class PriorTurn(BaseModel):
+    """One earlier turn of a conversation, as the widget stored it: who said it, and the text."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"] = Field(..., description="Who said it")
+    text: str = Field(
+        ...,
+        max_length=RESEED_TURN_MAX_CHARS,
+        description="What was said: plain text only, no tool result, code or figure",
+    )
+
+    @model_validator(mode="after")
+    def text_is_not_blank(self) -> Self:
+        """A turn with nothing in it carries no context, and a client that sends one is wrong."""
+        if not self.text.strip():
+            raise ValueError("a prior turn needs text")
+        return self
+
+
 class PageContext(BaseModel):
     """Context about the page where the widget is embedded."""
 
@@ -275,6 +304,26 @@ class ChatRequest(BaseModel):
             "server-only behavior. Declaring is what keeps an old cached widget from "
             "being sent a tool_request it cannot answer, which would hang its reply "
             "rather than fail it."
+        ),
+    )
+    prior_turns: list[PriorTurn] | None = Field(
+        default=None,
+        max_length=RESEED_TURNS_MAX,
+        description=(
+            "The conversation so far, oldest first, for a client that cannot tell whether "
+            "the server still holds its session. Used only when this request creates the "
+            "session (it has no messages yet): the server then starts it from a transcript "
+            f"of these turns, whole oldest turns dropped to fit {SUMMARY_INPUT_MAX_CHARS:,} "
+            "characters. A session that already exists ignores it, so a live conversation "
+            "is never altered."
+        ),
+    )
+    mode: Literal["quick", "analysis"] | None = Field(
+        default=None,
+        description=(
+            "The tier the conversation was last on. Used only together with `prior_turns` "
+            "on a request that is routed between a quick and an analysis model, where the "
+            "reseeded session starts on it; ignored otherwise."
         ),
     )
 
@@ -740,6 +789,20 @@ def _trim_preserving_tool_turns(messages: Sequence[BaseMessage], limit: int) -> 
     return list(messages[start:])
 
 
+class Reseed(NamedTuple):
+    """What a session reseeded from a client transcript started from.
+
+    `stored` is the one message the history holds (framing, transcript and the reader's
+    message); `turns` are the earlier turns inside it as messages, and `reader_message` is
+    the reader's own words. Later steps that read the history as the reader's words (the
+    tier decision, a handover's summary) use the last two, never the framing in `stored`.
+    """
+
+    stored: str
+    turns: list[BaseMessage]
+    reader_message: str
+
+
 class ChatSession:
     """A chat session with message history.
 
@@ -771,13 +834,22 @@ class ChatSession:
         # a first message that asks for analysis flips its own, so a session never changes
         # model with quick-model thinking blocks in its history (issue #522).
         self.mode: Tier = "quick"
+        # Set when the session was started from a transcript the client carried (see
+        # `reseed`). The tier decision and a handover read the parts inside the stored
+        # message, so a keyword in the transcript is not the reader asking for analysis
+        # and the framing is not summarized as if the reader had said it.
+        self.reseeded_as: Reseed | None = None
         # Groups the usage-metrics rows of one conversation. It is this session's id until
         # a handover opens the analysis session, which inherits the old session's value,
         # so a conversation that changed sessions is still one conversation in the report.
         self.conversation_id = session_id
 
-    def add_user_message(self, content: str) -> None:
+    def add_user_message(self, content: str, *, stored: str | None = None) -> None:
         """Add a user message to history.
+
+        `content` is what the person sent and is the text the length limit applies to.
+        `stored` is what goes into the history instead, for a message that carries more
+        than the person typed (a reseed transcript).
 
         Raises:
             ValueError: If message exceeds length limit or session at max messages.
@@ -789,8 +861,44 @@ class ChatSession:
                 f"Session has reached max messages ({MAX_MESSAGES_PER_SESSION}). "
                 "Start a new session."
             )
-        self.messages.append(HumanMessage(content=content))
+        self.messages.append(HumanMessage(content=content if stored is None else stored))
         self.last_active = datetime.now(UTC)
+
+    def reseed(self, prior_turns: Sequence[PriorTurn], message: str) -> None:
+        """Start this empty session from the client's transcript and the reader's message.
+
+        One user message, never two in a row: the transcript and `message` are combined
+        by `reseeded_message`. The tier is not touched here; the caller sets `mode`.
+
+        Raises:
+            ValueError: As `add_user_message`, about `message`.
+        """
+        kept, dropped = fit_turns(
+            [
+                (HumanMessage if turn.role == "user" else AIMessage)(
+                    content=strip_fences(turn.text)
+                )
+                for turn in prior_turns
+            ]
+        )
+        transcript = history_transcript(kept, max_chars=SUMMARY_INPUT_MAX_CHARS)
+        if transcript and dropped:
+            transcript = f"{OMITTED_TURNS_MARKER}\n\n{transcript}"
+        seeded = reseeded_message(transcript, message) if transcript else message
+        self.add_user_message(message, stored=seeded)
+        self.reseeded_as = Reseed(seeded, kept, message)
+
+    def handover_history(self, earlier: Sequence[BaseMessage]) -> list[BaseMessage]:
+        """`earlier` (the messages before the reader's latest) as the reader and assistant said them.
+
+        In a reseeded session the first message holds a transcript wrapped in framing; it
+        is replaced by the turns it was built from and the reader's own message, so a
+        summary is written from what was said and not from the framing.
+        """
+        seeded = self.reseeded_as
+        if seeded and earlier and earlier[0].content == seeded.stored:
+            return [*seeded.turns, HumanMessage(content=seeded.reader_message), *earlier[1:]]
+        return list(earlier)
 
     def add_assistant_message(self, content: str) -> None:
         """Add an assistant message to history.
@@ -1067,6 +1175,23 @@ def get_or_create_session(community_id: str, session_id: str | None) -> ChatSess
     session = ChatSession(new_id, community_id)
     store[new_id] = session
     return session
+
+
+def _restore_tier(community_id: str, session: ChatSession, body: ChatRequest) -> None:
+    """Put a reseeded session back on the tier the conversation was on.
+
+    The widget sends the tier of the last reply it showed. It is used only where the
+    request is routed (`routing_applies`), because only there does a session's tier mean
+    anything; elsewhere it is ignored. Setting `session.mode` before the turn is what
+    keeps the turn on that tier: an analysis session is not "handing over", so no
+    handover runs and no summary is asked for.
+    """
+    if body.mode is None:
+        return
+    info = registry.get(community_id)
+    config = info.community_config if info else None
+    if routing_applies(config, set(body.client_tools), body.model):
+        session.mode = body.mode
 
 
 def get_session(community_id: str, session_id: str) -> ChatSession | None:
@@ -3034,6 +3159,9 @@ def create_community_router(community_id: str) -> APIRouter:
 
         session = get_or_create_session(community_id, body.session_id)
         user_id = x_user_id or session.session_id
+        # Only a session this request just made is seeded: one that has messages is the
+        # server's own record and is never overwritten by a client's.
+        turns = body.prior_turns
 
         # The person moved on instead of answering a browser call. Close it out before
         # anything else: leaving an assistant message with tool_calls and no matching
@@ -3043,7 +3171,18 @@ def create_community_router(community_id: str) -> APIRouter:
 
         # Add user message with constraint validation
         try:
-            session.add_user_message(body.message)
+            if turns and not session.messages:
+                _restore_tier(community_id, session, body)
+                session.reseed(turns, body.message)
+                logger.info(
+                    "Reseeded session %s from %d prior turns (mode: %s)",
+                    session.session_id,
+                    len(turns),
+                    session.mode,
+                    extra={"community_id": community_id, "reseeded": True},
+                )
+            else:
+                session.add_user_message(body.message)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -4965,6 +5104,10 @@ async def _stream_chat_response(
         routing_config = routing_info.community_config if routing_info else None
         resuming = initial_messages is not None
         reader_message, earlier_messages = reader_turn(session.messages)
+        if session.reseeded_as and reader_message == session.reseeded_as.stored:
+            # The first message of a reseeded session holds a transcript as well as the
+            # reader's words; only the words can ask for analysis.
+            reader_message = session.reseeded_as.reader_message
         tier = tier_for_turn(
             routing_config,
             declared_client_tools,
@@ -5072,7 +5215,7 @@ async def _stream_chat_response(
             try:
                 async for line in stream_handover(
                     summarizer=awm.assistant.model,
-                    history=earlier_messages,
+                    history=session.handover_history(earlier_messages),
                     reader_message=reader_message,
                     open_session=open_analysis_session,
                     analysis_model=analysis_route.model,
