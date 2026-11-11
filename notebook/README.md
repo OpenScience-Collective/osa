@@ -29,7 +29,7 @@ Every message from the widget is `{target: 'osa-notebook', type, requestId, ...}
 
 | Message to the page | Fields | What it does |
 |---|---|---|
-| `import-notebook` | `datasetId`, `title`, `notebook`, `stats` | Writes `<community>/<dataset> · <title>.ipynb`, opens it. |
+| `import-notebook` | `datasetId`, `title`, `notebook` | Writes `<community>/<dataset> · <title>.ipynb`, opens it. |
 | `run-all` | `path` | Runs the notebook's cells one at a time (`notebook:run-cell`; `run-all-cells` never settles), stopping at the first that fails. |
 | `undo-import` | `path` | Deletes the latest import and closes its tab, unless its source was edited. |
 | `new-notebook` | | Writes and opens `<dataset> · Untitled.ipynb`. |
@@ -39,12 +39,12 @@ Every message from the widget is `{target: 'osa-notebook', type, requestId, ...}
 
 | Message from the page | Fields |
 |---|---|
-| `result` | `requestId`, `ok`, `path?`, `error?`: one per request, after it is done (an import and an open wait for the starter's setup to finish first). |
+| `result` | `requestId`, `ok`, `path?`, `error?`: one per request, after it is done (an import and an open wait for the starter's setup to finish first, for at most 120 s, after which they are answered `ok: false`). |
 | `notebooks` | `items: [{path, title, kind: 'playground' \| 'chat' \| 'blank', open, undoable?}]`, `active`: on ready, and after every change, including a notebook the reader opens inside JupyterLite. Not repeated when nothing changed. `undoable` is on the latest import until it is edited. |
 
 The page never trusts a path from a message except to open, rename or close one that is in its own listing under `<community>/` for this dataset.
 An import is checked before anything is written: the dataset against the pattern in `starters/index.json` (`datasetProblem`), nbformat 4, only markdown and code cells, at most 200 cells and 2 MB; the `osa-autorun` tag is stripped (an import never runs by itself) and code cells' outputs are cleared.
-A name that exists gets " 2", " 3", and nothing is overwritten; the starter, `<dataset>.ipynb`, is never written.
+A name that exists gets " 2", " 3", and nothing is overwritten; no message writes the starter, `<dataset>.ipynb`, though it is saved with the outputs its setup produced if it is switched away from before JupyterLite's autosave has done so.
 A message with another `target`, an unknown `type` or no `requestId` is ignored and not answered; a known type with a bad path or import is answered `ok: false` with a reason.
 
 The notebooks page is a single-document shell, so a tab switch closes the panel on screen (its kernel keeps running) and opens the next one in its place.

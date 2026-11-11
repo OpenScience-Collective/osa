@@ -31,7 +31,7 @@ Every message from the widget is `{target: 'osa-notebook', type, requestId, ...}
 
 | Direction | Message |
 |---|---|
-| widget to notebook | `import-notebook {datasetId, title, notebook, stats}`, `run-all {path}`, `undo-import {path}` |
+| widget to notebook | `import-notebook {datasetId, title, notebook}`, `run-all {path}`, `undo-import {path}` |
 | widget to notebook | `new-notebook`, `open-notebook {path}`, `rename-notebook {path, title}`, `close-notebook {path}` |
 | notebook to widget | `{source: 'osa-notebook', type: 'result', requestId, ok, path?, error?}`, once per request |
 | notebook to widget | `{source: 'osa-notebook', type: 'notebooks', items: [{path, title, kind, open, undoable?}], active}`, on ready and after every change, including a notebook the reader opens inside JupyterLite |
@@ -58,11 +58,14 @@ A rename keeps the `<dataset> · ` prefix.
 **Tabs.**
 The open list is kept in the page's `localStorage` per community and dataset, starts with the starter, and is restored after a reload with the starter on screen, the page's first notebook.
 A closed notebook is still a file and is listed with `open: false`, which is what "Reopen" lists.
-Switching waits for the starter's setup to finish, since setup runs cell by cell on the panel on screen, and saves a panel with unsaved changes before closing it, so a file nobody changed is not rewritten (the starter's `last_modified` stays put across an import).
+Switching waits for the starter's setup to finish, since setup runs cell by cell on the panel on screen, and saves a panel with unsaved changes before closing it, so a file nobody changed is not rewritten.
+The starter's source is never changed, but it may be saved with the outputs its setup produced: setup leaves it unsaved until JupyterLab's autosave, and an import or a switch inside that window saves it (and moves its `last_modified`) first.
+The wait for setup is bounded at 120 s, shorter than the widget's own 180 s: past it the request is answered `ok: false` (an import's file is already written and listed, and the answer says so), so a setup that hangs does not hold every later request behind it.
+A message the page ignores (another target, an unknown type, no usable `requestId`) is ignored in every state, including when the tabs did not start; a request whose check itself fails (the listing could not be read) is answered `ok: false`.
 
 **Undo** deletes the imported file and closes its tab, if the cells' source is still what was imported: running the cells is not an edit, typing in them is.
 
-**The widget** (`frontend/osa-chat-widget.js`, the block "Notebook tabs") opens the notebook tab and the panel, queues a message until the notebook has reported ready, posts it once and only to the notebook's origin, and draws the strip, the banner ("Imported N steps from your chat", the runs left out from `stats`, Run all and Undo) and the "+" menu from the notebook's messages, so it shows what the page has.
+**The widget** (`frontend/osa-chat-widget.js`, the block "Notebook tabs") opens the notebook tab and the panel, queues a message until the notebook has reported ready, posts it once and only to the notebook's origin, and draws the strip, the banner ("Imported N steps from your chat", the runs left out from the widget's own count, Run all and Undo) and the "+" menu from the notebook's messages, so it shows what the page has.
 `importNotebookToTab` is the one entry point; the "Continue in notebook" card (E4.3) will call it.
 
 ## Consequences

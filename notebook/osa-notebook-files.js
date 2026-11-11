@@ -275,7 +275,7 @@ export function tabContext(path, startersIndex) {
  * stripped and the code cells' outputs and execution counts cleared, since an
  * import is code to read and run, not results to trust.
  *
- * @param {unknown} input `{datasetId, title, notebook}`; `stats` is for the widget's banner.
+ * @param {unknown} input `{datasetId, title, notebook}`.
  * @param {{community: string, datasetPattern: string}} context
  * @returns {{ok: true, datasetId: string, title: string, notebook: object} | {ok: false, error: string}}
  */
