@@ -92,15 +92,19 @@ def _plan_titles(document: str) -> list[str]:
 
 
 class TestTheShippedConfig:
-    def test_the_scalp_map_is_among_the_three_dataset_page_questions_a_zarr_dataset_shows(
+    def test_the_dataset_page_keeps_its_three_questions_and_adds_no_scalp_map(
         self, nemar: CommunityConfig
     ) -> None:
         """The widget shows the first three templates that fit on the opening screen (the
-        first two in the compact row), so a template placed later is never seen."""
+        first two in the compact row). The ERP image stays among them, and no scalp-map
+        question is offered there: many NEMAR datasets name their channels in a scheme the
+        10-10 table cannot place (EGI's E1 to E128, BioSemi's A1 to D32), so a scalp map
+        offered on every dataset page would often come out with no electrodes placed."""
         assert nemar.widget is not None
         templates = nemar.widget.dataset_suggested_questions
         shown = [t.text for t in templates][:3]
-        assert any("scalp map" in text for text in shown), shown
+        assert any("ERP image" in text for text in shown), shown
+        assert not any("scalp map" in t.text.lower() for t in templates)
         # A dataset without a Zarr copy skips every needs_zarr one and keeps three.
         assert sum(1 for t in templates if not t.needs_zarr) >= 3
 
