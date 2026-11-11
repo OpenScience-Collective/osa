@@ -15,6 +15,14 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **`OSAChatWidget.seed(text, {mode}?)`, a 120 ms open and dock motion, and a bottom-right Move to corner arrow (#730)**: three changes to `frontend/osa-chat-widget.js`.
+  `seed` puts a host page's text at the head of the chat as the assistant's first message (marked `seeded: true`), opens the window in `mode`, and sends nothing: no request, no `send` event, no Turnstile token.
+  The text is Markdown, sanitized as a reply is, at most 2,000 characters, queued before `init()` and refused with a `[OSA] seed:` warning while a reply loads or when it is bad.
+  A chat with no reader message is reused; one with a reader message stays in History and a new chat opens.
+  The reader's first send carries `prior_turns: [{role: "assistant", text}]` (`selectReseedTurns` keeps a seeded message before the first reader message), and the seeded chat counts as content in History, trimming and the empty-chat checks (`chatIsEmpty`), keeps its mark across a reload, and has no thumbs row.
+  The center-stage dialog opens, and the corner window and scrim follow a dock, with 120 ms keyframe animations (state, focus and events unchanged and immediate; classes removed by a 150 ms timer; none under reduced motion), and **Move to corner** shows an arrow to the bottom right.
+  Refs #730; the website's call is nemarOrg/website#525.
+  Tests: new `frontend/test-widget-seed.js` (wired into the frontend-tests job), `frontend/test-widget-reseed.js` extended, and `TestASeededOpeningReply` in `tests/test_api/test_reseed.py` (the server accepts assistant-only `prior_turns`; no `src/` change).
 - **Plan bar: a run-all plan offers Pause, not Run step N (#731)**: with **Run all steps** chosen, the bar under the conversation no longer shows **Run step N** while the plan runs; it shows **Pause** and **Stop plan**, and the plan rail in the center-stage dialog follows the same rules.
   **Pause** stops the plan before the next step starts: the running step finishes, the model's request for the next one is left parked (as Stop plan leaves one), and the plan waits as a paused plan does, with **Run step N+1** (which continues in run-all mode and asks the model to run the rest without stopping), **Change step N+1** and **Stop plan**.
   It is client-side only (`canPause` and `pauseDue` in `frontend/osa-plan.js`, the runtime bundle rebuilt); the server is not told.
@@ -112,6 +120,10 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
+- **The search overview needs a search of at least three words (#728)**: `POST /{community}/overview` answers 422 ("an overview needs a search of at least 3 words") for a shorter `query`, before any model call.
+  A word is a whitespace-separated token holding a letter or digit (`query_word_count`, `MIN_QUERY_WORDS = 3` in `src/api/overview.py`), so `P300` and `α-band` count and a lone `-` does not; nemar.org's Discover panel counts the same way and shows a note instead of calling.
+  A one-word search such as "EEG" had come back as a 502 with no overview.
+  `docs/search-overview.md` gives the rule; tests cover the count, the 422 with its reason and no model call.
 - **NEMAR's vendored eegprep-lean is 0.5.0**: the wheel is the eegprep 0.5.0 release (tag `v0.5.0`, commit `13c79837`). eegprep and eegprep-lean now share one version number, which is why this jumps from 0.1.0.dev3. The only package code change since `50c50879` is `help()` and `dir()` (sccn/eegprep#440). The names the chat and the notebook call are unchanged.
 - **`osa-demo.pages.dev` is no longer an allowed origin**: backend CORS, the widget authorization check, the worker's `isAllowedOrigin` (and the `sync_worker_cors.py` template that writes it) and the notebook `frame-ancestors` no longer list `osa-demo.pages.dev` or `*.osa-demo.pages.dev`. Those hosts redirect to the custom domains before any API call, and the names are account-scoped. The dashboard's `osa-dash.pages.dev` origins are unchanged, since its pull-request previews call the API from there.
 - **HED has no forum**: NeuroStars (tag `hed`, three topics) is removed from HED's sources, with its `search_hed_forum` tool. It had never been synced.

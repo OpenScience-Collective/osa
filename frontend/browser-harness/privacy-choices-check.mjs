@@ -36,7 +36,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { connect, findChrome, launch } from './chrome.js';
+import { connect, evaluate, findChrome, launch } from './chrome.js';
 
 const WIDGET = readFileSync(new URL('../osa-chat-widget.js', import.meta.url), 'utf8');
 
@@ -94,14 +94,6 @@ function startServer() {
 }
 
 // ------------------------------------------------------------------ the driver
-
-async function evaluate(cdp, sessionId, expression, { userGesture = false } = {}) {
-  const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', {
-    expression, returnByValue: true, awaitPromise: true, userGesture,
-  }, sessionId);
-  if (exceptionDetails) throw new Error(`page exception: ${exceptionDetails.exception?.description || exceptionDetails.text}`);
-  return result.value;
-}
 
 async function waitFor(cdp, sessionId, expression, label, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;

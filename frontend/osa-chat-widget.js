@@ -550,9 +550,11 @@
   }
 
   // The first user message, whitespace collapsed, cut to CONVERSATION_TITLE_LIMIT
-  // characters; '' for a conversation with none.
+  // characters; with none, the page's seeded opening reply (seed(), #730) stands in for
+  // it; '' for a conversation with neither.
   function conversationTitle(list) {
-    const first = list.find((m) => m && m.role === 'user' && typeof m.content === 'string');
+    const first = list.find((m) => m && m.role === 'user' && typeof m.content === 'string')
+      || list.find((m) => isSeededMessage(m) && typeof m.content === 'string');
     if (!first) return '';
     return Array.from(first.content.replace(/\s+/g, ' ').trim()).slice(0, CONVERSATION_TITLE_LIMIT).join('');
   }
@@ -608,10 +610,16 @@
     };
   }
 
-  // Whether the reader has said anything in a conversation. One that is only the
-  // greeting holds nothing worth a slot.
-  function hasUserMessage(conversation) {
-    return conversation.messages.some((m) => m && m.role === 'user');
+  // An assistant message the host page put at the head of the chat with seed() (#730):
+  // content the reader did not write but that is worth keeping, unlike the greeting.
+  function isSeededMessage(message) {
+    return !!message && message.role === 'assistant' && message.seeded === true;
+  }
+
+  // Whether a conversation holds anything worth a slot: a message the reader wrote, or
+  // a reply the page seeded. One that is only the greeting holds nothing.
+  function hasContent(conversation) {
+    return conversation.messages.some((m) => m && (m.role === 'user' || isSeededMessage(m)));
   }
 
   // The newest MAX_CONVERSATIONS by updatedAt, newest first, and never the
@@ -624,9 +632,9 @@
     const byNewest = (a, b) => b.updatedAt - a.updatedAt;
     const active = conversations.find((conversation) => conversation.id === activeId);
     const others = conversations
-      .filter((conversation) => conversation !== active && hasUserMessage(conversation))
+      .filter((conversation) => conversation !== active && hasContent(conversation))
       .sort(byNewest);
-    const slots = active && hasUserMessage(active) ? max - 1 : max;
+    const slots = active && hasContent(active) ? max - 1 : max;
     const kept = others.slice(0, slots);
     // The active one first, so that on a tie of timestamps it is the newest.
     return (active ? [active, ...kept] : kept).sort(byNewest);
@@ -853,9 +861,10 @@
     hpc: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="17" width="18" height="4" rx="1"/><line x1="7" y1="5" x2="7.01" y2="5"/><line x1="7" y1="12" x2="7.01" y2="12"/><line x1="7" y1="19" x2="7.01" y2="19"/></svg>'
   };
 
-  // The AI Mode pill's two sparkles and the "Move to corner" arrows (boards C2, C3).
+  // The AI Mode pill's two sparkles and the "Move to corner" arrow, which points to the
+  // bottom right, where the window goes (boards C2, C3; #730).
   ICONS.sparkle = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z"/><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>';
-  ICONS.dock = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 10l6-6M15 4h5v5M10 14l-6 6M9 20H4v-5"/></svg>';
+  ICONS.dock = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7l10 10"/><path d="M17 7v10H7"/></svg>';
 
   // CSS Styles
   const STYLES = `
@@ -2117,6 +2126,19 @@
          outrank the ring's own two-class rule, which comes later in this sheet. */
       .osa-handover .osa-handover-marker.osa-handover-live {
         animation: none;
+      }
+
+      /* The center-stage dialog opens and docks with no motion (#730), and the scrim that
+         would fade out is simply gone. */
+      .osa-center-scrim.open,
+      .osa-center-scrim.closing,
+      .osa-chat-widget .osa-chat-window.osa-center.open,
+      .osa-chat-widget .osa-chat-window.open.osa-dock-in:not(.osa-center) {
+        animation: none !important;
+      }
+
+      .osa-center-scrim.closing {
+        display: none !important;
       }
     }
 
@@ -5590,6 +5612,54 @@
       display: block;
     }
 
+    /* The dialog's motion (#730): keyframes on the opened state, 120 ms, because the
+       window's rules below force transition: none and the scrim goes from display: none to
+       block, which no transition crosses. The state changes at once (inert, focus, scroll
+       lock, events); only these effects follow, and nothing waits for one to end. The
+       reduced-motion block turns every one of them off. */
+    .osa-center-scrim.open {
+      animation: osa-center-scrim-in 120ms ease-out;
+    }
+
+    .osa-chat-widget .osa-chat-window.osa-center.open {
+      animation: osa-center-in 120ms ease-out;
+    }
+
+    /* Docked: the corner window fades in, and the scrim, which is already gone as far as
+       the page is concerned, fades out under a class a timer removes (CENTER_FADE_CLEANUP_MS). */
+    .osa-chat-widget .osa-chat-window.open.osa-dock-in:not(.osa-center) {
+      animation: osa-dock-in 120ms ease-out;
+    }
+
+    .osa-center-scrim.closing {
+      display: block;
+      pointer-events: none;
+      animation: osa-center-scrim-out 120ms ease-in forwards;
+    }
+
+    @keyframes osa-center-in {
+      from { opacity: 0; transform: scale(0.98); }
+      to { opacity: 1; transform: none; }
+    }
+
+    /* The same frames as osa-center-in under its own name: a dock swaps the center-open
+       rule for this one in a single style recalc, and a browser keeps the finished
+       animation when the name is unchanged instead of starting a new one. */
+    @keyframes osa-dock-in {
+      from { opacity: 0; transform: scale(0.98); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @keyframes osa-center-scrim-in {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    @keyframes osa-center-scrim-out {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+
     .osa-chat-widget.osa-dark .osa-center-scrim {
       background: rgba(0, 0, 0, 0.55);
     }
@@ -8143,18 +8213,20 @@
   function normalizePersistedMessage(msg) {
     if (!isValidMessage(msg)) return null;
     if (msg.role !== 'assistant') {
-      const { dataset, ...rest } = msg;
+      // `seeded` is the mark of an assistant message only.
+      const { dataset, seeded, ...rest } = msg;
       return isValidDatasetId(dataset) ? { ...rest, dataset } : rest;
     }
     // The cut-off mark is kept only as the boolean the widget writes, and the server's
     // words for it only as a bounded string.
-    const { cutOff, cutOffMessage, usage, handover, mode, _handoverOpen, plan, ...rest } = msg;
+    const { cutOff, cutOffMessage, usage, handover, mode, _handoverOpen, plan, seeded, ...rest } = msg;
     const storedPlan = normalizePersistedPlan(plan);
     const cleanedUsage = cleanUsage(usage);
     const cleanedHandover = normalizeHandover(handover);
     const cleanedMode = normalizeReplyMode(mode);
     return {
       ...rest,
+      ...(seeded === true ? { seeded: true } : {}),
       ...(cleanedUsage ? { usage: cleanedUsage } : {}),
       ...(cleanedHandover ? { handover: cleanedHandover } : {}),
       ...(cleanedMode ? { mode: cleanedMode } : {}),
@@ -8590,12 +8662,12 @@
   }
 
   // Take the active conversation out of the way before another becomes active:
-  // kept, as it stands, when the reader said something in it, and gone when it is
-  // only the greeting.
+  // kept, as it stands, when the reader said something in it or the page seeded it,
+  // and gone when it is only the greeting.
   function retireActiveConversation() {
     if (!activeConversation) return;
     flushFeedbackBeforeSwap();
-    if (messages.some((m) => m.role === 'user')) {
+    if (hasContent({ messages })) {
       saveHistoryQuietly('leaving a conversation');
     } else {
       droppedConversationIds.add(activeConversation.id);
@@ -8604,6 +8676,12 @@
 
   function greetingMessages() {
     return [{ role: 'assistant', content: CONFIG.initialMessage }];
+  }
+
+  // Whether the chat is the empty one: only the greeting. A reply the page seeded
+  // (seed(), #730) is the chat's one message and still a chat with something in it.
+  function chatIsEmpty() {
+    return messages.length <= 1 && !messages.some(isSeededMessage);
   }
 
   // The conversations the widget can offer, newest first: {id, context, title,
@@ -9351,7 +9429,7 @@
     if (!sheet) return;
     const locked = isLoading;
     const now = Date.now();
-    const saved = listConversations().filter((c) => c.messages.some((m) => m && m.role === 'user'));
+    const saved = listConversations().filter(hasContent);
     const extras = new Map(saved.map((c) => [c.id, { active: c.active, thumbCallId: firstFigureCallId(c), code: historyCodeEntry(c) }]));
     const groups = groupByDay(saved.map(conversationSummary), now);
     const list = sheet.querySelector('.osa-history-list');
@@ -9564,7 +9642,7 @@
     renderMessages(container);
     renderSuggestions(container);
     const resetBtn = container.querySelector('.osa-reset-btn');
-    if (resetBtn) resetBtn.disabled = messages.length <= 1;
+    if (resetBtn) resetBtn.disabled = chatIsEmpty();
     evaluateContextSwitch();
   }
 
@@ -9767,10 +9845,11 @@
   }
 
   // Pure: whether a conversation the reader returned to should give way to a new one.
-  // An empty conversation never does; otherwise a new browser session does, and so
-  // does a conversation idle for longer than the server keeps its session.
-  function isFreshReturn({ hasUserMessage, sessionMarkerPresent, updatedAt, now }) {
-    if (!hasUserMessage) return false;
+  // An empty conversation never does (one the page seeded is not empty, #730);
+  // otherwise a new browser session does, and so does a conversation idle for longer
+  // than the server keeps its session.
+  function isFreshReturn({ hasContent, sessionMarkerPresent, updatedAt, now }) {
+    if (!hasContent) return false;
     return !sessionMarkerPresent || now - updatedAt > SESSION_TTL_MS;
   }
 
@@ -9808,7 +9887,8 @@
   // The turns to carry: the user's and the assistant's text, nothing else (a reply's
   // code runs, tool results and figures are other fields of the message, never read
   // here), each bounded, and the newest RESEED_MAX_TURNS that fit RESEED_TOTAL_CHARS. The assistant's greeting,
-  // which comes before the reader has said anything, is not a turn.
+  // which comes before the reader has said anything, is not a turn; a reply the host
+  // page seeded (seed(), #730) is, since the reader has seen it and may ask about it.
   function selectReseedTurns(list) {
     const turns = [];
     let started = false;
@@ -9816,7 +9896,7 @@
       if (!message || (message.role !== 'user' && message.role !== 'assistant')) continue;
       if (typeof message.content !== 'string') continue;
       if (message.role === 'user') started = true;
-      if (!started) continue;
+      if (!started && !(message.role === 'assistant' && message.seeded === true)) continue;
       // A bubble that is only an error (`failed`) is not a reply the server could build on.
       if (message.failed) continue;
       const text = message.content.trim();
@@ -9890,10 +9970,9 @@
     if (isPopoutWindow()) return;
     const sessionMarkerPresent = takeSessionMarker();
     if (!activeConversation) return;
-    const hasUserMessage = messages.some((m) => m.role === 'user');
     const stored = listConversations().find((c) => c.active);
     const updatedAt = stored ? stored.updatedAt : Date.now();
-    if (!isFreshReturn({ hasUserMessage, sessionMarkerPresent, updatedAt, now: Date.now() })) return;
+    if (!isFreshReturn({ hasContent: hasContent({ messages }), sessionMarkerPresent, updatedAt, now: Date.now() })) return;
     const previous = { id: activeConversation.id, title: conversationTitle(messages) };
     const id = startConversation({ context: pageContext() });
     if (id) welcomeBack = { conversationId: id, previousId: previous.id, previousTitle: previous.title };
@@ -9903,7 +9982,7 @@
   // one it replaced is still saved.
   function welcomeBackShown() {
     if (!welcomeBack || !activeConversation || activeConversation.id !== welcomeBack.conversationId) return false;
-    if (messages.some((m) => m.role === 'user')) return false;
+    if (hasContent({ messages })) return false;
     return readStoredConversations().some((c) => c.id === welcomeBack.previousId);
   }
 
@@ -9929,7 +10008,7 @@
       renderMessages(container);
       renderSuggestions(container);
       const resetBtn = container.querySelector('.osa-reset-btn');
-      if (resetBtn) resetBtn.disabled = messages.length <= 1;
+      if (resetBtn) resetBtn.disabled = chatIsEmpty();
       evaluateContextSwitch();
       // The card the reader pressed is gone with the welcome: focus goes to the input.
       container.querySelector('.osa-chat-input input')?.focus();
@@ -10218,7 +10297,7 @@
   }
 
   // The notice is on screen while the page's context differs from a chat that holds
-  // the reader's questions: {conversationId, from, to}. Not stored.
+  // the reader's questions or a reply the page seeded: {conversationId, from, to}. Not stored.
   let pendingSwitch = null;
   // What choosing "Continue" left in a chat: {conversationId, from, to, atIndex, told}.
   // `atIndex` is where the divider goes (the message count when it was chosen); `told`
@@ -10259,9 +10338,11 @@
   // remove the notice. Called when the widget loads, when the page names another
   // dataset, when the community config arrives (a search path may be new), and before
   // a send (a single-page site moves without telling the widget). A page that gives no
-  // context keeps the conversation's. With no question from the reader in the chat, or
-  // a chat that has no context yet, the new context is adopted silently: there is
-  // nothing earlier it could be confused with. A pop-out never asks: it shows its
+  // context keeps the conversation's. With nothing in the chat (no question from the
+  // reader, no reply the page seeded), or a chat that has no context yet, the new context
+  // is adopted silently: there is nothing earlier it could be confused with. A chat the
+  // page seeded does ask, so a seeded summary of one dataset is never carried silently
+  // under another page's context. A pop-out never asks: it shows its
   // opener's chat.
   function evaluateContextSwitch() {
     if (isPopoutWindow() || !activeConversation) return;
@@ -10269,7 +10350,7 @@
     let adopted = false;
     if (!page || sameContext(page, activeConversation.context)) {
       pendingSwitch = null;
-    } else if (!messages.some((m) => m.role === 'user') || !activeConversation.context) {
+    } else if (!hasContent({ messages }) || !activeConversation.context) {
       activeConversation.context = page;
       pendingSwitch = null;
       adopted = true;
@@ -13670,7 +13751,7 @@
     }
 
     // Update initial assistant message if chat has only the default greeting
-    if (messages.length === 1 && messages[0].role === 'assistant') {
+    if (messages.length === 1 && chatIsEmpty() && messages[0].role === 'assistant') {
       messages[0].content = CONFIG.initialMessage;
       renderMessages(container);
     }
@@ -15020,9 +15101,10 @@
         : '';
 
       // Per-response feedback (thumbs up/down) for assistant replies, but not
-      // the canned opening greeting (index 0). Up is a one-click count; down
-      // reveals an optional "what went wrong?" box before it is committed.
-      const showFeedback = msg.role === 'assistant' && msgIndex > 0;
+      // the canned opening greeting (index 0) and a reply the page seeded. Up is a
+      // one-click count; down reveals an optional "what went wrong?" box before it is
+      // committed.
+      const showFeedback = msg.role === 'assistant' && msgIndex > 0 && !msg.seeded;
       const fb = msg.feedback;
       const committed = !!msg.feedbackCommitted;
       const pendingDown = fb === 'down' && !committed;
@@ -15375,7 +15457,7 @@
   function suggestionsToShow() {
     if (isLoading) return null;
     const aboutDataset = datasetQuestions(currentDataset);
-    if (messages.length <= 1) {
+    if (chatIsEmpty()) {
       const questions = aboutDataset.length ? aboutDataset.slice(0, 3) : CONFIG.suggestedQuestions;
       return questions.length ? { questions, label: 'Try asking:', compact: false } : null;
     }
@@ -16851,7 +16933,7 @@
       clearActivity();
       input.disabled = false;
       sendBtn.disabled = false;
-      resetBtn.disabled = messages.length <= 1;
+      resetBtn.disabled = chatIsEmpty();
       // The box was emptied when the question was sent and nothing has been typed since
       // (it was disabled), so the question goes back as it was written.
       if (questionRemoved && !input.value) input.value = question;
@@ -16904,7 +16986,7 @@
 
   // Reset chat
   function resetChat(container) {
-    if (messages.length <= 1 || isLoading) return;
+    if (chatIsEmpty() || isLoading) return;
     // The sheet would go on listing the chat that is about to be discarded.
     closeHistory(container, { restoreFocus: false });
     // Commit any open thumbs-down comment before the history is cleared.
@@ -17239,7 +17321,7 @@
 
     // Update reset button state
     if (resetBtn) {
-      resetBtn.disabled = messages.length <= 1;
+      resetBtn.disabled = chatIsEmpty();
     }
 
     // Event listeners with null checks
@@ -17363,7 +17445,7 @@
   }
 
   // BEGIN host-api (E6.1, #701). The host page's way into the widget (open, close, ask,
-  // setMode, on) and the center-stage dialog those calls drive. A page calls it the
+  // seed, setMode, on) and the center-stage dialog those calls drive. A page calls it the
   // moment the script is there, so it is plain code in this file, not the runtime bundle.
   //
   // Center is the same .osa-chat-window with an osa-center class, never a second
@@ -17390,6 +17472,12 @@
   let centerInerted = [];
   let centerScrollLock = null;
   let centerKeyHandler = null;
+  // The cosmetic classes of a dock (osa-dock-in on the window, closing on the scrim) are
+  // taken off by these timers, after the 120 ms the CSS gives the effect. Nothing waits for
+  // an animation to end: the state (inert, scroll lock, focus, events) has already changed.
+  const CENTER_FADE_CLEANUP_MS = 150;
+  let dockMotionTimer = null;
+  let scrimFadeTimer = null;
 
   function hostWarn(call, message, value) {
     if (value === undefined) console.warn(`[OSA] ${call}: ${message}`);
@@ -17568,6 +17656,50 @@
     sending.catch((error) => console.error('[OSA] ask failed:', error));
   }
 
+  // --- seed (#730) ---
+  // seed(text, {mode}?) puts `text` at the head of the chat as the assistant's own
+  // opening reply, for a host page that has something to say before the reader asks
+  // (a summary of the dataset on screen, the way the page got here). Nothing is sent:
+  // no request, no 'send' event, no Turnstile token, no usage. The first message the
+  // reader then sends carries the text as the one earlier turn (selectReseedTurns keeps
+  // a `seeded` message), so the model has seen what the reader has.
+  function hostSeed(text, mode) {
+    const container = widgetContainer();
+    if (!container) return;
+    if (CONFIG.fullscreen) {
+      hostWarn('seed', 'the pop-out window shows the chat of the page that opened it, ignoring the call');
+      return;
+    }
+    if (isLoading) {
+      hostWarn('seed', 'a reply is still loading, ignoring the text');
+      return;
+    }
+    // A chat the reader has written in is theirs: it stays in History and the seeded
+    // reply opens a new one, as a change of page context does. A chat with nothing of
+    // theirs in it is reused, without a session (one the server held would not be told
+    // the seeded text, since a request carries the conversation only to a new session).
+    if (messages.some((m) => m.role === 'user')) {
+      if (startConversation({ context: pageContext() }) === null) return;
+    } else {
+      flushFeedbackBeforeSwap();
+      sessionId = null;
+      serverConfirmedAt = null;
+      // The seeded reply is about the page the host is on now, whatever the chat was
+      // opened under.
+      if (activeConversation) activeConversation.context = pageContext();
+    }
+    messages = [{ role: 'assistant', content: text.trim(), seeded: true }];
+    welcomeBack = null;
+    saveHistoryQuietly('seeding a conversation');
+    renderMessages(container);
+    renderSuggestions(container);
+    const resetBtn = container.querySelector('.osa-reset-btn');
+    if (resetBtn) resetBtn.disabled = chatIsEmpty();
+    syncCenterStart(container);
+    evaluateContextSwitch();
+    openChatWindow(container, mode);
+  }
+
   function hostSetMode(mode) {
     const container = widgetContainer();
     // The pop-out is a window of its own, with no corner to dock to.
@@ -17585,10 +17717,12 @@
   // work is done.
   function applyHostMode(container, mode) {
     if (mode === hostMode) return false;
+    const docking = hostMode === 'center' && mode === 'corner' && isOpen;
     hostMode = mode;
     const win = container.querySelector('.osa-chat-window');
     const center = mode === 'center';
     win.classList.toggle('osa-center', center);
+    playDockMotion(win, docking);
     if (center) {
       win.setAttribute('role', 'dialog');
       win.setAttribute('aria-modal', 'true');
@@ -17606,6 +17740,31 @@
     return true;
   }
 
+  // The corner window fades in from a hair smaller after a dock; nothing else about the
+  // dock waits for it. Taken off by a timer, never by an animation event.
+  function playDockMotion(win, docking) {
+    if (dockMotionTimer !== null) clearTimeout(dockMotionTimer);
+    dockMotionTimer = null;
+    win.classList.remove('osa-dock-in');
+    if (!docking) return;
+    win.classList.add('osa-dock-in');
+    dockMotionTimer = setTimeout(() => {
+      dockMotionTimer = null;
+      win.classList.remove('osa-dock-in');
+    }, CENTER_FADE_CLEANUP_MS);
+  }
+
+  // The scrim of a dialog that docked fades out under `closing`; opening it again takes
+  // the class off at once.
+  function fadeScrimOut(scrim) {
+    if (scrimFadeTimer !== null) clearTimeout(scrimFadeTimer);
+    scrim.classList.add('closing');
+    scrimFadeTimer = setTimeout(() => {
+      scrimFadeTimer = null;
+      scrim.classList.remove('closing');
+    }, CENTER_FADE_CLEANUP_MS);
+  }
+
   // Modal for as long as the dialog is open: the page behind it is inert and does not
   // scroll, and Tab and Escape are the dialog's (handleCenterKey).
   function engageCenter(container) {
@@ -17615,7 +17774,12 @@
     if (activeTab !== 'chat') setTab(container, 'chat');
     if (centerKeyHandler) return;
     const scrim = container.querySelector('.osa-center-scrim');
-    if (scrim) scrim.classList.add('open');
+    if (scrim) {
+      if (scrimFadeTimer !== null) clearTimeout(scrimFadeTimer);
+      scrimFadeTimer = null;
+      scrim.classList.remove('closing');
+      scrim.classList.add('open');
+    }
     const hold = (node) => {
       if (node.hasAttribute('inert')) return;
       node.setAttribute('inert', '');
@@ -17637,7 +17801,12 @@
 
   function releaseCenter(container) {
     const scrim = container.querySelector('.osa-center-scrim');
-    if (scrim) scrim.classList.remove('open');
+    if (scrim) {
+      const wasShown = scrim.classList.contains('open');
+      scrim.classList.remove('open');
+      // Only a dialog that docks, with the window staying, has a scrim worth fading.
+      if (wasShown && isOpen) fadeScrimOut(scrim);
+    }
     centerInerted.forEach((node) => node.removeAttribute('inert'));
     centerInerted = [];
     if (centerScrollLock) {
@@ -17897,7 +18066,7 @@
     const win = container.querySelector('.osa-chat-window');
     const start = win && win.querySelector('.osa-center-start');
     if (!start) return;
-    const show = hostMode === 'center' && activeTab === 'chat' && messages.length <= 1 && !isLoading;
+    const show = hostMode === 'center' && activeTab === 'chat' && chatIsEmpty() && !isLoading;
     const wasShown = !start.hidden;
     if (show === wasShown) return;
     start.hidden = !show;
@@ -18449,6 +18618,24 @@
       const mode = modeOption('ask', options);
       if (mode === null) return;
       hostDo(() => hostAsk(text, mode));
+    },
+    // seed(text, {mode}?): open the window with `text` (Markdown, at most
+    // RESEED_TURN_MAX_CHARS characters) as the assistant's first message. Sends nothing.
+    // Refused, with a warning, for empty text or while a reply is loading.
+    seed: function(text, options) {
+      if (typeof text !== 'string' || !text.trim()) {
+        hostWarn('seed', 'the text must be a non-empty string, ignoring:', text);
+        return;
+      }
+      // The stored and sent text is the trimmed one, so that is what the limit counts.
+      const trimmedLength = text.trim().length;
+      if (trimmedLength > RESEED_TURN_MAX_CHARS) {
+        hostWarn('seed', `the text must be at most ${RESEED_TURN_MAX_CHARS} characters, ignoring a text of`, trimmedLength);
+        return;
+      }
+      const mode = modeOption('seed', options);
+      if (mode === null) return;
+      hostDo(() => hostSeed(text, mode));
     },
     // setMode('corner' | 'center'): dock or undock the window. No effect in a pop-out.
     setMode: function(mode) {

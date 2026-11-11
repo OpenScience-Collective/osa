@@ -299,6 +299,50 @@ class TestASessionTheServerForgot:
 
 
 @pytest.mark.usefixtures("rig")
+class TestASeededOpeningReply:
+    """The widget's seed() puts an assistant reply the reader never asked for at the head of a
+    chat, so the first request of that chat carries `prior_turns` of one assistant turn and no
+    reader turn before it (#730)."""
+
+    SEEDED = f"This dataset, {DATASET}, has 64 channels and 3 sessions."
+
+    def _seed(self) -> list[dict]:
+        return turns(("assistant", self.SEEDED))
+
+    def test_the_request_is_accepted(self, client) -> None:
+        response = post(client, ASK, session_id="gone", prior_turns=self._seed())
+
+        assert response.status_code == 200, response.text
+
+    def test_the_model_sees_one_user_message_with_the_text_and_the_question(
+        self, client, rig
+    ) -> None:
+        chat(client, ASK, session_id="gone", prior_turns=self._seed())
+
+        (seeded,) = human_messages(rig.quick)
+        assert self.SEEDED in seeded
+        assert seeded.rstrip().endswith(f"<researcher_message>\n{ASK}\n</researcher_message>")
+
+    def test_the_answer_builds_on_the_seeded_text(self, client) -> None:
+        events = chat(client, ASK, session_id="gone", prior_turns=self._seed())
+
+        assert DATASET in done_of(events)["content"]
+
+    def test_the_stored_history_is_the_question_and_the_answer(self, client) -> None:
+        chat(client, ASK, session_id="gone", prior_turns=self._seed())
+
+        kinds = [m.type for m in _get_session_store(COMMUNITY)["gone"].messages]
+        assert kinds == ["human", "ai"]
+
+    def test_the_next_message_needs_no_turns(self, client, rig) -> None:
+        chat(client, ASK, session_id="gone", prior_turns=self._seed())
+        events = chat(client, "and how many sessions", session_id="gone", expect_session=True)
+
+        assert DATASET in done_of(events)["content"]
+        assert len(rig.quick.seen_message_lists) == 2
+
+
+@pytest.mark.usefixtures("rig")
 class TestALiveSession:
     def _live(self) -> ChatSession:
         session = ChatSession("live", COMMUNITY)
