@@ -69,13 +69,15 @@ XX099905_EEG_LABELS = ("C3", "Cz", "C4")
 # (T3 to T6 are T7, T8, P7, P8), the 10-20 extras and the reference sites.
 TABLE_ALIASES_AND_EXTRAS = (
     "T3", "T4", "T5", "T6", "P9", "P10", "T9", "T10", "Iz", "A1", "A2", "M1", "M2", "Fpz",
-    "C3", "Cz", "C4",
 )  # fmt: skip
 # A 10-10 label: Fp, AF, F, FT, FC, T, C, TP, CP, P, PO or O, then a number or z.
 TEN_TEN_LABEL = re.compile(r"(Fp|AF|F|FT|FC|T|C|TP|CP|P|PO|O)(\d+|z)")
-# The two topography documents measure about 15.8k and 17.3k characters: the 10-10 table is
-# 2.3k of them, and the rest is the shared plotting code and each document's own steps.
-TOPOGRAPHY_SIZE_CAP = 18_000
+# The two topography documents measure about 15.3k and 16.8k characters, against the issue's
+# target of about 12k (a test cap of 12.5k): the 10-10 table is 2.3k of them, and the rest is
+# the shared plotting code, the byte-identical Welch step and each document's own steps, none
+# of which can go without breaking a test that pins it. The cap sits just above the larger
+# document so that growth shows; going lower is the maintainer's call (see #721).
+TOPOGRAPHY_SIZE_CAP = 17_000
 PYTHON_FENCE = re.compile(r"^```python\n([\s\S]*?)\n```", re.MULTILINE)
 
 
@@ -90,6 +92,18 @@ def _plan_titles(document: str) -> list[str]:
 
 
 class TestTheShippedConfig:
+    def test_the_scalp_map_is_among_the_three_dataset_page_questions_a_zarr_dataset_shows(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """The widget shows the first three templates that fit on the opening screen (the
+        first two in the compact row), so a template placed later is never seen."""
+        assert nemar.widget is not None
+        templates = nemar.widget.dataset_suggested_questions
+        shown = [t.text for t in templates][:3]
+        assert any("scalp map" in text for text in shown), shown
+        # A dataset without a Zarr copy skips every needs_zarr one and keeps three.
+        assert sum(1 for t in templates if not t.needs_zarr) >= 3
+
     def test_it_offers_code_execution_behind_the_gate(self, nemar: CommunityConfig) -> None:
         assert nemar.extensions is not None
         [tool] = nemar.extensions.client_tools
@@ -758,8 +772,6 @@ class TestEachDocumentDeclaresItsPlan:
 
     @pytest.mark.parametrize("procedure_id", list(DECLARED_SEQUENCES))
     def test_its_code_fences_parse(self, nemar: CommunityConfig, procedure_id: str) -> None:
-        import ast
-
         fences = PYTHON_FENCE.findall(nemar.procedure_documents()[procedure_id])
         assert fences
         for body in fences:
@@ -848,6 +860,7 @@ class TestTheTopographyAndTimeFrequencyDocuments:
         assert table["T8"][0] > 0.4 and table["T7"][0] < -0.4
         # An old name is the position of its new one.
         assert table["T3"] == table["T7"] and table["T6"] == table["P8"]
+        assert {"C3", "Cz", "C4"} <= set(table)
         # The 10-05 labels (AFp1h, FFC1h, ...) are left out: a name is a 10-10 label or an extra.
         for name in set(table) - set(TABLE_ALIASES_AND_EXTRAS):
             assert TEN_TEN_LABEL.fullmatch(name), name
@@ -858,10 +871,8 @@ class TestTheTopographyAndTimeFrequencyDocuments:
     def test_the_two_topographies_carry_the_same_table_and_stay_small(
         self, documents: dict[str, str]
     ) -> None:
-        band, erp = (
-            _fence_with(documents[procedure_id], "positions = {") for procedure_id in TOPOGRAPHIES
-        )
-        assert band == erp
+        # (The two position fences are byte-identical: the marker test above pins that.)
+        band = _fence_with(documents[BAND_TOPOGRAPHY], "positions = {")
         # The 10-10 table is a fence of about 2.3k characters; the 343-label one was 9k.
         assert len(band) < 3_000
         for procedure_id in TOPOGRAPHIES:
@@ -959,10 +970,7 @@ class TestTheTopographyAndTimeFrequencyDocuments:
         ):
             assert phrase in plan, phrase
         # The warning comes before the numbered steps, so it is said before approval.
-        plan_section = document.split("## Plan", 1)[1]
-        assert plan_section.index("likely take a long time") < plan_section.index(
-            "1. **Read the recording**"
-        )
+        assert plan.index("likely take a long time") < plan.index("1. **Read the recording**")
 
     def test_the_time_frequency_epochs_hold_the_lowest_frequencys_wavelet(
         self, documents: dict[str, str]
