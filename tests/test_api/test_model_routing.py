@@ -797,6 +797,36 @@ class TestTurnClaims:
 
         assert opened[0].turn_started_at is None
 
+    def test_a_session_that_is_already_claimed_is_refused_not_run(self) -> None:
+        busy = ChatSession("sess-busy", COMMUNITY)
+        assert busy.begin_turn()
+        ran: list[bool] = []
+
+        async def run_analysis(_target: ChatSession):
+            ran.append(True)
+            yield "data: never\n\n"
+
+        async def drive() -> list[str]:
+            return [
+                line
+                async for line in stream_handover(
+                    summarizer=ScriptedChatModel(responses=[AIMessage(content=SUMMARY)]),
+                    history=[HumanMessage(content="hi")],
+                    reader_message="plot it",
+                    open_session=lambda: busy,
+                    analysis_model=SONNET,
+                    run_analysis=run_analysis,
+                )
+            ]
+
+        lines = asyncio.run(drive())
+
+        assert ran == []
+        assert '"event": "error"' in lines[-1]
+        assert not any('"started"' in line for line in lines)
+        # The other turn's claim is not released by the refused handover.
+        assert busy.turn_started_at is not None
+
 
 def _parked_analysis_session(mode: str) -> ChatSession:
     session = ChatSession("sess-parked", COMMUNITY)

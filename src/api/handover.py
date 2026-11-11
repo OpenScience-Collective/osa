@@ -4,7 +4,8 @@ The decisions and the summary text are in `src.agents.model_routing`; this is th
 sequence the reader's client sees, in order:
 
     {"event": "handover", "stage": "summarizing"}
-    {"event": "handover", "stage": "summarized", "messages": N, "words": W, "summary": "..."}
+    {"event": "handover", "stage": "summarized", "messages": N, "words": W, "summary": "...",
+     "degraded": true}     (`degraded` only when the summary is the reader's own words)
     {"event": "handover", "stage": "started", "session_id": "...", "model": "..."}
 
 and then the analysis run on the new session, streamed through the ordinary path, so its
@@ -19,7 +20,7 @@ with no tool call left dangling, so it stays valid on the quick model.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
@@ -37,6 +38,9 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
     from src.api.routers.community import ChatSession
+
+
+_SESSION_BUSY = "The new analysis session is already in use; please try again."
 
 
 def handover_sse(stage: str, **fields: Any) -> str:
@@ -60,7 +64,7 @@ async def stream_handover(
     reader_message: str,
     open_session: Callable[[], ChatSession],
     analysis_model: str,
-    run_analysis: Callable[[ChatSession], AsyncIterator[str]],
+    run_analysis: Callable[[ChatSession], AsyncGenerator[str, None]],
     summarizer_config: Any | None = None,
     record_summary: Callable[[Summary], None] | None = None,
 ) -> AsyncIterator[str]:
@@ -72,6 +76,8 @@ async def stream_handover(
             message needs no summary and flips its own session instead.
         reader_message: The reader's latest message, which the analysis model answers.
         open_session: Makes the new session (`get_or_create_session(community_id, None)`).
+            It must return a fresh, unclaimed session; a session that another turn holds
+            is refused with an `error` event.
         analysis_model: The model the analysis run uses, for the `started` event.
         run_analysis: Streams the analysis turn on the new session, which already holds
             its one seeded message and whose turn is already claimed.
@@ -101,7 +107,9 @@ async def stream_handover(
     # and a claim made after that would leave the session open to a second request for as
     # long as the client takes to read the event. Released however this ends, including
     # a client that leaves before the run starts.
-    session.begin_turn()
+    if not session.begin_turn():
+        yield f"data: {json.dumps({'event': 'error', 'message': _SESSION_BUSY})}\n\n"
+        return
     try:
         yield handover_sse("started", session_id=session.session_id, model=analysis_model)
         async with aclosing(run_analysis(session)) as stream:
