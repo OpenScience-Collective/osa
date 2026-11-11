@@ -533,6 +533,33 @@ the two disclosures and their markup for hostile code, Copy through happy-dom's 
 and each figure's Download, its label and numbering, and its file's bytes and name.
 `frontend/test-widget-popout.js` checks the code block, Copy and Download in the pop-out.
 
+## Saved conversations
+
+The widget keeps up to 30 conversations in the reader's browser, in one `localStorage` record per community and origin (`osa-chat-history-<community>` unless `storageKey` says otherwise).
+The record is `{version: 3, activeId, conversations: [...]}`.
+Each conversation has an id, a title (its first question, cut to 60 characters), a context (none, a dataset, or the search page), the server's session id, its two timestamps and its messages.
+When a 31st is saved, the one that last changed longest ago is dropped; the active conversation is never dropped.
+A conversation changes when a message is added or edited, a run is edited, or its session changes; a thumbs-up or thumbs-down does not count.
+A conversation with no question from the reader yet (only the greeting) does not use one of the 30 places, so starting a new chat never costs the oldest saved one.
+
+- **Nothing changes on screen yet.** The widget shows the active conversation, as it always showed its one chat. The History panel, a fresh chat on return and a reset when the dataset changes are built on this store.
+- **Older records are migrated on load.** A record any earlier widget wrote (version 2, version 1, or a bare list of messages) becomes one conversation, with its messages and session kept.
+- **A second tab, or the pop-out, does not drop the first's conversations.** Each save re-reads the record and replaces only its own conversation.
+- **A record from a newer widget is left alone.** If the stored version is above 3, the widget says so, does not save, and does not overwrite it.
+- **A corrupted record is reported, and a copy is kept before it is replaced.** If the stored text is not valid JSON, or is a version 3 record without a conversations list, the widget says it is corrupted and shows an empty chat; loading changes nothing.
+  The first save after that (the reader's next message) copies the unreadable text, byte for byte, to `<storageKey>-unreadable`, then writes a fresh record.
+  If the browser storage is too full to hold the copy, the record is replaced anyway and the reader sees a notice that no copy was kept, because refusing to replace a record the widget cannot use would stop every later save.
+  If the copy fails for any other reason, nothing is overwritten and the save fails with the usual storage message.
+  The copy is never cleaned up by the widget, and a second corruption replaces the first copy; remove the `-unreadable` key by hand to free the space.
+- **A full browser storage drops the oldest other conversation** and tries again, before it reports that the chat could not be saved.
+  When that retry succeeds, the reader sees a notice that the oldest saved conversation was removed: at once, and until dismissed, if the panel is open; otherwise the next time it opens.
+- **Mixed widget versions share a record.** The record keeps the same `storageKey` as before, so a version 2 widget (a cached or integrity-pinned embed, or another page on the same origin) that reads a version 3 record finds no top-level `messages`, shows the greeting, and its first save overwrites the whole record with a version 2 one.
+  Only a widget from the future is guarded against (the version above 3 rule); an older one is not.
+  Embeds that pin the widget by its integrity hash should be updated together, and a release note says so.
+- **Clearing the chat** (the header's reset button) discards the active conversation and starts an empty one; the others stay.
+
+Testing: `frontend/test-widget-history-store.js` runs the real widget source in happy-dom windows: the migrations, the 30-conversation limit, the save and load round trip, the records it must not overwrite, a full storage, and two widgets on one storage.
+
 ## The first paint: remembering the community's look
 
 The `widget:` block reaches the page with the community config request, some

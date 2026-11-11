@@ -343,7 +343,8 @@ console.log('\nasking from the dataset page records it; the suggestions go once 
   const user = ctx.api.__browser.getMessages().find((m) => m.role === 'user');
   assertEqual(user.dataset, 'nm000132', 'the message records the dataset on screen');
   const stored = JSON.parse(ctx.window.localStorage.getItem(HISTORY_KEY));
-  assertEqual(stored.messages.find((m) => m.role === 'user').dataset, 'nm000132', 'and so does the saved history');
+  const active = stored.conversations.find((c) => c.id === stored.activeId);
+  assertEqual(active.messages.find((m) => m.role === 'user').dataset, 'nm000132', 'and so does the saved history, in the active conversation');
   assertEqual(shown(ctx.q), null, 'mid-conversation on the same dataset: nothing offered');
   afterAsking = { [HISTORY_KEY]: ctx.window.localStorage.getItem(HISTORY_KEY) };
 }
