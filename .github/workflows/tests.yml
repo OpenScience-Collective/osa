@@ -463,6 +463,12 @@ jobs:
       - name: Run the run card tests on a real DOM
         run: bun frontend/test-widget-run-card.js
 
+      # A fresh chat on return: a new browser session or a chat over a day old starts a
+      # new conversation, never in a pop-out or over an empty chat, and the empty state
+      # offers the chat just left.
+      - name: Run the fresh chat on return tests on a real DOM
+        run: bun frontend/test-widget-fresh-return.js
+
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a
       # reading pace, the code block whole, and at once with reduced motion emulated.

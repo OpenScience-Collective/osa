@@ -572,7 +572,7 @@ When a 31st is saved, the one that last changed longest ago is dropped; the acti
 A conversation changes when a message is added or edited, a run is edited, or its session changes; a thumbs-up or thumbs-down does not count.
 A conversation with no question from the reader yet (only the greeting) does not use one of the 30 places, so starting a new chat never costs the oldest saved one.
 
-- **Nothing changes on screen yet.** The widget shows the active conversation, as it always showed its one chat. The History panel, a fresh chat on return and a reset when the dataset changes are built on this store.
+- **The widget shows the active conversation**, as it always showed its one chat, except on [a fresh chat on return](#a-fresh-chat-on-return). The History panel and a reset when the dataset changes are built on this store.
 - **Older records are migrated on load.** A record any earlier widget wrote (version 2, version 1, or a bare list of messages) becomes one conversation, with its messages and session kept.
 - **A second tab, or the pop-out, does not drop the first's conversations.** Each save re-reads the record and replaces only its own conversation.
 - **A record from a newer widget is left alone.** If the stored version is above 3, the widget says so, does not save, and does not overwrite it.
@@ -589,6 +589,24 @@ A conversation with no question from the reader yet (only the greeting) does not
 - **Clearing the chat** (the header's reset button) discards the active conversation and starts an empty one; the others stay.
 
 Testing: `frontend/test-widget-history-store.js` runs the real widget source in happy-dom windows: the migrations, the 30-conversation limit, the save and load round trip, the records it must not overwrite, a full storage, and two widgets on one storage.
+
+### A fresh chat on return
+
+A reader who comes back to the page starts a new chat; the one they left stays saved.
+When the widget loads and the active conversation holds a question from the reader, it starts a new conversation if either of these is true:
+
+- **A new browser session.** The first load in a tab sets a marker, `<storageKey>-session`, in `sessionStorage` (so a reload or a second page of the same tab keeps its chat, and a new tab or a restarted browser does not).
+- **The chat is older than the server's session.** Its last change was more than 24 hours ago, the same `SESSION_TTL_HOURS` after which the server forgets a session (`tests/test_frontend/test_widget_drift.py` keeps the two equal).
+
+A conversation with no question from the reader is never replaced.
+A browser that refuses `sessionStorage` reads as "the marker is there", so such a reader is not reset on every load; the 24 hour rule still applies.
+The [pop-out](#the-pop-out-window) never does this: it has a `sessionStorage` of its own and must show the same chat as its opener.
+
+The new chat takes the page's context (the dataset the page names with `setDataset`) and its empty state says so: "Welcome back. This is a new chat about `<dataset id>`." and, under it, a card, "Pick up where you left off: `<title>`".
+Clicking the card makes the conversation just left the active one again, with its messages and server session (a session the server has already forgotten starts a new one on the next message, as a resumed old chat always did); the card is hidden after the first message.
+The card is not stored: it is shown only on the load that started the new chat.
+
+Testing: `frontend/test-widget-fresh-return.js`.
 
 ## The first paint: remembering the community's look
 

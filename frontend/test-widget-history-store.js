@@ -59,6 +59,9 @@ const SOURCE = readFileSync(new URL('./osa-chat-widget.js', import.meta.url), 'u
 const API = 'http://localhost/api';
 const KEY = 'osa-test-history-store';
 const GREETING = 'Hello from the store tests';
+// When the fixture conversations were last touched: recent, so a load in the same
+// browser session (see start) never takes them for a chat to start over from (E1.2).
+const FIXTURE_TIME = Date.now() - 60 * 60 * 1000;
 
 function serverFetch(log = []) {
   return async (url, init = {}) => {
@@ -95,14 +98,17 @@ function failingStorage(real) {
   return { storage, control };
 }
 
-// A fresh window, as a new page load. `storage` seeds localStorage with what an
-// earlier load left; `shared` hands the widget another window's storage instead.
+// A fresh window, as a new page load of the same browser session (a reload keeps
+// sessionStorage, so the widget does not start a fresh chat; test-widget-fresh-return.js
+// covers that). `storage` seeds localStorage with what an earlier load left; `shared`
+// hands the widget another window's storage instead.
 function start({ storage = {}, shared = null, config = {} } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
   });
   window.__OSA_TEST__ = true;
+  window.sessionStorage.setItem(`${KEY}-session`, '1');
   const localStorage = shared || window.localStorage;
   for (const [key, value] of Object.entries(storage)) localStorage.setItem(key, value);
   const script = window.document.createElement('script');
@@ -143,8 +149,8 @@ function conversation(n, overrides = {}) {
     context: null,
     title: `Question ${n}`,
     sessionId: `session-${n}`,
-    createdAt: 1000 + n,
-    updatedAt: 1000 + n,
+    createdAt: FIXTURE_TIME + n,
+    updatedAt: FIXTURE_TIME + n,
     messages: [
       { role: 'assistant', content: GREETING },
       { role: 'user', content: `Question ${n}` },
@@ -318,16 +324,16 @@ console.log('\na save that changes nothing does not make the conversation newer'
   const ctx = start({ storage: { [KEY]: record } });
   ctx.hooks.saveHistory();
   const stored = ctx.stored();
-  assertEqual(stored.conversations.find((c) => c.id === 'conv-1').updatedAt, 1001, 'updatedAt is kept');
+  assertEqual(stored.conversations.find((c) => c.id === 'conv-1').updatedAt, FIXTURE_TIME + 1, 'updatedAt is kept');
   const voted = ctx.hooks.getMessages().map((m, i, all) => (i === all.length - 1 ? { ...m, feedback: 'up', feedbackCommitted: true } : m));
   ctx.hooks.setMessages(voted);
   ctx.hooks.saveHistory();
   const afterVote = ctx.stored().conversations.find((c) => c.id === 'conv-1');
-  assertEqual(afterVote.updatedAt, 1001, 'a committed vote does not move it either');
+  assertEqual(afterVote.updatedAt, FIXTURE_TIME + 1, 'a committed vote does not move it either');
   assertEqual(afterVote.messages.at(-1).feedback, 'up', 'though the vote itself is stored');
   ctx.hooks.setMessages([...ctx.hooks.getMessages(), { role: 'user', content: 'One more' }]);
   ctx.hooks.saveHistory();
-  assert(ctx.stored().conversations[0].updatedAt > 1001, 'a new message moves it to the top');
+  assert(ctx.stored().conversations[0].updatedAt > FIXTURE_TIME + 1, 'a new message moves it to the top');
   assertEqual(ctx.stored().conversations[0].id, 'conv-1', 'which is the active conversation');
 }
 

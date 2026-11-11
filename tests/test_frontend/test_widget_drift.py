@@ -19,6 +19,7 @@ import typing
 from pathlib import Path
 
 from src.api import security
+from src.api.routers.community import SESSION_TTL_HOURS
 from src.core.config.community import (
     DEFAULT_LAUNCHER_OFFSET,
     DEFAULT_LAUNCHER_OPEN_SIZE,
@@ -433,3 +434,13 @@ class TestWorkerByokHeaderDrift:
             assert key_style == expected, (
                 f"Found stale or unexpected credential-shaped headers: {key_style - expected}"
             )
+
+
+class TestSessionTtlMatchesBackend:
+    """The widget starts a fresh chat when the active one is older than the server's
+    session lifetime (E1.2), so its constant must equal the server's."""
+
+    def test_widget_session_ttl_equals_backend(self) -> None:
+        match = re.search(r"const SESSION_TTL_HOURS = (\d+);", _widget_source())
+        assert match, "Could not find SESSION_TTL_HOURS in osa-chat-widget.js"
+        assert int(match.group(1)) == SESSION_TTL_HOURS

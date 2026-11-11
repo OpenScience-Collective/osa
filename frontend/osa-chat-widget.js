@@ -98,6 +98,9 @@
     // Per-page instructions for the assistant (set by widget embedder)
     // These are sent to the backend as part of page_context
     widgetInstructions: null,
+    // Page paths where the reader is searching, not viewing a dataset (E1.3): a page
+    // under one gives the conversation the search context. From the community config.
+    searchPaths: [],
     showExperimentalBadge: true,
     repoUrl: 'https://osc.earth/osa/',
     repoName: 'Open Science Assistant',
@@ -780,6 +783,8 @@
     close: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>',
     send: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>',
     reset: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+    history: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
+    swap: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11l-3-3M20 17H9l3 3"/></svg>',
     brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>',
     copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
     check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
@@ -816,6 +821,11 @@
       --osa-user-bg: #2563eb;
       --osa-user-text: #ffffff;
       --osa-assistant-bg: #f3f4f6;
+      /* The quiet teal tint of a notice the reader may act on (the context-switch
+         notice, the resume card): the boards' #f5fbfd, #b9e0eb and #0f3d4c. */
+      --osa-notice-bg: #f5fbfd;
+      --osa-notice-border: #b9e0eb;
+      --osa-notice-text: #0f3d4c;
       --osa-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
       /* The launcher's geometry (#553). applyLauncherGeometry sets --osa-size-closed,
          --osa-size-open, --osa-closed-scale, --osa-edge-x and --osa-edge-y (and the
@@ -2297,6 +2307,67 @@
       background: var(--osa-primary-dark);
     }
 
+    /* The empty state of a chat started on return (E1.2): a welcome and the card
+       that goes back to the chat the reader left. */
+    .osa-welcome-back {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .osa-welcome-back-text {
+      padding: 10px 14px;
+      border-radius: 12px;
+      border-bottom-left-radius: 4px;
+      background: var(--osa-assistant-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-welcome-back-text code {
+      font-size: 12.5px;
+    }
+
+    .osa-resume-card {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 44px;
+      padding: 10px 12px;
+      text-align: left;
+      font: inherit;
+      font-size: 13px;
+      color: var(--osa-notice-text);
+      background: var(--osa-notice-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .osa-resume-card:hover {
+      border-color: var(--osa-accent);
+    }
+
+    .osa-resume-card:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-resume-card svg {
+      width: 16px;
+      height: 16px;
+      flex: none;
+      color: var(--osa-accent);
+    }
+
+    .osa-resume-card-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
     .osa-suggestions {
       padding: 12px 16px;
       border-top: 1px solid var(--osa-border);
@@ -3540,6 +3611,9 @@
       --osa-text-light: #9ca3af;
       --osa-border: #374151;
       --osa-assistant-bg: #1f2937;
+      --osa-notice-bg: #12303a;
+      --osa-notice-border: #2c5a69;
+      --osa-notice-text: #d3eef6;
       /* A shadow alone vanishes against a dark host page, so every raised surface
          (the panel, the launcher, the tooltips) also gets a hairline edge. */
       --osa-shadow: 0 0 0 1px #374151, 0 10px 25px rgba(0, 0, 0, 0.5);
@@ -5381,6 +5455,123 @@
     }
     saveHistoryQuietly('deleting a conversation');
     return true;
+  }
+
+  // --- Fresh chat on return ---
+  // A reader who comes back to the page, in a new browser session or after the
+  // server has forgotten the chat, starts a new conversation; the one they left stays
+  // in the store, and the empty state offers it back (E1.2, #655).
+
+  // How long the server keeps a session after its last request: SESSION_TTL_HOURS in
+  // src/api/routers/community.py, kept equal by tests/test_frontend/test_widget_drift.py.
+  const SESSION_TTL_HOURS = 24;
+  const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
+
+  // The pop-out is told its configuration by the page that opened it, and has a
+  // sessionStorage of its own, so it never decides on its own to start over: it
+  // shows the chat its opener shows.
+  function isPopoutWindow() {
+    return !!window.__OSA_CHAT_CONFIG__;
+  }
+
+  // Whether this browser session has loaded the widget before; the first load of a
+  // session sets the marker. A sessionStorage that cannot be used (blocked, or full)
+  // reads as "yes", so a reader whose browser forgets nothing is not reset on every load.
+  function takeSessionMarker() {
+    try {
+      const key = `${CONFIG.storageKey}-session`;
+      if (window.sessionStorage.getItem(key) !== null) return true;
+      window.sessionStorage.setItem(key, '1');
+      return false;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  // Pure: whether a conversation the reader returned to should give way to a new one.
+  // An empty conversation never does; otherwise a new browser session does, and so
+  // does a conversation idle for longer than the server keeps its session.
+  function isFreshReturn({ hasUserMessage, sessionMarkerPresent, updatedAt, now }) {
+    if (!hasUserMessage) return false;
+    return !sessionMarkerPresent || now - updatedAt > SESSION_TTL_MS;
+  }
+
+  // The conversation just left, while the empty state offers it back: {conversationId
+  // (the new one), previousId, previousTitle}. Not stored: a reload shows nothing.
+  let welcomeBack = null;
+
+  // Called by init() once the history is loaded. The new conversation takes the page's
+  // context (see pageContext).
+  function startFreshChatOnReturn() {
+    if (isPopoutWindow()) return;
+    const sessionMarkerPresent = takeSessionMarker();
+    if (!activeConversation) return;
+    const hasUserMessage = messages.some((m) => m.role === 'user');
+    const stored = listConversations().find((c) => c.active);
+    const updatedAt = stored ? stored.updatedAt : Date.now();
+    if (!isFreshReturn({ hasUserMessage, sessionMarkerPresent, updatedAt, now: Date.now() })) return;
+    const previous = { id: activeConversation.id, title: conversationTitle(messages) };
+    const id = startConversation({ context: pageContext() });
+    if (id) welcomeBack = { conversationId: id, previousId: previous.id, previousTitle: previous.title };
+  }
+
+  // Whether the empty state is showing: the new conversation is still empty, and the
+  // one it replaced is still saved.
+  function welcomeBackShown() {
+    if (!welcomeBack || !activeConversation || activeConversation.id !== welcomeBack.conversationId) return false;
+    if (messages.some((m) => m.role === 'user')) return false;
+    return readStoredConversations().some((c) => c.id === welcomeBack.previousId);
+  }
+
+  // The welcome and the resume card, drawn after the greeting.
+  function appendWelcomeBack(container, messagesEl) {
+    if (!welcomeBackShown()) return;
+    const context = activeConversation.context;
+    const about = context && context.type === 'dataset'
+      ? ` about <code>${escapeHtml(context.id)}</code>`
+      : '';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'osa-welcome-back';
+    wrapper.innerHTML = `
+      <div class="osa-welcome-back-text">Welcome back. This is a new chat${about}.</div>
+      <button type="button" class="osa-resume-card">
+        ${ICONS.history}
+        <span class="osa-resume-card-text">Pick up where you left off: <strong>${escapeHtml(welcomeBack.previousTitle)}</strong></span>
+      </button>`;
+    wrapper.querySelector('.osa-resume-card').addEventListener('click', () => {
+      const previousId = welcomeBack && welcomeBack.previousId;
+      if (!previousId || !activateConversation(previousId)) return;
+      welcomeBack = null;
+      renderMessages(container);
+      renderSuggestions(container);
+      const resetBtn = container.querySelector('.osa-reset-btn');
+      if (resetBtn) resetBtn.disabled = messages.length <= 1;
+    });
+    messagesEl.appendChild(wrapper);
+  }
+
+  // --- Context switch ---
+  // A conversation has a context: the dataset the page names (setDataset), or the
+  // dataset search (a page under CONFIG.searchPaths), or none (E1.3, #656).
+
+  // Pure: the context a page gives a conversation, or null when it gives none and the
+  // conversation keeps the one it has. A dataset wins over a search path; a search path
+  // matches the pathname itself and anything below it at a path-segment boundary
+  // (/discover matches /discover/x, not /discovery).
+  function contextForPage(dataset, pathname, searchPaths) {
+    if (dataset && isValidDatasetId(dataset.id)) return { type: 'dataset', id: dataset.id };
+    const path = typeof pathname === 'string' ? pathname : '';
+    for (const raw of Array.isArray(searchPaths) ? searchPaths : []) {
+      if (typeof raw !== 'string' || !raw.startsWith('/')) continue;
+      const base = raw.replace(/\/+$/, '');
+      if (path === base || path.startsWith(`${base}/`)) return { type: 'search' };
+    }
+    return null;
+  }
+
+  // The context of the page on screen now.
+  function pageContext() {
+    return contextForPage(currentDataset, window.location.pathname, CONFIG.searchPaths);
   }
 
   // Get page context (URL, title, and widget instructions) for contextual answers
@@ -9112,6 +9303,8 @@
       });
     });
 
+    appendWelcomeBack(container, messagesEl);
+
     if (toolActivity) {
       // In place of the loading dots: nothing is loading, the reply is waiting
       // on the person or on code running in this page.
@@ -10899,6 +11092,7 @@
     loadPageContextPreference();
     loadUserSettings();
     const historyNeedsSave = loadHistory();
+    startFreshChatOnReturn();
     injectStyles();
     const container = createWidget();
     // Everything else the remembered config sets (the logo, the title, the

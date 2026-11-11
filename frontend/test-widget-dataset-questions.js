@@ -125,6 +125,8 @@ async function start({ widget = { dataset_suggested_questions: TEMPLATES }, data
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
   });
   window.__OSA_TEST__ = true;
+  // A load in the same browser session, as a reload is: it keeps its chat (E1.2).
+  window.sessionStorage.setItem(`${HISTORY_KEY}-session`, '1');
   for (const [key, value] of Object.entries(storage)) window.localStorage.setItem(key, value);
   if (before) before(window);
   const script = window.document.createElement('script');
