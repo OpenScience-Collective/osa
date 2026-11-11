@@ -86,7 +86,8 @@ and no trace of the request is made.
 The dataset a page names is still sent with the question, as the table says.
 Your thumbs and comments are still received, but with usage sharing off they are not attached to a trace.
 No usage-metrics row holds your question, the reply, the page's address or your IP address.
-They are used to track cost, budgets and reliability, and there is no automatic deletion yet.
+They are used to track cost, budgets and reliability.
+They are kept for five years, then deleted automatically.
 
 **On the OSA server, on disk: feedback.**
 A thumbs up or down, and any comment you wrote with it.
@@ -95,7 +96,7 @@ and also when you send another question, start a new chat or close the window, w
 Feedback from the "Send feedback" form carries your comment and, only if you share the page, the page's address.
 Each also carries the ids that tie it to the conversation and the reply.
 Feedback is read by the OSA maintainers and that community's maintainers, so please do not include personal information.
-There is no automatic deletion.
+It is kept for five years, then deleted automatically.
 
 **Server logs.**
 They do not record your questions or the replies as such.
