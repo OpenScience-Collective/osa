@@ -406,6 +406,10 @@
   let browserToolsReady = null; // Promise resolving to the controller, or null
   let browserTools = null; // OSARuntime.ClientToolController
   let browserRuntime = null; // The OSARuntime.PyodideRuntime it drives
+  // The heap the runtime last reported, in MB. Kept here, not read back from the chat on
+  // screen: the runtime is shared by every chat on the page, so a new chat or a History
+  // conversation starts on the heap an earlier one left.
+  let lastReportedHeapMb = null;
   let runtimeApi = null; // The OSARuntime global itself, captured when it loaded
   let browserToolsSetup = null; // {tools, python} from the config, kept for a retry
   let browserToolsUnavailable = null; // {reason, detail} while code execution is off
@@ -10371,10 +10375,12 @@
       || !runtimeApi || !runtimeApi.memory || typeof callId !== 'string' || !callId) return {};
     const heapMb = runtimeApi.memory.heapMbFromBytes(browserRuntime.heapBytes(callId));
     if (!heapMb) return {};
-    // The run before it in the chat, so the card can tell the run that took the heap past
-    // the budget from the ones that only report what it left (heapReport). Called before
-    // this run is added to the chat.
-    const heapBeforeMb = lastRunHeapMb();
+    // The heap the runtime reported before this run, whichever chat that run was in, so the
+    // card can tell the run that took the heap past the budget from the ones that only report
+    // what it left (heapReport). A restarted runtime reports a smaller figure than this one,
+    // which heapReport reads as a run that grew it.
+    const heapBeforeMb = lastReportedHeapMb;
+    lastReportedHeapMb = heapMb;
     return {
       heapMb,
       budgetMb: normalizeMemoryBudget(userSettings.memoryBudgetMb),
@@ -11213,15 +11219,21 @@
       ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
       : '';
     // The runtime's memory after the run against the budget it ran under (E5.1), and, when it
-    // passed, which step took it there (the runs after that one only report what it left). Needs the runtime bundle's logic, so a restored chat gets it
-    // when the bundle has loaded (which draws the chat again).
+    // passed, which step took it there. The runs after that one only report what it left, in
+    // the plain style: the amber box is for the run that grew the heap. Needs the runtime
+    // bundle's logic, so a restored chat gets it when the bundle has loaded (which draws the
+    // chat again).
     const heap = runtimeApi && runtimeApi.memory ? runtimeApi.memory.heapReport(run.heapMb, run.budgetMb, run.heapBeforeMb) : null;
     const heapLine = heap
       ? `<div class="osa-run-card-heap${heap.grew ? ' osa-run-card-heap-over' : ''}">${escapeHtml(heap.text)}</div>`
       : '';
-    const heapWarning = heap && heap.exceeded
-      ? `<div class="osa-run-card-memory-warning">${escapeHtml(runtimeApi.memory.overBudgetWarning(heap, { step: run.step, title: run.stepTitle }))}</div>`
+    const heapNoteText = heap && heap.exceeded
+      ? escapeHtml(runtimeApi.memory.overBudgetWarning(heap, { step: run.step, title: run.stepTitle }))
       : '';
+    const heapWarning = !heapNoteText ? ''
+      : (heap.grew
+        ? `<div class="osa-run-card-memory-warning">${heapNoteText}</div>`
+        : `<div class="osa-run-card-note osa-run-card-heap-held">${heapNoteText}</div>`);
     const noMessage = run.status === 'error' && !error
       ? '<div class="osa-run-card-note osa-run-card-no-message">No error message was recorded.</div>'
       : '';

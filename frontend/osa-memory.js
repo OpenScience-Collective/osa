@@ -68,9 +68,10 @@ export function mbLabel(mb) {
  * took it there or further, and `held` is when an earlier run did and this one added
  * nothing: the heap only grows, so after one large read every later run, `print(1)`
  * included, reports the same over-budget figure, and only the first should be blamed.
- * `previousMb` is the heap the run before it in the chat reported, or null when there was
- * none. A heap that is smaller than the previous one belongs to a runtime started since
- * (a reload, a restart), whose first run to report it is the one that grew it.
+ * `previousMb` is the heap the runtime reported before this run, in whichever chat that
+ * was, or null when it had reported none. A heap that is smaller than the previous one
+ * belongs to a runtime started since (a reload, a restart), whose first run to report it
+ * is the one that grew it.
  * `budgetMb` is the budget the run was under, which a run keeps so a card read later does
  * not change with Settings.
  *

@@ -286,6 +286,7 @@ console.log('\nit is not sent from a page with no runtime, with the old bundle r
 const asking = (page) => page.api.getToolActivity() && page.api.getToolActivity().phase === 'asking';
 const heapLine = (page) => page.qa('.osa-run-card-heap').map(text);
 const warnings = (page) => page.qa('.osa-run-card-memory-warning').map(text);
+const heldNotes = (page) => page.qa('.osa-run-card-heap-held').map(text);
 
 /** One run the reader approves, with its result posted and the reply ended. */
 async function runOnce(page, code, description = 'Run the step') {
@@ -348,12 +349,15 @@ console.log('\nthe heap only grows: the run that crossed the budget is blamed, t
   assertEqual(heapLine(page), ['Heap 300 MB of 512 MB', 'Heap 1155 MB of 512 MB', 'Heap 1155 MB of 512 MB'], 'every card shows its heap');
   assertEqual(
     warnings(page),
-    [
-      'This run used more than the 512 MB budget. Ask for smaller pieces, or raise the budget in Settings.',
-      'The runtime is still holding 1155 MB from earlier steps; its memory does not shrink between runs.',
-    ],
-    'the second run is named; the third, which only reports the same heap, is not'
+    ['This run used more than the 512 MB budget. Ask for smaller pieces, or raise the budget in Settings.'],
+    'the second run is named in the warning box; the third, which only reports the same heap, is not'
   );
+  assertEqual(
+    heldNotes(page),
+    ['The runtime is still holding 1155 MB from earlier steps; its memory does not shrink between runs.'],
+    'the third says what the runtime holds, as a plain note'
+  );
+  assert(!page.q('.osa-run-card-memory-warning .osa-run-card-heap-held') && page.qa('.osa-run-card-memory-warning').length === 1, 'and not inside the amber box');
   assertEqual(page.qa('.osa-run-card-heap-over').length, 1, 'and only the run that crossed is in the warning style');
   await runOnce(page, '# HEAP_MB=1300\nbigger()');
   assertEqual(page.qa('.osa-run-card-heap-over').length, 2, 'a later run that grows the heap again is named');
@@ -361,8 +365,28 @@ console.log('\nthe heap only grows: the run that crossed the budget is blamed, t
   // The same, from a reload: the figure before each run is kept with it.
   const reloaded = await start({ storage: page.window.localStorage.getItem(page.storageKey), storageKey: page.storageKey });
   await waitUntil(() => reloaded.qa('.osa-run-card').length > 0, 'the restored chat shows its runs');
-  assertEqual(warnings(reloaded).length, 3, 'a reload restores the same three lines');
+  assertEqual(warnings(reloaded).length + heldNotes(reloaded).length, 3, 'a reload restores the same three lines');
+  assertEqual(heldNotes(reloaded).length, 1, 'one of them the plain note');
   assertEqual(reloaded.qa('.osa-run-card-heap-over').length, 2, 'and the same two warning styles');
+}
+
+console.log('\nthe runtime is shared by every chat: a small step in a new chat, after a large one, only holds the heap');
+{
+  const page = await start();
+  await runOnce(page, '# HEAP_MB=1155\nbig()');
+  assertEqual(warnings(page).length, 1, 'chat A: the large step is named');
+  click(page, page.q('.osa-history-btn'));
+  click(page, page.q('.osa-history-new'));
+  assertEqual(page.qa('.osa-run-card').length, 0, 'a new chat has no card');
+  await runOnce(page, '# HEAP_MB=1155\nprint(1)');
+  assertEqual(heapLine(page), ['Heap 1155 MB of 512 MB'], 'chat B shows the heap the runtime still holds');
+  assertEqual(warnings(page), [], 'and does not blame its small step');
+  assertEqual(
+    heldNotes(page),
+    ['The runtime is still holding 1155 MB from earlier steps; its memory does not shrink between runs.'],
+    'it says what the runtime holds'
+  );
+  assertEqual(page.qa('.osa-run-card-heap-over').length, 0, 'in the plain style');
 }
 
 console.log('\nSettings: the row says what it measures, in MB, and an over-budget heap reads as such to a screen reader');
