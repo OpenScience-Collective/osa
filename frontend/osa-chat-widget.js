@@ -6087,6 +6087,8 @@
   let historyThumbFlushQueued = false;
   const historyThumbWaiting = new Map();
   let historyThumbGeneration = 0;
+  // Watches the header's height while the sheet is open, to keep the scrim below it.
+  let historyHeaderObserver = null;
   // The elements the sheet made inert while it is open, to give back on close.
   let historyInerted = [];
 
@@ -6279,6 +6281,29 @@
     }
   }
 
+  // The scrim covers everything below the header, which stays live so the button that
+  // opened the sheet can close it. The header's height is not fixed (its title wraps),
+  // so the scrim follows it for as long as the sheet is open.
+  function syncHistoryScrim(container) {
+    const header = container.querySelector('.osa-chat-header');
+    const scrim = container.querySelector('.osa-history-scrim');
+    if (!scrim) return;
+    scrim.style.top = header && header.offsetHeight > 0 ? `${header.offsetHeight}px` : '0px';
+  }
+
+  function watchHistoryHeader(container) {
+    unwatchHistoryHeader();
+    const header = container.querySelector('.osa-chat-header');
+    if (!header || typeof window.ResizeObserver !== 'function') return;
+    historyHeaderObserver = new window.ResizeObserver(() => syncHistoryScrim(container));
+    historyHeaderObserver.observe(header);
+  }
+
+  function unwatchHistoryHeader() {
+    if (historyHeaderObserver) historyHeaderObserver.disconnect();
+    historyHeaderObserver = null;
+  }
+
   function openHistory(container) {
     if (historyOpen || isLoading || activeTab === 'notebook') return;
     const sheet = historySheet(container);
@@ -6290,9 +6315,9 @@
     historyClearConfirming = false;
     historyLockDrawn = isLoading;
     renderHistorySheet(container);
-    const header = container.querySelector('.osa-chat-header');
     const scrim = container.querySelector('.osa-history-scrim');
-    scrim.style.top = header && header.offsetHeight > 0 ? `${header.offsetHeight}px` : '0px';
+    syncHistoryScrim(container);
+    watchHistoryHeader(container);
     scrim.classList.add('open');
     sheet.classList.add('open');
     historyInerted = historyBackdropNodes(container).filter((node) => !node.hasAttribute('inert'));
@@ -6307,6 +6332,7 @@
     historyClearConfirming = false;
     historyNote = '';
     releaseHistoryThumbs();
+    unwatchHistoryHeader();
     const sheet = historySheet(container);
     if (sheet) sheet.classList.remove('open');
     const scrim = container.querySelector('.osa-history-scrim');
@@ -9335,6 +9361,8 @@
   function openSettings(container) {
     // Don't open settings if chat window is closed
     if (!isOpen) return;
+    // The sheet is modal and lists the chats as they were: Settings opens above it.
+    closeHistory(container, { restoreFocus: false });
 
     const overlay = container.querySelector('.osa-settings-overlay');
     const apiKeyInput = container.querySelector('#osa-settings-api-key');
@@ -12175,6 +12203,8 @@
   // Reset chat
   function resetChat(container) {
     if (messages.length <= 1 || isLoading) return;
+    // The sheet would go on listing the chat that is about to be discarded.
+    closeHistory(container, { restoreFocus: false });
     // Commit any open thumbs-down comment before the history is cleared.
     flushPendingResponseFeedback(container);
     // The active conversation is discarded for good; the others stay.
@@ -12305,6 +12335,8 @@
   // script's own address, integrity and crossorigin, which the host page's policy
   // already allows, since it loaded this script.
   function openPopout() {
+    const panel = document.querySelector('.osa-chat-widget');
+    if (panel) closeHistory(panel, { restoreFocus: false });
     // Reuse existing popup if still open
     if (chatPopup && !chatPopup.closed) {
       chatPopup.focus();

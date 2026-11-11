@@ -488,6 +488,63 @@ console.log('\n+ New chat starts an empty chat in the page\'s context');
 }
 
 // ---------------------------------------------------------------------------
+// The header stays live behind the sheet
+// ---------------------------------------------------------------------------
+
+console.log('\nthe header\'s Settings, Clear and Pop-out close the sheet, so it never lists a chat that is gone');
+{
+  const ctx = await start({ activeId: 'chat-a' });
+  ctx.button().click();
+  assert(ctx.sheetOpen(), 'the sheet is open on a chat that has messages');
+  ctx.q('.osa-settings-btn-open').click();
+  assert(!ctx.sheetOpen(), 'Settings closes the sheet, so Escape in Settings cannot close one under it');
+  assert(ctx.q('.osa-settings-overlay').classList.contains('open'), 'and Settings is open');
+  assertEqual(ctx.qa('[inert]').length, 0, 'with nothing left inert');
+  ctx.q('.osa-settings-close-btn').click();
+
+  ctx.button().click();
+  assert(ctx.sheetOpen(), 'the sheet opens again');
+  const id = ctx.hooks.getActiveConversation().id;
+  ctx.q('.osa-reset-btn').click();
+  assert(!ctx.sheetOpen(), 'Clear closes the sheet');
+  assert(ctx.hooks.getActiveConversation().id !== id, 'on the chat it discarded');
+  ctx.button().click();
+  assert(!ctx.rows().some((row) => row.getAttribute('data-id') === id), 'which the sheet no longer lists, opened again');
+  assert(text(ctx.q('.osa-history-note')) === '', 'with no note');
+
+  ctx.window.open = () => null;
+  ctx.window.alert = () => {};
+  assert(ctx.sheetOpen(), 'the sheet is open');
+  ctx.q('.osa-popout-btn').click();
+  assert(!ctx.sheetOpen(), 'Pop-out closes it');
+  assertEqual(ctx.qa('[inert]').length, 0, 'and the chat is live again');
+}
+
+console.log('\nthe scrim follows the header\'s height while the sheet is open, and stops when it closes');
+{
+  const ctx = await start();
+  let height = 60;
+  const header = ctx.q('.osa-chat-header');
+  Object.defineProperty(header, 'offsetHeight', { get: () => height, configurable: true });
+  const watchers = [];
+  ctx.window.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; this.disconnected = false; watchers.push(this); }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+  };
+  ctx.button().click();
+  const scrim = ctx.q('.osa-history-scrim');
+  assertEqual(scrim.style.top, '60px', 'the scrim starts below the header');
+  assertEqual(watchers.length, 1, 'the header is watched');
+  assert(watchers[0].target === header, 'the header itself');
+  height = 84;
+  watchers[0].callback();
+  assertEqual(scrim.style.top, '84px', 'a title that wraps moves it');
+  ctx.sheet().dispatchEvent(key(ctx, 'Escape'));
+  assert(watchers[0].disconnected, 'closed, the sheet watches nothing');
+}
+
+// ---------------------------------------------------------------------------
 // While a reply loads
 // ---------------------------------------------------------------------------
 
