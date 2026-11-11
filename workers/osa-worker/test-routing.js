@@ -778,18 +778,29 @@ console.log('\na 409 session_unknown from the backend reaches the caller unchang
   });
   const refusingEnv = { BACKEND_URL: `http://localhost:${refusing.port}`, BACKEND_API_KEY: 'test-key' };
   try {
+    // /chat takes expect_session, so its body carries it and the worker must forward it.
+    // /chat/resume does not take that field (its model forbids extra keys), so its body is
+    // a realistic resume body and the iteration only proves that the backend's status and
+    // JSON pass through untouched.
+    const bodies = {
+      chat: {
+        message: 'and how many participants',
+        session_id: 'gone',
+        expect_session: true,
+        cf_turnstile_response: 'spent-token',
+      },
+      'chat/resume': {
+        session_id: 'gone',
+        result: { call_id: 'call-1', status: 'ok', summary: 'shape (3, 4)' },
+      },
+    };
     for (const route of ['chat', 'chat/resume']) {
       seen.length = 0;
       const response = await worker.fetch(
         new Request(`https://${MOUNTED_HOST}/osa/nemar/${route}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Anthropic-API-Key': 'sk-ant-test' },
-          body: JSON.stringify({
-            message: 'and how many participants',
-            session_id: 'gone',
-            expect_session: true,
-            cf_turnstile_response: 'spent-token',
-          }),
+          body: JSON.stringify(bodies[route]),
         }),
         stubEnv(refusingEnv),
         {}
@@ -801,9 +812,9 @@ console.log('\na 409 session_unknown from the backend reaches the caller unchang
         `POST /nemar/${route} returns the backend's body, detail and code, unchanged`
       );
       assertEqual(seen[0]?.path, `/nemar/${route}`, `POST /nemar/${route} reached the backend`);
-      assertEqual(seen[0]?.body.expect_session, true, `/nemar/${route} forwards expect_session untouched`);
-      // Only /chat is Turnstile-gated; /chat/resume forwards its body as sent.
+      // Only /chat is Turnstile-gated and takes expect_session; /chat/resume forwards its body as sent.
       if (route === 'chat') {
+        assertEqual(seen[0]?.body.expect_session, true, '/nemar/chat forwards expect_session untouched');
         assert(!('cf_turnstile_response' in seen[0].body), '/nemar/chat still strips the Turnstile token');
       }
     }
