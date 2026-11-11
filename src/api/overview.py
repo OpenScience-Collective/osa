@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.agents.content import extract_text
@@ -169,7 +169,7 @@ class OverviewPick(BaseModel):
 class OverviewResponse(BaseModel):
     """The 200 body of ``POST /{community_id}/overview``."""
 
-    summary: list[TextSegment | DatasetSegment] = Field(
+    summary: list[Segment] = Field(
         description="The overview as text and result-id segments, in reading order."
     )
     picks: list[OverviewPick] = Field(description=f"At most {MAX_PICKS}, ids from the request.")
@@ -424,7 +424,7 @@ def _data_block(request: OverviewRequest) -> str:
     return text.replace("<", "\\u003c").replace(">", "\\u003e")
 
 
-def build_messages(request: OverviewRequest) -> list[SystemMessage | HumanMessage]:
+def build_messages(request: OverviewRequest) -> list[BaseMessage]:
     """The system prompt, and the request as fenced data."""
     return [
         SystemMessage(content=OVERVIEW_SYSTEM_PROMPT),
@@ -439,7 +439,11 @@ def build_messages(request: OverviewRequest) -> list[SystemMessage | HumanMessag
 _MARKER_OR_ID = re.compile(r"\[\[\s*(?P<marked>[^\[\]]*?)\s*\]\]|(?P<bare>\b[a-z]{2}\d{6}\b)", re.I)
 """A ``[[marker]]``, or a bare id-shaped token (two letters, six digits)."""
 
+_URL_LIKE = re.compile(r"https?://|\bwww\.", re.I)
+"""A link in text: nothing a result says may put one in front of a reader."""
+
 _SENTENCE_BREAK = re.compile(r"(?<!e\.g\.)(?<!i\.e\.)(?<!vs\.)(?<=[.!?])\s+")
+_BRACKETS = re.compile(r"[\[\]]")
 _FENCE = re.compile(r"^```[A-Za-z]*\s*(.*?)\s*```$", re.DOTALL)
 
 
@@ -502,13 +506,16 @@ def _sentence_segments(sentence: str, allowed: frozenset[str]) -> list[Segment] 
     """The sentence as segments, or None when it names an id outside ``allowed``.
 
     A ``[[marker]]`` or a bare id-shaped token that is an allowed id becomes a dataset
-    segment; any other one condemns the sentence. Stray brackets are removed from text.
+    segment; any other one condemns the sentence, and so does a link (text a result
+    planted, not a summary of it). Stray brackets are removed from text.
     """
+    if _URL_LIKE.search(sentence):
+        return None
     segments: list[Segment] = []
     position = 0
 
     def add_text(chunk: str) -> None:
-        chunk = chunk.replace("[[", "").replace("]]", "")
+        chunk = _BRACKETS.sub("", chunk)
         if chunk:
             segments.append(TextSegment(text=chunk))
 
@@ -532,7 +539,8 @@ def build_summary(text: str, allowed: frozenset[str]) -> list[Segment]:
 
     A sentence naming an id the request did not hold is dropped whole. Sentences are kept
     in order until one would carry the summary past ``SUMMARY_MAX_WORDS``; it and the ones
-    after it are dropped. Empty when nothing survives.
+    after it are dropped. The first sentence is kept even when it alone is over the cap,
+    so a long but valid answer is not a billed failure. Empty when nothing survives.
     """
     kept: list[list[Segment]] = []
     words = 0
@@ -541,7 +549,7 @@ def build_summary(text: str, allowed: frozenset[str]) -> list[Segment]:
         if not segments:
             continue
         sentence_words = _plain_words(segments)
-        if words + sentence_words > SUMMARY_MAX_WORDS:
+        if kept and words + sentence_words > SUMMARY_MAX_WORDS:
             break
         words += sentence_words
         kept.append(segments)
@@ -619,13 +627,18 @@ def answer_from_reply(
     """The response for the model's reply, with only ids from ``request`` in it.
 
     Raises:
-        OverviewUnanswered: When no sentence survives the filter.
+        OverviewUnanswered: When no sentence survives the filter, or what survives names no
+            result. The prompt requires the closest match by id, so a reply that cites
+            nothing is a refusal, an off-format reply or planted text, and is not shown
+            or cached.
     """
     allowed = frozenset(row.id for row in request.results)
     parsed = parse_reply(text)
     summary = build_summary(parsed.summary, allowed)
     if not summary:
         raise OverviewUnanswered("no sentence of the reply survived the citation filter")
+    if not any(isinstance(segment, DatasetSegment) for segment in summary):
+        raise OverviewUnanswered("no sentence of the reply names a result")
     picks = build_picks(parsed.picks, allowed)
     return OverviewResponse(
         summary=summary,
