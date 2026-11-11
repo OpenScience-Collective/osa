@@ -615,10 +615,30 @@ A first message has no earlier turns, so there is nothing to summarize: its own 
 **Metrics.**
 A handover logs two rows in `request_log`: the analysis run's under the request id `done.request_id` carries (what feedback joins on), and the quick model's work under `<request id>:quick`, which is the quick run that called `start_analysis` (if any) and the summary, priced at the quick model.
 The summary's tokens are counted, and it is traced with the request in LangFuse.
+Every row a chat request writes also carries `tier` (`quick` or `analysis` for a routed request, empty otherwise) and `conversation_id`.
+A conversation's id is its first session's id, and the analysis session a handover opens inherits it, so both models' rows, and every later turn on the new session (including `/chat/resume`), group as one conversation.
+The metrics middleware's stub row for a streamed request (no model, no tokens) stays as it was, and so do rows written before the two columns existed (they are empty).
+`osa metrics cost-report` prices them, as below.
 
 **`done.mode`.**
 On a routed request, `done` carries `mode` (`"quick"` or `"analysis"`) beside `model`.
 It is absent on a request that is not routed.
+
+## Cost per conversation: `osa metrics cost-report`
+
+```text
+osa metrics cost-report --community nemar --since 7d [--db PATH] [--json]
+```
+
+Prices each conversation of a community, the quick model against the analysis model (issue #678, plan E8.4), from the `request_log` the server already writes.
+`--since` is an age (`7d`, `12h`, `2w`) or a date; `--db` defaults to this machine's own metrics database, and a copy pulled from a server works.
+The database is opened read-only (SQLite `mode=ro`), and one from before `tier` and `conversation_id` existed is read without being migrated.
+
+The table has one row per conversation: its short id, start, turns by tier (`quick/analysis`), the quick cost, the analysis cost and the total, followed by totals by tier.
+A turn here is one model's work on one request, so a handover counts once on each side.
+Cost is each row's own estimate (`estimate_cost`, at the rates of the time it was logged).
+Requests that belong to no conversation (everything logged before this change, and `/ask`) are listed apart, by model, and the middleware's stub rows (no model) are left out.
+`--json` prints the same report as JSON.
 
 ## Plan first: `plan_first_instructions` and `propose_plan`
 
