@@ -527,6 +527,15 @@ jobs:
       - name: Run the History panel tests on a real DOM
         run: bun frontend/test-widget-history-panel.js
 
+      # The host API and the center-stage dialog (E6.1): open, close, ask, setMode and
+      # on, queued before init and replayed in order, bad calls refused, events once and
+      # safe from a throwing handler; the dialog's role, scrim, inert page, scroll lock,
+      # Tab trap, Escape and Move to corner docking the same conversation, and Close
+      # returning focus; and the start screen with its cards, footer and https docs link
+      # from the community config.
+      - name: Run the host API and center-stage tests on a real DOM
+        run: bun frontend/test-widget-host-api.js
+
       # The plan card and the step progress (E2.3, E2.4), the real widget and the runtime
       # bundle as built, with fetch answering recorded-shape SSE: the card and its edits,
       # the decision posted to /chat/resume, consent, step headers, the strip and bar,
@@ -597,6 +606,24 @@ jobs:
         with:
           name: history-check-screenshots
           path: ${{ runner.temp }}/history-check
+          if-no-files-found: ignore
+
+      # The center-stage dialog in real Chrome at 1280 x 900 and 390 x 844, light and
+      # dark: inside the viewport with no sideways scroll, the page inert, the real Tab
+      # key never leaving the dialog, Escape docking the same conversation, Close giving
+      # focus back, pills and send at least 44 px, and the colors at their contrast
+      # ratios. Its own server, so no backend and no network; the runner ships Chrome.
+      - name: Check the center-stage dialog in headless Chrome
+        env:
+          CENTER_CHECK_SCREENSHOTS: ${{ runner.temp }}/center-stage-check
+        run: bun frontend/browser-harness/center-stage-check.mjs
+
+      - name: Upload the center-stage check screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: center-stage-check-screenshots
+          path: ${{ runner.temp }}/center-stage-check
           if-no-files-found: ignore
 
       # What only a browser can check: Pyodide under a real Content-Security-Policy,
