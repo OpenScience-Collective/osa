@@ -2453,9 +2453,11 @@
       color: var(--osa-accent);
     }
 
-    .osa-history-btn[aria-disabled="true"] {
+    .osa-history-btn[aria-disabled="true"],
+    .osa-history-btn[aria-disabled="true"]:hover {
       cursor: not-allowed;
-      opacity: 0.45;
+      opacity: 0.4;
+      background: transparent;
     }
 
     .osa-history-scrim {
