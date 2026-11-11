@@ -15,6 +15,12 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **Plan bar: a run-all plan offers Pause, not Run step N (#731)**: with **Run all steps** chosen, the bar under the conversation no longer shows **Run step N** while the plan runs; it shows **Pause** and **Stop plan**, and the plan rail in the center-stage dialog follows the same rules.
+  **Pause** stops the plan before the next step starts: the running step finishes, the model's request for the next one is left parked (as Stop plan leaves one), and the plan waits as a paused plan does, with **Run step N+1** (which continues in run-all mode and asks the model to run the rest without stopping), **Change step N+1** and **Stop plan**.
+  It is client-side only (`canPause` and `pauseDue` in `frontend/osa-plan.js`, the runtime bundle rebuilt); the server is not told.
+  The bar state was right: it showed Paused after a step because the model had ended its reply between steps, so a run-all plan waited for a click.
+  NEMAR's `plan_first_instructions` and the plan decision's `Next:` line now say, for `run_all`, to call `execute_code` for the next step in the same turn and write no closing message until the last step has run.
+  Tests: `frontend/test-widget-plan-card.js` (running, between steps, after Pause, after Stop, done, Run step N never in the bar, Pause then continue, Pause during a retry), `frontend/test-widget-plan-rail.js`, `tests/test_agents/test_plan_first.py`, `tests/test_api/test_tool_results.py`.
 - **Usage metrics and feedback are deleted after five years (#725)**: `purge_expired_metrics` (`src/metrics/db.py`) deletes the `request_log` rows and `feedback_log` entries whose timestamp is more than `METRICS_RETENTION_YEARS` (5) calendar years old, comparing UTC ISO strings, with 29 February falling back to 28 February.
   It runs at every start, after the metrics database is initialized, because the scheduler only starts with sync enabled; and daily at 03:15 from the scheduler when it runs.
   The rows are erased, not only unlinked, since a feedback comment can hold personal data: the purge sets `secure_delete`, and a purge that deleted rows truncates the write-ahead log with a checkpoint (a checkpoint a reader blocks is logged as a warning).
