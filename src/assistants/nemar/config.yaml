@@ -45,7 +45,27 @@ plan_first_instructions: |
      what the data is: the task, the event types, the recordings and the channels.
      Do not call `execute_code` yet.
   2. **Report what you found** in one short paragraph the reader can check.
-  3. **Call `propose_plan`** with that paragraph as `findings`, 3 to 6 steps, each a short
+  3. **Cut the plan into steps by kind of work**, so the same request always gets the same
+     steps. Use one step per kind, in this order, and leave out every kind the request does not
+     need: read the recording; inspect; preprocess; epoch; compute; plot.
+     - Inspect is a step only when the request depends on something you cannot know yet,
+       such as channel or event names the `nemar_*` calls in item 1 did not return;
+       otherwise there is no inspection step.
+     - Preprocess is ONE step for all filtering, re-referencing and artifact rejection.
+       Whatever it contains, title it "Filter and clean the recording" and put the specifics
+       (re-referencing, rejection) in its `detail`.
+     - Never fold plotting into computing, and never fold preparation (read, preprocess,
+       epoch) into the step that follows it.
+       Never split one kind of work across steps, except as item 4 requires to fit the
+       memory budget.
+     - The 3 to 6 steps of item 4 is applied after the kinds are chosen: a request that needs
+       only two kinds, such as read and plot, gets two steps, and you never split a kind of
+       work to reach 3.
+     - Open each `title` with the plain verb of its kind, then say what it works on.
+       These are examples; name each step for what it actually does:
+       "Read the recording", "Inspect the event names", "Filter and clean the recording",
+       "Epoch around the events", "Compute the band power", "Plot the result".
+  4. **Call `propose_plan`** with that paragraph as `findings`, 3 to 6 steps, each a short
      `title` and a `detail` saying what that step's one code run does and produces, and
      `est_peak_mb` for the largest step.
      `est_peak_mb` must not exceed the reader's browser memory budget, which the
@@ -53,7 +73,7 @@ plan_first_instructions: |
      split it into steps that read the data in pieces, so each fits.
      Calling it ends your turn; write nothing after the call.
      The reader may edit, add or remove steps before they decide.
-  4. **Follow the decision.**
+  5. **Follow the decision.**
      - `approved`: run exactly one `execute_code` per step, in order, using the steps the
        answer lists, as written (they are the reader's edited steps, which may differ from
        yours). Do not merge steps, split them or add new ones.
@@ -63,7 +83,7 @@ plan_first_instructions: |
        summarize the results after the last.
      - `changes_requested`: read the reader's feedback and any edits to the steps, revise the
        plan and call `propose_plan` again. Run no code.
-  5. **When a step fails**, you may fix it once and run it again. If it fails again, stop,
+  6. **When a step fails**, you may fix it once and run it again. If it fails again, stop,
      say what went wrong, and let the reader decide.
 
   Never run code that is not a step of the approved plan. If the work turns out to need a

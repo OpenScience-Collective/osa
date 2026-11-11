@@ -15,7 +15,8 @@ not streamed, the session store and the metrics database.
 What stands in: the chat model (``StreamingScriptedChatModel``), which yields chunks in
 the shape each provider adapter yields them (``tests/helpers/provider_replies.py``), and
 the router's ``create_community_assistant``, which would build a real client from settings
-this suite has no keys for, as in ``test_tool_call_streaming.py``. The last class drives
+this suite has no keys for, as in ``test_tool_call_streaming.py`` (the shared pieces are in
+``tests/helpers/tool_call_streaming.py``). The last class drives
 each provider's real client stack instead, with only the network under it staged.
 """
 
@@ -79,7 +80,7 @@ from tests.helpers.provider_replies import (
     scripted_reply,
     text_chunk,
 )
-from tests.test_api.test_tool_call_streaming import _anthropic_call
+from tests.helpers.tool_call_streaming import _anthropic_call
 
 provider_param = pytest.mark.parametrize("provider", PROVIDERS, ids=lambda p: p.name)
 
@@ -481,7 +482,8 @@ def client(monkeypatch):
     from src.api.config import get_settings
     from src.assistants.registry import registry
 
-    # What is under test is the reply, not the API key check (see test_tool_call_streaming).
+    # What is under test is the reply, not the API key check (the same reasoning as
+    # `resume_client` in tests/helpers/tool_call_streaming.py).
     monkeypatch.setenv("REQUIRE_API_AUTH", "false")
     get_settings.cache_clear()
     registry.register_from_config(community_config())
