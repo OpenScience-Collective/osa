@@ -43,8 +43,10 @@ Its limits are per IP address: the per-minute limit it shares with the chat
 routes, and an hourly limit of its own (100 in production), so searching in
 Discover does not use up the 20 chat questions an hour.
 An `Origin` header is enforced by browsers only, so a caller outside a browser
-can send any one: the per-IP limits and the community's daily and monthly budget
-are what bound the spend, not the origin list.
+can send any one: the per-IP limits are the only enforced bound on the spend, not
+the origin list.
+The community's daily and monthly budget is monitored and opens an alert issue
+when crossed; it does not block requests.
 
 | Field | Limits |
 |---|---|
@@ -86,7 +88,12 @@ are what bound the spend, not the origin list.
 Every id in the response is one of the ids in the request: a sentence that names
 any other id is dropped before the response is built, whatever the text of a
 result asks the model to say.
-A sentence that holds a link (`http://`, `https://` or `www.`) is dropped too.
+A sentence that holds a link is dropped too: a scheme-prefixed one (`http://`,
+`https://`), a `www.` host, a `javascript:`, `data:`, `vbscript:` or `mailto:`
+scheme, or a bare host on a common suffix (`.com`, `.org`, `.net`, `.io`, `.edu`,
+`.gov`, `.dev`, `.app`, `.info`, `.xyz`).
+This is a filter, not a guarantee: a host on another suffix passes, so the page
+must render text segments as plain text and never autolink them.
 An id is checked inside `[[...]]` markers for every community; a bare id with no
 brackets is also checked, but only in the shape NEMAR ids have (two letters and
 six digits).

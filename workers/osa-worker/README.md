@@ -190,8 +190,9 @@ Exceeding it returns 429 with `Too many overview requests per hour`.
 
 There is no Turnstile on this route, and the backend authorizes it by the
 `Origin` header, which only browsers enforce: a non-browser caller can send any
-Origin. So these per-IP limits are the only protection at the edge, and the
-backend's per-community daily and monthly budget is the ceiling behind them.
+Origin. So these per-IP limits are the only enforced control on the route's
+spend. The backend's per-community daily and monthly budget is monitored and
+opens an alert issue when crossed; it does not block requests.
 
 ## BYOK Mode
 

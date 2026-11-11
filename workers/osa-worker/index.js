@@ -1048,9 +1048,10 @@ async function handleFeedback(request, env, corsHeaders, CONFIG) {
  * community's budget.
  *
  * Trust model: an Origin header is enforced by browsers only. A non-browser
- * caller can send any Origin, so the per-IP limits here are the only edge
- * protection of the quick model's spend, and the backend's daily and monthly
- * budget is the only ceiling behind them.
+ * caller can send any Origin, so the per-IP limits here are the only enforced
+ * control on the quick model's spend. The community's daily and monthly budget
+ * is monitored and opens an alert issue when crossed; it does not refuse a
+ * request.
  *
  * Own hourly budget, exempt from the /chat counter (countHourly: false): the
  * Discover panel asks for one overview per search that is not cached, which a
