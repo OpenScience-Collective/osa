@@ -590,7 +590,7 @@ Testing: `frontend/test-widget-notebook-entry.js` runs the real widget and the r
 ## Quick answers and analysis: the `handover` events
 
 A community that sets `quick_model` and `analysis_model` (NEMAR: `haiku` and `sonnet`; both or neither, each an offered model, and `execute_code` configured) answers most turns on the quick model and runs code, plots and analysis on the analysis model (issues #670 and #674, plan E8).
-This is the stream contract the widget's handover card reads; the card itself is separate work, and a widget that predates it keeps working, as below.
+This is the stream contract the widget's handover card reads (issue #677, plan E8.3, board A6, described under "The widget" below); a widget that predates the card ignores the events and keeps working, as below.
 
 **When a turn is routed.**
 Routing applies to a streamed `/chat` or `/chat/resume` request that declares `execute_code` in `client_tools` and names no `model`.
@@ -631,7 +631,7 @@ A widget adopts that id from `session` and `done`, as it already does, and an ol
 
 The quick model's call to `start_analysis` is not sent as a `tool_call` event (there is no tool for a client to show).
 Its prompt tells it to write nothing else, so a reply that hands over normally has no quick-model text before the handover.
-`frontend/test-widget-handover-events.js` runs the widget against this stream: the `handover` events (and ones it does not know) change nothing on the page, the second `session` event is adopted, and the next message goes to the new session.
+`frontend/test-widget-handover-events.js` runs the widget against this stream: each `handover` event moves the card on one step (and ones it does not know change nothing), the second `session` event is adopted, and the next message goes to the new session.
 
 A first message has no earlier turns, so there is nothing to summarize: its own session is flipped to analysis, with no `handover` events.
 
@@ -642,6 +642,29 @@ The summary's tokens are counted, and it is traced with the request in LangFuse.
 **`done.mode`.**
 On a routed request, `done` carries `mode` (`"quick"` or `"analysis"`) beside `model`.
 It is absent on a request that is not routed.
+
+### The widget
+
+The widget draws the handover from these events, in the layout of board A6 (`.context/designs/nemar-ai-ux/WidgetHandoff.dc.html`).
+It is tested on a real DOM by `frontend/test-widget-handover-card.js`.
+
+- **The card.**
+  `summarizing` opens a card, "Starting an analysis session", with a live step, "Summarizing our conversation…".
+  `summarized` turns it into "Summarized our conversation (N messages, W words)" and adds a native `<details>`, "What the analysis model is told", closed, holding the summary.
+  When the summary is `degraded` the step says the summary could not be written and the analysis model is told the reader's own words, and the details hold those words.
+  `started` adds "Handing it to the analysis model with your question" (live until the reply has text) and a `role="separator"` divider, "Analysis session · Claude Sonnet 5.5", where the label comes from the widget's model list and an id it does not know is shown as given.
+  The card sits before the analysis reply it belongs to, and is drawn while that reply is still behind the loading bubble.
+  A stage or a field the widget does not know is ignored.
+- **The summary is text.**
+  It is model output, so it is only ever set as text (never as markup), bounded to 2000 characters, and a summary that holds HTML stays inert.
+- **The mode.**
+  `done.mode` is kept on the reply.
+  While the latest reply reports a mode, the header shows a pill (`Quick` or `Analysis`, `aria-label` "Mode: …") and a footnote above the input reads "Quick answers use a smaller, faster model. Running code and plots use the analysis model."
+  A reply that ran in quick mode carries a "Quick answers" tag beside its label.
+  A community whose stream sends no `mode` shows none of this, and a first message that flips its own session shows the label and no card.
+- **Stored chats.**
+  The handover (`stage`, `messages`, `words`, `summary`, `degraded`, `model`) and the mode are stored on the reply, normalized and bounded on the way back in (`normalizePersistedMessage`), so a reload, or a chat opened from History, draws the same card (details closed), divider and label.
+  Starting a new chat clears the label and the footnote, since they follow the latest reply of the open chat.
 
 ## Plan first: `plan_first_instructions` and `propose_plan`
 

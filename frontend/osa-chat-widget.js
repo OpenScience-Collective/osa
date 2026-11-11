@@ -2062,6 +2062,12 @@
         animation: none;
         opacity: 0.6;
       }
+
+      /* The handover card's ring (E8.3) holds still, as a half ring. Three classes, to
+         outrank the ring's own two-class rule, which comes later in this sheet. */
+      .osa-handover .osa-handover-marker.osa-handover-live {
+        animation: none;
+      }
     }
 
     /* Above the launcher, --osa-panel-gap clear of it, and 30px short of the window's
@@ -3135,6 +3141,137 @@
       line-height: 1.5;
       color: var(--osa-text-light);
       border-top: 1px solid var(--osa-border);
+    }
+
+    /* The handover to the analysis model (E8.3, board A6): a card for the steps, the
+       divider where the session changes, the mode label in the header, and the tag a
+       quick reply carries. The card takes the notice colors, which are the board's. */
+    .osa-handover-group {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .osa-handover {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px 14px;
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 12px;
+      background: var(--osa-notice-bg);
+      color: var(--osa-notice-text);
+    }
+
+    .osa-handover-title {
+      font-size: 13.5px;
+      font-weight: 600;
+    }
+
+    .osa-handover-step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12.5px;
+      line-height: 1.4;
+    }
+
+    .osa-handover-marker {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 14px;
+      box-sizing: border-box;
+    }
+
+    .osa-handover-marker.osa-handover-done {
+      color: var(--osa-run-ok);
+    }
+
+    .osa-handover-marker.osa-handover-live {
+      border: 2px solid var(--osa-accent);
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: osa-spin 1s linear infinite;
+    }
+
+    .osa-handover-marker.osa-handover-stopped {
+      color: var(--osa-text-light);
+      font-weight: 600;
+    }
+
+    .osa-handover-told {
+      font-size: 12.5px;
+    }
+
+    .osa-handover-told summary {
+      cursor: pointer;
+      color: var(--osa-accent);
+      font-weight: 500;
+    }
+
+    .osa-handover-told p {
+      margin: 6px 0 0;
+      padding: 8px;
+      line-height: 1.5;
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 6px;
+      color: var(--osa-text);
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+
+    .osa-handover-divider {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11.5px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-handover-divider::before,
+    .osa-handover-divider::after {
+      content: '';
+      flex: 1 1 auto;
+      height: 1px;
+      background: var(--osa-border);
+    }
+
+    .osa-mode-label {
+      flex: none;
+      margin-left: 4px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      background: #ffffff;
+      color: #0b1a3a;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .osa-mode-label[hidden],
+    .osa-mode-note[hidden] {
+      display: none;
+    }
+
+    .osa-mode-note {
+      padding: 8px 16px;
+      border-top: 1px solid var(--osa-border);
+      font-size: 11.5px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-quick-tag {
+      padding: 1px 7px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0;
+      text-transform: none;
+      color: var(--osa-text-light);
     }
 
     /* What continuing a chat across a context change leaves in it: a divider, and
@@ -6859,12 +6996,16 @@
     }
     // The cut-off mark is kept only as the boolean the widget writes, and the server's
     // words for it only as a bounded string.
-    const { cutOff, cutOffMessage, usage, plan, ...rest } = msg;
+    const { cutOff, cutOffMessage, usage, handover, mode, _handoverOpen, plan, ...rest } = msg;
     const storedPlan = normalizePersistedPlan(plan);
     const cleanedUsage = cleanUsage(usage);
+    const cleanedHandover = normalizeHandover(handover);
+    const cleanedMode = normalizeReplyMode(mode);
     return {
       ...rest,
       ...(cleanedUsage ? { usage: cleanedUsage } : {}),
+      ...(cleanedHandover ? { handover: cleanedHandover } : {}),
+      ...(cleanedMode ? { mode: cleanedMode } : {}),
       ...(cutOff === true ? { cutOff: true } : {}),
       ...(cutOff === true && typeof cutOffMessage === 'string' && cutOffMessage
         ? { cutOffMessage: cutOffMessage.slice(0, CUT_OFF_MESSAGE_LIMIT) }
@@ -7140,7 +7281,7 @@
       // a reply's earlier runs (`_usageSoFar`, `_usageRuns`) only means something while the
       // reply is unfinished, so it is dropped too.
       const persistable = messages.map((m) => {
-        const { _feedbackCommitting, _feedbackJustOpened, _responseId, _usageSoFar, _usageRuns, feedbackDraft, ...rest } = m;
+        const { _feedbackCommitting, _feedbackJustOpened, _responseId, _usageSoFar, _usageRuns, _handoverOpen, feedbackDraft, ...rest } = m;
         if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
         // The plan card's open editor and unsent note are in-page state too.
         if (rest.plan) {
@@ -8515,6 +8656,240 @@
       container.querySelector('.osa-chat-input input')?.focus();
     });
     messagesEl.appendChild(wrapper);
+  }
+
+  // --- Handover (E8.3) ---
+  // A community that routes between a quick and an analysis model answers most turns on
+  // the quick one. A turn that asks for code or a plot moves the chat to the analysis
+  // model on a NEW server session, and the stream says so with `handover` events
+  // (src/api/handover.py): `summarizing`, then `summarized` (what the quick model wrote
+  // down for the analysis model), then `started` (the new session and its model). The
+  // analysis run follows through the ordinary path. This block draws what the reader
+  // sees of that (board A6): a card for the steps, a divider where the session changes,
+  // and a label for the mode a reply ran in.
+  //
+  // The handover is kept on the assistant message that the analysis run answers
+  // (`msg.handover`), and the mode on every reply that reports one (`msg.mode`, from
+  // `done.mode`), so a reload, or a chat opened from History, draws the same card,
+  // divider and label from stored data. The summary is model output: it is only ever
+  // set as text, never as markup.
+
+  const HANDOVER_STAGES = ['summarizing', 'summarized', 'started'];
+  // The summary is at most 150 words (SUMMARY_MAX_WORDS in src/agents/model_routing.py);
+  // this bounds what is kept whatever a stream or a stored record says.
+  const HANDOVER_SUMMARY_LIMIT = 2000;
+  const HANDOVER_COUNT_LIMIT = 100000;
+  const REPLY_MODES = ['quick', 'analysis'];
+  const MODE_LABELS = { quick: 'Quick', analysis: 'Analysis' };
+  const MODE_NOTE = 'Quick answers use a smaller, faster model. Running code and plots use the analysis model.';
+  const HANDOVER_CHECK_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>';
+
+  // The mode a reply reports, or null for anything else.
+  function normalizeReplyMode(value) {
+    return typeof value === 'string' && REPLY_MODES.includes(value) ? value : null;
+  }
+
+  function handoverCount(value) {
+    return Number.isInteger(value) && value >= 0 ? Math.min(value, HANDOVER_COUNT_LIMIT) : null;
+  }
+
+  // A handover as the widget keeps it, from a stream event's fields or a stored record:
+  // {stage, messages, words, summary, degraded, model}. Each field is checked and
+  // bounded; a field that is not valid is left out, and a record without a known stage
+  // is nothing (null).
+  function normalizeHandover(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    if (!HANDOVER_STAGES.includes(raw.stage)) return null;
+    const handover = { stage: raw.stage };
+    const messageCount = handoverCount(raw.messages);
+    if (messageCount !== null) handover.messages = messageCount;
+    const wordCount = handoverCount(raw.words);
+    if (wordCount !== null) handover.words = wordCount;
+    if (typeof raw.summary === 'string' && raw.summary) {
+      handover.summary = raw.summary.slice(0, HANDOVER_SUMMARY_LIMIT);
+    }
+    if (raw.degraded === true) handover.degraded = true;
+    if (isValidModelId(raw.model)) handover.model = raw.model;
+    return handover;
+  }
+
+  // The handover a stream event moves a reply's to, or null when the event is not one
+  // this widget knows (an unknown stage), which changes nothing. Fields it does not
+  // know are not read.
+  function nextHandover(current, event) {
+    if (!event || !HANDOVER_STAGES.includes(event.stage)) return null;
+    if (event.stage === 'summarizing') return normalizeHandover({ stage: 'summarizing' });
+    const kept = current || {};
+    if (event.stage === 'summarized') {
+      return normalizeHandover({
+        stage: 'summarized',
+        messages: event.messages,
+        words: event.words,
+        summary: event.summary,
+        degraded: event.degraded,
+      });
+    }
+    return normalizeHandover({ ...kept, stage: 'started', model: event.model });
+  }
+
+  // The stream's `handover` event: record it on the reply it belongs to and draw it.
+  function noticeHandover(container, message, event) {
+    if (!message) return;
+    const before = message.handover;
+    const next = nextHandover(before, event);
+    if (!next) return;
+    message.handover = next;
+    renderMessages(container);
+    // Said once to a screen reader, after the redraw (which empties the announcer when
+    // there is no status of its own to say). `summarized` and `started` arrive back to
+    // back and the one polite region would drop the first, so `started` says both.
+    const announcer = container.querySelector('.osa-status-announcer');
+    let spoken = handoverSpoken(next);
+    if (next.stage === 'started' && before && before.stage === 'summarized') {
+      spoken = `${handoverSpoken(before)}. ${spoken}`;
+    }
+    if (announcer && spoken) announcer.textContent = spoken;
+  }
+
+  function handoverSpoken(handover) {
+    if (handover.stage === 'summarizing') return 'Summarizing our conversation';
+    if (handover.stage === 'started') return 'Handing it to the analysis model with your question';
+    return handover.degraded ? 'The summary could not be written' : 'Summarized our conversation';
+  }
+
+  function plural(count, noun) {
+    return `${count} ${noun}${count === 1 ? '' : 's'}`;
+  }
+
+  // The first line of the card once the summary step is over.
+  function summarizedText(handover) {
+    if (handover.degraded) {
+      return 'The summary could not be written, so the analysis model is told your own words.';
+    }
+    if (handover.messages === undefined || handover.words === undefined) {
+      return 'Summarized our conversation';
+    }
+    return `Summarized our conversation (${plural(handover.messages, 'message')}, ${plural(handover.words, 'word')})`;
+  }
+
+  // One step of the card: a marker (a turning ring while it is under way, a check once
+  // done, a dash for a step that did not finish) and its words.
+  function handoverStep(kind, text) {
+    const row = document.createElement('div');
+    row.className = 'osa-handover-step';
+    const marker = document.createElement('span');
+    marker.className = `osa-handover-marker osa-handover-${kind}`;
+    marker.setAttribute('aria-hidden', 'true');
+    if (kind === 'done') marker.innerHTML = HANDOVER_CHECK_ICON;
+    else if (kind === 'stopped') marker.textContent = '–';
+    row.appendChild(marker);
+    const words = document.createElement('span');
+    words.textContent = text;
+    row.appendChild(words);
+    return row;
+  }
+
+  // The card, and under it the divider where the analysis session begins, for a reply
+  // that has a handover: one element, drawn before the reply.
+  function handoverElement(msg, msgIndex, handover) {
+    // Under way while this reply is the one being written; a stored card is over.
+    const live = isLoading && msgIndex === messages.length - 1;
+    const group = document.createElement('div');
+    group.className = 'osa-handover-group';
+
+    // A group, not a region: a long chat holds one card per handover, and each would be
+    // a landmark.
+    const card = document.createElement('div');
+    card.className = 'osa-handover';
+    card.setAttribute('role', 'group');
+    card.setAttribute('aria-label', 'Handing over to the analysis model');
+    const title = document.createElement('div');
+    title.className = 'osa-handover-title';
+    title.textContent = 'Starting an analysis session';
+    card.appendChild(title);
+
+    if (handover.stage === 'summarizing') {
+      card.appendChild(live
+        ? handoverStep('live', 'Summarizing our conversation…')
+        : handoverStep('stopped', 'Did not finish summarizing our conversation'));
+    } else {
+      card.appendChild(handoverStep('done', summarizedText(handover)));
+    }
+    if (handover.stage === 'started') {
+      const waiting = live && !hasVisibleText(msg.content);
+      card.appendChild(handoverStep(waiting ? 'live' : 'done', 'Handing it to the analysis model with your question'));
+    }
+    if (handover.summary) {
+      const details = document.createElement('details');
+      details.className = 'osa-handover-told';
+      details.open = msg._handoverOpen === true;
+      const summary = document.createElement('summary');
+      summary.textContent = 'What the analysis model is told';
+      const told = document.createElement('p');
+      told.textContent = handover.summary;
+      details.appendChild(summary);
+      details.appendChild(told);
+      // Kept on the reply, so a redraw (a streamed chunk) does not close what the reader opened.
+      details.addEventListener('toggle', () => { msg._handoverOpen = details.open; });
+      card.appendChild(details);
+    }
+    group.appendChild(card);
+
+    if (handover.stage === 'started') {
+      const divider = document.createElement('div');
+      divider.className = 'osa-handover-divider';
+      divider.setAttribute('role', 'separator');
+      const text = handover.model
+        ? `Analysis session · ${getModelLabel(handover.model)}`
+        : 'Analysis session';
+      divider.setAttribute('aria-label', text);
+      const label = document.createElement('span');
+      label.textContent = text;
+      divider.appendChild(label);
+      group.appendChild(divider);
+    }
+    return group;
+  }
+
+  // What renderMessages draws for a reply on account of a handover or a mode: an
+  // element to put before the reply (the card and divider, or null), and the tag a
+  // quick reply carries beside its label ('' for any other). The one hook the render
+  // loop calls.
+  function handoverParts(msg, msgIndex) {
+    if (msg.role !== 'assistant') return { before: null, tag: '' };
+    const handover = normalizeHandover(msg.handover);
+    return {
+      before: handover ? handoverElement(msg, msgIndex, handover) : null,
+      tag: msg.mode === 'quick' ? '<span class="osa-quick-tag">Quick answers</span>' : '',
+    };
+  }
+
+  // The mode the conversation is in now: the last reply that reported one, or null (a
+  // community whose stream sends no mode, or a chat with no reply yet).
+  function currentReplyMode() {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const mode = messages[index] && messages[index].role === 'assistant'
+        ? normalizeReplyMode(messages[index].mode)
+        : null;
+      if (mode) return mode;
+    }
+    return null;
+  }
+
+  // The header's mode label and the footnote under the conversation, shown only while a
+  // mode is known. Called after every redraw of the messages, so a new chat clears them
+  // and a chat opened from History brings them back.
+  function syncModeChrome(container) {
+    const mode = currentReplyMode();
+    const label = container.querySelector('.osa-mode-label');
+    if (label) {
+      label.hidden = !mode;
+      label.textContent = mode ? MODE_LABELS[mode] : '';
+      if (mode) label.setAttribute('aria-label', `Mode: ${MODE_LABELS[mode]}`);
+      else label.removeAttribute('aria-label');
+    }
+    const note = container.querySelector('.osa-mode-note');
+    if (note) note.hidden = !mode;
   }
 
   // --- Context switch ---
@@ -12487,6 +12862,7 @@
             <div class="osa-chat-status">
               <span class="osa-status-dot checking"></span>
               <span class="osa-status-text">Checking...</span>
+              <span class="osa-mode-label" role="note" hidden></span>
             </div>
           </div>
           <div class="osa-header-actions">
@@ -12518,6 +12894,7 @@
         <div class="osa-turnstile-container" style="display: none;"></div>
         <div class="osa-error" style="display: none;"></div>
         <div class="osa-warning" style="display: none;"></div>
+        <div class="osa-mode-note" hidden>${escapeHtml(MODE_NOTE)}</div>
         <div class="osa-context-notice-slot" role="status" aria-live="polite"></div>
         <div class="osa-chat-input">
           <input type="text" placeholder="${escapeHtml(CONFIG.placeholder)}" />
@@ -12962,6 +13339,10 @@
     messages.forEach((msg, msgIndex) => {
       const moveEl = contextMoveElementAt(msgIndex);
       if (moveEl) messagesEl.appendChild(moveEl);
+      // The handover card and divider come before the reply they belong to, and while
+      // that reply is still hidden behind the loading bubble (E8.3).
+      const handover = handoverParts(msg, msgIndex);
+      if (handover.before) messagesEl.appendChild(handover.before);
       // The streaming handler keeps an empty assistant entry so the final
       // response can update it in place. While the model is thinking, that
       // state must stay invisible: the loading bubble below is the assistant
@@ -13053,6 +13434,7 @@
       msgEl.innerHTML = `
         <div class="osa-message-header">
           <span class="osa-message-label">${escapeHtml(label)}</span>
+          ${handover.tag}
           ${copyBtn}
         </div>
         ${msg.role === 'assistant' ? planCardHtml(msg, msgIndex) : ''}
@@ -13278,6 +13660,7 @@
     const trailingMoveEl = contextMoveElementAt(messages.length);
     if (trailingMoveEl) messagesEl.appendChild(trailingMoveEl);
     appendWelcomeBack(container, messagesEl);
+    syncModeChrome(container);
 
     if (toolActivity) {
       // In place of the loading dots: nothing is loading, the reply is waiting
@@ -13814,6 +14197,9 @@
     if (Array.isArray(event.citations)) {
       message.citations = event.citations;
     }
+    // The tier the turn ran on, for a community that routes between two models (E8.3).
+    const mode = normalizeReplyMode(event.mode);
+    if (mode) message.mode = mode;
     // This run's usage joins what earlier runs of the reply used (kept aside by the
     // tool_request branch until now), so the reply shows its total, and only once whole.
     // A run that reported none makes the total partial, not a quiet understatement.
@@ -14290,6 +14676,11 @@
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
             }
+          } else if (event.event === 'handover') {
+            // The chat is moving to the analysis model on a new session (E8.3): the card
+            // shows the steps. The new session id is adopted from the `session` event
+            // that opens the analysis run, as it always was.
+            noticeHandover(container, messages[messageIndex], event);
           } else if (event.event === 'warning') {
             // The banner (e.g., conversation getting long), and, for a reply that
             // stopped short, the reply's own mark: the banner goes in seconds.
