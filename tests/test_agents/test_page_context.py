@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 import respx
 
 from src.assistants import discover_assistants, registry
@@ -835,3 +836,58 @@ class TestReaderContextInSystemPrompt:
         )
         assert "Reader Context" in prompt
         assert "https://nemar.org/dataset/nm000241" in prompt
+
+
+class TestMemoryBudgetInSystemPrompt:
+    """The reader's browser memory budget reaches the model (E5.1, #668)."""
+
+    @staticmethod
+    def _nemar_prompt(page_context: PageContext) -> str:
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        assistant = registry.create_assistant(
+            "nemar", model=model, preload_docs=False, page_context=page_context
+        )
+        return assistant.get_system_prompt()
+
+    @pytest.mark.parametrize("budget", [256, 512, 1024, 2048])
+    def test_budget_alone_gets_a_section(self, budget):
+        """A request carrying only the budget still renders it (no URL, no dataset)."""
+        prompt = self._nemar_prompt(PageContext(memory_budget_mb=budget))
+        assert "## Browser memory budget" in prompt
+        assert (
+            f"Each step must fit in {budget} MB of the reader's browser memory; "
+            "read long recordings in pieces."
+        ) in prompt
+
+    def test_no_budget_no_section(self):
+        prompt = self._nemar_prompt(PageContext(dataset_id="nm000241"))
+        assert "Browser memory budget" not in prompt
+
+    def test_budget_beside_the_dataset_and_the_page(self):
+        prompt = self._nemar_prompt(
+            PageContext(
+                url="https://nemar.org/dataset/nm000241",
+                title="nm000241",
+                dataset_id="nm000241",
+                memory_budget_mb=1024,
+            )
+        )
+        assert "## Reader Context" in prompt
+        assert "Each step must fit in 1024 MB" in prompt
+        assert "## Page Context" in prompt
+        # The budget follows the reader context, as its own section.
+        assert prompt.index("## Reader Context") < prompt.index("## Browser memory budget")
+
+    def test_a_community_that_turns_page_context_off_states_no_budget(self):
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        assistant = registry.create_assistant(
+            "nemar",
+            model=model,
+            preload_docs=False,
+            page_context=PageContext(memory_budget_mb=512),
+        )
+        assert "Each step must fit in 512 MB" in assistant.get_system_prompt()
+        assistant.config = assistant.config.model_copy(update={"enable_page_context": False})
+        assert "Browser memory budget" not in assistant.get_system_prompt()

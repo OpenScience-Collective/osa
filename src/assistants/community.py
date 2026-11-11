@@ -55,6 +55,9 @@ class PageContext:
     # {"type": "dataset", "id": ...} or {"type": "search"}: where the reader was before
     # choosing to continue this conversation in the page's context.
     moved_from: dict[str, str] | None = None
+    # How much of the reader's browser memory one step of an analysis may use, in MB
+    # (256, 512, 1024 or 2048; validated at the API boundary).
+    memory_budget_mb: int | None = None
 
 
 # Default system prompt template for generic communities
@@ -599,18 +602,31 @@ class CommunityAssistant(ToolAgent):
             return ""
         return "## Reader Context\n\n" + "\n\n".join(paragraphs)
 
+    def _format_memory_budget(self) -> str:
+        """The reader's browser memory budget, which every step has to fit in."""
+        page = self._page_context
+        if page is None or page.memory_budget_mb is None:
+            return ""
+        return (
+            "## Browser memory budget\n\n"
+            f"Each step must fit in {page.memory_budget_mb} MB of the reader's browser memory; "
+            "read long recordings in pieces."
+        )
+
     def _format_page_context_section(self) -> str:
         """Format page context section for system prompt."""
         if not self.config.enable_page_context:
             return ""
         if not self._page_context:
             return ""
-        # Need at least a URL, widget instructions or a dataset to include this section
+        # Need at least a URL, widget instructions, a dataset or a memory budget to include
+        # this section
         if (
             not self._page_context.url
             and not self._page_context.widget_instructions
             and not self._page_context.dataset_id
             and not self._page_context.moved_from
+            and self._page_context.memory_budget_mb is None
         ):
             return ""
 
@@ -619,6 +635,10 @@ class CommunityAssistant(ToolAgent):
         reader_context = self._format_reader_context()
         if reader_context:
             sections.append(reader_context)
+
+        memory_budget = self._format_memory_budget()
+        if memory_budget:
+            sections.append(memory_budget)
 
         if self._page_context.url:
             sections.append(

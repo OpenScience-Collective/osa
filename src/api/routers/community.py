@@ -230,6 +230,13 @@ class PageContext(BaseModel):
         default=None,
         description="Set on the first request after the reader chose to continue a conversation in a new context",
     )
+    memory_budget_mb: Literal[256, 512, 1024, 2048] | None = Field(
+        default=None,
+        description=(
+            "How much of the reader's browser memory one step of an analysis may use, in MB; "
+            "sent by a widget that runs code in the browser, and stated in the system prompt"
+        ),
+    )
 
     @field_validator("url")
     @classmethod
@@ -2269,6 +2276,7 @@ def create_community_assistant(
             title=page_context.title,
             widget_instructions=page_context.widget_instructions,
             dataset_id=page_context.dataset_id,
+            memory_budget_mb=page_context.memory_budget_mb,
             moved_from=(
                 page_context.moved_from.model_dump(exclude_none=True)
                 if page_context.moved_from

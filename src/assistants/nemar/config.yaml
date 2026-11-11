@@ -48,6 +48,9 @@ plan_first_instructions: |
   3. **Call `propose_plan`** with that paragraph as `findings`, 3 to 6 steps, each a short
      `title` and a `detail` saying what that step's one code run does and produces, and
      `est_peak_mb` for the largest step.
+     `est_peak_mb` must not exceed the reader's browser memory budget, which the
+     "Browser memory budget" section of this prompt states; when the largest step would,
+     split it into steps that read the data in pieces, so each fits.
      Calling it ends your turn; write nothing after the call.
      The reader may edit, add or remove steps before they decide.
   4. **Follow the decision.**
