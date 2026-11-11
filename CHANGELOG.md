@@ -15,6 +15,12 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **Usage metrics and feedback are deleted after five years (#725)**: `purge_expired_metrics` (`src/metrics/db.py`) deletes the `request_log` rows and `feedback_log` entries whose timestamp is more than `METRICS_RETENTION_YEARS` (5) calendar years old, comparing UTC ISO strings, with 29 February falling back to 28 February.
+  It runs at every start, after the metrics database is initialized, because the scheduler only starts with sync enabled; and daily at 03:15 from the scheduler when it runs.
+  A failure is logged with its traceback and does not stop the app or the scheduler.
+  `PRIVACY.md` now says both are kept for five years, then deleted automatically, where it said there was no automatic deletion.
+  Server logs are not covered.
+  Tests: `tests/test_metrics/test_retention.py` (real SQLite files and writers, the boundary, mixed timestamp forms, startup with sync off, the daily job and a broken database).
 - **NEMAR procedures for a band power topography, an ERP topography and a time-frequency map (#721, on #719)**: three more documents in `src/assistants/nemar/procedures/`, so NEMAR declares seven.
   A scalp map of band power used to match none of the four, and the model planned it three different ways.
   `band-power-topography` has two steps (compute the band power, with the band power document's Welch and integration blocks byte for byte; plot the scalp map), `erp-topography` five (the ERP document's titles and filter block, all EEG channels kept, averaged per condition over a time window, one map per condition and their difference when there are two on one symmetric color range, with a running sum per condition when the all-channel epochs would pass the memory budget), and `time-frequency-by-condition` four (read, epoch, compute, plot; filtering is decided there once not to be a step, since the wavelet is already band-selective).
