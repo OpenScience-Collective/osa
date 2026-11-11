@@ -862,16 +862,22 @@ A bar at the bottom says what the plan is waiting for:
 
 **Run step N is left out, not disabled, while a run-all plan runs.**
 The plan goes on by itself, so the button would be one to wait out, never one to press, and a grayed button between every pair of steps reads as something the plan is missing.
-The reply does not end between the steps of a run-all plan (the model is told not to end it, see below), so `isLoading` stays on across them and the bar is never the paused one; a run-all plan whose reply ends anyway, with steps left, is waiting, and the bar then offers **Run step N** because pressing it is what the plan needs.
+While a reply is in flight, `progressOf` is called with `active` true, and the bar is the running one.
+That is `currentReply !== null` (set when a message is sent, cleared when the whole reply, every run of it, has ended) or a tool activity, not `isLoading`: `isLoading` means "no visible text yet" and is cleared as soon as the reply shows any, so between two steps, once the model had written a sentence, it was false while the reply went on, and the bar read as paused with a **Run step N** button whose click sent a second request alongside the first.
+A run-all plan whose reply has ended with steps left is waiting, and the bar then offers **Run step N** because pressing it is what the plan needs.
 
-**Pause** (run-all plans only, while the reply goes on) sets a flag on the reply being sent; the widget sends nothing to the model.
+**Pause** (run-all plans only, while the reply goes on and a later step is left to hold, so not on the last step) sets a flag on the reply being sent; the widget sends nothing to the model.
 The step that is running finishes and its result goes back as usual (a step that failed is tried again first, since it has not finished); the request for the next step that arrives is then left parked, as **Stop plan** leaves one, and the reply ends with the plan still approved.
 The bar is then the paused one, and **Run step N+1** continues in run-all mode: its message tells the model to carry on to the last step, and the plan's run mode, `run_all`, is still the one in the model's history.
 Pressed before step 1 has started, it holds step 1; pressed between two steps, it holds the next.
+The held step is kept on the plan (`held`, stored with it), and **Run step N** then says so to the model: `Continue with step N. It has not run: I paused before it started, so it is not a failed attempt. Run it now, then run the remaining steps without stopping.` (without the last clause on the last step), because the server repairs the parked call as an error and the model would otherwise count it as an attempt.
+The decision's `Next:` line says the same of an unanswered `execute_code` in a run-all plan.
+A new plan in the same reply clears the pause.
 The rules are `canPause` and `pauseDue` in `frontend/osa-plan.js`.
 
 **Why a run-all plan reaches the last step.**
 Each step is one `execute_code` request, which ends the server's run and is answered on `/chat/resume`, whose stream continues the same reply; the reply ends only when the model answers in text without another call.
+So there were two causes of a bar that waited for a click in a run-all plan: the `active` computation above (the main one, which showed the paused bar while the reply was still running), and a model that ends its reply after a step.
 In run-all mode NEMAR's `plan_first_instructions` and the plan decision's own message (`Next:` line, `build_plan_tool_message`) tell the model to call `execute_code` for the next step in the same turn after each result, and to write no closing message until the last step has run.
 
 A polite live region of its own, outside the conversation, says where the plan stands (`Plan · step 2 of 3. Paused after step 1.`) each time that changes, since the strip and the bar are redrawn with the conversation.
