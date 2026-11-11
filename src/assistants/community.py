@@ -21,7 +21,13 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 from langchain_core.tools import BaseTool, StructuredTool, tool
 
 from src.agents.base import ToolAgent
-from src.core.config.community import CommunityConfig, Tier
+from src.core.config.community import (
+    EXECUTE_CODE_TOOL_NAME,
+    GET_PROCEDURE_TOOL_NAME,
+    PROPOSE_PLAN_TOOL_NAME,
+    CommunityConfig,
+    Tier,
+)
 from src.core.services.anthropic_models import BEDROCK_MODELS
 from src.core.services.tagged_citations import CITATION_INSTRUCTION
 from src.tools.base import DocRegistry
@@ -158,6 +164,38 @@ def _create_fetch_current_page_tool(page_url: str, citations: bool = False) -> B
         return result.content
 
     return fetch_current_page
+
+
+def _create_get_procedure_tool(documents: dict[str, str]) -> BaseTool:
+    """Create the tool that returns one known procedure's document.
+
+    Args:
+        documents: The community's procedure documents by id
+            (``CommunityConfig.procedure_documents``), read once at load.
+    """
+    known = ", ".join(f"'{procedure_id}'" for procedure_id in documents)
+
+    @tool(GET_PROCEDURE_TOOL_NAME)
+    def get_procedure(procedure_id: str) -> str:
+        """Fetch the document of one of the known procedures listed in your instructions.
+
+        The document opens with the plan to propose and then gives the rules and code for
+        each step. Call it when a request matches a listed procedure, before you propose
+        a plan.
+
+        Args:
+            procedure_id: The id of a listed procedure, for example the one named in
+                the "Known procedures" section.
+
+        Returns:
+            The procedure's Markdown document, or an error naming the known ids.
+        """
+        text = documents.get(procedure_id.strip())
+        if text is None:
+            return f"Error: unknown procedure {procedure_id!r}. The known procedures are: {known}."
+        return text
+
+    return get_procedure
 
 
 def _create_retrieve_docs_tool(
@@ -356,6 +394,18 @@ class CommunityAssistant(ToolAgent):
         # Tools this server binds but never executes; the browser does. Empty unless
         # the community configures them AND the caller declares it can run them.
         client_tools = build_client_tools(config, declared_client_tools, tier=tier)
+
+        # Known procedures are offered only when this turn can run code: a procedure is a
+        # recipe for a plan that ends in code, so a quick turn (which has no execute_code)
+        # and a widget that does not declare it get neither the tool nor the prompt section.
+        # Asked of the config on every build, offered or not, so a config that declares
+        # procedures without their documents fails here and not on some later turn.
+        procedures = config.procedure_documents()
+        client_tool_names = {tool.name for tool in client_tools}
+        self._procedures_offered = bool(procedures) and EXECUTE_CODE_TOOL_NAME in client_tool_names
+        self._plan_tool_bound = PROPOSE_PLAN_TOOL_NAME in client_tool_names
+        if self._procedures_offered:
+            tools.append(_create_get_procedure_tool(procedures))
 
         # A client tool sharing a name with a real server tool is the one configuration
         # mistake here with no symptom. `BaseAgent` partitions by name, so the server
@@ -706,6 +756,41 @@ class CommunityAssistant(ToolAgent):
             return ""
         return "## Working Notes For This Model\n\n" + "\n\n".join(notes)
 
+    def _format_procedures_section(self) -> str:
+        """The ``## Known procedures`` list and the rule for using it, or "".
+
+        Empty unless this turn offers ``get_procedure`` (``self._procedures_offered``). It
+        names ``propose_plan`` only when that client tool is bound, since a prompt that
+        names a tool the model was not given would send it to invent one.
+        """
+        if not self._procedures_offered:
+            return ""
+        listed = "\n".join(
+            f"- `{procedure.id}`: {procedure.title}. Use for: {procedure.when}"
+            for procedure in self.config.procedures
+        )
+        if self._plan_tool_bound:
+            rule = (
+                f"When a request matches one of them, call `{GET_PROCEDURE_TOOL_NAME}` with "
+                f"its id before `{PROPOSE_PLAN_TOOL_NAME}`, then propose the steps of the "
+                "document's plan as written (its titles, in its order), filling in only the "
+                "dataset, recording, channel, conditions and bands. A request that matches "
+                "none of them uses the plan-first step rules."
+            )
+        else:
+            rule = (
+                f"When a request matches one of them, call `{GET_PROCEDURE_TOOL_NAME}` with "
+                "its id before running code, then run the steps of the document's plan as "
+                "written (its titles, in its order), filling in only the dataset, recording, "
+                "channel, conditions and bands."
+            )
+        return (
+            "## Known procedures\n\n"
+            "These analyses have a fixed procedure: a document with the plan to follow and "
+            "the rules and code for each step.\n\n"
+            f"{listed}\n\n{rule}"
+        )
+
     def _format_citation_fallback_section(self) -> str:
         """Instruction added only when tools return plain strings (``citations=False``).
 
@@ -771,6 +856,7 @@ class CommunityAssistant(ToolAgent):
                 self._format_tagged_citation_section(),
                 citation_fallback_section,
                 self._format_model_instructions_section(),
+                self._format_procedures_section(),
                 additional_instructions,
             )
             if section

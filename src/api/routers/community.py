@@ -103,6 +103,7 @@ from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import (
+    GET_PROCEDURE_TOOL_NAME,
     MAX_DECLARED_CLIENT_TOOLS,
     PROPOSE_PLAN_TOOL_NAME,
     START_ANALYSIS_TOOL_NAME,
@@ -4228,6 +4229,8 @@ def create_community_router(community_id: str) -> APIRouter:
                     tools.append(f"search_{config.id}_faq")
                 if config.discourse:
                     tools.append(f"search_{config.id}_forum")
+                if config.procedures:
+                    tools.append(GET_PROCEDURE_TOOL_NAME)
                 result["available_tools_list"] = tools
             except (AttributeError, TypeError) as e:
                 logger.error(
