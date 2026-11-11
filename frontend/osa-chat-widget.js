@@ -3632,6 +3632,13 @@
       font-size: 12px;
     }
 
+    /* The one line a run shows where the workspace no longer has its figures. */
+    .osa-figure-note {
+      color: var(--osa-text-light);
+      font-size: 12px;
+      margin: 6px 0 0 0;
+    }
+
     .osa-rerun-buttons button {
       border: 1px solid var(--osa-border);
       background: var(--osa-bg);
@@ -5096,28 +5103,43 @@
   }
 
   // A reply's browser runs, as stored: the fields executionRecord writes, as
-  // strings, bounded, and never images (see executionRecord).
+  // strings, bounded, and never images (see executionRecord). How many figures the
+  // run drew is kept, as `figureCount` (only when there were some), so a restored
+  // chat knows to read them back from the workspace (hydrateFigures).
   function normalizePersistedExecutions(executions) {
     if (!Array.isArray(executions)) return [];
     return executions
       .filter((run) => run && typeof run === 'object' && !Array.isArray(run))
       .slice(0, MAX_BROWSER_RUNS_PER_REPLY)
-      .map((run) => ({
-        callId: clipField(run.callId, 'callId'),
-        tool: clipField(run.tool, 'tool'),
-        description: clipField(run.description, 'description'),
-        code: clipField(run.code, 'code'),
-        status: clipField(run.status, 'status'),
-        stdout: clipField(run.stdout, 'stdout'),
-        stderr: clipField(run.stderr, 'stderr'),
-        traceback: clipField(run.traceback, 'traceback'),
-        images: [],
-        // Whether the READER ran this themselves (runLocal), not the
-        // assistant: always a real boolean, never left undefined, so a run
-        // read back from storage renders identically to one just produced.
-        local: run.local === true,
-        workspaceNote: clipField(run.workspaceNote, 'workspaceNote'),
-      }));
+      .map((run) => {
+        const figureCount = normalizeFigureCount(run.figureCount);
+        return {
+          callId: clipField(run.callId, 'callId'),
+          tool: clipField(run.tool, 'tool'),
+          description: clipField(run.description, 'description'),
+          code: clipField(run.code, 'code'),
+          status: clipField(run.status, 'status'),
+          stdout: clipField(run.stdout, 'stdout'),
+          stderr: clipField(run.stderr, 'stderr'),
+          traceback: clipField(run.traceback, 'traceback'),
+          images: [],
+          ...(figureCount > 0 ? { figureCount } : {}),
+          // Whether the READER ran this themselves (runLocal), not the
+          // assistant: always a real boolean, never left undefined, so a run
+          // read back from storage renders identically to one just produced.
+          local: run.local === true,
+          workspaceNote: clipField(run.workspaceNote, 'workspaceNote'),
+        };
+      });
+  }
+
+  // The most figures a run keeps: the server's own cap on a result's images
+  // (MAX_IMAGES in osa-output.js, which the widget cannot import).
+  const MAX_FIGURES_PER_RUN = 3;
+
+  // A stored figure count: a whole number from 0 to MAX_FIGURES_PER_RUN, else 0.
+  function normalizeFigureCount(value) {
+    return Number.isInteger(value) && value > 0 ? Math.min(value, MAX_FIGURES_PER_RUN) : 0;
   }
 
   // Older widget versions persisted citation markers at the stream delta
@@ -5347,8 +5369,16 @@
         // recorded view.
         if (Array.isArray(rest.executions)) {
           rest.executions = rest.executions.map((run) => {
-            const { _editing, _draft, _runningLocal, _localResult, _codeOpen, _panelsOpen, ...keep } = run;
-            return { ...keep, images: [] };
+            const {
+              _editing, _draft, _runningLocal, _localResult, _codeOpen, _panelsOpen,
+              _figuresLoading, _figuresMissing, figureCount: previousCount, ...keep
+            } = run;
+            // What was drawn is remembered as a count, and the figures themselves are
+            // read back from the workspace (hydrateFigures): with no image in memory
+            // (not read back yet, or not found) the count already stored stands.
+            const shown = Array.isArray(run.images) ? run.images.length : 0;
+            const figureCount = shown > 0 ? normalizeFigureCount(shown) : normalizeFigureCount(previousCount);
+            return { ...keep, images: [], ...(figureCount > 0 ? { figureCount } : {}) };
           });
         }
         return rest;
@@ -5537,6 +5567,7 @@
     activeConversation = { id: target.id, context: target.context, createdAt: target.createdAt };
     droppedConversationIds.delete(target.id);
     saveHistoryQuietly('opening a conversation');
+    hydrateFigures();
     return true;
   }
 
@@ -6556,6 +6587,89 @@
     return workspaceStore;
   }
 
+  // --- Saved figures in restored chats (E1.5, #658) ---
+  // A chat's own storage never holds figures (saveHistory drops them), but every
+  // figure a run drew was saved in the workspace's IndexedDB, which any window of
+  // this origin can read, the pop-out included. A restored or opened chat keeps
+  // each run's `figureCount`; hydrateFigures reads those figures back into memory.
+
+  function bytesToBase64(bytes) {
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
+  // The workspace once the runtime that carries it has loaded, or null when this
+  // page has none. Waits for the community config, which says whether the runtime
+  // is wanted at all.
+  async function workspaceStoreWhenReady() {
+    if (communityConfigReady) await communityConfigReady;
+    const ready = browserToolsReady ? await browserToolsReady : null;
+    return ready ? getWorkspaceStore() : null;
+  }
+
+  // The runs of the chat on screen that drew figures which are not in memory, and
+  // are not being read right now.
+  function runsAwaitingFigures() {
+    const runs = [];
+    for (const message of messages) {
+      if (!message || !Array.isArray(message.executions)) continue;
+      for (const run of message.executions) {
+        if (!run || typeof run.callId !== 'string' || run.callId === '' || run._figuresLoading === true) continue;
+        const inMemory = Array.isArray(run.images) && run.images.length > 0;
+        if (normalizeFigureCount(run.figureCount) > 0 && !inMemory) runs.push(run);
+      }
+    }
+    return runs;
+  }
+
+  // Read the figures of the chat's runs back from the workspace once the runtime
+  // (which carries the workspace's code) is ready, put them on the runs as the
+  // images a run just produced would be, and redraw. Memory only: saveHistory
+  // still stores no image. A figure the workspace no longer has (deleted, never
+  // saved, a browser that cannot reach IndexedDB) is counted on the run, which
+  // shows a one-line note instead. Safe to call at any time and as often as
+  // asked: a run being read is not read twice, and one with nothing to read is
+  // left alone.
+  async function hydrateFigures() {
+    const runs = runsAwaitingFigures();
+    if (runs.length === 0) return;
+    for (const run of runs) run._figuresLoading = true;
+    let figures = new Map();
+    // Never draws inside the call that asked: a caller that has just changed the chat
+    // draws it itself.
+    await null;
+    try {
+      const store = await workspaceStoreWhenReady();
+      if (store) figures = await store.figuresForCalls(runs.map((run) => run.callId));
+    } catch (err) {
+      console.warn('[OSA] Could not read the saved figures:', err && err.message);
+    }
+    for (const run of runs) {
+      delete run._figuresLoading;
+      const wanted = normalizeFigureCount(run.figureCount);
+      run.images = (figures.get(run.callId) || []).slice(0, wanted)
+        .map((bytes) => ({ mime: 'image/png', data_base64: bytesToBase64(bytes) }));
+      if (run.images.length < wanted) run._figuresMissing = wanted - run.images.length;
+      else delete run._figuresMissing;
+    }
+    const container = document.querySelector('.osa-chat-widget');
+    if (container && messages.some((m) => m && Array.isArray(m.executions) && m.executions.some((run) => runs.includes(run)))) {
+      renderMessages(container, { follow: false });
+    }
+  }
+
+  // The line a run shows in place of figures the workspace no longer has.
+  function missingFiguresHtml(run) {
+    const count = Number.isInteger(run._figuresMissing) ? run._figuresMissing : 0;
+    if (count <= 0) return '';
+    const what = count === 1 ? 'A figure from this run is' : `${count} figures from this run are`;
+    return `<div class="osa-figure-note">${what} no longer saved in this browser.</div>`;
+  }
+
   function formatWorkspaceBytes(n) {
     if (!Number.isFinite(n) || n < 1024) return `${Math.max(0, Math.round(n || 0))} B`;
     const units = ['KB', 'MB', 'GB'];
@@ -7510,7 +7624,7 @@
           `<button type="button" class="osa-figure-download" data-msg-index="${escapeHtml(String(located.msgIndex))}" data-run-index="${escapeHtml(String(located.runIndex))}" data-image-index="${escapeHtml(String(imageIndex))}" ` +
           `aria-label="Download figure ${figureNumber} as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}<span>Download</span></button></div></div>`;
       })
-      .join('');
+      .join('') + missingFiguresHtml(run);
   }
 
   // A button that shows and hides a panel of the card: aria-expanded says which,
@@ -11444,6 +11558,8 @@
     renderSuggestions(container);
     evaluateContextSwitch();
     watchPageMoves();
+    // The figures of a restored chat, once the runtime that reads them is ready.
+    hydrateFigures();
 
     // Query required DOM elements with null checks
     const chatButton = container.querySelector('.osa-chat-button');
@@ -11787,6 +11903,7 @@
       renderMessages,
       saveHistory,
       loadHistory,
+      hydrateFigures,
       // The conversation store (#654): the four functions E1.3 and E1.4 build on,
       // the pure store functions the format tests drive, and the active
       // conversation's identity.
