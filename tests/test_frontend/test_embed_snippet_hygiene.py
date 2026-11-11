@@ -132,6 +132,12 @@ _RELATIVE_PATH_HARNESS_ALLOWLIST = {
         "route, for headless Chrome driven over the DevTools protocol; a dev "
         "harness page, never published as embed guidance"
     ),
+    "frontend/browser-harness/privacy-choices-check.mjs": (
+        "the Privacy choices check's own page, served from its own loopback "
+        "server and loading the widget from that server's /osa-chat-widget.js "
+        "route, for headless Chrome driven over the DevTools protocol; a dev "
+        "harness page, never published as embed guidance"
+    ),
     "frontend/browser-harness/notebook-entry-check.mjs": (
         "the notebook card and History menu check's own page, served from its own "
         "loopback server and loading the widget from that server's "
