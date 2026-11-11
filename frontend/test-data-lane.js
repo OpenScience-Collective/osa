@@ -988,6 +988,8 @@ print(json.dumps(out))
     const fences = [...document.matchAll(/```python\n([\s\S]*?)\n\s*```/g)].map((m) => m[1]);
     assertEqual(fences.length, 2, 'the band-power procedure carries the Welch block and the integration block');
     const SETUP = 'import eegprep_lean\nindex = await eegprep_lean.read_index("DATASET_ID")\nstore = index.store("RECORDING_PATH")';
+    assert(fences[0]?.includes(SETUP), 'the band-power Welch block opens its own index and store, so it stands alone');
+    assert(fences[0]?.includes('budget_mb = 512'), 'the band-power Welch block names the reader\'s budget on one line ("budget_mb = 512")');
     if (fences.length === 2 && fences[0].includes(SETUP) && fences[0].includes('budget_mb = 512')) {
       // A 1 MB budget cuts the read into several pieces, so the carried sums are exercised.
       const welch = fences[0].replace(SETUP, 'pass  # the runtime opens the index and the store').replace('budget_mb = 512', 'budget_mb = 1');
