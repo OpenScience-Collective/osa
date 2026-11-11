@@ -981,7 +981,7 @@ Once the server has confirmed the session in a page load the widget stops sendin
 - **When the widget sends it.**
   Until the server has confirmed the session in this page load (a `session` or `done` event, or a non-streaming reply, with the id), every `/chat` request carries `prior_turns`, and `mode` when a reply said one.
   So the first request after a page load, after a chat is opened from History or the resume card, and after a request the server never answered, carries it; a conversation that has had no server answer for longer than `SESSION_TTL_HOURS` carries it again.
-  Nothing is sent for a new, empty chat or for one with no assistant reply, and no turns once the server has confirmed the session; a restart or eviction after that, with the page still open, is caught by `expect_session` (next item).
+  Nothing is sent for a new, empty chat, and no turns for a chat with no assistant reply (there is nothing to carry) or once the server has confirmed the session; a restart or eviction after that, with the page still open, is caught by `expect_session` (next item).
   The confirmation is not stored.
   The pop-out is a page load of its own, so its first request carries the chat too.
 - **What it carries.**
@@ -997,8 +997,9 @@ Once the server has confirmed the session in a page load the widget stops sendin
   A keyword in the transcript is not a request for analysis; only the reader's own message is read for one.
   If the reader later asks for analysis, the summary for the handover is written from the turns and the reader's message, not from the framing the server added.
 - **When the server lost it while the page stayed open.**
-  A request that names a session and carries no turns (the server confirmed it in this page load) also carries `expect_session: true`.
-  If the server holds no live session for that id (it restarted, evicted the session, or the session expired) and the request has no `prior_turns`, it answers `409` with `{"detail": "<a plain sentence>", "code": "session_unknown"}` before it creates a session, claims a usage row or streams.
+  A request that names a session and carries no turns also carries `expect_session: true`: the usual case is a session the server confirmed in this page load, and a stored chat with a session id and no assistant reply is the other (the server has confirmed nothing there, so a lost session costs one refused request and a plain resend).
+  If the server holds no live session for that id (it restarted, evicted the session, or the session expired) and the request has no `prior_turns`, it answers `409` with `{"detail": "<a plain sentence>", "code": "session_unknown"}` before it creates a session, starts a stream or calls a model.
+  The refusal writes no usage row, so the dashboards do not count it as an error: it is an expected recovery, not a failed request.
   `detail` stays a string, so a client that reads only `detail` gets text it can show; `code` is the key a client acts on.
   The widget then marks the server as having confirmed nothing, builds the same request again without `expect_session` and with the turns and tier (as a first request after a page load does), and sends it once.
   The reader sees one answer and no error, and `serverAnswered`, the context-move notice and the host's `send` event behave as for one request.
@@ -1007,7 +1008,7 @@ Once the server has confirmed the session in a page load the widget stops sendin
 - **When the resend is not possible.**
   If no fresh token arrives in time, or the server refuses the second request with `session_unknown` too, the reader sees "Earlier messages in this chat were not kept by the server. Your message was not sent; send it again.", the question goes back in the input, and the next send carries the turns (the widget has already marked the server as having confirmed nothing).
   A `409` with another `code`, or none, is an ordinary error: it is shown as any error is and is not sent again.
-  A chat with no assistant reply has no turns to carry, so its resend is the plain request.
+  A chat with no assistant reply has no turns to carry, so its resend is the plain request, with an extra round trip, an extra Turnstile token and an extra worker rate-limit unit.
 - **What it does not do.**
   It does not store history on the server, summarize the transcript with a model, carry figures, or reseed `/chat/resume`.
   `/chat/resume` does not take `expect_session` and is unchanged: it already answers `404` for a session the server no longer holds and creates none, and the parked browser call it continues was lost with the session, so there is nothing a transcript could restore.
