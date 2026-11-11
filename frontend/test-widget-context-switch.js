@@ -73,29 +73,42 @@ function serverFetch(widget) {
   const sent = [];
   const encoder = new TextEncoder();
   let failures = 0;
+  let gate = null;
+  const answer = () => new Response(new ReadableStream({
+    start(controller) {
+      for (const event of [{ event: 'content', content: 'An answer.' }, { event: 'done' }]) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      }
+      controller.close();
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
   const fetch = async (url, init = {}) => {
     const u = String(url);
     if (u.endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    if (u.endsWith('/chat/resume')) {
+      sent.push(JSON.parse(init.body));
+      return answer();
+    }
     if (u.endsWith('/chat')) {
       sent.push(JSON.parse(init.body));
+      if (gate) await gate.promise;
       if (failures > 0) {
         failures -= 1;
         return new Response(JSON.stringify({ detail: 'The backend is down' }), { status: 500, headers: { 'content-type': 'application/json' } });
       }
-      return new Response(new ReadableStream({
-        start(controller) {
-          for (const event of [{ event: 'content', content: 'An answer.' }, { event: 'done' }]) {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-          }
-          controller.close();
-        },
-      }), { headers: { 'content-type': 'text/event-stream' } });
+      return answer();
     }
     return new Response(JSON.stringify({
       default_model: 'm', offered_models: [], widget: { title: 'Switch Tests', ...widget }, client_tools: [], runtime: null,
     }), { headers: { 'content-type': 'application/json' } });
   };
-  return { fetch, sent, failNext: (n = 1) => { failures = n; } };
+  // `hold()` keeps the next chat requests unanswered until the returned function is called.
+  const hold = () => {
+    let open;
+    gate = { promise: new Promise((resolve) => { open = resolve; }) };
+    return () => { gate = null; open(); };
+  };
+  return { fetch, sent, hold, failNext: (n = 1) => { failures = n; } };
 }
 
 // A fresh window, as a page load in a browser session that has loaded the widget
@@ -143,7 +156,7 @@ async function start({ searchPaths = SEARCH_PATHS, path = '/dataset/x', dataset,
   const hooks = api.__browser;
   if (!configDelayed) await waitUntil(() => q('.osa-chat-title').firstChild.textContent.trim() === 'Switch Tests', 'the community config arrives');
   return {
-    window, api, hooks, container, q, sent: server.sent, failNext: server.failNext,
+    window, api, hooks, container, q, sent: server.sent, failNext: server.failNext, hold: server.hold,
     releaseConfig: () => release(),
     navigate: (to) => window.happyDOM.setURL(`http://localhost${to}`),
   };
@@ -188,6 +201,10 @@ console.log('\nthe page context, as a pure function');
   assertEqual(page(null, '/discover', []), null, 'with no search paths, none');
   assertEqual(page(null, '/discover', undefined), null, 'also when there is no list');
   assertEqual(page(null, '/b/c', ['/a', '/b']), { type: 'search' }, 'any of several paths');
+  assertEqual(page(null, '/', ['/']), { type: 'search' }, '"/" is the home page');
+  assertEqual(page(null, '/dataset/x', ['/']), null, 'and not every page under it');
+  assertEqual(page(null, '/dataset/x', ['/', '/discover']), null, 'nor when another path is listed beside it');
+  assertEqual(page(null, '/discover/x', ['/', '/discover']), { type: 'search' }, 'while the other path still matches');
   assertEqual(page({ id: 'bad id' }, '/x', []), null, 'a dataset id the widget would refuse gives none');
   assert(same(null, null) && same({ type: 'search' }, { type: 'search' }) && same({ type: 'dataset', id: A }, { type: 'dataset', id: A }), 'equal contexts are the same');
   assert(!same(null, { type: 'search' }) && !same({ type: 'dataset', id: A }, { type: 'dataset', id: B }) && !same({ type: 'dataset', id: 'search' }, { type: 'search' }),
@@ -214,10 +231,15 @@ console.log('\na new dataset: the notice, above the input, naming the old one');
   ctx.api.setDataset({ id: B });
   const el = notice(ctx);
   assert(!!el, 'a notice appears');
-  assertEqual(text(el.querySelector('p')), `You're on a new dataset, ${B}. Your next message starts a new chat; the ${A} chat stays in History.`, 'in the board\'s words, naming both datasets');
-  assert(el.nextElementSibling === ctx.q('.osa-chat-input'), 'directly above the input');
+  assertEqual(text(el.querySelector('p')), `You're on a new dataset, ${B}. Your next message starts a new chat; the ${A} chat is saved.`, 'in the board\'s words, naming both datasets');
+  assert(el.parentElement.nextElementSibling === ctx.q('.osa-chat-input'), 'directly above the input');
   assertEqual(text(el.querySelector('.osa-context-continue')), `Continue the ${A} chat instead`, 'with the way to keep the old chat');
-  assert(el.getAttribute('role') === 'status', 'announced as a status');
+  const slot = el.parentElement;
+  assert(slot.classList.contains('osa-context-notice-slot') && slot.getAttribute('role') === 'status', 'in a status region');
+  assert(ctx.q('.osa-context-notice-slot') === slot, 'which is the one that was in the page before the notice came');
+  ctx.api.setDataset({ id: A });
+  assert(!notice(ctx) && ctx.q('.osa-context-notice-slot') === slot && slot.children.length === 0, 'and stays, empty, when the notice goes');
+  ctx.api.setDataset({ id: B });
   assert(ctx.q('.osa-chat-messages').textContent.includes('What is the sampling rate?'), 'the old chat stays on screen');
   assertEqual(conversations(ctx).length, 1, 'and nothing else is started yet');
   ctx.api.setDataset({ id: A });
@@ -261,7 +283,8 @@ console.log('\ncontinue the old chat: the divider, the note, and moved_from on t
   assertEqual(ctx.hooks.getActiveConversation().id, oldId, 'the same conversation is active');
   assertEqual(ctx.hooks.getActiveConversation().context, { type: 'dataset', id: B }, 'now in the new dataset\'s context');
   const divider = ctx.q('.osa-context-divider');
-  assert(!!divider && divider.getAttribute('role') === 'separator', 'a divider is in the chat');
+  assert(!!divider, 'a divider is in the chat');
+  assert(!divider.hasAttribute('role'), 'with no separator role, which would hide its words from a screen reader');
   assertEqual(text(divider), `Moved to ${B} · continuing this chat`, 'saying where the reader moved to');
   assertEqual(text(ctx.q('.osa-context-told')), `The assistant is told: the reader moved from ${A} to ${B}; compare or continue as they ask.`, 'and a dashed note on what the assistant is told');
   const before = ctx.q('.osa-chat-messages').children.length;
@@ -298,6 +321,95 @@ console.log('\na send that failed does not use up the move');
   assert(!('moved_from' in lastBody(ctx).page_context), 'once the server has answered it is spent');
 }
 
+console.log('\nthe move is told only while the page is still where the reader moved to');
+{
+  const ctx = await onDataset();
+  ctx.api.setDataset({ id: B });
+  ctx.q('.osa-context-continue').click();
+  ctx.api.setDataset(null);
+  assert(!notice(ctx), 'sanity: a page that is neither gives no notice');
+  assertEqual(ctx.hooks.getActiveConversation().context, { type: 'dataset', id: B }, 'and the chat keeps the dataset it moved to');
+  await send(ctx, 'Where am I?');
+  assert(!lastBody(ctx).page_context || !('moved_from' in lastBody(ctx).page_context), 'a request from such a page does not claim a move to the search page');
+  assert(!lastBody(ctx).page_context || !('dataset_id' in lastBody(ctx).page_context), 'and names no dataset');
+  ctx.api.setDataset({ id: B });
+  await send(ctx, 'Compare them');
+  assertEqual(lastBody(ctx).page_context.moved_from, { type: 'dataset', id: A }, 'back on the dataset it moved to, the move is still there to tell');
+}
+
+console.log('\na move told by a request sent before Continue is not used up');
+{
+  const ctx = await onDataset();
+  const release = ctx.hold();
+  ctx.q('.osa-chat-input input').value = 'A slow question';
+  ctx.q('.osa-send-btn').click();
+  await waitUntil(() => ctx.sent.length === 2, 'the slow request is sent');
+  assert(!('moved_from' in lastBody(ctx).page_context), 'sanity: it does not carry a move');
+  ctx.api.setDataset({ id: B });
+  ctx.q('.osa-context-continue').click();
+  release();
+  await waitUntil(() => !ctx.q('.osa-chat-input input').disabled, 'the slow reply ends');
+  await send(ctx, 'Compare them');
+  assertEqual(lastBody(ctx).page_context.moved_from, { type: 'dataset', id: A }, 'the move is carried by the next request');
+  await send(ctx, 'And now?');
+  assert(!('moved_from' in lastBody(ctx).page_context), 'and spent once that was answered');
+}
+
+console.log('\na resumed reply that carried the move uses it up');
+{
+  const ctx = await onDataset();
+  ctx.api.setDataset({ id: B });
+  ctx.q('.osa-context-continue').click();
+  const response = await ctx.hooks.postResume({ session_id: 's' }, { ok: true });
+  assert(!!response, 'sanity: the resume was answered');
+  assertEqual(lastBody(ctx).page_context.moved_from, { type: 'dataset', id: A }, 'it carried the move');
+  await send(ctx, 'And now?');
+  assert(!('moved_from' in lastBody(ctx).page_context), 'the next message does not repeat it');
+}
+
+console.log('\ntwo moves before a send are one, from where the chat started');
+{
+  const ctx = await onDataset();
+  ctx.api.setDataset({ id: B });
+  ctx.q('.osa-context-continue').click();
+  const third = 'ds004000';
+  ctx.api.setDataset({ id: third });
+  assert(!!notice(ctx), 'the next dataset shows the notice again');
+  notice(ctx).querySelector('.osa-context-continue').click();
+  assertEqual(text(ctx.q('.osa-context-told')), `The assistant is told: the reader moved from ${A} to ${third}; compare or continue as they ask.`, 'the note names where the chat started');
+  assertEqual(ctx.container.querySelectorAll('.osa-context-move').length, 1, 'with one divider');
+  await send(ctx, 'Compare them');
+  assertEqual(lastBody(ctx).page_context.moved_from, { type: 'dataset', id: A }, 'moved_from is the first dataset');
+  assertEqual(lastBody(ctx).page_context.dataset_id, third, 'beside the dataset the reader is on');
+}
+
+console.log('\na move back to where the chat started is no move');
+{
+  const ctx = await onDataset();
+  ctx.api.setDataset({ id: B });
+  ctx.q('.osa-context-continue').click();
+  ctx.api.setDataset({ id: A });
+  notice(ctx).querySelector('.osa-context-continue').click();
+  assertEqual(ctx.hooks.getActiveConversation().context, { type: 'dataset', id: A }, 'the chat is on the first dataset again');
+  assert(!ctx.q('.osa-context-move'), 'with no divider');
+  await send(ctx, 'Back where I was');
+  assert(!('moved_from' in lastBody(ctx).page_context), 'and the request tells of no move');
+  assertEqual(lastBody(ctx).page_context.dataset_id, A, 'only the dataset');
+}
+
+console.log('\nthe browser\'s back button is noticed before a send');
+{
+  const ctx = await onDataset();
+  ctx.api.setDataset(null);
+  ctx.navigate('/about');
+  ctx.window.dispatchEvent(new ctx.window.Event('popstate'));
+  assert(!notice(ctx), 'a page that gives no context shows no notice');
+  ctx.navigate('/discover');
+  ctx.window.dispatchEvent(new ctx.window.Event('popstate'));
+  assert(!!notice(ctx), 'a move to the search page shows it at once');
+  assert(text(notice(ctx).querySelector('p')).startsWith("You're on the dataset search."), 'naming the search page');
+}
+
 console.log('\nfrom a dataset to the search page, and back');
 {
   const ctx = await onDataset();
@@ -305,7 +417,7 @@ console.log('\nfrom a dataset to the search page, and back');
   ctx.api.setDataset(null);
   const el = notice(ctx);
   assert(!!el, 'leaving the dataset for a search path shows the notice');
-  assertEqual(text(el.querySelector('p')), `You're on the dataset search. Your next message starts a new chat; the ${A} chat stays in History.`, 'naming the search and the old dataset');
+  assertEqual(text(el.querySelector('p')), `You're on the dataset search. Your next message starts a new chat; the ${A} chat is saved.`, 'naming the search and the old dataset');
   await send(ctx, 'Find resting state datasets');
   assertEqual(conversations(ctx).length, 2, 'the send starts a new chat');
   assertEqual(ctx.hooks.getActiveConversation().context, { type: 'search' }, 'in the search context');

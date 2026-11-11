@@ -5651,6 +5651,8 @@
       const resetBtn = container.querySelector('.osa-reset-btn');
       if (resetBtn) resetBtn.disabled = messages.length <= 1;
       evaluateContextSwitch();
+      // The card the reader pressed is gone with the welcome: focus goes to the input.
+      container.querySelector('.osa-chat-input input')?.focus();
     });
     messagesEl.appendChild(wrapper);
   }
@@ -5662,13 +5664,18 @@
   // Pure: the context a page gives a conversation, or null when it gives none and the
   // conversation keeps the one it has. A dataset wins over a search path; a search path
   // matches the pathname itself and anything below it at a path-segment boundary
-  // (/discover matches /discover/x, not /discovery).
+  // (/discover matches /discover/x, not /discovery); "/" matches the home page only.
   function contextForPage(dataset, pathname, searchPaths) {
     if (dataset && isValidDatasetId(dataset.id)) return { type: 'dataset', id: dataset.id };
     const path = typeof pathname === 'string' ? pathname : '';
     for (const raw of Array.isArray(searchPaths) ? searchPaths : []) {
       if (typeof raw !== 'string' || !raw.startsWith('/')) continue;
       const base = raw.replace(/\/+$/, '');
+      // "/" is the home page alone: as a prefix it would be every page.
+      if (base === '') {
+        if (/^\/+$/.test(path)) return { type: 'search' };
+        continue;
+      }
       if (path === base || path.startsWith(`${base}/`)) return { type: 'search' };
     }
     return null;
@@ -5679,8 +5686,8 @@
     return contextForPage(currentDataset, window.location.pathname, CONFIG.searchPaths);
   }
 
-  // What the page's context is now compared with the chat's context, as the notice
-  // and the divider name them: a dataset by its id, the search page as "search".
+  // A context as the notice and the continue button name it: a dataset by its id, the
+  // search page as "search".
   function contextName(context) {
     return context && context.type === 'dataset' ? context.id : 'search';
   }
@@ -5711,11 +5718,27 @@
       : null;
   }
 
+  // The move chosen in the active chat that no answered request has carried yet.
+  function untoldMove() {
+    if (!contextMove || contextMove.told || !activeConversation) return null;
+    return contextMove.conversationId === activeConversation.id ? contextMove : null;
+  }
+
+  // The move the request being built carries, or null. The server is told where the
+  // reader is from the dataset the request names (none: the search page), so a move is
+  // carried only while the page is still where the reader moved to; a page that has
+  // since become neither would have the server told something false.
+  function carriedMove() {
+    const move = untoldMove();
+    if (!move) return null;
+    const page = pageContext();
+    return page && sameContext(move.to, page) ? move : null;
+  }
+
   // The move the next request tells the server about, as {type, id?}, or null.
   function pendingMovedFrom() {
-    if (!contextMove || contextMove.told || !activeConversation) return null;
-    if (contextMove.conversationId !== activeConversation.id) return null;
-    return normalizeConversationContext(contextMove.from);
+    const move = carriedMove();
+    return move ? normalizeConversationContext(move.from) : null;
   }
 
   // Decide what the page's context means for the active conversation, and draw or
@@ -5745,8 +5768,23 @@
     renderContextNotice(container);
   }
 
-  // The notice above the input (board A1), or none. Rebuilt only when what it says
-  // changes, so a streamed reply's redraws leave a focused button alone.
+  let pageMovesWatched = false;
+
+  // A site that moves without calling setDataset (the back and forward buttons of a
+  // single-page site) is noticed when the browser reports it, so the notice appears
+  // before the next send. A pushState navigation reports nothing: it is found at the
+  // send, or when the host calls setDataset. Only the path matters, so a hash change
+  // is not watched.
+  function watchPageMoves() {
+    if (pageMovesWatched) return;
+    pageMovesWatched = true;
+    window.addEventListener('popstate', () => evaluateContextSwitch());
+  }
+
+  // The notice above the input (board A1), or none. It goes into a live region that is
+  // always in the page (an announcement is made when content is added to a region
+  // already there, not when the region arrives with its content). Rebuilt only when what
+  // it says changes, so a streamed reply's redraws leave a focused button alone.
   function renderContextNotice(container) {
     const live = pendingSwitchShown();
     const key = live ? JSON.stringify([live.from, live.to]) : '';
@@ -5754,24 +5792,23 @@
     if (existing && existing.getAttribute('data-key') === key) return;
     if (existing) existing.remove();
     if (!live) return;
-    const input = container.querySelector('.osa-chat-input');
-    if (!input) return;
+    const slot = container.querySelector('.osa-context-notice-slot');
+    if (!slot) return;
     const where = live.to.type === 'dataset'
       ? `You're on a new dataset, <code>${escapeHtml(live.to.id)}</code>.`
       : "You're on the dataset search.";
     const old = escapeHtml(contextName(live.from));
     const notice = document.createElement('div');
     notice.className = 'osa-context-notice';
-    notice.setAttribute('role', 'status');
     notice.setAttribute('data-key', key);
     notice.innerHTML = `
       <div class="osa-context-notice-body">
         ${ICONS.swap}
-        <p>${where} <strong>Your next message starts a new chat;</strong> the ${old} chat stays in History.</p>
+        <p>${where} <strong>Your next message starts a new chat;</strong> the ${old} chat is saved.</p>
       </div>
       <button type="button" class="osa-context-continue">Continue the ${old} chat instead</button>`;
     notice.querySelector('.osa-context-continue').addEventListener('click', () => continueInContext(container));
-    input.before(notice);
+    slot.appendChild(notice);
   }
 
   // "Continue the <old> chat instead": the chat takes the page's context, shows the
@@ -5779,16 +5816,20 @@
   function continueInContext(container) {
     const live = pendingSwitchShown();
     if (!live) return;
-    // A second move before the first was told is one move, from where the chat started.
-    const earlier = pendingMovedFrom();
+    // A second move before the first was told is one move, from where the chat started;
+    // a move back to where it started is no move at all.
+    const earlier = untoldMove();
+    const from = earlier ? earlier.from : live.from;
     activeConversation.context = normalizeConversationContext(live.to);
-    contextMove = {
-      conversationId: activeConversation.id,
-      from: earlier || live.from,
-      to: live.to,
-      atIndex: messages.length,
-      told: false,
-    };
+    contextMove = sameContext(from, live.to)
+      ? null
+      : {
+        conversationId: activeConversation.id,
+        from,
+        to: live.to,
+        atIndex: messages.length,
+        told: false,
+      };
     pendingSwitch = null;
     saveHistoryQuietly('continuing in a new context');
     renderMessages(container);
@@ -5808,7 +5849,7 @@
     const element = document.createElement('div');
     element.className = 'osa-context-move';
     element.innerHTML = `
-      <div class="osa-context-divider" role="separator"><span>Moved to ${toCode} &middot; continuing this chat</span></div>
+      <div class="osa-context-divider"><span>Moved to ${toCode} &middot; continuing this chat</span></div>
       <div class="osa-context-told">The assistant is told: <em>the reader moved from ${from} to ${to}; compare or continue as they ask.</em></div>`;
     return element;
   }
@@ -5825,11 +5866,10 @@
     startConversation({ context: live.to });
   }
 
-  // A request that carried the move has been answered by the server.
-  function markContextMoveTold() {
-    if (contextMove && activeConversation && contextMove.conversationId === activeConversation.id) {
-      contextMove.told = true;
-    }
+  // The server has answered a request that carried `move` (see carriedMove); an answer
+  // to a request built before the move was chosen does not use it up.
+  function markContextMoveTold(move) {
+    if (move) move.told = true;
   }
 
   // Get page context (URL, title, widget instructions, the dataset and a move) for contextual answers
@@ -7039,6 +7079,7 @@
       result,
       client_tools: browserTools ? browserTools.declared : [],
     };
+    const carried = carriedMove();
     const pageContext = getPageContext();
     if (pageContext) body.page_context = pageContext;
     const model = modelOverride || userSettings.model;
@@ -7073,6 +7114,7 @@
           idle.stop();
         }
       }
+      markContextMoveTold(carried);
       const contentType = response.headers.get('content-type') || '';
       if (!contentType.includes('text/event-stream')) {
         idle.stop();
@@ -8828,6 +8870,7 @@
         <div class="osa-turnstile-container" style="display: none;"></div>
         <div class="osa-error" style="display: none;"></div>
         <div class="osa-warning" style="display: none;"></div>
+        <div class="osa-context-notice-slot" role="status" aria-live="polite"></div>
         <div class="osa-chat-input">
           <input type="text" placeholder="${escapeHtml(CONFIG.placeholder)}" />
           <button class="osa-send-btn" aria-label="Send">
@@ -10866,6 +10909,7 @@
       }
 
       // Add page context if enabled
+      const carried = carriedMove();
       const pageContext = getPageContext();
       if (pageContext) {
         body.page_context = pageContext;
@@ -10929,7 +10973,7 @@
         }
       }
       serverAnswered = true;
-      markContextMoveTold();
+      markContextMoveTold(carried);
       if (idle) idleTimers.set(response, idle);
 
       // Extract session ID from response header (set by streaming responses)
@@ -11399,6 +11443,7 @@
     renderMessages(container);
     renderSuggestions(container);
     evaluateContextSwitch();
+    watchPageMoves();
 
     // Query required DOM elements with null checks
     const chatButton = container.querySelector('.osa-chat-button');

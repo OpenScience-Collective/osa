@@ -269,6 +269,7 @@ console.log('\nthe empty state names the dataset and offers the chat just left')
   assertEqual(ctx.hooks.getSessionId(), 'session-old', 'with its server session');
   assert(ctx.q('.osa-chat-messages').textContent.includes('Answer to Compare ERPs'), 'and its messages on screen');
   assert(!ctx.q('.osa-welcome-back'), 'the card is gone');
+  assert(ctx.window.document.activeElement === ctx.q('.osa-chat-input input'), 'and focus is on the input, not lost with the card');
   assert(!idsOf(ctx).includes(newId), 'the empty chat it replaced is dropped');
 }
 
