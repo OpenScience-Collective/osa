@@ -70,6 +70,15 @@ def test_the_registry_is_not_empty() -> None:
     assert {"erp", "tricky", "empty"} <= set(NAMES)
 
 
+def test_every_built_conversation_is_checked(built: dict[str, dict[str, Any]]) -> None:
+    """The names are read from the registry's source with a regex; the builder's output is the truth.
+
+    A conversation the regex misses (added with different formatting) would silently skip
+    every parametrized check, so the two sets must be equal.
+    """
+    assert set(NAMES) == set(built)
+
+
 @pytest.mark.parametrize("name", NAMES)
 def test_notebook_is_valid_nbformat_4_5(built: dict[str, dict[str, Any]], name: str) -> None:
     notebook = nbformat.from_dict(built[name]["notebook"])
