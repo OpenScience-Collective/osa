@@ -960,21 +960,32 @@ class TestTheTopographyAndTimeFrequencyDocuments:
         assert "PO8 for ERP CORE's N170" in flat
         assert "epochs x frequencies x times" in flat
 
-    def test_the_time_frequency_plan_warns_before_approval_that_the_run_is_slow(
+    def test_the_time_frequency_plan_warns_before_approval_how_long_it_can_take(
         self, documents: dict[str, str]
     ) -> None:
+        """The warning is given every time and scales with the request: it says what a
+        request no bigger than ERP CORE's is told (the measured transform time) and what a
+        bigger one is told, and defines bigger in terms the model has when it plans, so it
+        neither promises a long wait for a small request nor a quick run for a large one."""
         document = documents[TIME_FREQUENCY]
         plan = _flat(document.split("## Plan", 1)[1].split("\n## ", 1)[0])
         for phrase in (
+            "every time",
             "single processor",
             "limited compute and memory",
-            "likely take a long time",
+            "more than about 80 epochs in a condition",
+            "a rate above 250 Hz",
+            "well under a second in testing",
+            "can take a long time",
+            "Never promise a long wait",
+            "never promise that a bigger one will be quick",
             "in the plan's findings",
             "again in step 3",
         ):
             assert phrase in plan, phrase
+        assert "likely take a long time" not in _flat(document)
         # The warning comes before the numbered steps, so it is said before approval.
-        assert plan.index("likely take a long time") < plan.index("1. **Read the recording**")
+        assert plan.index("every time") < plan.index("1. **Read the recording**")
 
     def test_the_time_frequency_epochs_hold_the_lowest_frequencys_wavelet(
         self, documents: dict[str, str]

@@ -9,10 +9,15 @@ Fill in only the dataset, recording, channel and conditions the reader named.
 Each step is one `execute_code` run, and the runs share one Python namespace, so every step uses the variables the earlier ones made.
 `est_peak_mb` is the largest step: about three times the size of the read (every EEG channel, 8 bytes a sample), plus about 100 MB for the interpreter.
 
-This procedure is slow, so warn the reader before they approve it, every time, however short the recording.
-The code runs in their browser, in a Python runtime with a single processor and limited compute and memory, so it will likely take a long time, longer with more epochs, more frequencies or a longer window.
-Say so in the plan's findings, which the reader sees beside the steps before approving, and again in step 3's detail, and name the ways to make it shorter: fewer frequencies, fewer epochs (one condition first, or a subset of the trials), or a shorter epoch window.
-When step 3 runs, say again that it may take a while.
+Warn the reader before they approve it, every time, how long it can take.
+The code runs in their browser, in a Python runtime with a single processor and limited compute and memory.
+A request is bigger than ERP CORE's when it has more than about 80 epochs in a condition, a rate above 250 Hz, or a window or frequency range the reader widened; any one of these makes it bigger.
+For a request no bigger than that, say that it runs on a single processor in their browser, that the transform took well under a second in testing at that size (19 frequencies, 250 Hz), and that reading the recording comes on top of it.
+For a bigger one, say that step 3 can take a long time, longer with more epochs, more frequencies, a longer window or a higher rate.
+Never promise a long wait for a request no bigger than ERP CORE's,
+and never promise that a bigger one will be quick.
+Put that warning in the plan's findings, which the reader sees beside the steps before approving, and again in step 3's detail,
+and name the ways to make it shorter: fewer frequencies, fewer epochs (one condition first, or a subset of the trials), or a shorter epoch window.
 
 Filtering is NOT a step here, decided once: the wavelet already passes only the frequencies around its own, so a filter would add edge effects and nothing else, and the data are used as recorded.
 The data also keep the reference they were recorded with: changing it would take a step titled "Filter and clean the recording", which this plan does not have.
