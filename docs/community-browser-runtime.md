@@ -302,11 +302,53 @@ Measured under Bun on Pyodide 0.29.5 and SciPy 1.14.1, with 2-second segments:
 | `firwin` (101 taps) + `filtfilt` on 33 × 170,750 | 0.49 s |
 | `butter` + `sosfiltfilt` on 33 × 170,750 | 0.04 s |
 
-So NEMAR's prompt calls `welch` one channel at a time on at most `2**28 // nperseg` samples,
-and filters the whole channels-by-samples array with `butter` and `sosfiltfilt`.
+So NEMAR's prompt calls `welch` one channel at a time, in chunks of at most `2**28 // nperseg` samples,
+and averages the chunks' estimates, weighted by their segment counts.
+It filters the whole channels-by-samples array with `butter` and `sosfiltfilt`.
+
+The chunks are cut so that their average is the estimate one call over the whole channel would return.
+With `noverlap = nperseg // 2` and `hop = nperseg - noverlap`,
+one call over `n` samples averages `(n - noverlap) // hop` segments, the `i`-th starting at sample `i * hop`.
+A chunk of `m` segments therefore starts at sample `first * hop`,
+where `first` steps by `m`,
+and spans `(k - 1) * hop + nperseg` samples for the `k` segments it holds
+(`k` is `m`, except for the last chunk, which holds what is left).
+Every segment lands in exactly one chunk, so the segment counts add up to one call's,
+and `sum(k * chunk_power) / sum(k)` is its mean of periodograms,
+with the same frequencies.
+Cutting chunks end to end instead would lose the segments that straddle each boundary,
+and weighting them by anything but segment count would not be a mean over segments.
+
+The chunk is also held to the reader's memory budget (E5.1, "Browser memory" in Settings):
+`min(2**28 // nperseg, budget_mb * 2**20 // 160)` samples.
+One `welch` call needs about 100 bytes per sample of its chunk, measured on Pyodide 0.29.5 by the growth of the WebAssembly heap
+(89 MB for 536,870 samples), and the recipe allows 160, which keeps the rest of the budget for the read.
+At 250 Hz and above the runtime's limit is the smaller of the two for every budget;
+at 60 Hz the 256 MB budget is (1,677,721 samples against 2,236,962).
+
+| call | result |
+|---|---|
+| 50 minutes at 250 Hz, 3 channels, one `welch` call per channel | refused (750,000 samples) |
+| the same, as the prompt's chunks | 2,999 segments in 2 chunks of up to 2,146, the whole 3,000 s |
+
 `frontend/test-data-lane.js` runs both of the prompt's blocks as written,
 with controls that the whole array and one over-long channel are refused,
 so a Pyodide that lifts the limit says so.
+For the spectrum it also asserts that the chunked result equals one `welch` call per channel to `1e-9`
+(at 250, 128.5 and 1000 Hz, so with an even and an odd `nperseg`, with one chunk and with a 1 MB budget that forces many),
+that it equals a by-hand estimate that shares no code with SciPy,
+and that a 50-minute signal at 250 Hz, which one call refuses, is covered whole:
+every one of its 2,999 segments counted on every channel, and a tone carried only by its last tenth found at its frequency.
+
+Measured once on a real recording, 2026-11-10, with `frontend/browser-harness`'s worker core on Pyodide 0.29.5 under Bun (not in a browser),
+NEMAR's production runtime and prelude, and `https://zarr.nemar.org/` as the data host:
+`on002718` sub-002 `FaceRecognition`, group `eeg_250hz`, 74 channels × 747,750 samples (2,991 s).
+`read_window` of the whole recording took 11.7 s and the prompt's recipe 0.7 s;
+one `welch` call over a channel was refused;
+the recipe counted 2,990 segments on every channel, in chunks of 2,146, covering 2,991 s of 2,991 s,
+and agreed with the by-hand estimate to `1.3e-15` of the spectrum's peak.
+The runtime's heap after that run was 1,155 MB: the read alone is 74 × 747,750 × 8 bytes = 443 MB,
+more than a 256 MB budget, so a read this size has to be in pieces too (the prompt says so).
 
 ## The Pyodide pin
 

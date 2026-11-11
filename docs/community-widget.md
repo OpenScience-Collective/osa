@@ -73,8 +73,9 @@ A question that runs code should stay within what the community's browser runtim
 ([`docs/community-browser-runtime.md`](community-browser-runtime.md)).
 NEMAR's preloads numpy, SciPy, matplotlib, zarr and eegprep-lean,
 so its power-spectrum question is answered with `scipy.signal.welch`,
-one channel at a time and on at most `2**28 // nperseg` samples,
-since past either it raises "array is too big" in 32-bit WebAssembly
+one channel at a time and in chunks of at most `2**28 // nperseg` samples whose estimates are averaged by segment count,
+which is the spectrum of the whole recording,
+since past either limit it raises "array is too big" in 32-bit WebAssembly
 (see "SciPy in 32-bit WebAssembly" in `docs/community-browser-runtime.md`),
 and its ERP question low-passes with `scipy.signal.butter` and `sosfiltfilt`.
 A package outside that list belongs in the notebook, which can `%pip install` it.
@@ -773,6 +774,45 @@ A plan is the newest plan in the conversation, so a paused plan continues in the
 The restored card is read-only and says `Approved` (or `Changes requested`, `Stopped`, or `Not answered` for a plan nobody answered); the strip and the bar come back once the runtime bundle has loaded.
 
 Testing: `frontend/test-widget-plan-card.js` runs the real widget and the runtime bundle as built in happy-dom, with `fetch` answering recorded-shape SSE; `tests/test_frontend/test_plan_resume_payload.py` feeds the payload the widget really posts to the server's `ResumeRequest`, `PlanDecision` and `build_plan_tool_message`.
+
+## Browser memory: the budget and the heap report
+
+A browser tab has a fixed amount of memory to give the Python runtime, and a laptop may have little to spare.
+A community with a browser runtime therefore lets the reader say how much one step of an analysis may use (E5.1, board A5), and tells them how much each step did use.
+
+**The setting.**
+Settings has a **Browser memory** field with four 44 px choices: 256 MB, 512 MB (the default), 1 GB and 2 GB.
+It appears only on a page that can run code in the browser, after the model and key fields.
+Choosing is part of the dialog like the model: **Save** stores it, **Cancel** leaves what was saved.
+The choice is stored with the other user settings (`memoryBudgetMb` in `osa-settings-<community>`).
+A stored value that is not one of the four, such as a hand-edited `300`, reads as 512 and is never sent.
+Below the choices, **Last step used** shows the heap of the latest run in the chat against the chosen budget.
+
+**The request.**
+The widget sends `page_context.memory_budget_mb` on `/chat` and `/chat/resume`, and only from a page whose browser runtime has loaded.
+A page that cannot run code sends nothing, and `page_context` stays absent when nothing else is set, as before.
+The server accepts exactly 256, 512, 1024 or 2048 and refuses any other value with a 422 (`PageContext` in `src/api/routers/community.py`).
+The system prompt then carries its own paragraph, `## Browser memory budget`: "Each step must fit in B MB of the reader's browser memory; read long recordings in pieces."
+A community that sets `enable_page_context: false` states none.
+NEMAR's `plan_first_instructions` also require the plan's `est_peak_mb` not to exceed it.
+The budget is advice to the model, not a limit: nothing enforces it, on the server or in the tab.
+
+**The heap report.**
+After each run the worker reads the size of Pyodide's WebAssembly memory (`pyodide._module.HEAPU8.byteLength`) and sends it beside the result as `heap_bytes`.
+It is not a `ClientToolResult` field and never reaches the server: `PyodideRuntime#heapBytes(callId)` hands it to the widget, which stores it on the run record as `heapMb`, with `budgetMb`, the budget the run was under.
+WebAssembly memory only grows, so the figure is the most the tab has had to give the runtime so far, the interpreter and its packages included (about 20 MB before any package loads), not what the one step held.
+The run card says `Heap N MB of B MB` under the figures.
+When N is more than B, the line takes a warning style and a second line names the step: "Step 2, Epoch the EEG, used more than the 512 MB budget. Ask for smaller pieces, or raise the budget in Settings." (a run no plan covers is "This run").
+A reload and the History sheet restore the line, against the budget the run had, whatever the setting is now.
+A run with no figure (one refused before it started, a timeout) has no line.
+
+**The plan card** keeps "Largest step needs about N MB" and, while the plan is a draft, adds a warning when N is more than the budget.
+
+The pure logic is `frontend/osa-memory.js`, exported as `OSARuntime.memory`.
+The widget holds its own copy of the four sizes and the heap limit, because a saved setting is read before the runtime bundle has loaded, and the heap line itself waits for the bundle (a chat restored before it loads is drawn again when it does).
+`frontend/test-widget-memory-budget.js` holds the copies to each other and to the server's list.
+
+Testing: `frontend/test-widget-memory-budget.js` runs the real widget and the runtime bundle as built in happy-dom, with a test worker that reports a heap when the code says `HEAP_MB=<n>`; `frontend/test-worker-core.js` holds the real worker's figure against real Pyodide; `tests/test_api/test_page_context.py` and `tests/test_agents/test_page_context.py` hold the server's side.
 
 ## Saved conversations
 
