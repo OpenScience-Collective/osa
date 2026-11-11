@@ -28,6 +28,7 @@ from src.core.config.community import (
     EXECUTE_CODE_TOOL_NAME,
     FULL_OUTPUT_TOOL_NAME,
     START_ANALYSIS_TOOL_NAME,
+    Tier,
 )
 
 if TYPE_CHECKING:
@@ -240,7 +241,7 @@ def client_tools_disabled() -> bool:
 def build_client_tools(
     config: CommunityConfig,
     declared: set[str] | None,
-    tier: Literal["quick", "analysis"] | None = None,
+    tier: Tier | None = None,
 ) -> list[ClientTool]:
     """Client tools that are BOTH configured on the community AND declared by the caller.
 

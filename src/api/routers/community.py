@@ -40,7 +40,6 @@ from src.agents.content import (
 from src.agents.model_routing import (
     QUICK_MODE_INSTRUCTIONS,
     Summary,
-    Tier,
     reader_turn,
     tier_for_turn,
 )
@@ -87,6 +86,7 @@ from src.core.config.community import (
     LauncherOffsetPx,
     LauncherSizePx,
     RuntimeConfig,
+    Tier,
     WidgetConfig,
 )
 from src.core.config.deployment import current_deployment
@@ -2214,6 +2214,14 @@ def create_community_assistant(
             widget_instructions=page_context.widget_instructions,
         )
 
+    # A quick turn gets the section that tells it to call `start_analysis`, after any
+    # instructions the caller passed.
+    merged_instructions = additional_instructions
+    if tier == "quick":
+        merged_instructions = "\n\n".join(
+            part for part in (additional_instructions, QUICK_MODE_INSTRUCTIONS) if part
+        )
+
     assistant = registry.create_assistant(
         community_id,
         model=model,
@@ -2239,11 +2247,7 @@ def create_community_assistant(
         declared_client_tools=declared_client_tools,
         browser_runs_left=browser_runs_left,
         tier=tier,
-        additional_instructions=(
-            "\n\n".join(part for part in (additional_instructions, QUICK_MODE_INSTRUCTIONS) if part)
-            if tier == "quick"
-            else additional_instructions
-        ),
+        additional_instructions=merged_instructions,
     )
 
     # Wire LangFuse tracing if configured

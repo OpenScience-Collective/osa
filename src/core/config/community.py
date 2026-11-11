@@ -638,6 +638,14 @@ than in ``src.tools.client_tools`` because this module must import without the
 RESERVED_CLIENT_TOOL_NAMES = frozenset({FULL_OUTPUT_TOOL_NAME})
 """Names a community may not configure, because the server binds them itself."""
 
+Tier = Literal["quick", "analysis"]
+"""Which of a community's two models (``quick_model``, ``analysis_model``) a turn runs on.
+
+A chat session's ``mode`` is one of these. Defined here, with the tool-name constants,
+because this module imports nothing heavy; the routing code, the assistant and the client
+tools all import it from here, so a third tier is added in one place.
+"""
+
 START_ANALYSIS_TOOL_NAME = "start_analysis"
 """The client tool a quick-tier turn calls to hand the conversation to the analysis model.
 

@@ -16,12 +16,12 @@ Features:
 import importlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.tools import BaseTool, StructuredTool, tool
 
 from src.agents.base import ToolAgent
-from src.core.config.community import CommunityConfig
+from src.core.config.community import CommunityConfig, Tier
 from src.core.services.anthropic_models import BEDROCK_MODELS
 from src.core.services.tagged_citations import CITATION_INSTRUCTION
 from src.tools.base import DocRegistry
@@ -263,7 +263,7 @@ class CommunityAssistant(ToolAgent):
         browser_runs_left: int | None = None,
         tagged_citations: bool = False,
         model_id: str | None = None,
-        tier: Literal["quick", "analysis"] | None = None,
+        tier: Tier | None = None,
     ) -> None:
         """Initialize the community assistant.
 

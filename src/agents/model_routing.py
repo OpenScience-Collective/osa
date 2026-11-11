@@ -24,12 +24,16 @@ import re
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from src.agents.content import extract_text
-from src.core.config.community import EXECUTE_CODE_TOOL_NAME, START_ANALYSIS_TOOL_NAME
+from src.core.config.community import (
+    EXECUTE_CODE_TOOL_NAME,
+    START_ANALYSIS_TOOL_NAME,
+    Tier,
+)
 from src.core.services.model_errors import classify_model_error, exception_text
 from src.tools.client_tools import client_tools_disabled
 
@@ -39,9 +43,6 @@ if TYPE_CHECKING:
     from src.core.config.community import CommunityConfig
 
 logger = logging.getLogger(__name__)
-
-Tier = Literal["quick", "analysis"]
-"""Which of a community's two models a turn runs on. A session's `mode` is one of these."""
 
 DEFAULT_TIER: Tier = "quick"
 
