@@ -15,6 +15,7 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **A privacy contact address**: `PRIVACY.md`'s "Questions and changes" now gives privacy@osc.earth for a privacy question or a request about data that concerns you; public GitHub issues stay the route for anything else.
 - **NEMAR procedures for a band power topography, an ERP topography and a time-frequency map (#721, on #719)**: three more documents in `src/assistants/nemar/procedures/`, so NEMAR declares seven.
   A scalp map of band power used to match none of the four, and the model planned it three different ways.
   `band-power-topography` has two steps (compute the band power, with the band power document's Welch and integration blocks byte for byte; plot the scalp map), `erp-topography` five (the ERP document's titles and filter block, all EEG channels kept, averaged per condition over a time window, one map per condition and their difference when there are two on one symmetric color range, with a running sum per condition when the all-channel epochs would pass the memory budget), and `time-frequency-by-condition` four (read, epoch, compute, plot; filtering is decided there once not to be a step, since the wavelet is already band-selective).

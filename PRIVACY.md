@@ -142,6 +142,8 @@ for NEMAR, see the [NEMAR privacy policy](https://docs.nemar.org/policies/privac
 
 ## Questions and changes
 
-Open an issue at [github.com/OpenScience-Collective/osa](https://github.com/OpenScience-Collective/osa/issues);
+For a privacy question, or a request about data that concerns you,
+email [privacy@osc.earth](mailto:privacy@osc.earth); the OSA maintainers read it.
+For anything else, open an issue at [github.com/OpenScience-Collective/osa](https://github.com/OpenScience-Collective/osa/issues);
 issues are public, so please do not put personal information in one.
 Changes to this page are in its history on GitHub.
