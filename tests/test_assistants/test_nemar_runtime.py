@@ -655,7 +655,10 @@ class TestTheProceduresLeaveThePrompt:
         assert "**Which channels.**" in flat
         assert "**Events.**" in flat
         assert "sample_index" in flat and "assert len(face) == 80" in flat
-        assert "When `execute_code` is not offered, this page cannot run code: give the recipe." in flat
+        assert (
+            "When `execute_code` is not offered, this page cannot run code: give the recipe."
+            in flat
+        )
 
     def test_the_worked_example_stays(self, nemar: CommunityConfig) -> None:
         flat = _flat(nemar.system_prompt)

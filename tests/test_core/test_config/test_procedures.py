@@ -147,7 +147,9 @@ class TestAFailureAtLoad:
 
     def test_a_non_markdown_file(self, folder: Path) -> None:
         path = _write(
-            folder, [_entry(file="procedures/do-the-thing.txt")], {"procedures/do-the-thing.txt": "x"}
+            folder,
+            [_entry(file="procedures/do-the-thing.txt")],
+            {"procedures/do-the-thing.txt": "x"},
         )
         with pytest.raises(ValidationError, match="it must be a .md file"):
             CommunityConfig.from_yaml(path)
@@ -160,12 +162,16 @@ class TestAFailureAtLoad:
     def test_a_duplicate_id(self, folder: Path) -> None:
         entries = [_entry(), _entry(file="procedures/other.md")]
         path = _write(
-            folder, entries, {"procedures/do-the-thing.md": DOCUMENT, "procedures/other.md": DOCUMENT}
+            folder,
+            entries,
+            {"procedures/do-the-thing.md": DOCUMENT, "procedures/other.md": DOCUMENT},
         )
         with pytest.raises(ValidationError, match="'do-the-thing' is declared twice"):
             CommunityConfig.from_yaml(path)
 
-    @pytest.mark.parametrize("bad", ["Power Spectrum", "power_spectrum", "-lead", "trail-", "a--b", ""])
+    @pytest.mark.parametrize(
+        "bad", ["Power Spectrum", "power_spectrum", "-lead", "trail-", "a--b", ""]
+    )
     def test_a_non_slug_id(self, folder: Path, bad: str) -> None:
         path = _write(folder, [_entry(id=bad)], {"procedures/do-the-thing.md": DOCUMENT})
         with pytest.raises(ValidationError, match="procedure id"):
@@ -214,7 +220,8 @@ class TestAFailureAtLoad:
 
     def test_more_than_the_most_procedures(self, folder: Path) -> None:
         entries = [
-            _entry(id=f"procedure-{n}", file=f"procedures/{n}.md") for n in range(MAX_PROCEDURES + 1)
+            _entry(id=f"procedure-{n}", file=f"procedures/{n}.md")
+            for n in range(MAX_PROCEDURES + 1)
         ]
         files = {f"procedures/{n}.md": DOCUMENT for n in range(MAX_PROCEDURES + 1)}
         path = _write(folder, entries, files)
@@ -223,7 +230,9 @@ class TestAFailureAtLoad:
 
     def test_an_unknown_key(self, folder: Path) -> None:
         path = _write(
-            folder, [_entry() | {"url": "https://example.org"}], {"procedures/do-the-thing.md": DOCUMENT}
+            folder,
+            [_entry() | {"url": "https://example.org"}],
+            {"procedures/do-the-thing.md": DOCUMENT},
         )
         with pytest.raises(ValidationError, match="url"):
             CommunityConfig.from_yaml(path)

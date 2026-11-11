@@ -389,7 +389,11 @@ def parse_plan_stream(lines: Iterable[str], deadline: float | None = None) -> Ru
                 )
     except TimeoutError as exc:
         return RunRecord(
-            "error", ERROR, session_id=session_id, note=str(exc), tools_before_plan=tools_before_plan
+            "error",
+            ERROR,
+            session_id=session_id,
+            note=str(exc),
+            tools_before_plan=tools_before_plan,
         )
     return RunRecord(
         "error",

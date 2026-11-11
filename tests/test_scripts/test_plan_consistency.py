@@ -439,7 +439,9 @@ def test_the_report_shows_the_detail_that_decided_a_vague_title():
     record = pc.parse_plan_stream([_plan_line(steps)])
     runs = {pc.REQUESTS[0]: [record] * 4}
     report = pc.render_report("https://x.test", 4, runs, "2026-01-01")
-    assert "| 1 | plan | none | 1 | filter | detail | Next step [detail: Apply a 1 to 40 Hz" in report
+    assert (
+        "| 1 | plan | none | 1 | filter | detail | Next step [detail: Apply a 1 to 40 Hz" in report
+    )
     assert "| (no title) [detail: Plot the evoked response." in report
     assert "| 1 | plan | none | 3 | plot | title | Plot ERP |" in report  # title decided: no detail
     assert "..." in report  # a long detail is truncated

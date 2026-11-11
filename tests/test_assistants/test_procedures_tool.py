@@ -88,8 +88,9 @@ class TestACommunityThatCanRunCode:
     def test_an_id_with_stray_whitespace_still_finds_its_document(self) -> None:
         procedure_id = _nemar().procedures[0].id
         tool = _tool(_assistant(CODE_AND_PLAN))
-        assert tool.invoke({"procedure_id": f" {procedure_id}\n"}) == (
-            _nemar().procedure_documents()[procedure_id]
+        assert (
+            tool.invoke({"procedure_id": f" {procedure_id}\n"})
+            == (_nemar().procedure_documents()[procedure_id])
         )
 
     def test_the_prompt_lists_each_procedure_with_the_rule(self) -> None:

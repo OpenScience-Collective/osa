@@ -115,9 +115,7 @@ def _chat(client: TestClient) -> list[dict]:
     ]
 
 
-def test_an_analysis_turn_fetches_the_procedure_then_proposes_the_plan(
-    client, monkeypatch
-) -> None:
+def test_an_analysis_turn_fetches_the_procedure_then_proposes_the_plan(client, monkeypatch) -> None:
     config = _config()
     procedure_id = config.procedures[0].id
     document = config.procedure_documents()[procedure_id]
@@ -136,9 +134,12 @@ def test_an_analysis_turn_fetches_the_procedure_then_proposes_the_plan(
     ended = names.index(("tool_end", GET_PROCEDURE_TOOL_NAME))
     requested = names.index(("tool_request", PROPOSE_PLAN_TOOL_NAME))
     assert started < ended < requested
-    assert document.splitlines()[0] in next(
-        e for e in events if e["event"] == "tool_end" and e["name"] == GET_PROCEDURE_TOOL_NAME
-    )["output"]
+    assert (
+        document.splitlines()[0]
+        in next(
+            e for e in events if e["event"] == "tool_end" and e["name"] == GET_PROCEDURE_TOOL_NAME
+        )["output"]
+    )
 
     request = events[requested]
     assert request["args"] == PLAN_ARGS
