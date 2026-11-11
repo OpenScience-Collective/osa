@@ -5,10 +5,13 @@ For agent requests, the handler sets metrics on request.state which the
 middleware reads after the response completes.
 
 Streaming caveat: For streaming responses, the middleware fires before
-streaming completes. Streaming handlers log metrics directly at the end
-of the generator instead, and set ``request.state.metrics_logged`` before
-they return the response (``_claim_metrics_row``), so the middleware does
-not also write a stub row under the same request id (issue #687).
+streaming completes. Streaming handlers set ``request.state.metrics_logged``
+before they return the response (``_claim_metrics_row``), so the middleware
+writes no row for them, and the generator guarantees the request's one row
+instead: it logs at the end of the stream, or, if the stream is cut short
+(the reader disconnects, something raises), in its outermost ``finally``
+(``_log_unfinished_stream``), so no streamed request is left without a row
+and none has a stub beside the real one (issue #687).
 """
 
 import logging

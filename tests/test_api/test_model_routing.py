@@ -14,6 +14,7 @@ which runs the same turns against the real models.
 """
 
 import asyncio
+import gc
 import json
 from dataclasses import dataclass, field
 
@@ -23,6 +24,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from starlette.requests import Request
 
 import src.agents.model_routing as model_routing
 import src.api.routers.community as community_module
@@ -447,6 +449,213 @@ def metered_client(tmp_path, monkeypatch) -> TestClient:
     app.add_middleware(MetricsMiddleware)
     app.include_router(create_community_router(COMMUNITY))
     return TestClient(app)
+
+
+def _post_and_disconnect(app, path: str, payload: dict, *, stop_after: str) -> list[str]:
+    """POST through the real ASGI app; the reader goes away once a chunk has `stop_after`.
+
+    A raw ASGI call, because the test client always reads a stream to its end. The `receive`
+    answers the request body, then reports `http.disconnect` after the first chunk that
+    holds `stop_after`; `send` yields to the loop, as a real server's write to a socket
+    does, so the disconnect can interrupt the response. Returns the body chunks sent.
+    """
+    chunks: list[str] = []
+
+    async def run() -> None:
+        disconnected = asyncio.Event()
+        request_sent = False
+
+        async def receive() -> dict:
+            nonlocal request_sent
+            if not request_sent:
+                request_sent = True
+                return {
+                    "type": "http.request",
+                    "body": json.dumps(payload).encode(),
+                    "more_body": False,
+                }
+            await disconnected.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict) -> None:
+            if message["type"] == "http.response.body":
+                text = message.get("body", b"").decode()
+                chunks.append(text)
+                if stop_after in text:
+                    disconnected.set()
+                    # The server is still writing this chunk when the reader's
+                    # disconnect is noticed, so it cancels the response here.
+                    await asyncio.sleep(0.05)
+            await asyncio.sleep(0)
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"origin", ORIGIN.encode()),
+                (b"x-anthropic-api-key", BYOK["X-Anthropic-API-Key"].encode()),
+            ],
+            "server": ("testserver", 80),
+            "client": ("127.0.0.1", 1234),
+        }
+        await app(scope, receive, send)
+        # The abandoned generator is closed by the loop's async-generator finalizer.
+        gc.collect()
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    asyncio.run(run())
+    return chunks
+
+
+class TestAStreamTheReaderLeaves:
+    """Exactly one row per request id, whenever the stream ends (issue #687)."""
+
+    PAYLOAD = {"message": "find datasets with face stimuli", "client_tools": [EXECUTE_CODE]}
+
+    def test_a_full_stream_is_the_baseline_one_row(self, metered_client, monkeypatch) -> None:
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        chunks = _post_and_disconnect(
+            metered_client.app, f"/{COMMUNITY}/chat", self.PAYLOAD, stop_after="never appears"
+        )
+
+        assert any('"event": "done"' in c for c in chunks)
+        (row,) = _request_rows()
+        assert row["status_code"] == 200
+        assert row["error_message"] is None
+
+    def test_a_reader_who_leaves_after_the_session_event_leaves_a_499_row(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        chunks = _post_and_disconnect(
+            metered_client.app, f"/{COMMUNITY}/chat", self.PAYLOAD, stop_after='"event": "session"'
+        )
+
+        assert not any('"event": "done"' in c for c in chunks)
+        (row,) = _request_rows()
+        assert row["status_code"] == 499
+        assert row["error_message"] == "client disconnected"
+        assert row["endpoint"] == f"/{COMMUNITY}/chat"
+        assert row["tier"] == "quick"
+        assert row["conversation_id"]
+
+    def test_a_reader_who_leaves_during_a_handover_summary_leaves_one_row_each(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        _rig(
+            monkeypatch,
+            quick=[say_with_usage(SUMMARY, 300, 40)],
+            analysis=[say_with_usage("Plotting.", 1000, 200)],
+        )
+
+        _post_and_disconnect(
+            metered_client.app,
+            f"/{COMMUNITY}/chat",
+            {**self.PAYLOAD, "message": "plot the ERP", "session_id": "sess-quick"},
+            stop_after='"stage": "summarizing"',
+        )
+
+        rows = {r["request_id"]: r for r in _request_rows()}
+        main = next(r for r in rows.values() if not r["request_id"].endswith(":quick"))
+        assert len([r for r in rows.values() if not r["request_id"].endswith(":quick")]) == 1
+        assert main["status_code"] == 499
+        assert main["conversation_id"] == "sess-quick"
+        # Whatever the quick model spent is on the quick row alone, never counted twice.
+        assert not main["total_tokens"]
+
+    def test_a_streamed_ask_that_is_cut_off_leaves_a_499_row(
+        self, metered_client, monkeypatch
+    ) -> None:
+        _rig(monkeypatch, quick=[say_with_usage("Hello.", 50, 5)])
+
+        _post_and_disconnect(
+            metered_client.app,
+            f"/{COMMUNITY}/ask",
+            {"question": "what is HED?", "stream": True},
+            stop_after='"event": "content"',
+        )
+
+        (row,) = _request_rows()
+        assert row["endpoint"] == f"/{COMMUNITY}/ask"
+        assert row["status_code"] == 499
+        assert row["error_message"] == "client disconnected"
+
+    def test_a_second_message_while_a_reply_is_running_is_logged_as_refused(
+        self, metered_client, monkeypatch
+    ) -> None:
+        session = _earlier_conversation()
+        assert session.begin_turn()
+        _rig(monkeypatch, quick=[say("unused")])
+
+        events = _chat(metered_client, "and another thing", session_id="sess-quick")
+
+        assert events[-1]["event"] == "error"
+        (row,) = _request_rows()
+        assert row["status_code"] == 409
+        assert row["error_message"]
+        assert row["conversation_id"] == "sess-quick"
+
+    @pytest.mark.usefixtures("metered_client")
+    def test_an_exception_that_escapes_is_recorded_with_its_type(self) -> None:
+        """What a stream that raised past its own handlers leaves, on the real database."""
+        request = Request({"type": "http", "headers": [], "state": {}})
+        request.state.metrics_logged = True
+        started = community_module.time.monotonic()
+
+        with pytest.raises(RuntimeError):
+            try:
+                raise RuntimeError("past every handler")
+            finally:
+                community_module._log_unfinished_stream(
+                    request,
+                    COMMUNITY,
+                    f"/{COMMUNITY}/chat",
+                    None,
+                    [],
+                    started,
+                    input_tokens=50,
+                    output_tokens=5,
+                    tier="quick",
+                )
+        # A second call is a no-op: the row exists.
+        community_module._log_unfinished_stream(
+            request, COMMUNITY, f"/{COMMUNITY}/chat", None, [], started
+        )
+
+        (row,) = _request_rows()
+        assert (row["status_code"], row["error_message"]) == (500, "RuntimeError")
+        assert row["tier"] == "quick"
+        # The tokens counted so far are kept, so what was spent is still priced.
+        assert (row["input_tokens"], row["output_tokens"]) == (50, 5)
+
+    @pytest.mark.usefixtures("metered_client")
+    def test_a_generator_that_returned_without_a_row_is_recorded_as_an_error(self) -> None:
+        request = Request({"type": "http", "headers": [], "state": {}})
+
+        community_module._log_unfinished_stream(
+            request,
+            COMMUNITY,
+            f"/{COMMUNITY}/chat",
+            None,
+            [],
+            community_module.time.monotonic(),
+        )
+
+        (row,) = _request_rows()
+        assert row["status_code"] == 500
+        assert "without logging" in row["error_message"]
 
 
 class TestHandoverMetrics:

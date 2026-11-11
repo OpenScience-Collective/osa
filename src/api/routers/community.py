@@ -4,6 +4,7 @@ Creates parameterized routers for any registered community.
 Each community gets endpoints like /{community_id}/ask, /{community_id}/chat, etc.
 """
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -11,6 +12,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 import time
 import uuid
 from collections.abc import AsyncGenerator, Iterator, Sequence
@@ -3923,13 +3925,83 @@ def _claim_metrics_row(http_request: Request | None) -> None:
     """Tell the metrics middleware that a streamed request logs its own row.
 
     The middleware decides whether to write its stub row (no model, no tokens) as soon as
-    the response starts, which for a stream is before the generator has run, so the
-    generator's own ``_log_streaming_metrics`` call sets ``metrics_logged`` too late. A
-    route that streams calls this before it returns the ``StreamingResponse`` instead, so
-    the generator's row is the only row under the request id (issue #687).
+    the response starts, which for a stream is before the generator has run, so a route
+    that streams calls this before it returns the ``StreamingResponse`` (issue #687). The
+    generator then owes the request exactly one row: it writes it where the stream ends,
+    and ``_log_unfinished_stream``, in the generator's outermost ``finally``, writes one
+    when the stream ended without reaching that call (the reader disconnected, or
+    something raised first). ``_log_streaming_metrics`` records that the row was written
+    in ``request.state.stream_row_written``, which is separate from ``metrics_logged`` so
+    the middleware stays quiet either way.
     """
     if http_request:
         http_request.state.metrics_logged = True
+
+
+#: Status recorded for a stream whose reader went away before the reply finished (the
+#: non-standard 499 "client closed request" that nginx also uses).
+CLIENT_DISCONNECTED_STATUS = 499
+
+
+def _log_unfinished_stream(
+    http_request: Request | None,
+    community_id: str,
+    endpoint: str,
+    awm: AssistantWithMetrics | None,
+    tools_called: list[str],
+    start_time: float,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    longest_prompt_tokens: int | None = None,
+    tier: Tier | None = None,
+    conversation_id: str | None = None,
+) -> None:
+    """Write the request's row when a stream ended without writing one.
+
+    Called from a streaming generator's outermost ``finally``. Every normal ending logs
+    its row just after yielding its last event, so a generator closed at (or before) that
+    yield, by the reader disconnecting or by the server cancelling the task, never gets to
+    it, and the middleware has been told to stay quiet (``_claim_metrics_row``). Without
+    this the request would leave no row at all. The call is synchronous, so it runs to the
+    end inside a closing or cancelled generator.
+
+    A closed generator or a cancelled task is recorded as status 499 ("client
+    disconnected"); an exception that escaped is recorded as 500 with its type; a
+    generator that simply returned without a row is a 500 too, since that is a path that
+    should have logged. The tokens are those counted so far, so a reply cut short is still
+    priced for what was spent. Does nothing once the request's row exists.
+    """
+    if http_request is None or getattr(http_request.state, "stream_row_written", False):
+        return
+    escaped = sys.exc_info()[1]
+    if escaped is None:
+        status_code = 500
+        error_message = "stream ended without logging a row"
+    elif isinstance(escaped, GeneratorExit | asyncio.CancelledError):
+        status_code = CLIENT_DISCONNECTED_STATUS
+        error_message = "client disconnected"
+    else:
+        status_code = 500
+        error_message = type(escaped).__name__
+    _log_streaming_metrics(
+        http_request=http_request,
+        community_id=community_id,
+        endpoint=endpoint,
+        awm=awm,
+        tools_called=tools_called,
+        start_time=start_time,
+        status_code=status_code,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        error_message=error_message,
+        longest_prompt_tokens=longest_prompt_tokens,
+        tier=tier,
+        conversation_id=conversation_id,
+    )
 
 
 def _log_streaming_metrics(
@@ -4014,6 +4086,8 @@ def _log_streaming_metrics(
             conversation_id=conversation_id,
         )
         log_request(entry)
+        if not request_id_suffix and http_request:
+            http_request.state.stream_row_written = True
     except Exception:
         logger.exception(
             "Failed to log streaming metrics for %s (community=%s, status=%d)",
@@ -4618,6 +4692,21 @@ async def _stream_ask_response(
             error_message=failure.detail,
         )
 
+    finally:
+        _log_unfinished_stream(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/ask",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
+        )
+
 
 def _finish_with_tool_request(
     session: ChatSession,
@@ -4785,6 +4874,8 @@ async def _stream_chat_response(
     # The tier of the model whose work this request's metrics row records, set once the
     # turn is routed (see `row_tier` below). None for a community that does not route.
     row_tier: Tier | None = None
+    # Set once the turn is routed; read by the `finally` that logs an unfinished stream.
+    handing_over = False
 
     # The metrics middleware assigns a per-request UUID. The widget attaches the one on the
     # final `done` event to a reply for feedback, which joins it back to request_log, so it
@@ -4826,6 +4917,17 @@ async def _stream_chat_response(
                 }
             )
             + "\n\n"
+        )
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=metrics_endpoint,
+            awm=None,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=409,
+            error_message="a reply is already in progress on this session",
+            conversation_id=session.conversation_id,
         )
         return
 
@@ -5472,4 +5574,21 @@ async def _stream_chat_response(
         # Anthropic (langchain-anthropic's own `_merge_messages`). The OpenRouter path merges
         # nothing: LiteLLM sends two consecutive user messages, which the OpenAI-style chat
         # format allows.
+        # What the request spent is the quick row's when it handed over (the analysis run,
+        # on the new session, writes this request's row itself), so none is counted here.
+        _log_unfinished_stream(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=metrics_endpoint,
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            input_tokens=0 if handing_over else total_input_tokens,
+            output_tokens=0 if handing_over else total_output_tokens,
+            cache_read_tokens=0 if handing_over else total_cache_read_tokens,
+            cache_creation_tokens=0 if handing_over else total_cache_creation_tokens,
+            longest_prompt_tokens=None if handing_over else longest_prompt_tokens,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
+        )
         session.end_turn()
