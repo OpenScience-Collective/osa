@@ -452,6 +452,9 @@ jobs:
       - name: Run the notebook import tests on a real DOM
         run: bun frontend/test-widget-notebook-import.js
 
+      - name: Run the notebook strip tests on a real DOM
+        run: bun frontend/test-widget-notebook-strip.js
+
       - name: Run the first paint tests on a real DOM
         run: bun frontend/test-widget-first-paint.js
 

@@ -439,11 +439,13 @@
   //   requests: requestId -> {type, resolve, timer} for a message awaiting its result
   //   tabs:     the notebooks the notebook page last listed, {items, active}
   //   import:   the banner's import, or null (see importNotebookToTab)
+  //   renaming: the path being renamed in the strip, or null; renameDraft its text
+  //   menuOpen: whether the strip's "+" menu is open
   const notebookEmbed = {
     frame: null, datasetId: null, state: 'idle', setup: null, failure: null,
     loadTimer: null, readyTimer: null, sentScheme: null,
     outbox: [], requests: new Map(), tabs: { items: [], active: null },
-    import: null
+    import: null, renaming: null, renameDraft: '', menuOpen: false
   };
   // --- Conversation store ---
   // The saved chats (#654): one record per community and origin, under
@@ -1578,13 +1580,170 @@
       white-space: nowrap;
     }
 
-    /* The import banner (#673), above the notebook's frame. Every color is a
-       token, so the dark appearance needs no rules of its own: the banner sits on
-       the notice's surface. */
+    /* The notebooks strip and the import banner (#673, #676), above the notebook's
+       frame. Every color is a token, so the dark appearance needs no rules of its
+       own: the strip sits on the assistant's surface, the open tab on the panel's,
+       and the banner on the notice's. */
+    .osa-nb-bar {
+      position: relative;
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      flex: 0 0 auto;
+      padding: 6px 10px 0;
+      background: var(--osa-assistant-bg);
+      border-bottom: 1px solid var(--osa-border);
+    }
+
+    .osa-nb-bar[hidden],
+    .osa-nb-menu[hidden],
     .osa-notebook-banner[hidden] {
       display: none;
     }
 
+    .osa-nb-strip {
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    .osa-nb-tab {
+      display: flex;
+      align-items: center;
+      flex: 0 0 auto;
+      border: 1px solid transparent;
+      border-bottom: 0;
+      border-radius: 6px 6px 0 0;
+    }
+
+    .osa-nb-tab-on {
+      background: var(--osa-bg);
+      border-color: var(--osa-border);
+    }
+
+    .osa-nb-tab-label {
+      font: inherit;
+      font-size: 12.5px;
+      max-width: 180px;
+      padding: 7px 10px;
+      border: 0;
+      border-radius: 6px 6px 0 0;
+      background: transparent;
+      color: var(--osa-text-light);
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .osa-nb-tab-label:hover {
+      color: var(--osa-text);
+    }
+
+    .osa-nb-tab-on .osa-nb-tab-label {
+      padding-right: 4px;
+      font-weight: 500;
+      color: var(--osa-text);
+    }
+
+    .osa-nb-action,
+    .osa-nb-add {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--osa-text-light);
+      cursor: pointer;
+    }
+
+    .osa-nb-action {
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+    }
+
+    .osa-nb-action:hover {
+      background: var(--osa-assistant-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-nb-add {
+      width: 30px;
+      height: 30px;
+      margin-bottom: 2px;
+      border: 1px dashed var(--osa-text-light);
+      border-radius: 6px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-nb-rename {
+      width: 160px;
+      margin: 3px 4px;
+      padding: 3px 8px;
+      font: inherit;
+      font-size: 12.5px;
+      border: 1px solid var(--osa-accent);
+      border-radius: 6px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-nb-menu {
+      position: absolute;
+      top: calc(100% + 4px);
+      right: 10px;
+      z-index: 5;
+      min-width: 200px;
+      max-width: calc(100% - 20px);
+      max-height: 240px;
+      overflow-y: auto;
+      padding: 6px;
+      border: 1px solid var(--osa-border);
+      border-radius: 10px;
+      background: var(--osa-bg);
+      box-shadow: var(--osa-shadow);
+    }
+
+    .osa-nb-menu-item {
+      display: block;
+      width: 100%;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--osa-text);
+      font: inherit;
+      font-size: 13px;
+      text-align: left;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .osa-nb-menu-item:hover,
+    .osa-nb-menu-item:focus-visible {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-nb-menu-heading {
+      padding: 8px 10px 2px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--osa-text-light);
+    }
+
+    .osa-nb-bar button:focus-visible,
+    .osa-nb-rename:focus-visible,
     .osa-notebook-banner button:focus-visible {
       outline: 2px solid var(--osa-accent);
       outline-offset: 1px;
@@ -4424,7 +4583,8 @@
   }
 
   // --- Notebook tabs ---
-  // The import of a chat's notebook into the notebook tab (#673), over the notebook page's
+  // The Notebook surface's strip of named notebooks (#676) and the import of a
+  // chat's notebook into one of them (#673), both over the notebook page's
   // bridge (notebook/osa-bridge.js, docs/adr/0017-notebook-import-and-tabs.md).
   // The widget cannot write the notebook's storage itself, since the frame is
   // another origin, so everything here is a request to the page and its answer:
@@ -4433,10 +4593,16 @@
   //                  open-notebook, rename-notebook, close-notebook
   //   from the page: {source: 'osa-notebook', type: 'result', requestId, ok, path?, error?}
   //                  {source: 'osa-notebook', type: 'notebooks', items, active}
-  // The last `notebooks` message is kept, and says whether the import can still be undone.
+  // The strip is drawn from the last `notebooks` message and from nothing else,
+  // so it shows what the page has, including a notebook the reader opened there.
   // A request is posted once, to the notebook's own origin, and only after the
   // notebook has reported ready; until then it waits in the outbox.
 
+  const NOTEBOOK_ICONS = {
+    plus: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>',
+    pencil: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path></svg>',
+    close: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>'
+  };
   const NOTEBOOK_KINDS = ['playground', 'chat', 'blank'];
   // Longest wait for the notebook's answer to one request. An import waits for
   // the starter's setup first, which on a cold start takes a while.
@@ -4466,8 +4632,14 @@
     failNotebookRequests(reason);
     notebookEmbed.tabs = { items: [], active: null };
     notebookEmbed.import = null;
+    notebookEmbed.renaming = null;
+    notebookEmbed.renameDraft = '';
+    notebookEmbed.menuOpen = false;
     const container = document.querySelector('.osa-chat-widget');
-    if (container) renderNotebookBanner(container);
+    if (container) {
+      renderNotebookTabs(container);
+      renderNotebookBanner(container);
+    }
   }
 
   function postNotebookMessage(message) {
@@ -4543,6 +4715,10 @@
       const item = items.find((candidate) => candidate.path === current.path);
       current.undoable = !!item && item.undoable;
     }
+    if (notebookEmbed.renaming && !items.some((item) => item.path === notebookEmbed.renaming)) {
+      notebookEmbed.renaming = null;
+    }
+    renderNotebookTabs(container);
     renderNotebookBanner(container);
   }
 
@@ -4681,6 +4857,195 @@
     }
   }
 
+  // The strip: the open notebooks as tabs, then the "+" button and its menu.
+  // Rebuilt from notebookEmbed.tabs each time; a rename in progress keeps its
+  // text and its focus across the rebuild.
+  function renderNotebookTabs(container) {
+    const bar = container.querySelector('.osa-nb-bar');
+    if (!bar) return;
+    const strip = bar.querySelector('.osa-nb-strip');
+    const menu = bar.querySelector('.osa-nb-menu');
+    const add = bar.querySelector('.osa-nb-add');
+    const open = notebookEmbed.tabs.items.filter((item) => item.open);
+    const closed = notebookEmbed.tabs.items.filter((item) => !item.open);
+    bar.hidden = notebookEmbed.tabs.items.length === 0;
+    const editing = strip.querySelector('.osa-nb-rename');
+    if (editing) notebookEmbed.renameDraft = editing.value;
+    const hadFocus = !!editing && document.activeElement === editing;
+    if (editing) editing.dataset.rebuilding = '1';
+    strip.textContent = '';
+    const selectedIndex = Math.max(0, open.findIndex((item) => item.path === notebookEmbed.tabs.active));
+    open.forEach((item, index) => {
+      const selected = item.path === notebookEmbed.tabs.active;
+      const group = document.createElement('div');
+      group.className = `osa-nb-tab${selected ? ' osa-nb-tab-on' : ''}`;
+      group.setAttribute('role', 'presentation');
+      if (notebookEmbed.renaming === item.path) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'osa-nb-rename';
+        input.value = notebookEmbed.renameDraft || item.title;
+        input.setAttribute('aria-label', 'Notebook name');
+        input.maxLength = 64;
+        let finished = false;
+        const finish = (commit) => {
+          if (finished) return;
+          finished = true;
+          notebookEmbed.renaming = null;
+          const title = input.value.trim();
+          notebookEmbed.renameDraft = '';
+          if (commit && title !== '' && title !== item.title) {
+            sendNotebookRequest('rename-notebook', { path: item.path, title }, (result) => {
+              if (!result.ok) console.warn(`[OSA] The notebook was not renamed: ${result.error}`);
+              else if (notebookEmbed.import && notebookEmbed.import.path === item.path && result.path) {
+                notebookEmbed.import.path = result.path;
+              }
+            });
+          }
+          renderNotebookTabs(container);
+        };
+        input.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            finish(true);
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            finish(false);
+          }
+        });
+        // Not while the strip is rebuilt around it: removing a focused input blurs it.
+        input.addEventListener('blur', () => {
+          if (!input.dataset.rebuilding) finish(true);
+        });
+        group.appendChild(input);
+        strip.appendChild(group);
+        if (hadFocus) input.focus();
+        return;
+      }
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'osa-nb-tab-label';
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+      tab.tabIndex = index === selectedIndex ? 0 : -1;
+      tab.title = item.title;
+      tab.textContent = item.title;
+      tab.dataset.path = item.path;
+      tab.addEventListener('click', () => {
+        if (!selected) sendNotebookRequest('open-notebook', { path: item.path });
+      });
+      tab.addEventListener('keydown', (event) => {
+        const tabs = [...strip.querySelectorAll('[role="tab"]')];
+        const at = tabs.indexOf(tab);
+        const target = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: tabs.length - 1 }[event.key];
+        if (target === undefined || tabs.length === 0) return;
+        event.preventDefault();
+        const next = tabs[(target + tabs.length) % tabs.length];
+        tabs.forEach((other) => { other.tabIndex = other === next ? 0 : -1; });
+        next.focus();
+      });
+      group.appendChild(tab);
+      if (selected && item.kind !== 'playground') {
+        const rename = document.createElement('button');
+        rename.type = 'button';
+        rename.className = 'osa-nb-action osa-nb-rename-btn';
+        rename.setAttribute('aria-label', `Rename ${item.title}`);
+        rename.innerHTML = NOTEBOOK_ICONS.pencil;
+        rename.addEventListener('click', () => {
+          notebookEmbed.renaming = item.path;
+          notebookEmbed.renameDraft = item.title;
+          renderNotebookTabs(container);
+          const input = container.querySelector('.osa-nb-rename');
+          if (input) {
+            input.focus();
+            input.select();
+          }
+        });
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'osa-nb-action osa-nb-close-btn';
+        close.setAttribute('aria-label', `Close ${item.title}`);
+        close.innerHTML = NOTEBOOK_ICONS.close;
+        close.addEventListener('click', () => {
+          sendNotebookRequest('close-notebook', { path: item.path });
+        });
+        group.append(rename, close);
+      }
+      strip.appendChild(group);
+    });
+
+    add.setAttribute('aria-expanded', notebookEmbed.menuOpen ? 'true' : 'false');
+    menu.hidden = !notebookEmbed.menuOpen;
+    menu.textContent = '';
+    const entry = (label, onClick) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'osa-nb-menu-item';
+      button.setAttribute('role', 'menuitem');
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        closeNotebookMenu(container);
+        onClick();
+      });
+      menu.appendChild(button);
+    };
+    entry('Blank notebook', () => { sendNotebookRequest('new-notebook', {}); });
+    if (closed.length > 0) {
+      const heading = document.createElement('div');
+      heading.className = 'osa-nb-menu-heading';
+      heading.setAttribute('role', 'presentation');
+      heading.textContent = 'Reopen';
+      menu.appendChild(heading);
+      for (const item of closed) {
+        entry(item.title, () => { sendNotebookRequest('open-notebook', { path: item.path }); });
+      }
+    }
+  }
+
+  function closeNotebookMenu(container, restoreFocus = false) {
+    if (!notebookEmbed.menuOpen) return;
+    notebookEmbed.menuOpen = false;
+    renderNotebookTabs(container);
+    if (restoreFocus) container.querySelector('.osa-nb-add')?.focus();
+  }
+
+  // The strip's "+" button and its menu: opens on click, closes on Escape, on a
+  // click anywhere else in the widget, and when an entry is chosen.
+  function wireNotebookTabs(view) {
+    const add = view.querySelector('.osa-nb-add');
+    const menu = view.querySelector('.osa-nb-menu');
+    add.addEventListener('click', () => {
+      const container = view.closest('.osa-chat-widget');
+      if (!container) return;
+      notebookEmbed.menuOpen = !notebookEmbed.menuOpen;
+      renderNotebookTabs(container);
+      if (notebookEmbed.menuOpen) menu.querySelector('.osa-nb-menu-item')?.focus();
+    });
+    view.addEventListener('keydown', (event) => {
+      const container = view.closest('.osa-chat-widget');
+      if (!container || !notebookEmbed.menuOpen) return;
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        closeNotebookMenu(container, true);
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const items = [...menu.querySelectorAll('.osa-nb-menu-item')];
+        const at = items.indexOf(document.activeElement);
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        if (items.length > 0) {
+          event.preventDefault();
+          items[(at + step + items.length) % items.length].focus();
+        }
+      }
+    });
+    view.addEventListener('click', (event) => {
+      const container = view.closest('.osa-chat-widget');
+      if (container && notebookEmbed.menuOpen && !event.target.closest('.osa-nb-add, .osa-nb-menu')) {
+        closeNotebookMenu(container);
+      }
+    });
+  }
+
   // The notebook tab's header line and its loading and fallback overlays.
   function renderNotebookStatus(container) {
     const text = container.querySelector('.osa-notebook-status-text');
@@ -4718,6 +5083,11 @@
     view.className = 'osa-view osa-view-notebook osa-view-off';
     view.setAttribute('inert', '');
     view.innerHTML = `
+      <div class="osa-nb-bar" hidden>
+        <div class="osa-nb-strip" role="tablist" aria-label="Notebooks"></div>
+        <button type="button" class="osa-nb-add" aria-label="New notebook" aria-haspopup="menu" aria-expanded="false">${NOTEBOOK_ICONS.plus}</button>
+        <div class="osa-nb-menu" role="menu" aria-label="New notebook" hidden></div>
+      </div>
       <div class="osa-notebook-banner" role="status" hidden></div>
       <div class="osa-notebook-overlay osa-notebook-loading osa-overlay-hidden" role="status">
         <div class="osa-notebook-overlay-title">Opening the notebook</div>
@@ -4732,6 +5102,7 @@
           <a class="osa-notebook-open-tab" target="_blank" rel="noopener">Open in a new tab</a>
         </div>
       </div>`;
+    wireNotebookTabs(view);
     view.querySelector('.osa-notebook-retry').addEventListener('click', () => {
       const container = view.closest('.osa-chat-widget');
       if (!container) return;

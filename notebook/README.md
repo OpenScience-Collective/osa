@@ -8,16 +8,47 @@ See `docs/community-notebook.md` for how a community adds a starter, and `docs/a
 
 - `open.html` / `open.js`: the same-origin bootstrap page. JupyterLite 0.8.4 has no `?fromURL=` content-loading parameter, so this page fills a community's starter notebook in with the requested dataset id and writes it directly into JupyterLite's own browser storage, then redirects into it.
 - `osa-bridge.js`: added by the build to the notebook page (`notebooks/index.html`). It runs a starter's cells tagged `osa-autorun` when the notebook opens and after a kernel restart, and, when the notebook is the chat widget's tab, reports ready and setup status to the widget and applies the widget's light or dark theme (`docs/adr/0012-the-notebook-as-a-widget-tab.md`).
+  Embedded, it also keeps the dataset's notebooks as tabs and writes an import to storage on the widget's request (below).
   As soon as the notebook's panel exists, and again after a restart, it sends the kernel a rejection guard, silently and ahead of the setup cells: without it, a request that fails in Safari never returns, and the kernel stays busy for good (#496). The guard is the chat runtime's own, `buildRejectionGuardSource()` in `frontend/osa-egress.js`, which says why it works.
+- `osa-notebook-files.js`: the pure half of the tabs and the import, loaded by the bridge with a dynamic `import()` and built into the site beside it: how a title becomes a file name, what an import may contain, and which messages from the widget the page acts on. It imports `open.js` for the dataset check.
 - `localforage.min.js`: vendored, unmodified, version 1.10.0 (the exact version JupyterLite itself bundles), Apache License 2.0.
   Fetched from `https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js`, sha256 `cc168d95fb927d46b1043726cfe13998e08902ff63f24330e2bb2290109ed145` as downloaded; this repo's own pre-commit hook (`fix end of files`) added the single trailing newline the upstream file lacked, so the byte-identical committed copy is `b60ef9b887b994187a44438c182dba772741611a46f6dab79d0908c70a17cc18` -- a whitespace-only difference, not a code change.
   Its own license header is intact at the top of the file; do not strip it.
 - `_headers`: a TEMPLATE for Cloudflare Pages headers (immutable caching for wheels, no-cache for everything a reader's session depends on being fresh, and the site-wide Content Security Policy (CSP)/Referrer-Policy). The build (`write_headers`) fills in the environment's `frame-ancestors` list (`embed_origins`), prefixes every path pattern with the site's own path (`/osa`), and writes the result at the true publish root, since Cloudflare Pages only reads `_headers` from exactly there, never a subdirectory.
 - `test-open.js`: `open.js`'s pure logic (input validation, token filling, entry shape), run under Bun -- no browser, no network.
+- `test-notebook-files.js`: `osa-notebook-files.js` under Bun, no browser: naming, hostile titles, collisions, rejected datasets, paths outside the community, oversize and wrong-format imports, the autorun tag, unknown message types.
 - `test-bridge.js`: the bridge's rejection guard, run under Bun against the real Pyodide from npm: it is the chat runtime's guard exactly, and under it a failed `pyfetch` raises where it otherwise hangs (Bun's fetch rejects the way Safari's does). No browser; needs `bun install`.
-- `e2e-check.js`: the full flow in a real, headless Chrome: builds the site, serves it with its own `_headers`, opens a dataset link, and checks that the setup cell runs by itself, every cell runs, edits save and autosave, a rejection shaped like Safari's failed fetch raises in the kernel rather than hanging it, a kernel restart reruns setup and the kernel it starts is guarded too, the notebook works framed on an allowed site (theme messages included), and a site not on the list is refused. Needs the network (reads `zarr.nemar.org`, or `zarr-test.nemar.org` with `--environment develop`).
+- `e2e-check.js`: the full flow in a real, headless Chrome: builds the site, serves it with its own `_headers`, opens a dataset link, and checks that the setup cell runs by itself, every cell runs, edits save and autosave, a rejection shaped like Safari's failed fetch raises in the kernel rather than hanging it, a kernel restart reruns setup and the kernel it starts is guarded too, the notebook works framed on an allowed site (theme messages included, and, on develop, a real import from the conversation builder, undo, create, rename, close, a reload and a reopen, a second import as a new tab, and a foreign message), and a site not on the list is refused. Needs the network (reads `zarr.nemar.org`, or `zarr-test.nemar.org` with `--environment develop`).
 
 The actual build script lives at the repository root, `scripts/build_notebook_site.py` (Python, alongside every other community-config-reading script), not in this folder: it reads every community's `config.yaml` under `src/assistants/`, which is easiest from the same place `scripts/build_runtime_lock.py` already reads them from.
+
+## Importing a chat's notebook, and the notebook tabs
+
+The widget shows this site in a frame on another origin, so it cannot write the notebook's storage; it asks `osa-bridge.js`, which can (`docs/adr/0017-notebook-import-and-tabs.md`).
+Every message from the widget is `{target: 'osa-notebook', type, requestId, ...}`, and the bridge acts on it only if `event.source` is `window.parent`.
+
+| Message to the page | Fields | What it does |
+|---|---|---|
+| `import-notebook` | `datasetId`, `title`, `notebook`, `stats` | Writes `<community>/<dataset> · <title>.ipynb`, opens it. |
+| `run-all` | `path` | Runs the notebook's cells one at a time (`notebook:run-cell`; `run-all-cells` never settles), stopping at the first that fails. |
+| `undo-import` | `path` | Deletes the latest import and closes its tab, unless its source was edited. |
+| `new-notebook` | | Writes and opens `<dataset> · Untitled.ipynb`. |
+| `open-notebook` | `path` | Opens a listed notebook as the tab on screen (a closed one reopens). |
+| `rename-notebook` | `path`, `title` | Renames the file, keeping the `<dataset> · ` prefix. The starter cannot be renamed. |
+| `close-notebook` | `path` | Closes the tab; the file stays. The starter cannot be closed. |
+
+| Message from the page | Fields |
+|---|---|
+| `result` | `requestId`, `ok`, `path?`, `error?`: one per request, after it is done (an import and an open wait for the starter's setup to finish first). |
+| `notebooks` | `items: [{path, title, kind: 'playground' \| 'chat' \| 'blank', open, undoable?}]`, `active`: on ready, and after every change, including a notebook the reader opens inside JupyterLite. Not repeated when nothing changed. `undoable` is on the latest import until it is edited. |
+
+The page never trusts a path from a message except to open, rename or close one that is in its own listing under `<community>/` for this dataset.
+An import is checked before anything is written: the dataset against the pattern in `starters/index.json` (`datasetProblem`), nbformat 4, only markdown and code cells, at most 200 cells and 2 MB; the `osa-autorun` tag is stripped (an import never runs by itself) and code cells' outputs are cleared.
+A name that exists gets " 2", " 3", and nothing is overwritten; the starter, `<dataset>.ipynb`, is never written.
+A message with another `target`, an unknown `type` or no `requestId` is ignored and not answered; a known type with a bad path or import is answered `ok: false` with a reason.
+
+The notebooks page is a single-document shell, so a tab switch closes the panel on screen (its kernel keeps running) and opens the next one in its place.
+The open tabs are kept in the page's `localStorage` per community and dataset (`osa-notebook-tabs:<community>:<dataset>`) and come back after a reload, with the starter on screen; a closed notebook is still a file.
 
 ## Building the site
 
@@ -46,6 +77,9 @@ A bare-host `--site-url` (no path) skips all of that and publishes directly at `
 ```bash
 # open.js's pure logic, no browser needed
 bun notebook/test-open.js
+
+# osa-notebook-files.js's naming, import and message rules, no browser
+bun notebook/test-notebook-files.js
 
 # the bridge's rejection guard, against the real Pyodide from npm (after bun install)
 bun notebook/test-bridge.js

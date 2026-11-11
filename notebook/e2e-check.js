@@ -1127,6 +1127,76 @@ async function main() {
         const olderUndo = await ask('undo-import', { path: one?.path });
         report(olderUndo?.ok === false && (await exists(one?.path)), 'only the latest import can be undone');
 
+        // --- Create, rename, close ---
+        log('tabs: create, rename, close');
+        const created = await ask('new-notebook');
+        report(created?.ok === true && created.path === `${prefix}Untitled.ipynb`, `a blank notebook is created (${created?.path})`);
+        const blank = created?.path ? await getContents(created.path, true) : null;
+        report(
+          blank?.content?.cells?.length === 1 && blank?.content?.metadata?.osa?.kind === 'blank',
+          'with one empty cell, marked as blank'
+        );
+        report((await activePath()) === created?.path, 'and opened');
+        const secondBlank = await ask('new-notebook');
+        report(secondBlank?.path === `${prefix}Untitled 2.ipynb`, `a second blank one does not overwrite the first (${secondBlank?.path})`);
+
+        const renamed = await ask('rename-notebook', { path: secondBlank?.path, title: 'My notes' });
+        report(renamed?.ok === true && renamed.path === `${prefix}My notes.ipynb`, `rename keeps the "<dataset> · " prefix (${renamed?.path})`);
+        report((await exists(renamed?.path)) && !(await exists(secondBlank?.path)), 'the file moved to its new name');
+        report((await activePath()) === renamed?.path, 'and the notebook on screen followed it');
+        const withRenamed = await listWhere((list) => itemOf(list, renamed?.path)?.title === 'My notes' && list.active === renamed?.path);
+        report(!!withRenamed && itemOf(withRenamed, renamed?.path).kind === 'blank', 'the list shows the new title, still blank');
+        const hostile = await ask('rename-notebook', { path: renamed?.path, title: '../../escape/\u0000x' });
+        report(hostile?.ok === true && hostile.path === `${prefix}escapex.ipynb`, `a hostile title cannot leave the directory (${hostile?.path})`);
+        const into = await ask('rename-notebook', { path: hostile?.path, title: 'Untitled' });
+        // "Untitled" is the first blank notebook's name; "Untitled 2" was renamed away, so it is free.
+        report(into?.path === `${prefix}Untitled 2.ipynb`, `a title another notebook has gets a number (${into?.path})`);
+        const starterRename = await ask('rename-notebook', { path: starterPath, title: 'Mine' });
+        report(starterRename?.ok === false && (await exists(starterPath)), 'the starter cannot be renamed');
+        const starterClose = await ask('close-notebook', { path: starterPath });
+        report(starterClose?.ok === false, 'or closed');
+
+        const closePath = into?.path;
+        const closed = await ask('close-notebook', { path: closePath });
+        report(closed?.ok === true, 'close-notebook was answered ok');
+        const afterClose = await listWhere((list) => itemOf(list, closePath)?.open === false);
+        report(!!afterClose, 'the closed notebook is listed as not open');
+        report(await exists(closePath), 'and it is still a file');
+        const shown = await activePath();
+        report(shown !== null && shown !== closePath && itemOf(afterClose, shown)?.open === true, 'an open notebook took its place on screen');
+        const openPaths = afterClose?.items.filter((item) => item.open).map((item) => item.path) ?? [];
+
+        // --- A reload brings the open list back, and a closed notebook reopens ---
+        log('tabs: reloading the page');
+        const messagesBefore = (await messagesOf(host)).length;
+        await cdp.send('Page.reload', {}, host.sessionId);
+        const restored = await pollUntil(
+          async () => {
+            const messages = await messagesOf(host);
+            const list = await latestList();
+            return messages.length < messagesBefore && list?.items.length > 0 ? list : null;
+          },
+          180_000,
+          500
+        ).catch(() => null);
+        report(!!restored, 'after a reload the notebook lists its notebooks again');
+        report(
+          !!restored &&
+            JSON.stringify(restored.items.filter((item) => item.open).map((item) => item.path).sort()) ===
+              JSON.stringify([...openPaths].sort()),
+          'the same notebooks are open as before the reload'
+        );
+        report(itemOf(restored, closePath)?.open === false, 'and the closed one is still closed, and still listed');
+        report(restored?.active === starterPath, 'the starter, which the page opens first, is the one on screen');
+        report(
+          await pollUntil(() => hasMessage(host, 'setup', { status: 'done' }), 120_000, 500).catch(() => false),
+          'its setup ran by itself again in the fresh kernel'
+        );
+        const reopened = await ask('open-notebook', { path: closePath });
+        report(reopened?.ok === true && (await activePath()) === closePath, 'a closed notebook reopens from the list');
+        const afterReopen = await listWhere((list) => itemOf(list, closePath)?.open === true && list.active === closePath);
+        report(!!afterReopen, 'and is an open tab again');
+
         // --- Not ours: nothing is answered, nothing is written ---
         log('tabs: messages the page must not act on');
         const filesBefore = await directory();

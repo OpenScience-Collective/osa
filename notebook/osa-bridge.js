@@ -306,11 +306,31 @@
     const { community, datasetId, datasetPattern } = context;
     const playground = firstPanel.context.path;
     const contents = app.serviceManager.contents;
+    const storageKey = `osa-notebook-tabs:${community}:${datasetId}`;
 
-    // The open notebooks, in order; the starter is always first.
-    let openList = [playground];
+    // The open tabs, in order; the starter is always first. Kept in this
+    // browser's storage so a reload brings them back; a closed notebook is
+    // still a file, so it is listed (open: false) and can be reopened.
+    const readOpen = () => {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(storageKey));
+        return Array.isArray(saved?.open) ? saved.open.filter((path) => typeof path === 'string') : [];
+      } catch {
+        return [];
+      }
+    };
+    let openList = [playground, ...readOpen().filter((path) => path !== playground)];
+    const writeOpen = () => {
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify({ open: openList }));
+      } catch (err) {
+        warn('the open notebooks were not remembered', err);
+      }
+    };
     const addOpen = (path) => {
-      if (!openList.includes(path)) openList = [...openList, path];
+      if (openList.includes(path)) return;
+      openList = [...openList, path];
+      writeOpen();
     };
 
     const kinds = new Map([[playground, 'playground']]);
@@ -454,14 +474,52 @@
       return { ok: true, path };
     }
 
+    async function newNotebook() {
+      const taken = (await listFiles()).map((file) => file.path);
+      const path = files.importedPath(community, datasetId, files.BLANK_TITLE, taken);
+      await writeNotebook(path, files.blankNotebook(), 'blank');
+      addOpen(path);
+      await show(path);
+      return { ok: true, path };
+    }
+
+    async function openNotebook(request) {
+      addOpen(request.path);
+      await show(request.path);
+      return { ok: true, path: request.path };
+    }
+
+    async function renameNotebook(request) {
+      const taken = (await listFiles()).map((file) => file.path);
+      const next = files.renamedPath(request.path, request.title, taken);
+      if (next === request.path) return { ok: true, path: next };
+      await contents.rename(request.path, next);
+      openList = openList.map((path) => (path === request.path ? next : path));
+      writeOpen();
+      if (kinds.has(request.path)) {
+        kinds.set(next, kinds.get(request.path));
+        kinds.delete(request.path);
+      }
+      if (lastImport?.path === request.path) lastImport = { ...lastImport, path: next };
+      return { ok: true, path: next };
+    }
+
     // The tab to land on when `path` goes: the one before it.
     const neighbour = (path) => openList[Math.max(0, openList.indexOf(path) - 1)] ?? playground;
+
+    async function closeNotebook(request) {
+      if (activePath() === request.path) await show(neighbour(request.path));
+      openList = openList.filter((path) => path !== request.path);
+      writeOpen();
+      return { ok: true, path: request.path };
+    }
 
     async function undoImport(request) {
       if (lastImport?.path !== request.path) return { ok: false, error: 'only the latest import can be undone' };
       if (await isEdited(lastImport)) return { ok: false, error: 'it has been edited, so it was kept' };
       if (activePath() === request.path) await show(neighbour(request.path));
       openList = openList.filter((path) => path !== request.path);
+      writeOpen();
       await contents.delete(request.path);
       kinds.delete(request.path);
       lastImport = null;
@@ -497,10 +555,13 @@
       }
     }
 
-    // What each request does; Run all is the one that is not waited for. The others
-    // are not handled here yet and are answered as unsupported.
+    // What each request does; Run all is the one that is not waited for.
     const HANDLERS = {
       'import-notebook': importNotebook,
+      'new-notebook': newNotebook,
+      'open-notebook': openNotebook,
+      'rename-notebook': renameNotebook,
+      'close-notebook': closeNotebook,
       'undo-import': undoImport,
     };
 
