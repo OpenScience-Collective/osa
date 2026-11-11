@@ -21,7 +21,7 @@ const response = await fetch('https://edge.osc.earth/osa/nemar/overview', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    query: 'face recognition',
+    query: 'face recognition in EEG',
     filters: { modality: ['eeg'] },
     total_count: 240,
     results: results.slice(0, 10).map((r) => ({
@@ -50,10 +50,15 @@ when crossed; it does not block requests.
 
 | Field | Limits |
 |---|---|
-| `query` | 1 to 300 characters, not blank |
+| `query` | 1 to 300 characters, and at least 3 words: whitespace-separated tokens that hold a letter or digit, so `P300` and `α-band` are words and a lone `-` is not |
 | `filters` | at most 20 keys; values are strings, booleans, integers or lists of strings |
 | `results` | 1 to 10 rows; `id` unique, up to 64 characters of letters, digits, `.`, `_`, `-`; `title` up to 200 characters; `description` up to 500; `modalities` an optional string |
 | `total_count` | optional, the number of matches in all |
+
+A search under three words gives the model too little to write a cited reading
+("EEG" alone came back with no citation, a 502; #728), so the route refuses it with a 422
+before any model call.
+nemar.org's Discover panel counts words the same way and shows a note instead of calling.
 
 ## What comes back
 
@@ -105,7 +110,7 @@ cached.
 |---|---|
 | 403 | The origin is not allowed and no key was sent |
 | 404 | The community has no quick model |
-| 422 | A field is out of bounds (the body names which) |
+| 422 | A field is out of bounds (the body names which), including a `query` under 3 words ("an overview needs a search of at least 3 words") |
 | 500 | A bug or a missing configuration on the server, not the model provider; the body has an error id to give the maintainers |
 | 502 | The model wrote no overview that could be shown, or the provider failed; try again later. Nothing is cached |
 
