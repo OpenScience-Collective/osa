@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Handover to the analysis model</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0e5a70}a:hover{color:#083b4a}
+</style>
+</helmet>
+<div style="width: 400px; height: 820px; box-sizing: border-box; font-family: Inter, system-ui, sans-serif; color: #1f2937; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 14px; overflow: hidden; display: flex; flex-direction: column">
+  <header style="background: #5bbad5; color: #06112a; padding: 12px 14px; display: flex; align-items: center; gap: 10px">
+    <div style="width: 34px; height: 34px; border-radius: 999px; background: #ffffff; display: flex; align-items: center; justify-content: center; flex: none">
+      <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" fill="#0e7490"></path></svg>
+    </div>
+    <div style="flex: 1 1 auto; font-weight: 600; font-size: 15px">NEMAR Assistant</div>
+    <span style="font-size: 11px; background: #ffffff; border-radius: 999px; padding: 3px 8px; color: #0b1a3a; font-weight: 600">Analysis</span>
+  </header>
+
+  <div style="flex: 1 1 auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; overflow: hidden">
+    <div style="align-self: flex-end; max-width: 84%; background: #5bbad5; color: #06112a; border-radius: 12px; padding: 10px 14px; font-size: 14px">Find EEG datasets with face stimuli</div>
+    <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: 0.6px; color: #6b7280; font-weight: 600">NEMAR ASSISTANT <span style="letter-spacing: 0; font-weight: 500; border: 1px solid #e2e8f0; border-radius: 999px; padding: 1px 7px">Quick answers</span></div>
+    <div style="background: #f3f4f6; border-radius: 12px; padding: 12px 14px; font-size: 13.5px; line-height: 1.55">The closest match is <a href="#">on002718</a>, 18 participants viewing famous, unfamiliar and scrambled faces. The source study, <a href="#">ds000117</a>, adds MEG and fMRI…</div>
+    <div style="align-self: flex-end; max-width: 84%; background: #5bbad5; color: #06112a; border-radius: 12px; padding: 10px 14px; font-size: 14px">Plot the ERP for famous faces in on002718</div>
+
+    <section aria-label="Handing over to the analysis model" style="border: 1px solid #b9e0eb; background: #f5fbfd; border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px">
+      <div style="font-size: 13.5px; font-weight: 600; color: #0b1a3a">Starting an analysis session</div>
+      <div style="display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: #334155">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#15803d" stroke-width="2.5" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>
+        Summarized our conversation (4 messages, 90 words)
+      </div>
+      <div style="display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: #334155">
+        <span style="width: 14px; height: 14px; border-radius: 999px; border: 2px solid #0e7490; border-right-color: transparent; box-sizing: border-box; display: inline-block"></span>
+        Handing it to the analysis model with your question
+      </div>
+      <details style="font-size: 12.5px; color: #334155">
+        <summary style="cursor: pointer; color: #0e5a70; font-weight: 500">What the analysis model is told</summary>
+        <p style="margin: 6px 0 0; line-height: 1.5; background: #ffffff; border: 1px solid #cfe7ef; border-radius: 6px; padding: 8px">The reader searched for EEG datasets with face stimuli and chose on002718 (famous, unfamiliar and scrambled faces, 70 EEG channels at 250 Hz). They now ask: plot the ERP for famous faces in on002718.</p>
+      </details>
+    </section>
+
+    <div role="separator" style="display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #475569; margin-top: 2px">
+      <span style="flex: 1 1 auto; height: 1px; background: #cbd5e1"></span>
+      <span>Analysis session · Claude Sonnet 5.5</span>
+      <span style="flex: 1 1 auto; height: 1px; background: #cbd5e1"></span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #475569">
+      <span style="width: 8px; height: 8px; border-radius: 999px; background: #0e7490; display: inline-block"></span>
+      Looking at the events of sub-002 before proposing a plan…
+    </div>
+  </div>
+
+  <div style="border-top: 1px solid #e5e7eb; padding: 8px 14px; font-size: 11.5px; color: #475569; background: #f7f8fb">Quick answers use a smaller, faster model. Running code and plots use the analysis model.</div>
+  <form style="border-top: 1px solid #e5e7eb; padding: 12px 14px; display: flex; gap: 8px">
+    <label for="ho-input" style="position: absolute; left: -9999px">Message</label>
+    <input id="ho-input" type="text" placeholder="Ask about on002718…" style="flex: 1 1 auto; min-width: 0; border: 1px solid #cbd5e1; border-radius: 999px; padding: 11px 16px; font: 14px Inter, sans-serif">
+    <button type="submit" aria-label="Send" style="width: 44px; height: 44px; border-radius: 999px; border: 0; background: #0e7490; display: flex; align-items: center; justify-content: center">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" aria-hidden="true"><path d="M4 12l16-8-6 16-2-7z"></path></svg>
+    </button>
+  </form>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":400,"height":820}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan first, then run</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0e5a70}a:hover{color:#083b4a}
+</style>
+</helmet>
+<div style="width: 400px; height: 960px; box-sizing: border-box; font-family: Inter, system-ui, sans-serif; color: #1f2937; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 14px; overflow: hidden; display: flex; flex-direction: column">
+  <header style="background: #5bbad5; color: #06112a; padding: 12px 14px; display: flex; align-items: center; gap: 10px">
+    <div style="width: 34px; height: 34px; border-radius: 999px; background: #ffffff; display: flex; align-items: center; justify-content: center; flex: none">
+      <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" fill="#0e7490"></path></svg>
+    </div>
+    <div style="flex: 1 1 auto; font-weight: 600; font-size: 15px">NEMAR Assistant</div>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; background: #ffffff; border-radius: 4px; padding: 2px 6px">on002718</span>
+    <button type="button" aria-label="Close" style="width: 32px; height: 32px; border: 0; background: transparent; display: flex; align-items: center; justify-content: center">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#06112a" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+    </button>
+  </header>
+
+  <div style="flex: 1 1 auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; overflow: hidden">
+    <div style="align-self: flex-end; max-width: 84%; background: #5bbad5; color: #06112a; border-radius: 12px; padding: 10px 14px; font-size: 14px">Compare ERPs for famous vs scrambled faces</div>
+
+    <div style="font-size: 11px; letter-spacing: 0.6px; color: #6b7280; font-weight: 600">NEMAR ASSISTANT</div>
+    <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #475569">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#15803d" stroke-width="2.5" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>
+      Looked first: dataset summary, events of sub-002, channel list
+    </div>
+    <div style="background: #f3f4f6; border-radius: 12px; padding: 12px 14px; font-size: 13.5px; line-height: 1.55">
+      <strong>What I found.</strong> sub-002's FaceRecognition recording has 1,479 events. Face onsets are labeled Famous, Unfamiliar and Scrambled, each as a first, immediate or delayed repeat. The EEG is 70 channels at 250 Hz; I'll leave out the 2 EOG channels.
+    </div>
+
+    <section aria-label="Proposed plan" style="border: 1px solid #94cfe0; border-radius: 12px; overflow: hidden">
+      <div style="background: #f5fbfd; padding: 12px 14px; border-bottom: 1px solid #cfe7ef">
+        <div style="display: flex; align-items: center; justify-content: space-between">
+          <div style="font-weight: 600; font-size: 14px; color: #0b1a3a">Proposed plan · 5 steps</div>
+          <span style="font-size: 11px; color: #0e5a70; border: 1px solid #b9e0eb; border-radius: 999px; padding: 2px 8px; background: #ffffff">Draft</span>
+        </div>
+        <div style="font-size: 12px; color: #475569; margin-top: 4px">About 1 to 2 minutes · largest step needs about 300 MB of your 512 MB budget</div>
+      </div>
+      <ol style="list-style: none; margin: 0; padding: 6px 0">
+        <li style="display: flex; gap: 10px; padding: 8px 14px; align-items: flex-start">
+          <span style="flex: none; width: 22px; height: 22px; border-radius: 999px; background: #0e7490; color: #ffffff; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center">1</span>
+          <span style="flex: 1 1 auto; font-size: 13px; line-height: 1.45">Count face onsets per condition in sub-002's events.</span>
+          <button type="button" aria-label="Edit step 1" style="flex: none; width: 28px; height: 28px; border: 0; background: transparent"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path></svg></button>
+        </li>
+        <li style="display: flex; gap: 10px; padding: 8px 14px; align-items: flex-start; background: #fffbeb">
+          <span style="flex: none; width: 22px; height: 22px; border-radius: 999px; background: #0e7490; color: #ffffff; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center">2</span>
+          <div style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px">
+            <label for="step2" style="position: absolute; left: -9999px">Step 2</label>
+            <textarea id="step2" rows="3" style="font: 13px/1.45 Inter, sans-serif; border: 1px solid #f59e0b; border-radius: 6px; padding: 6px 8px; resize: none; color: #1f2937">Read the EEG once and cut epochs from −200 to 600 ms around each face onset, baseline −200 to 0 ms.</textarea>
+            <div style="display: flex; gap: 6px">
+              <button type="button" style="background: #0b1a3a; color: #ffffff; border: 0; border-radius: 6px; padding: 6px 10px; font: 500 12px Inter, sans-serif">Save</button>
+              <button type="button" style="background: #ffffff; color: #334155; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 10px; font: 500 12px Inter, sans-serif">Cancel</button>
+            </div>
+          </div>
+        </li>
+        <li style="display: flex; gap: 10px; padding: 8px 14px; align-items: flex-start">
+          <span style="flex: none; width: 22px; height: 22px; border-radius: 999px; background: #0e7490; color: #ffffff; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center">3</span>
+          <span style="flex: 1 1 auto; font-size: 13px; line-height: 1.45">Average the epochs per condition and find the channels with the largest N170.</span>
+          <button type="button" aria-label="Edit step 3" style="flex: none; width: 28px; height: 28px; border: 0; background: transparent"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path></svg></button>
+        </li>
+        <li style="display: flex; gap: 10px; padding: 8px 14px; align-items: flex-start">
+          <span style="flex: none; width: 22px; height: 22px; border-radius: 999px; background: #0e7490; color: #ffffff; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center">4</span>
+          <span style="flex: 1 1 auto; font-size: 13px; line-height: 1.45">Plot famous vs scrambled ERPs there, with 150 to 200 ms shaded.</span>
+          <button type="button" aria-label="Edit step 4" style="flex: none; width: 28px; height: 28px; border: 0; background: transparent"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path></svg></button>
+        </li>
+        <li style="display: flex; gap: 10px; padding: 8px 14px; align-items: flex-start">
+          <span style="flex: none; width: 22px; height: 22px; border-radius: 999px; background: #0e7490; color: #ffffff; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center">5</span>
+          <span style="flex: 1 1 auto; font-size: 13px; line-height: 1.45">Summarize the difference and offer to repeat it for all 18 subjects.</span>
+          <button type="button" aria-label="Edit step 5" style="flex: none; width: 28px; height: 28px; border: 0; background: transparent"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path></svg></button>
+        </li>
+      </ol>
+      <div style="padding: 0 14px 10px">
+        <button type="button" style="background: transparent; border: 1px dashed #94cfe0; border-radius: 8px; width: 100%; padding: 8px; font: 500 12.5px Inter, sans-serif; color: #0e5a70">+ Add a step</button>
+      </div>
+      <fieldset style="border: 0; border-top: 1px solid #e5e7eb; margin: 0; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px">
+        <legend style="position: absolute; left: -9999px">When a step finishes</legend>
+        <div style="font-size: 12px; color: #475569; font-weight: 600">When a step finishes</div>
+        <div style="display: flex; gap: 6px">
+          <label style="flex: 1 1 0; display: flex; align-items: center; gap: 6px; border: 1.5px solid #0e7490; background: #f5fbfd; border-radius: 8px; padding: 8px 10px; font-size: 12.5px"><input type="radio" name="mode" checked> Pause so I can look</label>
+          <label style="flex: 1 1 0; display: flex; align-items: center; gap: 6px; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; font-size: 12.5px"><input type="radio" name="mode"> Run all steps</label>
+        </div>
+      </fieldset>
+      <div style="padding: 10px 14px 14px; display: flex; gap: 8px; align-items: center">
+        <button type="button" style="flex: 1 1 auto; background: #0e7490; color: #ffffff; border: 0; border-radius: 8px; min-height: 44px; font: 600 14px Inter, sans-serif">Approve and run step 1</button>
+        <button type="button" style="background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 8px; min-height: 44px; padding: 0 12px; font: 500 13px Inter, sans-serif">Ask for changes</button>
+      </div>
+      <div style="padding: 0 14px 12px; font-size: 11.5px; color: #64748b">Approving lets these steps run their code in your browser. You can stop any step.</div>
+    </section>
+  </div>
+
+  <form style="border-top: 1px solid #e5e7eb; padding: 12px 14px; display: flex; gap: 8px">
+    <label for="pl-input" style="position: absolute; left: -9999px">Message</label>
+    <input id="pl-input" type="text" placeholder="Or describe a different plan…" style="flex: 1 1 auto; min-width: 0; border: 1px solid #cbd5e1; border-radius: 999px; padding: 11px 16px; font: 14px Inter, sans-serif">
+    <button type="submit" aria-label="Send" style="width: 44px; height: 44px; border-radius: 999px; border: 0; background: #0e7490; display: flex; align-items: center; justify-content: center">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" aria-hidden="true"><path d="M4 12l16-8-6 16-2-7z"></path></svg>
+    </button>
+  </form>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":400,"height":960}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

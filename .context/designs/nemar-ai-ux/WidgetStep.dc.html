@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Step results, code and errors</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0e5a70}a:hover{color:#083b4a}
+</style>
+</helmet>
+<div style="width: 400px; height: 1100px; box-sizing: border-box; font-family: Inter, system-ui, sans-serif; color: #1f2937; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 14px; overflow: hidden; display: flex; flex-direction: column">
+  <header style="background: #5bbad5; color: #06112a; padding: 12px 14px; display: flex; align-items: center; gap: 10px">
+    <div style="width: 34px; height: 34px; border-radius: 999px; background: #ffffff; display: flex; align-items: center; justify-content: center; flex: none">
+      <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" fill="#0e7490"></path></svg>
+    </div>
+    <div style="flex: 1 1 auto; font-weight: 600; font-size: 15px">NEMAR Assistant</div>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; background: #ffffff; border-radius: 4px; padding: 2px 6px">on002718</span>
+  </header>
+
+  <div style="padding: 10px 14px; border-bottom: 1px solid #e5e7eb; background: #f7f8fb; display: flex; align-items: center; gap: 10px">
+    <div style="font-size: 12px; font-weight: 600; color: #0b1a3a">Plan · step 4 of 5</div>
+    <div aria-hidden="true" style="flex: 1 1 auto; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px">
+      <span style="height: 6px; border-radius: 3px; background: #0e7490"></span>
+      <span style="height: 6px; border-radius: 3px; background: #0e7490"></span>
+      <span style="height: 6px; border-radius: 3px; background: #0e7490"></span>
+      <span style="height: 6px; border-radius: 3px; background: #b91c1c"></span>
+      <span style="height: 6px; border-radius: 3px; background: #e2e8f0"></span>
+    </div>
+    <span style="font-size: 11px; color: #475569">Pauses after each step</span>
+  </div>
+
+  <div style="flex: 1 1 auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; overflow: hidden">
+    <button type="button" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 9px 12px; font: 13px Inter, sans-serif; color: #1f2937">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#15803d" stroke-width="2.5" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>
+      <span style="flex: 1 1 auto"><strong style="font-weight: 600">Step 1</strong> · Counted 882 face onsets in 3 conditions</span>
+      <span style="font-size: 11px; color: #64748b">1.2 s</span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+    </button>
+    <button type="button" style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 9px 12px; font: 13px Inter, sans-serif; color: #1f2937">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#15803d" stroke-width="2.5" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>
+      <span style="flex: 1 1 auto"><strong style="font-weight: 600">Step 2</strong> · Cut 882 epochs, −200 to 600 ms</span>
+      <span style="font-size: 11px; color: #64748b">6.1 s</span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+    </button>
+
+    <article style="border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden">
+      <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #f1f5f9">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#15803d" stroke-width="2.5" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>
+        <div style="flex: 1 1 auto; font-size: 13px"><strong style="font-weight: 600">Step 3</strong> · Averaged epochs per condition</div>
+        <span style="font-size: 11px; color: #15803d; background: #f0fdf4; border-radius: 999px; padding: 2px 8px">Done · 3.4 s</span>
+      </div>
+      <div style="padding: 10px 12px; font-size: 13px; line-height: 1.5; color: #334155">The N170 is largest at EEG065 to EEG068. Famous faces dip to −4.1 µV at 172 ms; scrambled faces to −2.3 µV.</div>
+      <figure style="margin: 0 12px 6px; border: 1px solid #f1f5f9; border-radius: 8px; padding: 6px">
+        <svg role="img" aria-label="ERP at EEG066 by condition, famous faces have a deeper dip near 170 ms" width="348" height="150" viewBox="0 0 348 150">
+          <rect x="161" y="10" width="19" height="125" fill="#fde68a" opacity="0.5"></rect>
+          <line x1="30" y1="75" x2="336" y2="75" stroke="#cbd5e1" stroke-width="1"></line>
+          <line x1="105" y1="12" x2="105" y2="135" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3 3"></line>
+          <line x1="30" y1="135" x2="336" y2="135" stroke="#94a3b8" stroke-width="1"></line>
+          <path d="M30 75 L105 75 C120 74 130 58 140 60 C150 64 158 104 168 112 C178 116 186 88 200 80 C230 64 262 68 336 74" fill="none" stroke="#2563eb" stroke-width="2"></path>
+          <path d="M30 76 L105 76 C120 74 130 64 140 66 C150 70 158 88 168 92 C178 94 186 84 200 80 C230 72 262 74 336 75" fill="none" stroke="#ea580c" stroke-width="2"></path>
+          <path d="M30 75 L105 75 C120 74 130 61 140 63 C150 67 158 98 168 104 C178 108 186 86 200 80 C230 68 262 71 336 74" fill="none" stroke="#475569" stroke-width="1.5" stroke-dasharray="4 3"></path>
+          <text x="105" y="146" font-size="9" fill="#475569" text-anchor="middle" font-family="Inter">0 ms</text>
+          <text x="180" y="146" font-size="9" fill="#475569" text-anchor="middle" font-family="Inter">200</text>
+          <text x="330" y="146" font-size="9" fill="#475569" text-anchor="end" font-family="Inter">600</text>
+          <text x="40" y="20" font-size="9" fill="#2563eb" font-family="Inter">Famous</text>
+          <text x="40" y="32" font-size="9" fill="#c2410c" font-family="Inter">Scrambled</text>
+          <text x="40" y="44" font-size="9" fill="#475569" font-family="Inter">Unfamiliar</text>
+        </svg>
+      </figure>
+      <div style="display: flex; gap: 6px; padding: 8px 12px 12px; flex-wrap: wrap">
+        <button type="button" aria-expanded="false" style="display: flex; align-items: center; gap: 6px; background: #f5fbfd; color: #0e5a70; border: 1.5px solid #0e7490; border-radius: 8px; min-height: 36px; padding: 0 12px; font: 600 12.5px Inter, sans-serif">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0e5a70" stroke-width="2.2" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"></path></svg>
+          Show code · 24 lines
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#0e5a70" stroke-width="2.5" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+        </button>
+        <button type="button" style="background: #ffffff; color: #334155; border: 1px solid #cbd5e1; border-radius: 8px; min-height: 36px; padding: 0 10px; font: 500 12.5px Inter, sans-serif">Copy code</button>
+        <button type="button" style="background: #ffffff; color: #334155; border: 1px solid #cbd5e1; border-radius: 8px; min-height: 36px; padding: 0 10px; font: 500 12.5px Inter, sans-serif">Output · 6 lines</button>
+        <button type="button" aria-label="Download figure" style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"></path></svg>
+        </button>
+      </div>
+    </article>
+
+    <article style="border: 1.5px solid #b91c1c; border-radius: 12px; overflow: hidden">
+      <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #fef2f2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#b91c1c" stroke-width="2.5" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v6M12 16.5v.5"></path></svg>
+        <div style="flex: 1 1 auto; font-size: 13px; color: #7f1d1d"><strong style="font-weight: 600">Step 4 failed</strong> · KeyError: 'Scrambled'</div>
+      </div>
+      <div style="padding: 10px 12px; font-size: 13px; line-height: 1.5; color: #334155">The labels are <code style="font-family: 'JetBrains Mono', monospace; font-size: 12px; background: #f1f5f9; padding: 0 3px; border-radius: 3px">scrambled_first</code>, <code style="font-family: 'JetBrains Mono', monospace; font-size: 12px; background: #f1f5f9; padding: 0 3px; border-radius: 3px">scrambled_immediate</code> and so on, not <code style="font-family: 'JetBrains Mono', monospace; font-size: 12px; background: #f1f5f9; padding: 0 3px; border-radius: 3px">Scrambled</code>.</div>
+      <div style="margin: 0 12px; background: #1e293b; border-radius: 8px; padding: 8px 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.6; color: #e2e8f0">
+        <div style="display: flex; gap: 10px; padding: 0 10px"><span style="color: #64748b; width: 14px; text-align: right">7</span><span>labels = events["trial_type"].to_numpy()</span></div>
+        <div style="display: flex; gap: 10px; padding: 0 10px; background: #7f1d1d"><span style="color: #fca5a5; width: 14px; text-align: right">8</span><span>erp = {c: epochs[groups[c]].mean(0)</span></div>
+        <div style="display: flex; gap: 10px; padding: 0 10px"><span style="color: #64748b; width: 14px; text-align: right">9</span><span>       for c in ("Famous", "Scrambled")}</span></div>
+      </div>
+      <div style="display: flex; gap: 6px; padding: 10px 12px; flex-wrap: wrap">
+        <button type="button" aria-expanded="true" style="display: flex; align-items: center; gap: 6px; background: #ffffff; color: #0e5a70; border: 1.5px solid #0e7490; border-radius: 8px; min-height: 36px; padding: 0 12px; font: 600 12.5px Inter, sans-serif">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0e5a70" stroke-width="2.2" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"></path></svg>
+          All code · 31 lines
+        </button>
+        <button type="button" style="background: #ffffff; color: #334155; border: 1px solid #cbd5e1; border-radius: 8px; min-height: 36px; padding: 0 10px; font: 500 12.5px Inter, sans-serif">Full traceback</button>
+        <button type="button" style="background: #ffffff; color: #334155; border: 1px solid #cbd5e1; border-radius: 8px; min-height: 36px; padding: 0 10px; font: 500 12.5px Inter, sans-serif">Copy error</button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid #fee2e2; background: #fffbfb; font-size: 12.5px; color: #334155">
+        <span style="width: 8px; height: 8px; border-radius: 999px; background: #0e7490; display: inline-block"></span>
+        Fixing the labels and running step 4 again… <span style="color: #64748b">attempt 2 of 2</span>
+      </div>
+    </article>
+  </div>
+
+  <div style="border-top: 1px solid #e5e7eb; padding: 10px 14px; display: flex; gap: 8px; align-items: center; background: #f7f8fb">
+    <span style="flex: 1 1 auto; font-size: 12px; color: #475569">Step 5 waits until step 4 works.</span>
+    <button type="button" style="background: #ffffff; color: #7f1d1d; border: 1px solid #fca5a5; border-radius: 8px; min-height: 36px; padding: 0 12px; font: 500 12.5px Inter, sans-serif">Stop plan</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":400,"height":1100}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
