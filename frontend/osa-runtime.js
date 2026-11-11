@@ -526,6 +526,11 @@ export class PyodideRuntime {
     // window between a result settling and the workspace write that consumes
     // it, so takeFiles() deletes what it returns.
     this._files = new Map();
+    // call_id -> the size of the interpreter's WebAssembly memory in bytes after that
+    // run (E5.1), for the widget to report against the reader's memory budget. Kept
+    // apart from the result on purpose: `heap_bytes` is not a ClientToolResult field, so
+    // it never reaches the server. Bounded like `outputs`, oldest first.
+    this._heap = new Map();
   }
 
   /** True when the runtime can accept work. */
@@ -666,6 +671,10 @@ export class PyodideRuntime {
       }
       if (pendingEntry && files.length > 0) {
         this._files.set(msg.call_id, files);
+      }
+      if (pendingEntry && Number.isFinite(msg.heap_bytes) && msg.heap_bytes > 0) {
+        this._heap.set(msg.call_id, msg.heap_bytes);
+        while (this._heap.size > FULL_OUTPUT_MAX_CALLS) this._heap.delete(this._heap.keys().next().value);
       }
       const settled = this._settleExecution(msg.call_id, result);
       // An instance that reported its own out-of-memory is still the instance
@@ -1106,6 +1115,19 @@ export class PyodideRuntime {
     const files = this._files.get(callId);
     this._files.delete(callId);
     return files || [];
+  }
+
+  /**
+   * The size of the interpreter's WebAssembly memory after the run `callId`, in bytes, or
+   * null when the run reported none (one refused before it started, a host-side timeout or
+   * cancel, a run older than the last FULL_OUTPUT_MAX_CALLS). The widget reads it after the
+   * run to show "Heap N MB of B MB" (E5.1); it is not part of the result.
+   *
+   * @param {string} callId
+   * @returns {number|null}
+   */
+  heapBytes(callId) {
+    return this._heap.has(callId) ? this._heap.get(callId) : null;
   }
 
   /**

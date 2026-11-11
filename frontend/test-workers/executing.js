@@ -125,10 +125,17 @@ self.onmessage = (event) => {
       files.push({ path: 'artifacts/bad.bin', data_base64: 'not-valid-base64!!!' });
     }
 
+    // HEAP_MB=<n> anywhere in the code (a comment will do) reports a WebAssembly heap of n MB
+    // after the run, as the real worker does in `heap_bytes` (osa-worker-core.js); without
+    // it the run reports none. Beside the result, never in it.
+    const heapMatch = code.match(/HEAP_MB=(\d+)/);
+    const heapFields = heapMatch ? { heap_bytes: Number(heapMatch[1]) * 1024 * 1024 } : {};
+
     const reply = () => {
       self.postMessage({
         type: 'result',
         call_id: data.call_id,
+        ...heapFields,
         status: failed ? 'error' : 'ok',
         stdout: failed ? '' : fullStdout.slice(0, 64),
         stderr: failed ? fullStderr : '',
