@@ -119,6 +119,7 @@ console.log('\na proposed plan: the rail is an aside with a list, every step pen
   const aside = rail(page);
   assert(aside !== null && aside.tagName === 'ASIDE' && aside.getAttribute('aria-label') === 'Plan', 'an <aside aria-label="Plan"> appears');
   assert(aside.querySelector('ol') !== null, 'with an <ol>');
+  assertEqual(aside.querySelector('ol').getAttribute('role'), 'list', 'that says it is a list (Safari drops it from a list with no bullets)');
   assert(page.q('.osa-chat-window').classList.contains('osa-center-has-rail'), 'and the window has the rail class');
   assertEqual(heading(page), 'Proposed plan', 'headed "Proposed plan"');
   assertEqual(rows(page).map((li) => text(li.querySelector('.osa-plan-rail-title'))), PLAN_ARGS.steps.map((s) => s.title), 'a row for each step, in order');
@@ -446,6 +447,72 @@ console.log('\nTab runs header, rail, thread, input and stays in the dialog; Esc
   assert(!win.classList.contains('osa-center') && rail(page) === null, 'Escape docks the dialog, and the rail goes with it');
   assert(page.q('.osa-chat-messages') === thread, 'the same thread');
   assert(win.classList.contains('open'), 'still open');
+}
+
+// What the browser does and happy-dom does not: an element in a display:none subtree has no
+// boxes, so focus() on it does nothing. Read from the computed display, as the CSS decides.
+function emulateLayout(page) {
+  page.window.HTMLElement.prototype.getClientRects = function getClientRects() {
+    for (let el = this; el && el.nodeType === 1; el = el.parentElement) {
+      el.setAttribute('data-style-check', '1');
+      el.removeAttribute('data-style-check');
+      if (page.window.getComputedStyle(el).display === 'none') return [];
+    }
+    return [{ width: 10, height: 10 }];
+  };
+}
+
+console.log('\nRun step N in the bar: focus goes where the reader can see it, never to the page');
+{
+  const page = await centerPage();
+  await proposeFirst(page);
+  await runStepsPaused(page, 1);
+  emulateLayout(page);
+  assert(display(page, page.q('.osa-plan-strip')) === 'none', 'set up: the strip is hidden while the rail shows');
+  const go = page.queue();
+  click(page, page.q('.osa-plan-bar-run'));
+  await waitUntil(() => page.requests.length === 4, 'Run step 2 is sent');
+  const active = page.window.document.activeElement;
+  assert(active !== page.window.document.body, 'focus did not fall to the page');
+  assert(active === rail(page) && page.q('.osa-chat-window').contains(active), 'it went to the rail, which says the same as the hidden strip, inside the dialog');
+  assertEqual(rail(page).getAttribute('tabindex'), '-1', 'the rail takes focus without joining the Tab order');
+  go.send({ event: 'session', session_id: 'sess-1' });
+  go.send(doneEvent('Nothing more.'));
+  go.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+}
+
+console.log('\nRun step N at 900px and under: the strip is drawn, and it takes focus');
+{
+  const page = await centerPage();
+  page.window.happyDOM.setViewport({ width: 900, height: 700 });
+  await proposeFirst(page);
+  await runStepsPaused(page, 1);
+  emulateLayout(page);
+  assert(display(page, page.q('.osa-plan-strip')) !== 'none', 'set up: the strip shows');
+  const go = page.queue();
+  click(page, page.q('.osa-plan-bar-run'));
+  await waitUntil(() => page.requests.length === 4, 'Run step 2 is sent');
+  assert(page.window.document.activeElement === page.q('.osa-plan-strip'), 'focus is on the strip');
+  go.send({ event: 'session', session_id: 'sess-1' });
+  go.send(doneEvent('Nothing more.'));
+  go.close();
+  await waitUntil(() => settled(page), 'the reply ends');
+}
+
+console.log('\na row whose run card is not in the thread still does something');
+{
+  const page = await centerPage();
+  await proposeFirst(page);
+  await runStepsPaused(page, 1);
+  const scrolled = [];
+  page.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView(options) { scrolled.push([this, options]); };
+  const thread = page.q('.osa-chat-messages');
+  page.q('.osa-run-card[data-plan-step="1"]').remove();
+  assertEqual(railButtons(page).length, 1, 'set up: step 1 is still drawn as a button');
+  click(page, railButtons(page)[0]);
+  assertEqual(scrolled.length, 1, 'the click scrolls');
+  assert(scrolled[0][0] === thread && page.window.document.activeElement === thread, 'to the thread, which is focused: no dead control');
 }
 
 console.log('\nthe rail is not drawn at 900px and under, where the strip carries the plan');

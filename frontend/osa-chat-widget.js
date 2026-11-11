@@ -13035,14 +13035,29 @@
         messagesEl.appendChild(bar);
       }
     }
-    if (planFocusAfterRender) {
-      const target = messagesEl.querySelector(planFocusAfterRender);
-      planFocusAfterRender = null;
-      if (target && typeof target.focus === 'function') target.focus();
-    }
     // The center-stage dialog's rail and header button read the same conversation (E6.1).
+    // The rail first: focus below may have to land on it.
     syncPlanRail(container);
     syncCenterNotebook(container);
+    if (planFocusAfterRender) {
+      const wanted = messagesEl.querySelector(planFocusAfterRender);
+      planFocusAfterRender = null;
+      // focus() on an element that is not drawn does nothing, and the control that had
+      // focus has been replaced, so focus would fall to the page: the strip is hidden
+      // while the rail shows. The rail says the same, so it takes the focus, then the thread.
+      const target = wanted && !isDrawn(wanted)
+        ? [container.querySelector('.osa-plan-rail'), messagesEl].find(isDrawn)
+        : wanted;
+      if (target && typeof target.focus === 'function') {
+        if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+        target.focus();
+      }
+    }
+  }
+  // Whether an element is on screen, which focus() needs: display:none, or an ancestor
+  // with it, leaves no boxes.
+  function isDrawn(el) {
+    return Boolean(el) && typeof el.focus === 'function' && typeof el.getClientRects === 'function' && el.getClientRects().length > 0;
   }
   // --- End plan card ---
 
@@ -17647,7 +17662,7 @@
       ? `<div class="osa-plan-rail-memory">Memory budget ${escapeHtml(memoryLabel)} <span aria-hidden="true">·</span> <button type="button" class="osa-plan-rail-change" aria-label="Change memory budget">change</button></div>`
       : '';
     return `<p class="osa-plan-rail-heading" id="osa-plan-rail-heading">${escapeHtml(model.heading)}</p>
-        <ol class="osa-plan-rail-list" aria-labelledby="osa-plan-rail-heading">${rows}</ol>
+        <ol class="osa-plan-rail-list" role="list" aria-labelledby="osa-plan-rail-heading">${rows}</ol>
         <div class="osa-plan-rail-foot">
           <div class="osa-plan-rail-mode"><span class="osa-sr-only">Run mode: </span>${escapeHtml(model.modeLabel)}</div>
           ${memory}
@@ -17675,6 +17690,8 @@
       rail = document.createElement('aside');
       rail.className = 'osa-plan-rail';
       rail.setAttribute('aria-label', 'Plan');
+      // Focus goes here when the strip it stands for is hidden: see renderPlanChrome.
+      rail.setAttribute('tabindex', '-1');
     }
     // Beside the thread, before it: the header, the rail, the thread, the input.
     if (rail.nextElementSibling !== thread) thread.parentElement.insertBefore(rail, thread);
@@ -17699,13 +17716,14 @@
   function goToPlanStep(container, step) {
     const thread = container.querySelector('.osa-chat-messages');
     if (!thread) return;
-    const cards = [...thread.querySelectorAll('.osa-run-card[data-plan-step]')].filter((el) => el.getAttribute('data-plan-step') === String(step));
-    const card = cards.length ? cards[cards.length - 1] : null;
-    if (!card) return;
+    const runCards = [...thread.querySelectorAll('.osa-run-card[data-plan-step]')];
+    const cards = runCards.filter((el) => el.getAttribute('data-plan-step') === String(step));
+    // A row drawn as a button always has an effect: when its card is not in the thread
+    // (a run mirrored into an open local editor has none), the newest card, or the thread.
+    const card = cards.length ? cards[cards.length - 1] : (runCards.length ? runCards[runCards.length - 1] : thread);
     if (!card.hasAttribute('tabindex')) card.setAttribute('tabindex', '-1');
     if (typeof card.scrollIntoView === 'function') {
-      const calm = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      card.scrollIntoView({ block: 'start', behavior: calm ? 'auto' : 'smooth' });
+      card.scrollIntoView({ block: 'start', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
     }
     card.focus({ preventScroll: true });
   }
