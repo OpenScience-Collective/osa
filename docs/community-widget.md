@@ -1066,13 +1066,13 @@ What `share_usage: false` changes on the server, and what it leaves:
 `POST /{community}/ask` and `/chat/resume` accept the same `share_usage` field (default `true`).
 The Cloudflare worker forwards the JSON body unchanged, so the field needs no header or allowlist entry.
 
-The link goes to `privacy_url` from the community's `widget` block, or, when that is unset or not valid, to `https://github.com/OpenScience-Collective/osa/blob/develop/PRIVACY.md`.
+The link goes to `privacy_url` from the community's `widget` block, or, when that is unset or not valid, to `https://docs.osc.earth/osa/privacy/`, the reader-facing copy of the repository's `PRIVACY.md`.
 It is validated twice, as `analysis_docs` is: `WidgetConfig` refuses a value that is not an `https://` URL with a host, no credentials and no whitespace (at most 500 characters) when the config loads, and the widget checks again before drawing, falling back to the default.
 It opens in a new tab (`target="_blank"`, `rel="noopener noreferrer"`, with a visually hidden "(opens in a new tab)").
 
 ```yaml
 widget:
-  privacy_url: https://nemar.org/privacy/
+  privacy_url: https://docs.nemar.org/policies/privacy/#the-open-science-assistant
 ```
 
 ## The first paint: remembering the community's look

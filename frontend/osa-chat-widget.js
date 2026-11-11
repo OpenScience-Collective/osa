@@ -17720,7 +17720,7 @@
   // scopes to it, and Escape closes it first, see handleCenterKey) with its own keydown,
   // because Settings and Feedback have no trap in the corner and this one is a modal there
   // as well: Tab and Shift+Tab wrap inside it, and Escape closes only it.
-  const DEFAULT_PRIVACY_URL = 'https://github.com/OpenScience-Collective/osa/blob/develop/PRIVACY.md';
+  const DEFAULT_PRIVACY_URL = 'https://docs.osc.earth/osa/privacy/';
   const PRIVACY_URL_MAX = 500;
   // Runtime state of "Share usage data". True until the reader says otherwise.
   let shareUsageEnabled = true;

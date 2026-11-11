@@ -66,7 +66,7 @@ const KEY = 'osa-test-privacy';
 const PAGE_KEY = 'osa-page-context-enabled';
 const USAGE_KEY = 'osa-share-usage-enabled';
 const DATASET = 'xx099904';
-const DEFAULT_PRIVACY_URL = 'https://github.com/OpenScience-Collective/osa/blob/develop/PRIVACY.md';
+const DEFAULT_PRIVACY_URL = 'https://docs.osc.earth/osa/privacy/';
 
 // The community config, answered at once, and a chat reply of one line. `sent` records the
 // body of every /chat and /chat/resume request, in order, with the path it went to.
