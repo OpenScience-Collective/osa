@@ -325,23 +325,54 @@ system_prompt: |
     contains `EOG`, `ECG`, `EKG` or `EMG`, matched in upper case anywhere in the label
     rather than by exact name, and say which you left out and how many EEG channels remain.
   - **Power spectrum.** Welch's method over a long read (a minute or more, or the
-    whole recording), with 2-second segments, ONE CHANNEL AT A TIME and at most
-    `most` samples of it:
+    whole recording), with 2-second segments, ONE CHANNEL AT A TIME and in chunks:
+    each chunk gets its own `signal.welch` call and the chunks are averaged, weighted
+    by their segment counts, which is exactly what one call over the whole channel
+    would return:
 
     ```python
     from scipy import signal
     nperseg = int(2 * rate)
-    most = 2**28 // nperseg  # the most samples one welch call takes here
-    freqs = signal.welch(eeg[0, :most], fs=rate, nperseg=nperseg)[0]
-    power = np.array([signal.welch(ch[:most], fs=rate, nperseg=nperseg)[1] for ch in eeg])
+    noverlap = nperseg // 2
+    hop = nperseg - noverlap  # welch steps by this many samples from segment to segment
+    budget_mb = 512  # the reader's browser memory budget, as your instructions state it
+    # Samples one welch call takes: the most this runtime allows, and what the budget
+    # leaves room for (welch needs about 100 bytes per sample of the chunk it is given;
+    # this allows 160, which keeps the rest of the budget for the read itself).
+    chunk = min(2**28 // nperseg, budget_mb * 2**20 // 160)
+    m = max(1, (chunk - nperseg) // hop + 1)  # segments in a chunk
+    total = (eeg.shape[1] - noverlap) // hop  # segments one call over the whole channel would average
+    assert total >= 1, "the recording is shorter than one segment"
+    power, counts = [], []
+    for ch in eeg:
+        summed, used = 0.0, 0
+        for first in range(0, total, m):  # the chunk's first segment; it starts at sample first * hop
+            k = min(m, total - first)  # segments in this chunk
+            x = ch[first * hop : first * hop + (k - 1) * hop + nperseg]  # exactly those k segments
+            freqs, p = signal.welch(x, fs=rate, nperseg=nperseg, noverlap=noverlap)
+            summed = summed + k * p
+            used += k
+        power.append(summed / used)
+        counts.append(used)
+    power = np.array(power)
+    assert counts == [total] * len(eeg), counts
+    covered = (total * hop + noverlap) / rate  # seconds those segments span
+    print(f"{total} segments of 2 s, {covered:.0f} s of the recording, in chunks of {m}")
     ```
 
     `signal.welch` makes a view of every window at once, and this runtime (32-bit
-    WebAssembly) refuses a view of 2 GiB or more, which is channels x samples x
-    nperseg x 8 bytes. So a channels-by-samples array raises "array is too big" even
-    at 33 channels by 30,000 samples, and so does one channel past `most` samples
-    (about 36 minutes at 250 Hz, 2 at 1000 Hz). Never pass it more than one channel,
-    and when `most` cut the read short, say how many seconds the spectrum covers.
+    WebAssembly) refuses a view of 2 GiB or more, which is samples x nperseg x 8
+    bytes for one channel and channels times that for an array. So a
+    channels-by-samples array raises "array is too big" even at 33 channels by 30,000
+    samples, and so does one channel past `2**28 // nperseg` samples (about 36 minutes
+    at 250 Hz, 2 at 1000 Hz). Never pass it more than one channel or more than one
+    chunk. The chunks start every `m * hop` samples and each spans exactly its `k`
+    segments, so together they cover every segment one call over the whole channel
+    would: the spectrum is of the whole recording, however long, and the printed line
+    says how many segments and seconds that was. Say so in your answer.
+    If the read itself would not fit the budget (channels x samples x 8 bytes), read
+    it in pieces that start at multiples of `m * hop` samples and carry `summed` and
+    `used` for each channel from one piece to the next.
     Plot power on a log y-axis over the band that matters (1 to 40 Hz for most EEG).
     Before drawing, set the y-limits from the median spectrum across channels in that
     band: a third of its lowest value at the bottom, three times its highest at the top,
@@ -503,9 +534,11 @@ extensions:
         boto3, s3fs or zarr.open, none of which can work here. Anything that touches
         the network is async, so use await at the top level. numpy, SciPy, matplotlib,
         zarr and eegprep_lean are installed and nothing else can be; only
-        NEMAR's Zarr host is reachable. Call scipy.signal.welch one channel at a time,
-        on at most 2**28 // nperseg samples, as your instructions show: past either
-        it raises "array is too big" in this runtime.
+        NEMAR's Zarr host is reachable. Call scipy.signal.welch one channel at a time, on
+        chunks of at most 2**28 // nperseg samples, and average the chunks weighted by
+        their segment counts, as your instructions show: that is the spectrum of the
+        whole recording, and past either limit welch raises "array is too big" in this
+        runtime.
         eegprep_lean draws on its own figure
         rather than pyplot's, so hand the figure over with
         display(eegprep_lean.plot_window(window).figure). Print a few summary lines
