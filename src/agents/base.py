@@ -22,6 +22,7 @@ from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, ValidationError
 
 from src.agents.state import BaseAgentState, PendingClientCallPayload
+from src.core.config.community import PROPOSE_PLAN_TOOL_NAME
 from src.tools.client_tools import ClientTool
 
 logger = logging.getLogger(__name__)
@@ -481,13 +482,24 @@ class BaseAgent(ABC):
                 # The reply has used its budget of browser runs. Answered like any
                 # refused call, so the run returns to the model instead of parking
                 # one more; fixed text, so the cached prefix survives it.
+                #
+                # A plan is refused too, on purpose, though answering one spends no
+                # run (`PendingClientCall.runs_after_answer`): its steps would each be
+                # one more run, and all would be refused, so showing the reader a plan
+                # that cannot be followed is worse than saying why there is none. The
+                # text names the real reason, which is not that a plan ran code.
+                refusal = (
+                    "This reply has already run code in the browser the most times "
+                    "one reply may, so no further plan can be followed; no plan was "
+                    "shown. Answer with what the earlier runs showed."
+                    if tc["name"] == PROPOSE_PLAN_TOOL_NAME
+                    else "This reply has already run code in the browser the most "
+                    "times one reply may; this call was not run. Answer with "
+                    "what the earlier runs showed."
+                )
                 new_messages.append(
                     ToolMessage(
-                        content=(
-                            "This reply has already run code in the browser the most "
-                            "times one reply may; this call was not run. Answer with "
-                            "what the earlier runs showed."
-                        ),
+                        content=refusal,
                         tool_call_id=tc["id"],
                         name=tc["name"],
                         status="error",
