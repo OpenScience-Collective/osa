@@ -565,6 +565,15 @@ jobs:
       - name: Run the host API and center-stage tests on a real DOM
         run: bun frontend/test-widget-host-api.js
 
+      # OSAChatWidget.seed (#730): the text becomes the assistant's first message and
+      # nothing is sent (no request, no send event, no Turnstile token); it is Markdown,
+      # sanitized, unrated, in History and across a reload; a chat with no reader message
+      # is reused, one with a message is kept and a new chat opens; the first send carries
+      # prior_turns; bad calls warn, calls before init are replayed, a loading reply
+      # refuses it. The server's half is tests/test_api/test_reseed.py.
+      - name: Run the seed tests on a real DOM
+        run: bun frontend/test-widget-seed.js
+
       # The plan card and the step progress (E2.3, E2.4), the real widget and the runtime
       # bundle as built, with fetch answering recorded-shape SSE: the card and its edits,
       # the decision posted to /chat/resume, consent, step headers, the strip and bar,
