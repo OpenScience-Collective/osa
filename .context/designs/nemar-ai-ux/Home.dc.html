@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Home search with AI Mode</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0f172a}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 900px; font-family: Inter, system-ui, sans-serif; color: #0f172a; background: linear-gradient(165deg, #eef3fb 0%, #f5f8fd 55%, #e6edf9 100%); position: relative; overflow: hidden">
+  <div aria-hidden="true" style="position: absolute; right: -120px; top: 120px; width: 760px; height: 620px; border-radius: 50%; border: 1px solid rgba(96, 116, 200, 0.18); background: rgba(160, 175, 230, 0.10)"></div>
+  <div aria-hidden="true" style="position: absolute; right: 40px; top: 210px; width: 520px; height: 420px; border-radius: 50%; border: 1px dashed rgba(96, 116, 200, 0.20)"></div>
+
+  <header style="position: relative">
+    <div style="max-width: 1200px; margin: 0 auto; padding: 16px 48px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap">
+      <div style="display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 26px; letter-spacing: -0.5px; color: #0b1a3a">
+        <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="12" fill="none" stroke="#5bbad5" stroke-width="2"></circle><circle cx="14" cy="14" r="5" fill="#5bbad5"></circle></svg>
+        <span>NEMAR</span>
+      </div>
+      <nav aria-label="Main" style="display: flex; gap: 22px; font-size: 14px; flex-wrap: wrap; flex: 1 1 auto; justify-content: center">
+        <a href="#" style="color: #475569; text-decoration: none">About</a>
+        <a href="#" style="color: #475569; text-decoration: none">Discover</a>
+        <a href="#" style="color: #475569; text-decoration: none">News</a>
+        <a href="#" style="color: #475569; text-decoration: none">Documentation</a>
+        <a href="#" style="color: #475569; text-decoration: none">Support</a>
+      </nav>
+      <a href="#" style="border: 1px solid #cbd5e1; border-radius: 999px; padding: 7px 16px; font-size: 14px; color: #0f172a; text-decoration: none; background: #ffffff">Sign in</a>
+    </div>
+  </header>
+
+  <section style="position: relative; max-width: 1200px; margin: 0 auto; padding: 40px 48px 64px">
+    <p style="margin: 0 0 24px; text-transform: uppercase; letter-spacing: 0.16em; font-size: 14px; font-weight: 600; color: #2563eb">Open neuroscience data, ready to use</p>
+
+    <form role="search" style="position: relative; max-width: 736px; margin-bottom: 48px">
+      <span aria-hidden="true" style="position: absolute; top: -10px; left: -12px; width: 20px; height: 20px; border-top: 2px solid rgba(37, 99, 235, 0.55); border-left: 2px solid rgba(37, 99, 235, 0.55)"></span>
+      <span aria-hidden="true" style="position: absolute; bottom: -10px; right: -12px; width: 20px; height: 20px; border-bottom: 2px solid rgba(37, 99, 235, 0.55); border-right: 2px solid rgba(37, 99, 235, 0.55)"></span>
+      <span style="display: block; font-size: 14px; font-weight: 600; letter-spacing: 0.04em; margin-bottom: 12px">Search for data</span>
+      <sc-if value="{{aiOn}}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; gap: 8px">
+          <div style="position: relative; flex: 1 1 auto; min-width: 0; padding: 2px; border-radius: 999px; background: linear-gradient(92deg, #5bbad5, #603cba); box-shadow: 0 10px 32px rgba(96, 60, 186, 0.22)">
+            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" style="position: absolute; left: 22px; top: 50%; transform: translateY(-50%); color: #0e7490"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z" fill="currentColor"></path><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" fill="currentColor"></path></svg>
+            <label for="hero-ai" style="position: absolute; left: -9999px">Describe the data you need</label>
+            <input id="hero-ai" type="search" value="EEG where people view famous faces" placeholder="Describe the data you need, in plain words" style="width: 100%; box-sizing: border-box; padding: 15px 150px 15px 48px; border: 0; border-radius: 999px; background: #ffffff; color: #0f172a; font: 18px/1.5 Inter, sans-serif">
+            <button type="button" aria-pressed="true" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 6px; height: 44px; padding: 0 16px 0 12px; border-radius: 999px; border: 1px solid #9fd6e6; background: #e3f4f9; color: #0b4f63; font: 600 14px Inter, sans-serif">
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="12.5" r="6" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="M15 17l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><path d="M18.5 2.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" fill="currentColor"></path></svg>
+              AI Mode
+            </button>
+          </div>
+          <button type="submit" style="flex: none; display: inline-flex; align-items: center; gap: 8px; padding: 16px 30px; background: #5bbad5; color: #04121f; border: 0; border-radius: 999px; font: 600 16px Inter, sans-serif; box-shadow: 0 8px 24px rgba(91, 186, 213, 0.30)">
+            <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z" fill="currentColor"></path></svg>
+            Ask
+          </button>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 16px 0 0 4px">
+          <span style="font-size: 13px; font-weight: 600; color: #475569; margin-right: 2px">Try</span>
+          <button type="button" style="display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid #cbd5e1; background: rgba(255, 255, 255, 0.85); color: #0f172a; font: 500 13px Inter, sans-serif">Resting-state EEG with over 100 participants</button>
+          <button type="button" style="display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid #cbd5e1; background: rgba(255, 255, 255, 0.85); color: #0f172a; font: 500 13px Inter, sans-serif">MEG with eye tracking</button>
+          <button type="button" style="display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid #cbd5e1; background: rgba(255, 255, 255, 0.85); color: #0f172a; font: 500 13px Inter, sans-serif">Datasets I can analyze in the browser</button>
+        </div>
+      </sc-if>
+      <sc-if value="{{aiOff}}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; gap: 8px">
+          <div style="position: relative; flex: 1 1 auto; min-width: 0">
+            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" style="position: absolute; left: 20px; top: 50%; transform: translateY(-50%); color: rgba(71, 85, 105, 0.7)"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path></svg>
+            <label for="hero-q" style="position: absolute; left: -9999px">Search datasets</label>
+            <input id="hero-q" type="search" placeholder="Enter keyword or phrase" style="width: 100%; box-sizing: border-box; padding: 16px 152px 16px 48px; border: 1px solid #cbd5e1; border-radius: 999px; background: #ffffff; color: #0f172a; font: 18px/1.5 Inter, sans-serif; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28)">
+            <button type="button" aria-pressed="false" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 6px; height: 44px; padding: 0 16px 0 12px; border-radius: 999px; border: 1px solid transparent; background: #f1f5f9; color: #334155; font: 500 14px Inter, sans-serif">
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="12.5" r="6" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="M15 17l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><path d="M18.5 2.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" fill="none" stroke="currentColor" stroke-width="1.4"></path></svg>
+              AI Mode
+            </button>
+          </div>
+          <button type="submit" style="flex: none; padding: 16px 32px; background: #5bbad5; color: #04121f; border: 0; border-radius: 999px; font: 600 16px Inter, sans-serif; box-shadow: 0 8px 24px rgba(91, 186, 213, 0.30)">Search</button>
+        </div>
+      </sc-if>
+    </form>
+
+    <div style="display: flex; gap: 64px; flex-wrap: wrap; align-items: flex-end">
+      <h1 style="flex: 1 1 420px; margin: 0; font-size: 88px; line-height: 1.04; letter-spacing: -0.02em; font-weight: 800; color: #0f172a">Search,<br>Visualize,<br>Analyze,<br><span style="background: linear-gradient(92deg, #5bbad5, #603cba); -webkit-background-clip: text; background-clip: text; color: transparent">Download</span></h1>
+      <div style="flex: 1 1 420px; display: flex; flex-direction: column; gap: 28px; padding-bottom: 12px">
+        <p style="margin: 0; font-size: 19px; line-height: 1.75; color: #475569">NEMAR is an open-access <em>data, tools, and compute</em> resource for finding, accessing, assessing, and processing human EEG, MEG, iEEG, and EMG data.</p>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap">
+          <a href="#" style="display: inline-flex; align-items: center; padding: 14px 28px; border-radius: 999px; background: #0f172a; color: #ffffff; text-decoration: none; font-weight: 600; font-size: 15px">Browse datasets</a>
+          <a href="#" style="display: inline-flex; align-items: center; gap: 8px; padding: 14px 28px; border-radius: 999px; border: 1px solid #94a3b8; color: #0f172a; text-decoration: none; font-weight: 600; font-size: 15px">Contribute your dataset →</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"aiOn":{"editor":"boolean","default":true},"$preview":{"width":1280,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const aiOn = this.props.aiOn ?? true;
+    return { aiOn: aiOn, aiOff: !aiOn };
+  }
+}
+</script>
+</body>
+</html>

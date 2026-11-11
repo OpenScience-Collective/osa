@@ -1,7 +1,7 @@
 # NEMAR AI experience: epics and delivery loop
 
 Status: draft for review, 2026-11-10.
-Designs: the "NEMAR AI UX concepts" canvas (https://claude.ai/artifact/1jPSUnj2JLhwKYeFha8CiZ), boards A1 to C3.
+Designs: the "NEMAR AI UX concepts" canvas (https://claude.ai/artifact/1jPSUnj2JLhwKYeFha8CiZ), boards A1 to D2.
 Inputs: feedback sent to Yahya from the NEMAR team (five items), Yahya's notes of 2026-11-10,
 a live session on nemar.org, and code reconnaissance of OSA (`develop` at 545bb1e), `nemarOrg/website` (`staging` at cb9e362), `nemarOrg/docs` and `nemarOrg/nemar-cli`.
 
@@ -35,7 +35,7 @@ In the code:
 Keep it maintainable: polish what exists before adding surfaces.
 
 - **Now:** E1 to E5, and E8. They fix what users hit today, cut running cost, and need no new service.
-- **Next, after the C boards are approved:** E6, AI mode on nemar.org.
+- **Next:** E6, AI Mode on nemar.org (boards approved 2026-11-10).
 - **Later, design only:** E7, account-backed history.
 - **Out of scope:** sharing one Python kernel between chat and notebook (a stated non-goal), one notebook tab per snippet (cells replace it), a model rewriting notebooks, and server-side history before E7's decision.
 
@@ -70,7 +70,7 @@ No mocks of business logic; recorded fixtures of real runs are fine as data.
    When a conversation resumes after its server session expired, send a compact text transcript to seed the new session.
    Verify: a backend test against a real graph that the seeded session answers with prior context.
 
-### E2. Plan first, then run one step at a time (OSA backend, NEMAR prompt, widget; boards A2, A3, C2)
+### E2. Plan first, then run one step at a time (OSA backend, NEMAR prompt, widget; boards A2, A3, C3)
 
 1. **`propose_plan` client tool.**
    A tool the agent calls with `{findings, steps: [{title, detail}], est_peak_mb}`; like `execute_code`, it interrupts the graph, the widget shows the plan, and `/chat/resume` returns the approved or edited plan and the run mode.
@@ -159,22 +159,33 @@ Switching models inside one server session risks the preserved-thinking checks n
 
 The search overview (E6.3) runs on the quick model.
 
-### E6. AI mode on nemar.org (OSA widget API, NEMAR website, OSA backend; boards C1, C2, C3)
+### E6. AI Mode on nemar.org (OSA widget API, NEMAR website, OSA backend; boards C1 to C3, D1, D2)
 
-Starts after the C boards are approved.
+Boards approved on 2026-11-10, after one revision: AI Mode is a pill, not a panel, and in search it is a toggle inside the field.
+"AI Mode" is one name and one look across the site: a pill of the site's 44 px pill height, brand teal `#5bbad5` with `#04121f` text when it is an action, and a teal tint (`#e3f4f9`, text `#0b4f63`) when it is a toggle that is on.
 
 1. **Host API and center stage.**
    `open()`, `close()`, `ask(text, {mode})`, `setMode('corner' | 'center')`, `on(event, fn)`; a center-stage dialog with focus trap where Escape or "Move to corner" docks the same conversation to the corner.
+   The dialog opens on a start screen (C2: question field, suggestion pills, what it can do) and becomes the conversation with the plan rail (C3).
    Verify: widget tests and a harness check for focus, Escape and docking.
-2. **Ask bar on the dataset page** (C1), after the ActionBar; hidden when the widget did not load.
+2. **AI Mode pill on the dataset page** (C1).
+   An ActionBar pill right after Download, same shape and 44 px height (`.action`), in brand teal with a sparkle icon; it calls `open({mode: 'center'})`.
+   A one-time hint under it introduces the feature; the pill is hidden when the widget did not load.
    Verify: website unit tests and a staging check.
 3. **Search overview in OSA.**
-   An endpoint that takes the query, filters and top results, answers on Haiku, cites only dataset ids from the given results, caches per normalized query for 24 hours, and counts against the community budget.
+   An endpoint that takes the query, filters and top results, answers on the quick model, cites only dataset ids from the given results, caches per normalized query for 24 hours, and counts against the community budget.
    Verify: backend tests for citation filtering and caching.
-4. **Discover AI overview** (C3): a remembered toggle, a client-side panel with a loading state, and "Ask a follow-up" into the widget.
+4. **Discover AI overview** (D2).
+   The AI Mode toggle sits inside the 44 px search field (a 36 px pill, `aria-pressed`); when on, the field gets a teal-to-purple ring and the overview panel loads client-side above the results, with "Ask a follow-up" into the widget.
+   The preference is remembered and carried as `ai=1` in the URL.
    Ship "Showing results for <corrected_query>" first; it needs no AI.
    Verify: website unit tests and a staging check.
-5. **Release and pin.**
+5. **AI Mode in the home search** (D1).
+   The same toggle inside the hero search field, at the full 44 px pill height.
+   When on, the field gets the teal-to-purple ring of the hero's "Download" headline, a sparkle replaces the magnifier, the placeholder invites a plain-language description, the button reads "Ask", and a "Try" row offers example searches; submitting goes to `/discover?q=…&ai=1`.
+   Off, the hero looks exactly as it does today.
+   Verify: website unit tests, a staging check in light and dark themes, and phone width.
+6. **Release and pin.**
    After an OSA release, bump the pinned widget source and Subresource Integrity (SRI) hash in `nemarOrg/website` `wrangler.toml`.
 
 ### E7. Account-backed history (design only)
@@ -202,6 +213,6 @@ Waves (at most three issues in flight):
 3. E1.4 with E1.5, E2.1 with E2.2 (on the analysis model), and E4.2 with E4.4.
 4. E2.3 with E2.4, E8.3 with E8.4, and E4.3.
 5. E5.1 with E5.2, E2.5, E3.3 to E3.5, and E1.6.
-6. After the C boards are approved: E6.4's corrected query, E6.1, E6.3, then E6.2 and E6.4.
+6. E6 (boards approved): E6.4's corrected query, E6.1, E6.3, then E6.2, E6.4 and E6.5.
 
 The loop ends when every Now issue is merged into `develop` and verified on develop-demo.osc.earth, or when an issue is blocked on a human decision, which the PM reports instead of guessing.
