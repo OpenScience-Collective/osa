@@ -784,6 +784,9 @@
     send: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>',
     reset: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
     history: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
+    search: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>',
+    more: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>',
+    historyClock: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>',
     swap: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11l-3-3M20 17H9l3 3"/></svg>',
     brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>',
     copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
@@ -1574,11 +1577,13 @@
     /* The chat's own header buttons have nothing to do on the notebook tab.
        Hidden, not removed, so the header does not reflow as the tabs switch. The
        pop-out button stays: the pop-out opens on the notebook tab too (#470). */
+    .osa-capsule .osa-history-btn,
     .osa-capsule .osa-settings-btn-open,
     .osa-capsule .osa-reset-btn {
       transition: opacity 160ms ease, background 0.2s, visibility 0s;
     }
 
+    .osa-capsule.osa-tab-notebook .osa-history-btn,
     .osa-capsule.osa-tab-notebook .osa-settings-btn-open,
     .osa-capsule.osa-tab-notebook .osa-reset-btn {
       opacity: 0;
@@ -2435,6 +2440,348 @@
     .osa-context-continue:focus-visible {
       outline: 2px solid var(--osa-accent);
       outline-offset: 2px;
+    }
+
+    /* The History sheet (E1.4, board A4): a bottom sheet over the chat, with a scrim
+       over everything but the header, so the History button that opened it still
+       closes it. Colors are the panel's own tokens, so the dark scheme and a
+       community's theme carry over. */
+    .osa-history-btn[aria-pressed="true"] {
+      opacity: 1;
+      background: var(--osa-bg);
+      color: var(--osa-accent);
+    }
+
+    .osa-history-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
+    .osa-history-scrim {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      display: none;
+      background: rgba(15, 23, 42, 0.28);
+      z-index: 40;
+    }
+
+    .osa-history-scrim.open {
+      display: block;
+    }
+
+    .osa-history-sheet {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      box-sizing: border-box;
+      height: 74%;
+      min-height: min(320px, 100%);
+      display: none;
+      flex-direction: column;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      border-radius: 16px 16px 0 0;
+      box-shadow: 0 -6px 24px rgba(15, 23, 42, 0.18);
+      z-index: 50;
+      outline: none;
+    }
+
+    .osa-history-sheet.open {
+      display: flex;
+    }
+
+    .osa-history-grip {
+      flex: none;
+      width: 40px;
+      height: 4px;
+      margin: 8px auto 0;
+      border-radius: 2px;
+      background: var(--osa-border);
+    }
+
+    .osa-history-head {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 16px 6px;
+    }
+
+    .osa-history-title-text {
+      flex: 1 1 auto;
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--osa-text);
+    }
+
+    .osa-history-new {
+      min-height: 44px;
+      padding: 0 14px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--osa-on-primary);
+      background: var(--osa-primary);
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .osa-history-new:hover:not(:disabled) {
+      background: var(--osa-primary-dark);
+    }
+
+    .osa-history-sheet button:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-history-sheet button:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
+    .osa-history-note {
+      flex: none;
+      padding: 0 16px 4px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--osa-text-light);
+    }
+
+    .osa-history-note:empty {
+      display: none;
+    }
+
+    .osa-history-list {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 0 10px;
+    }
+
+    .osa-history-day-label {
+      margin: 0;
+      padding: 10px 6px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--osa-text-light);
+    }
+
+    .osa-history-rows {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .osa-history-row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      border-radius: 10px;
+    }
+
+    .osa-history-row-active {
+      background: var(--osa-notice-bg);
+    }
+
+    .osa-history-open {
+      flex: 1 1 auto;
+      min-width: 0;
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      box-sizing: border-box;
+      padding: 8px 6px;
+      text-align: left;
+      font: inherit;
+      color: inherit;
+      background: transparent;
+      border: 0;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .osa-history-open:hover:not(:disabled) {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-history-thumb {
+      flex: none;
+      width: 56px;
+      height: 40px;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      color: var(--osa-text-light);
+      background: var(--osa-assistant-bg);
+      border: 1px solid var(--osa-border);
+      border-radius: 6px;
+    }
+
+    .osa-history-thumb svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .osa-history-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #ffffff;
+    }
+
+    .osa-history-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .osa-history-title {
+      display: block;
+      overflow: hidden;
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .osa-history-meta {
+      display: block;
+      font-size: 11.5px;
+      line-height: 1.4;
+      color: var(--osa-text-light);
+      overflow-wrap: anywhere;
+    }
+
+    .osa-history-meta code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11.5px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      white-space: normal;
+    }
+
+    .osa-history-more {
+      flex: none;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--osa-text-light);
+      background: transparent;
+      border: 0;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .osa-history-more:hover:not(:disabled) {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-history-more svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .osa-history-menu {
+      position: absolute;
+      right: 8px;
+      top: calc(100% - 6px);
+      z-index: 5;
+      min-width: 160px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      padding: 4px;
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-border);
+      border-radius: 10px;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+    }
+
+    .osa-history-menu[hidden] {
+      display: none;
+    }
+
+    .osa-history-menu button {
+      min-height: 44px;
+      padding: 0 12px;
+      text-align: left;
+      font: inherit;
+      font-size: 13px;
+      color: var(--osa-text);
+      background: transparent;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .osa-history-menu button:hover:not(:disabled) {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-history-menu .osa-history-menu-delete {
+      color: #b91c1c;
+    }
+
+    .osa-history-empty {
+      margin: 0;
+      padding: 28px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      text-align: center;
+      color: var(--osa-text-light);
+    }
+
+    .osa-history-clear-row {
+      flex: none;
+      padding: 6px 16px 0;
+    }
+
+    .osa-history-clear {
+      min-height: 44px;
+      padding: 0 14px;
+      font: inherit;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--osa-text-light);
+      background: transparent;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .osa-history-clear.osa-history-confirm {
+      color: #b91c1c;
+      border-color: #b91c1c;
+      background: #fef2f2;
+    }
+
+    .osa-history-footer {
+      flex: none;
+      margin-top: 6px;
+      padding: 10px 16px 14px;
+      font-size: 11.5px;
+      line-height: 1.5;
+      color: var(--osa-text-light);
+      border-top: 1px solid var(--osa-border);
     }
 
     /* What continuing a chat across a context change leaves in it: a divider, and
@@ -3868,6 +4215,26 @@
     .osa-chat-widget.osa-dark .osa-run-card button.osa-run-card-button:hover {
       background: rgba(255, 255, 255, 0.08);
     }
+
+    /* The History sheet on the dark panel: a heavier scrim, and the delete reds
+       lightened to read on it. */
+    .osa-chat-widget.osa-dark .osa-history-scrim {
+      background: rgba(0, 0, 0, 0.55);
+    }
+
+    .osa-chat-widget.osa-dark .osa-history-sheet {
+      box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--osa-border);
+    }
+
+    .osa-chat-widget.osa-dark .osa-history-menu .osa-history-menu-delete {
+      color: #fca5a5;
+    }
+
+    .osa-chat-widget.osa-dark .osa-history-clear.osa-history-confirm {
+      color: #fca5a5;
+      border-color: #fca5a5;
+      background: rgba(220, 38, 38, 0.15);
+    }
   `;
 
   // Escape text for interpolation into HTML, including quoted attribute values.
@@ -4170,6 +4537,7 @@
     if (!container.classList.contains('osa-capsule')) return;
     if (tab === 'notebook' && !isNotebookAvailable()) tab = 'chat';
     activeTab = tab;
+    if (tab === 'notebook') closeHistory(container, { restoreFocus: false });
     container.classList.toggle('osa-tab-notebook', tab === 'notebook');
     container.classList.toggle('osa-tab-chat', tab === 'chat');
     for (const [name, on] of [['chat', tab === 'chat'], ['notebook', tab === 'notebook']]) {
@@ -5590,6 +5958,475 @@
     }
     saveHistoryQuietly('deleting a conversation');
     return true;
+  }
+
+  // Delete every saved conversation, this browser's whole history, and start an
+  // empty one in place of the active chat. False while a reply is on its way.
+  function clearAllConversations() {
+    if (isLoading) return false;
+    flushFeedbackBeforeSwap();
+    for (const saved of readStoredConversations()) droppedConversationIds.add(saved.id);
+    if (activeConversation) droppedConversationIds.add(activeConversation.id);
+    messages = greetingMessages();
+    sessionId = null;
+    beginConversation(null);
+    welcomeBack = null;
+    pendingSwitch = null;
+    contextMove = null;
+    saveHistoryQuietly('clearing the history');
+    return true;
+  }
+
+  // --- History panel ---
+  // The sheet over the chat that lists every saved conversation by day, with its
+  // dataset, how many steps ran and figures were drawn, and a thumbnail of its first
+  // figure (board A4, E1.4, #657). It draws nothing of the store itself: it asks
+  // listConversations, and acts through activateConversation, deleteConversation,
+  // startConversation and clearAllConversations, each of which says no mid-reply.
+
+  // The tool whose runs are not steps: reading output back, not analysis.
+  const FULL_OUTPUT_TOOL = 'get_full_output';
+
+  // How many figures a run drew: those kept (figureCount) or, for a run just made
+  // that has not been saved yet, the ones in memory.
+  function runFigureCount(run) {
+    const inMemory = Array.isArray(run.images) ? Math.min(run.images.length, MAX_FIGURES_PER_RUN) : 0;
+    return Math.max(normalizeFigureCount(run.figureCount), inMemory);
+  }
+
+  // Pure: what a row of the panel says about a saved conversation. A step is a run
+  // the assistant made, not one the reader made from "Edit and run" or the reading
+  // of an output.
+  function conversationSummary(conversation) {
+    let steps = 0;
+    let figures = 0;
+    for (const message of Array.isArray(conversation.messages) ? conversation.messages : []) {
+      if (!message || !Array.isArray(message.executions)) continue;
+      for (const run of message.executions) {
+        if (!run || typeof run !== 'object') continue;
+        if (run.local !== true && run.tool !== FULL_OUTPUT_TOOL) steps += 1;
+        figures += runFigureCount(run);
+      }
+    }
+    return {
+      id: conversation.id,
+      title: typeof conversation.title === 'string' ? conversation.title : '',
+      context: conversation.context || null,
+      steps,
+      figures,
+      updatedAt: conversation.updatedAt,
+    };
+  }
+
+  // The call id of the first run in a conversation that drew a figure, whose first
+  // figure is the row's thumbnail; null when none did.
+  function firstFigureCallId(conversation) {
+    for (const message of Array.isArray(conversation.messages) ? conversation.messages : []) {
+      if (!message || !Array.isArray(message.executions)) continue;
+      for (const run of message.executions) {
+        if (run && typeof run.callId === 'string' && run.callId !== '' && runFigureCount(run) > 0) return run.callId;
+      }
+    }
+    return null;
+  }
+
+  // Pure: summaries, newest first, in the days the panel lists them under: Today,
+  // Yesterday, and Earlier (whose rows say their date). A day with none is left out.
+  function groupByDay(list, now = Date.now()) {
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+    const startOfYesterday = new Date(startOfToday);
+    startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+    const groups = [
+      { key: 'today', label: 'Today', items: [] },
+      { key: 'yesterday', label: 'Yesterday', items: [] },
+      { key: 'earlier', label: 'Earlier', items: [] },
+    ];
+    for (const item of list) {
+      if (item.updatedAt >= startOfToday.getTime()) groups[0].items.push(item);
+      else if (item.updatedAt >= startOfYesterday.getTime()) groups[1].items.push(item);
+      else groups[2].items.push(item);
+    }
+    return groups.filter((group) => group.items.length > 0);
+  }
+
+  // A row's time: the clock for today and yesterday, the date for the rest.
+  function historyWhen(updatedAt, groupKey, now) {
+    try {
+      const date = new Date(updatedAt);
+      if (groupKey !== 'earlier') return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const sameYear = date.getFullYear() === new Date(now).getFullYear();
+      return date.toLocaleDateString([], sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function plural(count, word) {
+    return `${count} ${word}${count === 1 ? '' : 's'}`;
+  }
+
+  // Whether the panel is open, what it last had to say (a failed action), whether
+  // "Clear all" is one click from clearing, the thumbnails made for it (call id to an
+  // object URL, or null for a figure that could not be read; revoked on close), and
+  // what draws them as rows scroll into view.
+  let historyOpen = false;
+  let historyNote = '';
+  let historyClearConfirming = false;
+  const historyThumbs = new Map();
+  let historyThumbObserver = null;
+  // The elements the sheet made inert while it is open, to give back on close.
+  let historyInerted = [];
+
+  const HISTORY_FOOTER = 'Saved in this browser only, the last 30 chats with their figures.';
+  const HISTORY_BUSY_NOTE = 'History is not available while a reply is loading.';
+
+  function historySheet(container) {
+    return container.querySelector('.osa-history-sheet');
+  }
+
+  // The panel's own children that are not the chat behind the sheet: its header, the
+  // pop-out's tab strip, the grip, the overlays and the sheet itself.
+  function historyBackdropNodes(container) {
+    const chatWindow = container.querySelector('.osa-chat-window');
+    if (!chatWindow) return [];
+    const keep = ['osa-chat-header', 'osa-tab-strip', 'osa-resize-handle', 'osa-settings-overlay', 'osa-history-sheet', 'osa-history-scrim'];
+    return [...chatWindow.children].filter((node) => !keep.some((name) => node.classList.contains(name)));
+  }
+
+  function historyThumbHtml(callId) {
+    return `<span class="osa-history-thumb" aria-hidden="true"${callId ? ` data-call-id="${escapeHtml(callId)}"` : ''}>${ICONS.search}</span>`;
+  }
+
+  function historyRowHtml(summary, extra, groupKey, now, locked) {
+    const dataset = summary.context && summary.context.type === 'dataset'
+      ? `<code>${escapeHtml(summary.context.id)}</code>`
+      : (summary.context && summary.context.type === 'search' ? '<span>Dataset search</span>' : '');
+    const facts = [];
+    if (summary.steps > 0) facts.push(plural(summary.steps, 'step'));
+    if (summary.figures > 0) facts.push(plural(summary.figures, 'figure'));
+    const when = historyWhen(summary.updatedAt, groupKey, now);
+    if (when) facts.push(when);
+    const factsText = facts.join(' · ');
+    const title = summary.title || 'Untitled chat';
+    const id = escapeHtml(summary.id);
+    const off = locked ? ' disabled' : '';
+    return `
+      <li class="osa-history-row${extra.active ? ' osa-history-row-active' : ''}" data-id="${id}">
+        <button type="button" class="osa-history-open" data-id="${id}"${extra.active ? ' aria-current="true"' : ''}${off}>
+          ${historyThumbHtml(extra.thumbCallId)}
+          <span class="osa-history-text">
+            <span class="osa-history-title">${escapeHtml(title)}</span>
+            <span class="osa-history-meta">${dataset}<span class="osa-history-facts">${dataset && factsText ? ' &middot; ' : ''}${escapeHtml(factsText)}</span></span>
+          </span>
+        </button>
+        <button type="button" class="osa-history-more" data-id="${id}" aria-label="More actions for ${escapeHtml(title)}" aria-haspopup="menu" aria-expanded="false"${off}>${ICONS.more}</button>
+        <div class="osa-history-menu" role="menu" aria-label="Actions for ${escapeHtml(title)}" hidden>
+          <button type="button" role="menuitem" class="osa-history-menu-open" data-id="${id}"${off}>Open</button>
+          <button type="button" role="menuitem" class="osa-history-menu-delete" data-id="${id}"${off}>Delete</button>
+        </div>
+      </li>`;
+  }
+
+  // Draw the sheet's list, buttons and note from the store as it is now.
+  function renderHistorySheet(container) {
+    const sheet = historySheet(container);
+    if (!sheet) return;
+    const locked = isLoading;
+    const now = Date.now();
+    const saved = listConversations().filter((c) => c.messages.some((m) => m && m.role === 'user'));
+    const extras = new Map(saved.map((c) => [c.id, { active: c.active, thumbCallId: firstFigureCallId(c) }]));
+    const groups = groupByDay(saved.map(conversationSummary), now);
+    const list = sheet.querySelector('.osa-history-list');
+    list.innerHTML = groups.length === 0
+      ? '<p class="osa-history-empty">No saved chats yet. Your conversations appear here, in this browser.</p>'
+      : groups.map((group) => `
+        <section class="osa-history-day" aria-label="${escapeHtml(group.label)}">
+          <h3 class="osa-history-day-label">${escapeHtml(group.label)}</h3>
+          <ul class="osa-history-rows">${group.items.map((summary) => historyRowHtml(summary, extras.get(summary.id), group.key, now, locked)).join('')}</ul>
+        </section>`).join('');
+    const note = locked ? HISTORY_BUSY_NOTE : historyNote;
+    sheet.querySelector('.osa-history-note').textContent = note;
+    const newBtn = sheet.querySelector('.osa-history-new');
+    const clearBtn = sheet.querySelector('.osa-history-clear');
+    newBtn.disabled = locked;
+    clearBtn.disabled = locked || saved.length === 0;
+    clearBtn.textContent = historyClearConfirming ? 'Confirm: delete all chats' : 'Clear all history';
+    clearBtn.classList.toggle('osa-history-confirm', historyClearConfirming);
+    observeHistoryThumbs(sheet);
+  }
+
+  // The thumbnail of each row's first figure, read only for the rows that scroll into
+  // view (a panel of 30 chats must not read 30 figures from IndexedDB at once). With
+  // no IntersectionObserver the first rows are read.
+  function observeHistoryThumbs(sheet) {
+    if (historyThumbObserver) historyThumbObserver.disconnect();
+    historyThumbObserver = null;
+    const thumbs = [...sheet.querySelectorAll('.osa-history-thumb[data-call-id]')];
+    if (thumbs.length === 0) return;
+    if (typeof window.IntersectionObserver === 'function') {
+      const observer = new window.IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          observer.unobserve(entry.target);
+          loadHistoryThumb(entry.target);
+        }
+      }, { root: sheet.querySelector('.osa-history-list') });
+      historyThumbObserver = observer;
+      thumbs.forEach((thumb) => observer.observe(thumb));
+    } else {
+      thumbs.slice(0, 12).forEach(loadHistoryThumb);
+    }
+  }
+
+  async function loadHistoryThumb(thumb) {
+    const callId = thumb.getAttribute('data-call-id');
+    if (!callId) return;
+    const show = (url) => {
+      // The sheet may have been redrawn or closed while the figure was read.
+      if (!url || !thumb.isConnected || !historyOpen) return;
+      thumb.innerHTML = `<img alt="" src="${escapeHtml(url)}">`;
+    };
+    if (historyThumbs.has(callId)) {
+      show(historyThumbs.get(callId));
+      return;
+    }
+    let url = null;
+    try {
+      const store = await workspaceStoreWhenReady();
+      const found = store ? await store.figuresForCalls([callId]) : new Map();
+      const first = (found.get(callId) || [])[0];
+      if (first) url = URL.createObjectURL(new Blob([first], { type: 'image/png' }));
+    } catch (err) {
+      console.warn('[OSA] Could not read a history thumbnail:', err && err.message);
+    }
+    if (!historyOpen) {
+      // Closed while it was read: nothing holds this URL, so nothing keeps it.
+      if (url) URL.revokeObjectURL(url);
+      return;
+    }
+    historyThumbs.set(callId, url);
+    show(url);
+  }
+
+  function releaseHistoryThumbs() {
+    if (historyThumbObserver) historyThumbObserver.disconnect();
+    historyThumbObserver = null;
+    for (const url of historyThumbs.values()) {
+      if (url) URL.revokeObjectURL(url);
+    }
+    historyThumbs.clear();
+  }
+
+  function syncHistoryButton(container) {
+    const button = container.querySelector('.osa-history-btn');
+    if (!button) return;
+    button.setAttribute('aria-pressed', historyOpen ? 'true' : 'false');
+    // A reply on its way holds the store still (see the store API), so there is
+    // nothing the panel could do; an open panel stays closable.
+    button.disabled = isLoading && !historyOpen;
+    button.title = button.disabled ? HISTORY_BUSY_NOTE : 'History';
+  }
+
+  // Keep the panel true to a reply starting or ending: called with every redraw of
+  // the conversation, since both move through one.
+  let historyLockDrawn = false;
+  function syncHistoryAvailability(container) {
+    syncHistoryButton(container);
+    if (historyOpen && historyLockDrawn !== isLoading) {
+      historyLockDrawn = isLoading;
+      renderHistorySheet(container);
+    }
+  }
+
+  function openHistory(container) {
+    if (historyOpen || isLoading || activeTab === 'notebook') return;
+    const sheet = historySheet(container);
+    if (!sheet) return;
+    closeSettings(container);
+    flushPendingResponseFeedback(container);
+    historyOpen = true;
+    historyNote = '';
+    historyClearConfirming = false;
+    historyLockDrawn = isLoading;
+    renderHistorySheet(container);
+    const header = container.querySelector('.osa-chat-header');
+    const scrim = container.querySelector('.osa-history-scrim');
+    scrim.style.top = header && header.offsetHeight > 0 ? `${header.offsetHeight}px` : '0px';
+    scrim.classList.add('open');
+    sheet.classList.add('open');
+    historyInerted = historyBackdropNodes(container).filter((node) => !node.hasAttribute('inert'));
+    historyInerted.forEach((node) => node.setAttribute('inert', ''));
+    syncHistoryButton(container);
+    sheet.focus();
+  }
+
+  function closeHistory(container, { restoreFocus = true } = {}) {
+    if (!historyOpen) return;
+    historyOpen = false;
+    historyClearConfirming = false;
+    historyNote = '';
+    releaseHistoryThumbs();
+    const sheet = historySheet(container);
+    if (sheet) sheet.classList.remove('open');
+    const scrim = container.querySelector('.osa-history-scrim');
+    if (scrim) scrim.classList.remove('open');
+    historyInerted.forEach((node) => node.removeAttribute('inert'));
+    historyInerted = [];
+    syncHistoryButton(container);
+    if (restoreFocus) container.querySelector('.osa-history-btn')?.focus();
+  }
+
+  function toggleHistory(container) {
+    if (historyOpen) closeHistory(container);
+    else openHistory(container);
+  }
+
+  // What the chat shows after the active conversation changed under it: the same
+  // redraw the resume card makes.
+  function redrawChat(container) {
+    renderMessages(container);
+    renderSuggestions(container);
+    const resetBtn = container.querySelector('.osa-reset-btn');
+    if (resetBtn) resetBtn.disabled = messages.length <= 1;
+    evaluateContextSwitch();
+  }
+
+  function closeHistoryMenus(sheet) {
+    sheet.querySelectorAll('.osa-history-menu').forEach((menu) => { menu.hidden = true; });
+    sheet.querySelectorAll('.osa-history-more[aria-expanded="true"]').forEach((button) => button.setAttribute('aria-expanded', 'false'));
+  }
+
+  function openHistoryConversation(container, id) {
+    if (isLoading) return;
+    if (!activateConversation(id)) {
+      historyNote = 'That chat could not be opened. It may have been deleted in another tab.';
+      renderHistorySheet(container);
+      return;
+    }
+    closeHistory(container, { restoreFocus: false });
+    redrawChat(container);
+    container.querySelector('.osa-chat-input input')?.focus();
+  }
+
+  function deleteHistoryConversation(container, id) {
+    if (isLoading) return;
+    historyClearConfirming = false;
+    historyNote = deleteConversation(id) ? '' : 'That chat could not be deleted.';
+    // Deleting the active chat leaves an empty one in its place.
+    redrawChat(container);
+    renderHistorySheet(container);
+    historySheet(container).focus();
+  }
+
+  function startHistoryConversation(container) {
+    if (isLoading) return;
+    if (startConversation({ context: pageContext() }) === null) return;
+    closeHistory(container, { restoreFocus: false });
+    redrawChat(container);
+    container.querySelector('.osa-chat-input input')?.focus();
+  }
+
+  // Two clicks, as the workspace's Delete: a stray click leaves it one click from
+  // clearing, and closing the panel or any other action puts it back.
+  function clearHistoryClick(container) {
+    if (isLoading) return;
+    if (!historyClearConfirming) {
+      historyClearConfirming = true;
+      renderHistorySheet(container);
+      return;
+    }
+    historyClearConfirming = false;
+    clearAllConversations();
+    historyNote = '';
+    redrawChat(container);
+    renderHistorySheet(container);
+    historySheet(container).focus();
+  }
+
+  function bindHistoryPanel(container) {
+    const sheet = historySheet(container);
+    if (!sheet) return;
+    const button = container.querySelector('.osa-history-btn');
+    button?.addEventListener('click', () => toggleHistory(container));
+    container.querySelector('.osa-history-scrim')?.addEventListener('click', () => closeHistory(container));
+    sheet.querySelector('.osa-history-new').addEventListener('click', () => startHistoryConversation(container));
+    sheet.querySelector('.osa-history-clear').addEventListener('click', () => clearHistoryClick(container));
+    sheet.addEventListener('click', (event) => {
+      const target = event.target && typeof event.target.closest === 'function' ? event.target : null;
+      if (!target) return;
+      const control = (selector) => target.closest(selector);
+      let hit;
+      if ((hit = control('.osa-history-open')) || (hit = control('.osa-history-menu-open'))) {
+        openHistoryConversation(container, hit.getAttribute('data-id'));
+      } else if ((hit = control('.osa-history-menu-delete'))) {
+        deleteHistoryConversation(container, hit.getAttribute('data-id'));
+      } else if ((hit = control('.osa-history-more'))) {
+        const menu = hit.parentElement.querySelector('.osa-history-menu');
+        const opening = menu.hidden;
+        closeHistoryMenus(sheet);
+        if (opening) {
+          menu.hidden = false;
+          hit.setAttribute('aria-expanded', 'true');
+          menu.querySelector('button')?.focus();
+        }
+      } else if (!control('.osa-history-menu')) {
+        closeHistoryMenus(sheet);
+      }
+      if (!control('.osa-history-clear') && historyClearConfirming) {
+        historyClearConfirming = false;
+        renderHistorySheet(container);
+      }
+    });
+    container.addEventListener('keydown', (event) => {
+      if (!historyOpen) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        const openMenu = [...sheet.querySelectorAll('.osa-history-menu')].find((menu) => !menu.hidden);
+        if (openMenu) {
+          const more = openMenu.parentElement.querySelector('.osa-history-more');
+          closeHistoryMenus(sheet);
+          more?.focus();
+        } else {
+          closeHistory(container);
+        }
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      // Focus stays in the sheet while it is open: the chat behind is inert.
+      const focusable = [...sheet.querySelectorAll('button:not([disabled])')].filter((el) => !el.closest('[hidden]'));
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = container.ownerDocument.activeElement;
+      if (event.shiftKey && (active === first || active === sheet)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+  }
+
+  // The markup of the sheet, drawn once with the widget; renderHistorySheet fills it.
+  function historySheetHtml() {
+    return `
+        <div class="osa-history-scrim" aria-hidden="true"></div>
+        <section class="osa-history-sheet" id="osa-history-sheet" role="dialog" aria-modal="true" aria-label="History" tabindex="-1">
+          <div class="osa-history-grip" aria-hidden="true"></div>
+          <div class="osa-history-head">
+            <h2 class="osa-history-title-text">History</h2>
+            <button type="button" class="osa-history-new">+ New chat</button>
+          </div>
+          <div class="osa-history-note" role="status" aria-live="polite"></div>
+          <div class="osa-history-list"></div>
+          <div class="osa-history-clear-row">
+            <button type="button" class="osa-history-clear">Clear all history</button>
+          </div>
+          <div class="osa-history-footer">${escapeHtml(HISTORY_FOOTER)}</div>
+        </section>`;
   }
 
   // --- Fresh chat on return ---
@@ -8961,6 +9798,9 @@
             </div>
           </div>
           <div class="osa-header-actions">
+            <button class="osa-header-btn osa-history-btn" title="History" aria-label="History" aria-pressed="false" aria-controls="osa-history-sheet">
+              ${ICONS.historyClock}
+            </button>
             <button class="osa-header-btn osa-settings-btn-open" title="Settings">
               ${ICONS.settings}
             </button>
@@ -9114,6 +9954,7 @@
           </div>
         </div>
       </div>
+      ${historySheetHtml()}
       </div>
     `;
     defaultAvatarHtml = container.querySelector('.osa-chat-avatar')?.innerHTML ?? null;
@@ -9419,6 +10260,7 @@
     const scrolledFrom = messagesEl.scrollTop;
     const awayFromBottom = messagesEl.scrollHeight - messagesEl.clientHeight - scrolledFrom;
     messagesEl.innerHTML = '';
+    syncHistoryAvailability(container);
     // The loading bubble's label, or a line under the reply's text (#538), never both.
     const status = statusToShow();
     announceStatus(container, status);
@@ -11322,6 +12164,7 @@
     } else {
       // Commit any open thumbs-down comment box on close.
       flushPendingResponseFeedback(container);
+      closeHistory(container, { restoreFocus: false });
       chatWindow.classList.remove('open');
       container.classList.remove('chat-open');
       if (!capsule) {
@@ -11592,6 +12435,7 @@
     chatButton?.addEventListener('click', () => handleChatButtonClick(container));
     closeBtn?.addEventListener('click', () => toggleChat(container));
     resetBtn?.addEventListener('click', () => resetChat(container));
+    bindHistoryPanel(container);
     popoutBtn?.addEventListener('click', () => openPopout());
     settingsBtn?.addEventListener('click', () => openSettings(container));
 
@@ -11911,6 +12755,7 @@
       listConversations,
       activateConversation,
       deleteConversation,
+      clearAllConversations,
       getActiveConversation: () => (activeConversation ? { ...activeConversation } : null),
       conversationStore: {
         MAX_CONVERSATIONS,
@@ -11921,6 +12766,15 @@
         mergeActiveConversation,
         trimConversations,
         evictOldestInactive,
+      },
+      // The History panel (E1.4): the pure helpers, and what is on screen.
+      history: {
+        conversationSummary,
+        groupByDay,
+        open: (container) => openHistory(container),
+        close: (container) => closeHistory(container),
+        isOpen: () => historyOpen,
+        sync: (container) => syncHistoryAvailability(container),
       },
       getSessionId: () => sessionId,
       setSessionId: (value) => { sessionId = value; },
