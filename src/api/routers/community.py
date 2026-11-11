@@ -23,6 +23,7 @@ from typing import Annotated, Any, Literal, NamedTuple, Self
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -2248,6 +2249,69 @@ def _get_cache_user_id(community_id: str, api_key: str | None, user_id: str | No
     return f"{community_id}_widget"
 
 
+def _build_chat_model(
+    route: RequestRoute,
+    community_id: str,
+    *,
+    byok: ByokCredential | None,
+    user_id: str | None,
+    reasoning_effort: str | None,
+    max_tokens: int | None = None,
+) -> BaseChatModel:
+    """The bare chat model for a routed request, built by the provider that serves it.
+
+    Shared by ``create_community_assistant`` (which wraps the model in an agent) and the
+    endpoints that call a model directly (``/overview``), so the three provider paths and
+    their settings live in one place.
+
+    Args:
+        route: The provider, key and model ``_route_request`` chose.
+        community_id: The community, for the OpenRouter prompt-cache lane.
+        byok: The caller's own credential, if any.
+        user_id: The ``X-User-ID`` header, for the OpenRouter prompt-cache lane.
+        reasoning_effort: The level from the neutral scale, or None for high. Every
+            provider path resolves it against the model it actually runs.
+        max_tokens: The most tokens to generate, or None for the provider's default.
+    """
+    settings = get_settings()
+    provider_choice = route.choice
+    limits: dict[str, Any] = {} if max_tokens is None else {"max_tokens": max_tokens}
+
+    if provider_choice.provider == "anthropic":
+        # Prompt caching on this path is handled by the provider layer
+        # (CachingChatAnthropic's cache_control breakpoints in
+        # src/core/services/anthropic_llm.py), not by a per-user cache
+        # lane, so there is no cache_user_id to compute here.
+        return create_anthropic_llm(
+            model=route.model,
+            api_key=provider_choice.api_key,
+            temperature=settings.llm_temperature,
+            reasoning_effort=reasoning_effort,
+            **limits,
+        )
+    if provider_choice.provider == "bedrock":
+        # Automatic prompt caching (Luna) needs nothing from this layer: the
+        # provider reports cache reads and writes, and a stable prompt prefix,
+        # which the agent already keeps, is what earns the reads.
+        return create_bedrock_llm(
+            model=route.model,
+            temperature=settings.llm_temperature,
+            reasoning_effort=reasoning_effort,
+            **limits,
+        )
+    # Determine user_id for prompt caching optimization
+    cache_user_id = _get_cache_user_id(community_id, byok.key if byok else None, user_id)
+    return create_openrouter_llm(
+        model=route.model,
+        api_key=provider_choice.api_key,
+        temperature=settings.llm_temperature,
+        provider=route.provider_hint,
+        user_id=cache_user_id,
+        reasoning_effort=reasoning_effort,
+        **limits,
+    )
+
+
 @dataclass
 class AssistantWithMetrics:
     """Community assistant bundled with metadata for metrics logging."""
@@ -2340,7 +2404,7 @@ def create_community_assistant(
     # BYOK requirement for OpenRouter custom models)
     route = _route_request(community_info, community_id, byok, origin, requested_model, tier=tier)
     provider_choice = route.choice
-    selected_model, selected_provider = route.model, route.provider_hint
+    selected_model = route.model
     logger.debug(
         "Using %s API key for provider %s",
         provider_choice.key_source,
@@ -2367,37 +2431,13 @@ def create_community_assistant(
     community_config = community_info.community_config
     reasoning_effort = community_config.reasoning_effort if community_config else None
 
-    if provider_choice.provider == "anthropic":
-        # Prompt caching on this path is handled by the provider layer
-        # (CachingChatAnthropic's cache_control breakpoints in
-        # src/core/services/anthropic_llm.py), not by a per-user cache
-        # lane, so there is no cache_user_id to compute here.
-        model = create_anthropic_llm(
-            model=selected_model,
-            api_key=provider_choice.api_key,
-            temperature=settings.llm_temperature,
-            reasoning_effort=reasoning_effort,
-        )
-    elif provider_choice.provider == "bedrock":
-        # Automatic prompt caching (Luna) needs nothing from this layer: the
-        # provider reports cache reads and writes, and a stable prompt prefix,
-        # which the agent already keeps, is what earns the reads.
-        model = create_bedrock_llm(
-            model=selected_model,
-            temperature=settings.llm_temperature,
-            reasoning_effort=reasoning_effort,
-        )
-    else:
-        # Determine user_id for prompt caching optimization
-        cache_user_id = _get_cache_user_id(community_id, byok.key if byok else None, user_id)
-        model = create_openrouter_llm(
-            model=selected_model,
-            api_key=provider_choice.api_key,
-            temperature=settings.llm_temperature,
-            provider=selected_provider,
-            user_id=cache_user_id,
-            reasoning_effort=reasoning_effort,
-        )
+    model = _build_chat_model(
+        route,
+        community_id,
+        byok=byok,
+        user_id=user_id,
+        reasoning_effort=reasoning_effort,
+    )
 
     # Convert Pydantic PageContext to agent's dataclass PageContext
     agent_page_context = None

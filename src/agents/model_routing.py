@@ -273,15 +273,19 @@ def researcher_words(history: Iterable[BaseMessage], max_words: int = SUMMARY_MA
     return tail_words(" ".join(lines[-3:]), max_words)
 
 
-async def _invoke_summarizer(
-    model: BaseChatModel, messages: list[BaseMessage], config: Any | None
+async def invoke_with_retry(
+    model: BaseChatModel,
+    messages: list[BaseMessage],
+    config: Any | None,
+    *,
+    purpose: str = "the handover summary",
 ) -> BaseMessage:
-    """One summarizer call, tried again once when the provider's failure can clear.
+    """One plain model call, tried again once when the provider's failure can clear.
 
     The streamed run has its own retry (`src.core.services.stream_retry`), which is built
     around an event stream; a plain call needs its own small one, with the same
     classification: only a failure `classify_model_error` says a retry can fix is tried
-    again, once, after a short wait.
+    again, once, after a short wait. `purpose` names the call in the retry's log line.
     """
     for attempt in range(1, SUMMARY_ATTEMPTS + 1):
         try:
@@ -291,7 +295,8 @@ async def _invoke_summarizer(
             if attempt >= SUMMARY_ATTEMPTS or failure.retryable is not True:
                 raise
             logger.warning(
-                "Retrying the handover summary after %s [%s]: %s",
+                "Retrying %s after %s [%s]: %s",
+                purpose,
                 failure.detail,
                 failure.kind,
                 exception_text(error),
@@ -314,7 +319,7 @@ async def summarize_history(
     """
     transcript = history_transcript(history)
     try:
-        response = await _invoke_summarizer(
+        response = await invoke_with_retry(
             model,
             [SystemMessage(content=SUMMARY_SYSTEM_PROMPT), HumanMessage(content=transcript)],
             config,
