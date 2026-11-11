@@ -99,7 +99,12 @@ console.log('\nimportedName: what a title may be in a file name');
   const wide = importedName('\u{1F9E0}'.repeat(100));
   assertEqual(Array.from(wide).length, MAX_TITLE_CHARS, 'and counted in characters, not code units');
   assert(!importedName(`${'x'.repeat(MAX_TITLE_CHARS - 1)} .y`).endsWith(' '), 'a cut that ends on a space does not leave it');
-  assertEqual(importedName(importedName('../a/b: c')), importedName('../a/b: c'), 'cleaning twice changes nothing');
+  assertEqual(importedName('a / b'), 'a b', 'a removed separator between spaces leaves one space');
+  assertEqual(importedName('ERPs - a : b'), 'ERPs - a b', 'a removed colon between spaces leaves one space');
+  assertEqual(importedName('a​b‌‍⁠c'), 'abc', 'zero-width characters are removed');
+  for (const title of ['../a/b: c', 'a / b', 'ERPs - a : b', 'a ​ b', ' / x / ', 'x'.repeat(63) + ' / y']) {
+    assertEqual(importedName(importedName(title)), importedName(title), `cleaning twice changes nothing: ${JSON.stringify(title)}`);
+  }
 }
 
 console.log('\nimportedPath: where an import is stored');

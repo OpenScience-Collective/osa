@@ -59,10 +59,12 @@ const EXTENSION = '.ipynb';
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
 
 // Path separators and the characters Windows and macOS refuse in a file name,
-// every control character (C0 and C1), and the line, paragraph and
-// direction-override characters that can make a name read as something else.
+// every control character (C0 and C1), and the line, paragraph, zero-width and
+// direction-override characters that can make a name read as something else
+// (or make two names that look alike differ).
 // eslint-disable-next-line no-control-regex
-const UNSAFE_NAME_CHARS = /[/\\:*?"<>|\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+const UNSAFE_NAME_CHARS =
+  /[/\\:*?"<>|\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069]/g;
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -73,18 +75,23 @@ function fail(error) {
 }
 
 /**
- * A title as it may appear in a file name: whitespace runs become one space,
- * `/ \ : * ? " < > |` and control characters are removed, dots and spaces at
- * either end are trimmed (so `../x` is `x`), and at most 64 characters stay.
- * Nothing left means "Notebook".
+ * A title as it may appear in a file name: `/ \ : * ? " < > |`, control and
+ * zero-width characters are removed, whitespace runs become one space (after
+ * the removal, so `a / b` is `a b`), dots and spaces at either end are trimmed
+ * (so `../x` is `x`), and at most 64 characters stay. Nothing left means
+ * "Notebook". Cleaning a cleaned title changes nothing.
  *
  * @param {unknown} title
  */
 export function importedName(title) {
   const text = typeof title === 'string' ? title : '';
+  // Whitespace is turned into spaces first so a newline (a control character)
+  // is not removed and does not glue two words together; the runs the removal
+  // leaves behind are collapsed again afterwards.
   const cleaned = text
     .replace(/\s+/g, ' ')
     .replace(UNSAFE_NAME_CHARS, '')
+    .replace(/\s+/g, ' ')
     .replace(/^[. ]+|[. ]+$/g, '');
   const capped = Array.from(cleaned).slice(0, MAX_TITLE_CHARS).join('').replace(/[. ]+$/g, '');
   return capped === '' ? DEFAULT_TITLE : capped;
