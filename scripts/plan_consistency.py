@@ -340,7 +340,8 @@ def parse_plan_stream(lines: Iterable[str], deadline: float | None = None) -> Ru
                     return RunRecord(
                         "no_plan", NO_PLAN, session_id=session_id, note=f"tool_request for {tool}"
                     )
-                args = event.get("args") if isinstance(event.get("args"), dict) else {}
+                raw_args = event.get("args")
+                args = raw_args if isinstance(raw_args, dict) else {}
                 steps, dropped = coerce_steps(args.get("steps"))
                 peak = args.get("est_peak_mb")
                 notes = []
@@ -640,7 +641,17 @@ def records_from_raw(raw: dict[str, Any]) -> dict[PlanRequest, list[RunRecord]]:
             )
         runs: list[RunRecord] = []
         for entry in raw["runs"][request.key]:
-            run = RunRecord(**{**entry, "sequence": tuple(entry["sequence"])})
+            if entry["kind"] not in ("plan", "no_plan", "error"):
+                raise ValueError(f"unknown outcome {entry['kind']!r} in the raw file")
+            run = RunRecord(
+                kind=entry["kind"],
+                sequence=tuple(entry["sequence"]),
+                steps=entry.get("steps", []),
+                findings=entry.get("findings", ""),
+                est_peak_mb=entry.get("est_peak_mb"),
+                session_id=entry.get("session_id", ""),
+                note=entry.get("note", ""),
+            )
             if run.kind == "plan":
                 run.sequence = normalize_plan(run.steps)
             runs.append(run)

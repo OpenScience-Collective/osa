@@ -455,3 +455,9 @@ def test_save_raw_writes_a_file_that_loads_again(tmp_path):
     assert [[run.sequence for run in runs] for runs in rebuilt.values()] == [
         [record.sequence] * 2 for _ in pc.REQUESTS
     ]
+
+
+def test_a_raw_file_with_an_unknown_outcome_is_refused():
+    failed = asdict(pc.RunRecord("error", pc.ERROR)) | {"kind": "bogus"}
+    with pytest.raises(ValueError, match="bogus"):
+        pc.records_from_raw({"runs": {r.key: [failed] for r in pc.REQUESTS}})
