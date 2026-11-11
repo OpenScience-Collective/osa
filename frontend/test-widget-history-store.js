@@ -446,14 +446,16 @@ console.log('\nsave then load returns identical messages, with no in-page-only f
   assert(!JSON.stringify(saved.messages).includes('feedbackDraft'), 'nor the unsent draft');
   assertEqual(saved.messages[2].executions[0].images, [], 'the stored run has no images');
 
+  // The figure itself is dropped, and only how many there were is kept (E1.5), so a
+  // restored chat can read it back from the workspace.
   const expected = [
     { role: 'assistant', content: GREETING, citations: [], executions: [] },
     { role: 'user', content: 'plot it', dataset: 'nm000103' },
-    { role: 'assistant', content: 'here', citations: [], executions: [{ ...RUN, images: [] }] },
+    { role: 'assistant', content: 'here', citations: [], executions: [{ ...RUN, images: [], figureCount: 1 }] },
   ];
   // Loading fills the run's missing traceback with an empty one.
-  const expectedLoaded = [expected[0], expected[1], { ...expected[2], executions: [{ ...RUN_LOADED, images: [] }] }];
-  assertEqual(saved.messages, expected, 'what is stored is the input minus its in-page fields, dataset, run code and output kept');
+  const expectedLoaded = [expected[0], expected[1], { ...expected[2], executions: [{ ...RUN_LOADED, images: [], figureCount: 1 }] }];
+  assertEqual(saved.messages, expected, 'what is stored is the input minus its in-page fields and images, dataset, run code and output and the figure count kept');
   ctx.hooks.setMessages([]);
   ctx.hooks.setSessionId(null);
   const needsSave = ctx.hooks.loadHistory();
