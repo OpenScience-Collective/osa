@@ -45,18 +45,15 @@ a{color:#0f172a}a:hover{color:#1e3a8a}
       <sc-if value="{{aiOn}}" hint-placeholder-val="{{ true }}">
         <div style="display: flex; gap: 8px">
           <div style="position: relative; flex: 1 1 auto; min-width: 0; padding: 2px; border-radius: 999px; background: linear-gradient(92deg, #5bbad5, #603cba); box-shadow: 0 10px 32px rgba(96, 60, 186, 0.22)">
-            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" style="position: absolute; left: 22px; top: 50%; transform: translateY(-50%); color: #0e7490"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z" fill="currentColor"></path><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" fill="currentColor"></path></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" style="position: absolute; left: 22px; top: 50%; transform: translateY(-50%); color: rgba(71, 85, 105, 0.7)"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path></svg>
             <label for="hero-ai" style="position: absolute; left: -9999px">Describe the data you need</label>
             <input id="hero-ai" type="search" value="EEG where people view famous faces" placeholder="Describe the data you need, in plain words" style="width: 100%; box-sizing: border-box; padding: 15px 150px 15px 48px; border: 0; border-radius: 999px; background: #ffffff; color: #0f172a; font: 18px/1.5 Inter, sans-serif">
-            <button type="button" aria-pressed="true" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 6px; height: 44px; padding: 0 16px 0 12px; border-radius: 999px; border: 1px solid #9fd6e6; background: #e3f4f9; color: #0b4f63; font: 600 14px Inter, sans-serif">
-              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="12.5" r="6" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="M15 17l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><path d="M18.5 2.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" fill="currentColor"></path></svg>
+            <button type="button" aria-pressed="true" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 6px; height: 44px; padding: 0 16px 0 12px; border-radius: 999px; border: 1px solid #9fd6e6; background: #e3f4f9; color: #0b4f63; font: 600 15px Inter, sans-serif">
+              <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9.5" cy="14" r="5.5" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="M13.5 18l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><path d="M18 .5l1.6 3.9 3.9 1.6-3.9 1.6L18 11.5l-1.6-3.9L12.5 6l3.9-1.6z" fill="currentColor"></path></svg>
               AI Mode
             </button>
           </div>
-          <button type="submit" style="flex: none; display: inline-flex; align-items: center; gap: 8px; padding: 16px 30px; background: #5bbad5; color: #04121f; border: 0; border-radius: 999px; font: 600 16px Inter, sans-serif; box-shadow: 0 8px 24px rgba(91, 186, 213, 0.30)">
-            <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z" fill="currentColor"></path></svg>
-            Ask
-          </button>
+          <button type="submit" style="flex: none; padding: 16px 32px; background: #5bbad5; color: #04121f; border: 0; border-radius: 999px; font: 600 16px Inter, sans-serif; box-shadow: 0 8px 24px rgba(91, 186, 213, 0.30)">Search</button>
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 16px 0 0 4px">
           <span style="font-size: 13px; font-weight: 600; color: #475569; margin-right: 2px">Try</span>
@@ -71,8 +68,8 @@ a{color:#0f172a}a:hover{color:#1e3a8a}
             <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" style="position: absolute; left: 20px; top: 50%; transform: translateY(-50%); color: rgba(71, 85, 105, 0.7)"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path></svg>
             <label for="hero-q" style="position: absolute; left: -9999px">Search datasets</label>
             <input id="hero-q" type="search" placeholder="Enter keyword or phrase" style="width: 100%; box-sizing: border-box; padding: 16px 152px 16px 48px; border: 1px solid #cbd5e1; border-radius: 999px; background: #ffffff; color: #0f172a; font: 18px/1.5 Inter, sans-serif; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28)">
-            <button type="button" aria-pressed="false" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 6px; height: 44px; padding: 0 16px 0 12px; border-radius: 999px; border: 1px solid transparent; background: #f1f5f9; color: #334155; font: 500 14px Inter, sans-serif">
-              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="12.5" r="6" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="M15 17l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><path d="M18.5 2.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" fill="none" stroke="currentColor" stroke-width="1.4"></path></svg>
+            <button type="button" aria-pressed="false" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 6px; height: 44px; padding: 0 16px 0 12px; border-radius: 999px; border: 1px solid transparent; background: #f1f5f9; color: #334155; font: 500 15px Inter, sans-serif">
+              <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9.5" cy="14" r="5.5" fill="none" stroke="currentColor" stroke-width="2"></circle><path d="M13.5 18l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><path d="M18 1.5l1.4 3.1 3.1 1.4-3.1 1.4L18 10.5l-1.4-3.1L13.5 6l3.1-1.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"></path></svg>
               AI Mode
             </button>
           </div>

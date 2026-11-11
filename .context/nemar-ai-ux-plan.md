@@ -182,7 +182,7 @@ Boards approved on 2026-11-10, after one revision: AI Mode is a pill, not a pane
    Verify: website unit tests and a staging check.
 5. **AI Mode in the home search** (D1).
    The same toggle inside the hero search field, at the full 44 px pill height.
-   When on, the field gets the teal-to-purple ring of the hero's "Download" headline, a sparkle replaces the magnifier, the placeholder invites a plain-language description, the button reads "Ask", and a "Try" row offers example searches; submitting goes to `/discover?q=…&ai=1`.
+   When on, the field gets the teal-to-purple ring of the hero's "Download" headline, the placeholder invites a plain-language description, and a "Try" row offers example searches; the magnifier and the "Search" button stay as they are, so the toggle's icon is the only AI mark (a sparkle drawn large enough to match its 15 px label). Submitting goes to `/discover?q=…&ai=1`.
    Off, the hero looks exactly as it does today.
    Verify: website unit tests, a staging check in light and dark themes, and phone width.
 6. **Release and pin.**
