@@ -678,16 +678,18 @@ console.log('\na workspace whose read rejects is not a workspace without the fig
 {
   const ctx = await start({ activeId: 'chat-a', tools: true });
   await waitUntil(() => ctx.hooks.getMessages()[2].executions[0]._figuresUnavailable === true, 'the first read ends');
-  let reads = 0;
-  ctx.hooks.setWorkspaceStore({ figuresForCalls: async () => { reads += 1; throw new Error('the database was closed'); } });
+  // A real workspace whose database will not open yet: the factory answers the open with an
+  // error, as IndexedDB does when the database is closed or blocked.
+  const { store, failOpens } = await workspaceThatCanFail([['session-a', 'call-a1'], ['session-a', 'call-a2']]);
+  failOpens(true);
+  ctx.hooks.setWorkspaceStore(store);
   await ctx.hooks.hydrateFigures();
   const runs = ctx.hooks.getMessages()[2].executions;
-  assertEqual(reads, 1, 'the store was asked');
   assert(runs.slice(0, 2).every((r) => r._figuresUnavailable === true && r._figuresMissing === undefined), 'the runs are unavailable, none missing');
   assertEqual(runs.slice(0, 2).map((r) => r.figureCount), [1, 1], 'with their counts left alone');
   assertEqual(ctx.qa('.osa-figure-note').map(text), ['Figures from this run could not be loaded.', 'Figures from this run could not be loaded.'], 'and say so');
-  // The workspace is back: the same runs are read again and drawn.
-  ctx.hooks.setWorkspaceStore(await workspaceWithFigures([['session-a', 'call-a1'], ['session-a', 'call-a2']]));
+  // The database opens again: the same store is asked again and the figures are drawn.
+  failOpens(false);
   await ctx.hooks.hydrateFigures();
   assertEqual(ctx.qa('.osa-execution-figure img').length, 2, 'a later read finds both figures');
   assertEqual(ctx.qa('.osa-figure-note').length, 0, 'and the note is gone');
@@ -707,10 +709,34 @@ console.log('\na call id two runs share is unavailable, not missing');
   assertEqual(ctx.qa('.osa-figure-note').map(text), ['Figures from this run could not be loaded.'], 'with that note on that run alone');
 }
 
+// Two real workspaces over one in-memory database: one records the figures, the other is
+// the one the panel reads, and its opens fail while `failOpens(true)` is in force, so the
+// failure and the retry both go through WorkspaceStore's own _open and raceDeadline.
+async function workspaceThatCanFail(runs) {
+  const memory = memoryIndexedDB();
+  let failing = false;
+  const dbFactory = {
+    open(name, version) {
+      if (!failing) return memory.open(name, version);
+      const request = {};
+      setTimeout(() => {
+        request.error = new Error('the database was closed');
+        request.onerror?.();
+      }, 0);
+      return request;
+    },
+  };
+  await workspaceWithFigures(runs, memory);
+  return {
+    store: new OSARuntime.WorkspaceStore({ community: 'nemar', dbFactory }),
+    failOpens: (value) => { failing = value; },
+  };
+}
+
 // A real workspace over the in-memory IndexedDB, with real figures recorded by its
 // own recordRun, as the controller records a run.
-async function workspaceWithFigures(runs) {
-  const store = new OSARuntime.WorkspaceStore({ community: 'nemar', dbFactory: memoryIndexedDB() });
+async function workspaceWithFigures(runs, dbFactory = memoryIndexedDB()) {
+  const store = new OSARuntime.WorkspaceStore({ community: 'nemar', dbFactory });
   for (const [session, callId] of runs) {
     const result = await store.recordRun({
       session, callId, status: 'ok', description: 'plot', code: 'plot()', stdout: '', stderr: '', summary: '',
