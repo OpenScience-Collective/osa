@@ -46,13 +46,14 @@ import argparse
 import json
 import re
 import sys
+import tempfile
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeVar
 
 DEFAULT_BASE_URL = "https://develop-widget.osc.earth/osa"
 DEFAULT_ORIGIN = "https://develop-demo.osc.earth"
@@ -65,6 +66,8 @@ MEMORY_BUDGET_MB = 1024
 DEFAULT_SEARCH_QUERY = "TEST COPY"
 SEARCH_TOOL = "nemar_search_datasets"
 PLAN_TOOL = "propose_plan"
+
+T = TypeVar("T")
 
 REPEATS = 4
 # The read timeout is per read, so a stream that keeps sending events never hits it; this
@@ -290,7 +293,7 @@ def iter_events(lines: Iterable[str], deadline: float | None = None) -> Iterator
 class RunRecord:
     """What one repeat produced. ``steps`` are the raw ``{title, detail}`` of the plan."""
 
-    kind: str  # "plan", "no_plan" or "error"
+    kind: Literal["plan", "no_plan", "error"]
     sequence: tuple[str, ...]
     steps: list[dict[str, Any]] = field(default_factory=list)
     findings: str = ""
@@ -402,8 +405,17 @@ def missing_dataset_ids(requests: Iterable[PlanRequest], found: set[str]) -> lis
 # --- The network (httpx is imported inside, so importing this module needs no network) -----
 
 
-def _chat(base_url: str, body: dict[str, Any], origin: str, parse: Any, timeout: float) -> Any:
-    """POST one streaming ``/nemar/chat`` request, hand its lines to ``parse``, then close."""
+def _chat(
+    base_url: str,
+    body: dict[str, Any],
+    origin: str,
+    parse: Callable[[Iterable[str], float], T],
+    timeout: float,
+) -> T:
+    """POST one streaming ``/nemar/chat`` request, hand its lines to ``parse``, then close.
+
+    ``parse(lines, deadline)`` returns what the caller wants from the stream; so does this.
+    """
     import httpx
 
     url = f"{base_url.rstrip('/')}/{COMMUNITY}/chat"
@@ -600,6 +612,13 @@ def raw_payload(
     }
 
 
+def save_raw(
+    path: Path, base_url: str, today: str, results: dict[PlanRequest, list[RunRecord]]
+) -> None:
+    """Write the runs so far to ``path``; called after every repeat, so a crash keeps them."""
+    path.write_text(json.dumps(raw_payload(base_url, today, results), indent=2))
+
+
 def records_from_raw(raw: dict[str, Any]) -> dict[PlanRequest, list[RunRecord]]:
     """Rebuild the runs a ``--raw-out`` file saved, normalizing the steps with today's rules.
 
@@ -642,7 +661,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--repeats", type=int, default=REPEATS, help="repeats per request")
     parser.add_argument("--out", type=Path, help="write the markdown report here (default: stdout)")
     parser.add_argument(
-        "--raw-out", type=Path, help="also write every run, with step details, as JSON"
+        "--raw-out",
+        type=Path,
+        help="write every run, with step details, as JSON after each repeat "
+        "(default for a live run: a file in the temp directory)",
     )
     parser.add_argument(
         "--origin", default=DEFAULT_ORIGIN, help="Origin header (default: %(default)s)"
@@ -671,17 +693,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         base_url, today = args.base_url, date.today().isoformat()
         confirm_datasets(base_url, REQUESTS, args.search_query, args.origin)
+        if args.raw_out is None:
+            args.raw_out = Path(tempfile.gettempdir()) / f"plan-consistency-{today}.raw.json"
+        print(f"raw runs saved to {args.raw_out} after each repeat", file=sys.stderr)
         results = {}
         for request in REQUESTS:
             runs: list[RunRecord] = []
+            results[request] = runs
             for i in range(1, args.repeats + 1):
                 run = run_once(base_url, request, args.origin)
                 runs.append(run)
+                if args.raw_out:
+                    save_raw(args.raw_out, base_url, today, results)
                 print(
                     f"{request.key} {i}/{args.repeats}: {_seq(run.sequence)} {run.note}",
                     file=sys.stderr,
                 )
-            results[request] = runs
     repeats = len(next(iter(results.values())))
 
     report = render_report(base_url, repeats, results, today)
@@ -690,8 +717,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"report written to {args.out}", file=sys.stderr)
     else:
         print(report)
-    if args.raw_out:
-        args.raw_out.write_text(json.dumps(raw_payload(base_url, today, results), indent=2))
     return 0
 
 

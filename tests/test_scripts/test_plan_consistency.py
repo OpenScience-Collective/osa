@@ -444,3 +444,14 @@ def test_the_report_shows_the_detail_that_decided_a_vague_title():
     assert "| 1 | plan | 3 | plot | title | Plot ERP |" in report  # title decided: no detail
     assert "..." in report  # a long detail is truncated
     assert "8 of 12 step(s) were classified by their detail" in report
+
+
+def test_save_raw_writes_a_file_that_loads_again(tmp_path):
+    record = pc.parse_plan_stream(PLAN_STREAM.read_text().splitlines())
+    results = {r: [record, record] for r in pc.REQUESTS}
+    path = tmp_path / "raw.json"
+    pc.save_raw(path, "https://x.test", "2026-01-01", results)
+    rebuilt = pc.records_from_raw(json.loads(path.read_text()))
+    assert [[run.sequence for run in runs] for runs in rebuilt.values()] == [
+        [record.sequence] * 2 for _ in pc.REQUESTS
+    ]
