@@ -60,45 +60,70 @@ SNAPSHOT_NOTE = (
 )
 
 
+#: The note when `mode=ro` could not open a file whose `-wal` is beside it (for example a
+#: read-only directory, where no `-shm` can be created): the `-wal` is then not read.
+IMMUTABLE_WITH_WAL_NOTE = (
+    "SQLite could not open this database read-only (for example because no -shm file can be "
+    "created in its directory), so it was opened as an immutable snapshot and the rows in "
+    "the -wal file beside it are not included. The report can show fewer requests than the "
+    "server has. Copy metrics.db with its -wal and -shm into a writable directory, or take a "
+    "snapshot on the server with VACUUM INTO (see docs/community-widget.md)."
+)
+
+
+def _wal_beside(path: Path) -> Path:
+    return path.with_name(path.name + "-wal")
+
+
 def _wal_mode_without_log(path: Path) -> bool:
     """Whether the file says it is in WAL mode while no `-wal` file is beside it.
 
     Whether SQLite opens such a file read-only depends on its version, so this is checked
     on the file itself: a copy of a live database made without its `-wal` file looks like
     this, and so does a database that was closed cleanly (then nothing is missing). A
-    `VACUUM INTO` snapshot is not in WAL mode, so it is never flagged.
+    `VACUUM INTO` snapshot is not in WAL mode, so it is never flagged. The `-wal` is looked
+    for beside the real file, so a symlinked database is judged where it lives.
     """
-    with path.open("rb") as f:
+    real = path.resolve()
+    with real.open("rb") as f:
         header = f.read(20)
     is_wal = len(header) == 20 and header[:16] == b"SQLite format 3\x00" and header[18] == 2
-    return is_wal and not path.with_name(path.name + "-wal").exists()
+    return is_wal and not _wal_beside(real).exists()
 
 
 def open_read_only(path: Path) -> tuple[sqlite3.Connection, str | None]:
     """Open a metrics database that cannot be written to by this process.
 
-    A database copied out of a running server is in WAL mode but may have no `-wal` or
-    `-shm` file beside it. Depending on the SQLite version, read-only mode then either
-    cannot open it ("unable to open database file"), in which case the file is opened as
-    immutable instead, or opens it and sees only what is in the main file. Any other
-    failure (a locked database, a file that is not a database) is raised as it is.
+    A WAL-mode file with no `-wal` beside it (what copying `metrics.db` alone out of a
+    running server gives) is opened as immutable straight away: SQLite's read-only mode
+    would open it too, on a recent version, but it creates an empty `-wal` and `-shm`
+    beside the copy, so a second run would no longer see that the file lacked its `-wal`
+    and the warning would disappear while the numbers are still short. An immutable open
+    creates nothing and reads the same rows. Otherwise the file is opened with
+    `mode=ro`, and only an "unable to open" failure falls back to immutable (any other
+    failure, a locked database or a file that is not a database, is raised as it is).
 
     Returns:
-        The connection, and a note saying that rows still in a `-wal` file that was not
-        copied are not included, when the file is in WAL mode with no `-wal` beside it (or
-        had to be opened as immutable); None otherwise.
+        The connection, and a note saying that rows in a `-wal` file that was not copied
+        or not read are not included, whenever the file was opened as immutable; None
+        otherwise.
     """
-    uri = path.resolve().as_uri()
-    # Checked before connecting: opening a WAL database can create the `-wal` file.
-    note = SNAPSHOT_NOTE if _wal_mode_without_log(path) else None
-    try:
-        conn = sqlite3.connect(f"{uri}?mode=ro", uri=True)
-        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()
-    except sqlite3.OperationalError as e:
-        if "unable to open" not in str(e):
-            raise
-        conn = sqlite3.connect(f"{uri}?mode=ro&immutable=1", uri=True)
+    real = path.resolve()
+    uri = real.as_uri()
+    immutable = f"{uri}?mode=ro&immutable=1"
+    note: str | None = None
+    if _wal_mode_without_log(real):
+        conn = sqlite3.connect(immutable, uri=True)
         note = SNAPSHOT_NOTE
+    else:
+        try:
+            conn = sqlite3.connect(f"{uri}?mode=ro", uri=True)
+            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()
+        except sqlite3.OperationalError as e:
+            if "unable to open" not in str(e):
+                raise
+            conn = sqlite3.connect(immutable, uri=True)
+            note = IMMUTABLE_WITH_WAL_NOTE if _wal_beside(real).exists() else SNAPSHOT_NOTE
     conn.row_factory = sqlite3.Row
     return conn, note
 

@@ -1,6 +1,7 @@
 """`osa metrics cost-report`, through typer's CliRunner on a database built with real rows."""
 
 import json
+import os
 import shutil
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -10,7 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from src.cli.main import cli
-from src.cli.metrics import SNAPSHOT_NOTE, open_read_only, parse_since
+from src.cli.metrics import IMMUTABLE_WITH_WAL_NOTE, SNAPSHOT_NOTE, open_read_only, parse_since
 from src.core.services.anthropic_models import HAIKU, SONNET
 from src.metrics.cost import estimate_cost
 from src.metrics.db import RequestLogEntry, init_metrics_db, log_request
@@ -160,6 +161,74 @@ class TestCostReport:
         assert result.exit_code == 0
         assert json.loads(result.stdout)["note"] == SNAPSHOT_NOTE
         assert "no -wal file is beside it" in " ".join(result.stderr.split())
+
+    def test_a_copy_without_its_wal_creates_no_files_and_warns_every_time(
+        self, db, tmp_path
+    ) -> None:
+        """Opening it read-only would leave an empty -wal behind and silence the second note."""
+        copy_dir = tmp_path / "pulled"
+        copy_dir.mkdir()
+        copy = copy_dir / "metrics.db"
+        shutil.copyfile(db, copy)
+        before = sorted(p.name for p in copy_dir.iterdir())
+
+        first = open_read_only(copy)
+        first[0].close()
+        second = open_read_only(copy)
+        second[0].close()
+
+        assert sorted(p.name for p in copy_dir.iterdir()) == before == ["metrics.db"]
+        assert first[1] == SNAPSHOT_NOTE
+        assert second[1] == SNAPSHOT_NOTE
+
+    def test_a_symlinked_database_is_judged_beside_its_real_file(self, tmp_path) -> None:
+        live = tmp_path / "live" / "metrics.db"
+        live.parent.mkdir()
+        init_metrics_db(live)
+        keeper = sqlite3.connect(live)
+        keeper.execute("PRAGMA wal_autocheckpoint=0")
+        keeper.execute("SELECT count(*) FROM sqlite_master").fetchall()
+        _log(live, "link1", HAIKU, "quick", "44444444-dddd", 1)
+        assert Path(f"{live}-wal").exists()
+        link_dir = tmp_path / "links"
+        link_dir.mkdir()
+        link = link_dir / "metrics.db"
+        link.symlink_to(live)
+
+        conn, note = open_read_only(link)
+        try:
+            turns = conn.execute("SELECT count(*) FROM request_log").fetchone()[0]
+        finally:
+            conn.close()
+            keeper.close()
+
+        assert note is None
+        assert turns == 1
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+    def test_a_wal_that_could_not_be_read_gets_its_own_note(self, tmp_path) -> None:
+        """mode=ro cannot create the -shm in a read-only directory, so the -wal is skipped."""
+        live = tmp_path / "live" / "metrics.db"
+        live.parent.mkdir()
+        init_metrics_db(live)
+        keeper = sqlite3.connect(live)
+        keeper.execute("PRAGMA wal_autocheckpoint=0")
+        keeper.execute("SELECT count(*) FROM sqlite_master").fetchall()
+        _log(live, "ro1", HAIKU, "quick", "55555555-eeee", 1)
+        pulled = tmp_path / "pulled"
+        pulled.mkdir()
+        shutil.copyfile(live, pulled / "metrics.db")
+        shutil.copyfile(f"{live}-wal", pulled / "metrics.db-wal")
+        keeper.close()
+        pulled.chmod(0o555)
+        try:
+            conn, note = open_read_only(pulled / "metrics.db")
+            conn.close()
+        finally:
+            pulled.chmod(0o755)
+
+        assert note == IMMUTABLE_WITH_WAL_NOTE
+        assert "-wal file beside it are not included" in note
 
     def test_a_vacuum_into_snapshot_is_complete_and_needs_no_note(self, tmp_path) -> None:
         """The snapshot the docs recommend: taken on the server, rows still in the -wal included."""
