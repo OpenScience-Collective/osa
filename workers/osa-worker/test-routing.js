@@ -309,7 +309,7 @@ const overviewEnv = {
   TURNSTILE_SECRET_KEY: 'a-secret-that-would-demand-a-token',
 };
 try {
-  const payload = { query: 'faces', filters: {}, results: [{ id: 'xx099901', title: 't', description: 'd' }] };
+  const payload = { query: 'faces in EEG', filters: {}, results: [{ id: 'xx099901', title: 't', description: 'd' }] };
   const origin = 'https://test.nemar.org';
   const viaWorker = await worker.fetch(
     new Request(`https://${MOUNTED_HOST}/osa/${COMMUNITY}/overview`, {

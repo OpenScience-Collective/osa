@@ -48,6 +48,10 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 MAX_QUERY_CHARS = 300
+# The maintainer's rule (#728): an overview needs a search of at least this many words, and a
+# shorter one is refused before the model is called. nemar.org's Discover panel counts words
+# the same way (query_word_count) and shows a note instead of calling.
+MIN_QUERY_WORDS = 3
 MAX_RESULTS = 10
 MAX_FILTERS = 20
 MAX_FILTER_KEY_CHARS = 100
@@ -86,6 +90,15 @@ CACHE_MAX_ENTRIES = 500
 FilterValue = str | bool | int | list[str]
 
 
+def query_word_count(query: str) -> int:
+    """Words in a search: whitespace-separated tokens holding at least one letter or digit.
+
+    Unicode-aware, so "P300", "naïve" and "α-band" are words and a lone "-" or "&" is not.
+    nemar.org's Discover panel counts the same way before it calls.
+    """
+    return sum(1 for token in query.split() if any(ch.isalnum() for ch in token))
+
+
 class OverviewResultRow(BaseModel):
     """One search result the caller wants read: what the model may say about it."""
 
@@ -119,6 +132,8 @@ class OverviewRequest(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("query must not be blank")
+        if query_word_count(value) < MIN_QUERY_WORDS:
+            raise ValueError(f"an overview needs a search of at least {MIN_QUERY_WORDS} words")
         return value
 
     @field_validator("filters")

@@ -219,7 +219,7 @@ quick and an analysis model. See `docs/community-widget.md` ("A conversation the
 **Request:**
 ```json
 {
-  "query": "face recognition",
+  "query": "face recognition in EEG",
   "filters": {"modality": ["eeg"], "has_hed": true},
   "results": [
     {"id": "on002718", "title": "Face processing EEG", "description": "...", "modalities": "eeg"}
@@ -227,7 +227,7 @@ quick and an analysis model. See `docs/community-widget.md` ("A conversation the
   "total_count": 240
 }
 ```
-- `query`: 1 to 300 characters, not blank.
+- `query`: 1 to 300 characters, not blank, and at least `MIN_QUERY_WORDS` (3) words as `query_word_count` counts them (whitespace-separated tokens holding a letter or digit); the maintainer's rule (#728).
 - `filters`: at most 20 keys; a value is a string, bool, int or list of strings (names up to 100 characters, strings up to 200, lists up to 20 items).
 - `results`: 1 to 10 rows in the search's ranking order. `id` is up to 64 characters of letters, digits, `.`, `_`, `-` and unique in the request; `title` up to 200 characters; `description` up to 500; `modalities` is an optional string.
 - `total_count`: optional, how many results matched in all.
@@ -257,7 +257,7 @@ quick and an analysis model. See `docs/community-widget.md` ("A conversation the
 |---|---|
 | 403 | No authorized origin and no BYOK key; or the model costs more than the platform allows |
 | 404 | The community has no `quick_model` (no config key was added for this endpoint) |
-| 422 | A field is out of bounds: more than 10 results, an over-long field, an empty query, duplicate result ids |
+| 422 | A field is out of bounds: more than 10 results, an over-long field, an empty query, a query under 3 words, duplicate result ids |
 | 500 | A failure that is not the provider's (a bug, a missing API key for the model factory): logged with its traceback, not cached. The body is `{"detail": ...}` with an error id |
 | 502 | The model wrote nothing that survives the citation filter, names no result, could not be parsed, or the provider failed (after one retry). Not cached. The body is `{"detail": ...}` |
 

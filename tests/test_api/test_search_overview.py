@@ -133,7 +133,7 @@ def row(dataset_id: str, **overrides) -> dict:
 
 def body(**overrides) -> dict:
     return {
-        "query": "face recognition",
+        "query": "face recognition EEG",
         "filters": {"modality": ["eeg"]},
         "results": [row(i) for i in IDS],
         "total_count": 40,
@@ -377,8 +377,8 @@ class TestTheCache:
     ) -> None:
         made = rig(monkeypatch)
 
-        first = await post(client, body(query="Face  Recognition "))
-        second = await post(client, body(query="face recognition"))
+        first = await post(client, body(query="Face  Recognition  EEG "))
+        second = await post(client, body(query="face recognition eeg"))
 
         assert made.model.calls == 1
         assert (first.status_code, second.status_code) == (200, 200)
@@ -425,7 +425,7 @@ class TestTheCache:
     async def test_a_different_query_makes_a_new_call(self, client, monkeypatch) -> None:
         made = rig(monkeypatch)
         await post(client)
-        await post(client, body(query="resting state"))
+        await post(client, body(query="resting state EEG"))
         assert made.model.calls == 2
 
     async def test_a_caller_cannot_plant_an_overview_for_other_results(
@@ -470,14 +470,14 @@ class TestTheCache:
         overview_caches.max_entries = 2
         cache = overview_caches.for_community(COMMUNITY)
         made = rig(monkeypatch)
-        queries = ["one", "two", "three"]
+        queries = ["query number one", "query number two", "query number three"]
         for query in queries:
             await post(client, body(query=query))
         assert len(cache) == 2
 
-        await post(client, body(query="three"))
+        await post(client, body(query="query number three"))
         assert made.model.calls == 3
-        await post(client, body(query="one"))
+        await post(client, body(query="query number one"))
         assert made.model.calls == 4
 
     async def test_a_failed_answer_is_not_cached(self, client, monkeypatch) -> None:
@@ -535,7 +535,9 @@ class TestTheCache:
         model = GatedChatModel(responses=[GOOD], gate=gate)
         rig(monkeypatch, model)
 
-        pending = [asyncio.create_task(post(client, body(query=f"query {n}"))) for n in range(3)]
+        pending = [
+            asyncio.create_task(post(client, body(query=f"query number {n}"))) for n in range(3)
+        ]
         await until(lambda: model.entered == 3)
         gate.set()
         responses = await asyncio.gather(*pending)
@@ -822,19 +824,23 @@ class TestGuards:
         [
             body(query=""),
             body(query="   "),
-            body(query="q" * 301),
+            body(query="q" * 99 + " " + "q" * 99 + " " + "q" * 101),
+            body(query="EEG"),
+            body(query="P300 speller"),
             body(results=[]),
             body(results=[row(IDS[0], title="t" * 201)]),
             body(results=[row(IDS[0], description="d" * 501)]),
             body(filters={f"k{n}": "v" for n in range(21)}),
             body(filters={"k": {"nested": 1}}),
-            {"query": "no results"},
+            {"query": "no results here"},
             {"results": [row(IDS[0])]},
         ],
         ids=[
             "empty query",
             "blank query",
             "long query",
+            "one word",
+            "two words",
             "no results",
             "long title",
             "long description",
@@ -850,10 +856,23 @@ class TestGuards:
         assert response.status_code == 422
         assert made.model.calls == 0
 
+    async def test_a_search_under_three_words_is_a_422_that_says_so(
+        self, client, monkeypatch
+    ) -> None:
+        """nemar.org shows a note for these and never calls; a caller that does gets a
+        plain reason, and no model call is spent (#728)."""
+        made = rig(monkeypatch)
+        response = await post(client, body(query="EEG"))
+        assert response.status_code == 422
+        assert "at least 3 words" in response.text
+        assert made.model.calls == 0
+
     async def test_ten_results_at_the_limits_are_accepted(self, client, monkeypatch) -> None:
         rig(monkeypatch, None, reply("The first is [[xx099900]]."))
         results = [row(f"xx0999{n:02d}", title="t" * 200, description="d" * 500) for n in range(10)]
-        response = await post(client, body(query="q" * 300, results=results))
+        response = await post(
+            client, body(query="q" * 99 + " " + "q" * 99 + " " + "q" * 100, results=results)
+        )
         assert response.status_code == 200, response.text
         assert response.json()["shown"] == 10
 
