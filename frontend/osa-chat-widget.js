@@ -783,7 +783,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-zRPYHKtxwiyWDb0SK57cTrkKmrE+YaUdHXYUka3nr7YWYtpOX4L/xBml445DBi2S';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-oQAeK/wuVT0Ivb60H786tNN0Kx0ZEwVzQClRNzP2yWtMKQCex/deV1TNMTnWgytK';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -4152,6 +4152,505 @@
       margin-top: 0;
     }
 
+    /* The plan card, the step progress strip and the plan bar (the Plan card block in
+       the script). Colors come from the panel's own tokens, so the dark panel needs only
+       the few redefined below. */
+    .osa-plan-card,
+    .osa-plan-strip,
+    .osa-plan-bar {
+      --osa-plan-danger: #b91c1c;
+      --osa-plan-editing-bg: #fffbeb;
+    }
+
+    .osa-plan-card [hidden] {
+      display: none !important;
+    }
+
+    .osa-plan-card {
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 12px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 13px;
+      margin: 0 0 8px 0;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .osa-plan-findings {
+      padding: 10px 14px;
+      background: var(--osa-assistant-bg);
+      line-height: 1.5;
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+    }
+
+    .osa-plan-top {
+      padding: 10px 14px;
+      background: var(--osa-notice-bg);
+      border-bottom: 1px solid var(--osa-notice-border);
+    }
+
+    .osa-plan-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .osa-plan-card h4.osa-plan-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--osa-text);
+    }
+
+    .osa-plan-badge {
+      flex: none;
+      font-size: 11px;
+      color: var(--osa-notice-text);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: var(--osa-bg);
+    }
+
+    .osa-plan-meta {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+      overflow-wrap: anywhere;
+    }
+
+    .osa-plan-card .osa-plan-mode-line {
+      padding: 0 14px 10px;
+    }
+
+    .osa-plan-card ol.osa-plan-steps {
+      list-style: none;
+      margin: 0;
+      padding: 6px 0;
+    }
+
+    .osa-plan-step {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 8px 14px;
+      margin: 0;
+    }
+
+    .osa-plan-step-editing {
+      background: var(--osa-plan-editing-bg);
+    }
+
+    .osa-plan-num {
+      flex: none;
+      width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .osa-plan-step-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .osa-plan-step-title {
+      font-weight: 500;
+    }
+
+    .osa-plan-step-detail {
+      color: var(--osa-text-light);
+      font-size: 12.5px;
+    }
+
+    .osa-plan-step-actions {
+      flex: none;
+      display: flex;
+      gap: 2px;
+    }
+
+    .osa-plan-card button {
+      font: revert;
+      appearance: auto;
+      box-sizing: border-box;
+      cursor: pointer;
+    }
+
+    .osa-plan-card button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .osa-plan-card button:focus-visible,
+    .osa-plan-card input:focus-visible,
+    .osa-plan-card textarea:focus-visible,
+    .osa-plan-bar button:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-plan-card button.osa-plan-icon-btn {
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--osa-text-light);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .osa-plan-card button.osa-plan-icon-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .osa-plan-card button.osa-plan-icon-btn:hover:not(:disabled) {
+      color: var(--osa-accent);
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    .osa-plan-edit {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .osa-plan-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--osa-text-light);
+    }
+
+    .osa-plan-card input.osa-plan-input,
+    .osa-plan-card textarea.osa-plan-textarea {
+      font: inherit;
+      font-size: 14px;
+      line-height: 1.45;
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--osa-border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      resize: vertical;
+    }
+
+    .osa-plan-error {
+      color: var(--osa-plan-danger);
+      font-size: 12.5px;
+      padding: 0 14px;
+    }
+
+    .osa-plan-edit .osa-plan-error {
+      padding: 0;
+    }
+
+    .osa-plan-edit-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .osa-plan-card button.osa-plan-btn {
+      min-height: 36px;
+      padding: 0 12px;
+      border-radius: 6px;
+      border: 1px solid var(--osa-border);
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 12.5px;
+      font-weight: 500;
+    }
+
+    .osa-plan-card button.osa-plan-save,
+    .osa-plan-card button.osa-plan-send-feedback {
+      background: var(--osa-primary);
+      border-color: var(--osa-primary);
+      color: var(--osa-on-primary);
+    }
+
+    .osa-plan-card button.osa-plan-add {
+      display: block;
+      width: calc(100% - 28px);
+      margin: 0 14px 10px;
+      min-height: 36px;
+      background: transparent;
+      border: 1px dashed var(--osa-notice-border);
+      border-radius: 8px;
+      color: var(--osa-accent);
+      font-size: 12.5px;
+      font-weight: 500;
+    }
+
+    .osa-plan-card fieldset.osa-plan-modes {
+      margin: 0;
+      padding: 10px 14px;
+      min-width: 0;
+      border: 0;
+      border-top: 1px solid var(--osa-border);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .osa-plan-modes-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--osa-text-light);
+    }
+
+    .osa-plan-modes-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .osa-plan-mode {
+      flex: 1 1 140px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 40px;
+      box-sizing: border-box;
+      padding: 6px 10px;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      font-size: 12.5px;
+      cursor: pointer;
+    }
+
+    .osa-plan-mode-on {
+      border: 1.5px solid var(--osa-accent);
+      background: var(--osa-notice-bg);
+      padding: 5.5px 9.5px;
+    }
+
+    .osa-plan-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      padding: 10px 14px 4px;
+    }
+
+    .osa-plan-card button.osa-plan-approve {
+      flex: 1 1 auto;
+      min-height: 44px;
+      padding: 0 14px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .osa-plan-card button.osa-plan-ask {
+      flex: 1 1 auto;
+      min-height: 44px;
+      padding: 0 12px;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .osa-plan-feedback {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 14px 4px;
+    }
+
+    .osa-plan-note {
+      padding: 4px 14px 12px;
+      font-size: 11.5px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-plan-waiting {
+      font-size: 12.5px;
+      color: var(--osa-text-light);
+    }
+
+    /* A reply that is only a plan or a run has no text: no empty bubble under it. */
+    .osa-message-content:empty {
+      display: none;
+    }
+
+    .osa-plan-card.osa-plan-changes_requested,
+    .osa-plan-card.osa-plan-stopped,
+    .osa-plan-card.osa-plan-unanswered {
+      border-color: var(--osa-border);
+    }
+
+    /* The strip over the conversation: where the plan is, one segment a step. */
+    .osa-plan-strip {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      flex: none;
+      margin: -16px -16px 0;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      background: var(--osa-assistant-bg);
+      border-bottom: 1px solid var(--osa-border);
+      font-size: 12px;
+      color: var(--osa-text);
+    }
+
+    .osa-plan-strip-label {
+      font-weight: 600;
+    }
+
+    .osa-plan-strip-mode {
+      font-size: 11px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-plan-segments {
+      flex: 1 1 60px;
+      min-width: 60px;
+      display: grid;
+      gap: 4px;
+    }
+
+    .osa-plan-seg {
+      height: 6px;
+      border-radius: 3px;
+      background: var(--osa-border);
+    }
+
+    .osa-plan-seg-done {
+      background: var(--osa-accent);
+    }
+
+    .osa-plan-seg-current {
+      background: var(--osa-accent);
+      opacity: 0.45;
+    }
+
+    .osa-plan-seg-failed {
+      background: var(--osa-plan-danger);
+    }
+
+    .osa-plan-seg-stopped {
+      background: var(--osa-text-light);
+    }
+
+    /* The bar under it: what the plan is waiting for, and what the reader can do. */
+    .osa-plan-bar {
+      position: sticky;
+      bottom: 0;
+      z-index: 2;
+      flex: none;
+      margin: auto -16px -16px;
+      padding: 10px 14px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      background: var(--osa-assistant-bg);
+      border-top: 1px solid var(--osa-border);
+      font-size: 12px;
+    }
+
+    .osa-plan-bar-text {
+      flex: 1 1 140px;
+      color: var(--osa-text);
+    }
+
+    .osa-plan-bar-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .osa-plan-bar button.osa-plan-bar-btn {
+      font: revert;
+      appearance: auto;
+      box-sizing: border-box;
+      min-height: 44px;
+      padding: 0 12px;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .osa-plan-bar button.osa-plan-bar-run {
+      background: var(--osa-primary);
+      border-color: var(--osa-primary);
+      color: var(--osa-on-primary);
+      font-weight: 600;
+    }
+
+    .osa-plan-bar button.osa-plan-bar-stop {
+      color: var(--osa-plan-danger);
+      border-color: var(--osa-plan-danger);
+    }
+
+    /* A step's head on its run card: the step, then how long it took. */
+    .osa-run-card-head .osa-run-card-title {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .osa-run-card-step-text {
+      font-weight: 400;
+    }
+
+    .osa-run-card-step-text strong {
+      font-weight: 600;
+    }
+
+    .osa-run-card-elapsed {
+      flex: none;
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-chat-widget.osa-dark .osa-plan-card,
+    .osa-chat-widget.osa-dark .osa-plan-strip,
+    .osa-chat-widget.osa-dark .osa-plan-bar {
+      --osa-plan-danger: #fca5a5;
+      --osa-plan-editing-bg: rgba(245, 158, 11, 0.12);
+    }
+
+    .osa-chat-widget.osa-dark .osa-plan-card button.osa-plan-icon-btn:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
     .osa-figure-actions {
       display: flex;
       justify-content: flex-end;
@@ -6219,7 +6718,8 @@
     }
     // The cut-off mark is kept only as the boolean the widget writes, and the server's
     // words for it only as a bounded string.
-    const { cutOff, cutOffMessage, usage, ...rest } = msg;
+    const { cutOff, cutOffMessage, usage, plan, ...rest } = msg;
+    const storedPlan = normalizePersistedPlan(plan);
     const cleanedUsage = cleanUsage(usage);
     return {
       ...rest,
@@ -6236,6 +6736,7 @@
           && typeof citation.source === 'string')
         : [],
       executions: normalizePersistedExecutions(msg.executions),
+      ...(storedPlan ? { plan: storedPlan } : {}),
     };
   }
 
@@ -6266,6 +6767,7 @@
           // read back from storage renders identically to one just produced.
           local: run.local === true,
           workspaceNote: clipField(run.workspaceNote, 'workspaceNote'),
+          ...normalizePlanRunFields(run),
         };
       });
   }
@@ -6499,6 +7001,11 @@
       const persistable = messages.map((m) => {
         const { _feedbackCommitting, _feedbackJustOpened, _responseId, _usageSoFar, _usageRuns, feedbackDraft, ...rest } = m;
         if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
+        // The plan card's open editor and unsent note are in-page state too.
+        if (rest.plan) {
+          const { _ui, ...plan } = rest.plan;
+          rest.plan = plan;
+        }
         // Figures are shown for the life of the page and not stored. An open
         // "Edit and run" editor, its draft and its live echo, and an opened
         // code or output panel (#491), are the same kind of transient, in-page-only state
@@ -8211,6 +8718,8 @@
           workspace: workspaceStore,
         });
         runtimeApi = api;
+        // A restored chat holds plans the progress strip could not read before this.
+        if (messages.some((m) => m && m.plan)) renderIfMounted();
       } catch (err) {
         browserRuntime = null;
         browserTools = null;
@@ -8468,7 +8977,16 @@
   // config and the runtime, so a question typed the moment the page opens is
   // not sent without them; after that it resolves at once.
   function declaredClientTools() {
-    return declaredClientToolsWithin(communityConfigReady, () => browserToolsReady, 3000);
+    return declaredClientToolsWithin(communityConfigReady, () => browserToolsReady, 3000).then(withPlanTool);
+  }
+
+  // `propose_plan` rides along with the tools the controller declares, and only once the
+  // runtime that carries the plan logic has loaded: that is what can answer one. A page
+  // that declared it without could park a plan nobody could decide.
+  function withPlanTool(declared) {
+    if (!Array.isArray(declared) || declared.length === 0) return declared;
+    if (!runtimeApi || !runtimeApi.plan || declared.includes(PROPOSE_PLAN_TOOL)) return declared;
+    return [...declared, PROPOSE_PLAN_TOOL];
   }
 
   // ONE deadline covers both waits, deliberately: it bounds how long a first
@@ -8580,6 +9098,12 @@
   // The gate the controller calls. Resolves with the person's decision, and
   // always resolves: see renderIfMounted.
   function askToRunCode(prompt) {
+    // An approved plan is consent to its own steps (E2.3): a run that is the next step,
+    // or the next attempt of one that failed, is not asked about. Any other run is, and
+    // so is every run once the plan is stopped, or changes were asked for.
+    if (runtimeApi.plan && runtimeApi.plan.nextRunOf(messages)) {
+      return Promise.resolve(runtimeApi.GATE_DECISION.RUN);
+    }
     return new Promise((resolve) => {
       toolActivity = askingActivity(prompt, (decision, alwaysRun) => {
         try {
@@ -8751,7 +9275,13 @@
         'Send your message again and the assistant will answer without it.'
       );
     }
+    // A plan is answered by the reader, not the runtime (see the Plan card block).
+    if (request.tool === PROPOSE_PLAN_TOOL && runtimeApi.plan) {
+      return answerPlanRequest(container, request, messageIndex);
+    }
     const runsCode = request.tool !== runtimeApi.FULL_OUTPUT_TOOL_NAME;
+    // The step of the approved plan this run is, read before the gate asks about it.
+    const planned = runsCode && runtimeApi.plan ? runtimeApi.plan.nextRunOf(messages) : null;
     let result;
     try {
       if (runsCode) toolActivity = runningActivity(requestPrompt(request));
@@ -8764,8 +9294,9 @@
     }
     const message = messages[messageIndex];
     if (message && runsCode) {
+      const record = executionRecord(request, result, recordedTraceback(request.call_id));
       message.executions = (message.executions || []).concat(
-        executionRecord(request, result, recordedTraceback(request.call_id))
+        planned ? { ...record, ...plannedRunFields(planned, result) } : record
       );
     }
     // The result goes back to the model next, which reads it before anything else
@@ -8796,7 +9327,15 @@
     let current = outcome;
     while (current && current.toolRequest) {
       const { toolRequest, messageIndex } = current;
-      runs += 1;
+      // Stop plan: this request is left unanswered on purpose, like the one past the cap
+      // below, and the next message abandons it. The reply ends here without an error.
+      if (currentReply && currentReply.stopped) {
+        if (typeof steps.stopped === 'function') steps.stopped(messageIndex);
+        return;
+      }
+      // A plan is the reader's to answer and runs no code, so it is not a run (the
+      // server does not count it against the cap either).
+      if (toolRequest.tool !== PROPOSE_PLAN_TOOL) runs += 1;
       let resumed;
       try {
         if (runs > MAX_BROWSER_RUNS_PER_REPLY) {
@@ -8807,6 +9346,10 @@
         const result = await steps.answer(toolRequest, messageIndex);
         resumed = await steps.resume(toolRequest, result);
       } catch (error) {
+        // A decision the server never recorded (the post failed, or the parked call had
+        // expired) must not leave the plan approved on the page: that would run code
+        // without asking, for a plan the model knows nothing of.
+        if (toolRequest.tool === PROPOSE_PLAN_TOOL) revokePlanDecision(messageIndex, toolRequest.call_id);
         noteStoppedReply(messageIndex, error);
         throw error;
       }
@@ -8880,7 +9423,7 @@
     const body = {
       session_id: request.session_id || sessionId,
       result,
-      client_tools: browserTools ? browserTools.declared : [],
+      client_tools: browserTools ? withPlanTool(browserTools.declared) : [],
     };
     const carried = carriedMove();
     const pageContext = getPageContext();
@@ -9346,13 +9889,16 @@
   //   editorHtml the inline editor, when the reader has it open
   function runDoneCardHtml({ run, located = null, retry = null, editable = false, editorHtml = '' }) {
     const failed = runFailed(run);
-    const error = failed ? runErrorInfo(run) : null;
+    // A planned step the runtime refused (`denied`) failed as a step, so it reads as one
+    // and names the refusal ("denied_import: scipy"), though it is not a raised error.
+    const stepFailed = planStepFailed(run);
+    const error = failed || stepFailed ? runErrorInfo(run) : null;
     const msgIndex = located ? located.msgIndex : '';
     const runIndex = located ? located.runIndex : '';
     const where = located ? ` data-msg-index="${msgIndex}" data-run-index="${runIndex}"` : '';
     const idBase = located ? `osa-run-${msgIndex}-${runIndex}` : 'osa-run';
     const open = run._panelsOpen && typeof run._panelsOpen === 'object' ? run._panelsOpen : {};
-    const outcome = run.status === 'ok' ? 'ok' : (failed ? 'failed' : 'stopped');
+    const outcome = run.status === 'ok' ? 'ok' : (failed || stepFailed ? 'failed' : 'stopped');
 
     const output = [run.stdout, error ? error.before : ''].filter(Boolean).join('\n');
     const outputLines = textLineCount(output);
@@ -9430,9 +9976,13 @@
       panels.push(runPanelHtml({ id: warningsId, open: open.warnings === true, inner: `<pre class="osa-execution-output">${escapeHtml(run.stderr)}</pre>` }));
     }
 
+    // A failed step has attempts, not a budget of runs: the line says which one is next.
+    const retryText = retry && retry.step
+      ? `Fixing step ${retry.step} and running it again... attempt ${retry.attempt} of ${retry.of}`
+      : (retry ? `The assistant is looking at this error and may run the code again (${retry.used} of ${retry.of} runs used)` : '');
     const retryLine = retry
       ? `<div class="osa-run-card-retry"><span class="osa-activity-pulse" aria-hidden="true"></span>` +
-        `<span>The assistant is looking at this error and may run the code again (${escapeHtml(String(retry.used))} of ${escapeHtml(String(retry.of))} runs used)</span></div>`
+        `<span>${escapeHtml(retryText)}</span></div>`
       : '';
     // Shown regardless of status, unlike stderr: a save failure matters most on a
     // run whose Python succeeded, and for the reader's own runs this is the only
@@ -9458,7 +10008,8 @@
         <div class="osa-run-card osa-run-card-done osa-run-card-${outcome} osa-execution-run osa-code-block" data-status="${escapeHtml(run.status)}">
           <div class="osa-run-card-head">
             <span class="osa-run-card-icon" aria-hidden="true">${RUN_ICONS[outcome]}</span>
-            <div class="osa-run-card-title">${escapeHtml(runTitle(run))}</div>
+            <div class="osa-run-card-title">${runHeadingHtml(run, error)}</div>
+            ${runElapsedHtml(run)}
           </div>
           ${run.description ? `<div class="osa-run-card-description">${escapeHtml(run.description)}</div>` : ''}
           ${localNote}
@@ -9542,6 +10093,8 @@
   // The card shown while a tool_request is answered, as HTML.
   function toolPanelHtml(activity) {
     if (!activity) return '';
+    // The plan card, in the reply above, is what is being waited on.
+    if (activity.phase === 'plan') return '<div class="osa-plan-waiting" role="status">Waiting for your decision on the plan.</div>';
     const prompt = activity.prompt || {};
     return runCardHtml({
       phase: activity.phase === 'asking' ? 'asking' : 'running',
@@ -9573,8 +10126,9 @@
     return executions.map((run, runIndex) => {
       if (mirrored.has(run.callId)) return '';
       const last = runIndex === executions.length - 1;
-      const retry = pending && last && runFailed(run) && run.local !== true && assistantRuns < MAX_BROWSER_RUNS_PER_REPLY
-        ? { used: assistantRuns, of: MAX_BROWSER_RUNS_PER_REPLY }
+      const stepRetry = planRetryOf(run);
+      const retry = pending && last && (runFailed(run) || planStepFailed(run)) && run.local !== true && assistantRuns < MAX_BROWSER_RUNS_PER_REPLY
+        ? (stepRetry === undefined ? { used: assistantRuns, of: MAX_BROWSER_RUNS_PER_REPLY } : stepRetry)
         : null;
       return runCardHtml({
         phase: 'done',
@@ -9587,6 +10141,641 @@
     }).join('');
   }
   // --- End run card ---
+
+  // --- Plan card (E2.3, E2.4) ---
+  //
+  // The server's `propose_plan` call (src/tools/client_tools.py) ends a run on a
+  // tool_request like a code call does, but it asks the reader, not the runtime: the
+  // plan card is the question and `/chat/resume` carries the answer, a PlanDecision
+  // (src/api/tool_results.py). After an approval each `execute_code` run of the reply
+  // belongs to a step of the plan, which is what the step headers, the progress strip,
+  // the bar under the conversation (Run step N, Change step N, Stop plan) and the
+  // permission gate read. The rules (which step a run is, what the strip says) are
+  // frontend/osa-plan.js, in the runtime bundle as OSARuntime.plan, since this script
+  // cannot import it; what is here is state, markup and handlers. Without the bundle
+  // the widget does not declare `propose_plan`, and a restored plan still draws.
+  //
+  // The plan lives on the reply that proposed it (`message.plan`), the runs on the
+  // replies that ran them, so everything on screen is read back from the conversation
+  // and a reload shows the same. A paused plan continues in a LATER reply ("Continue
+  // with step 2."), so the newest plan in the conversation is the current one.
+  //
+  // Everything the model wrote (findings, titles, details) and everything the reader
+  // typed is escaped on its way into the markup.
+
+  const PROPOSE_PLAN_TOOL = 'propose_plan';
+  // The server's bounds (MAX_PLAN_* in src/tools/client_tools.py), as osa-plan.js
+  // PLAN_LIMITS holds them for the runtime; the stored copy is bounded here because a
+  // restored chat is read before the runtime bundle has loaded. test-widget-plan-card.js
+  // holds the two to each other.
+  const PLAN_STORAGE_LIMITS = Object.freeze({
+    steps: 8, title: 120, detail: 600, findings: 2000, feedback: 1000, peakMb: 8192, attempts: 2,
+  });
+  const PLAN_STATUS_LABELS = Object.freeze({
+    draft: 'Draft',
+    approved: 'Approved',
+    changes_requested: 'Changes requested',
+    stopped: 'Stopped',
+    unanswered: 'Not answered',
+  });
+  const PLAN_MODE_LABELS = Object.freeze({ pause: 'Pauses after each step', run_all: 'Runs all steps' });
+  // A run longer than a day is a clock that is wrong, not a run.
+  const PLAN_MAX_ELAPSED_MS = 86400000;
+
+  // The decision being waited for: {callId, messageIndex, resolve}, or null.
+  let planWait = null;
+  // The reply being sent, for Stop plan to reach: {stopped}. Set by sendMessage.
+  let currentReply = null;
+  // The selector of the control that should have focus once the card has been redrawn.
+  let planFocusAfterRender = null;
+
+  // The first `limit` code points, as osa-plan.js clip does: the server counts code points.
+  function planText(value, limit) {
+    if (typeof value !== 'string') return '';
+    return value.length <= limit ? value : Array.from(value).slice(0, limit).join('');
+  }
+
+  function planOneLine(value) {
+    return typeof value === 'string' ? value.split(/\s+/).filter(Boolean).join(' ') : '';
+  }
+
+  function planCount(value, max) {
+    return Number.isInteger(value) && value > 0 ? Math.min(value, max) : 0;
+  }
+
+  // A reply's plan as stored: bounded, with a status the card knows. A draft was never
+  // answered and nothing waits for it now, so it comes back as such. Null when it is not
+  // a plan. Transient state (`_ui`) is never read back.
+  function normalizePersistedPlan(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !Array.isArray(raw.steps) || raw.steps.length === 0) {
+      return null;
+    }
+    const steps = raw.steps.slice(0, PLAN_STORAGE_LIMITS.steps).map((step) => {
+      const entry = step && typeof step === 'object' ? step : {};
+      return {
+        title: planText(planOneLine(planText(entry.title, PLAN_STORAGE_LIMITS.title * 4)), PLAN_STORAGE_LIMITS.title),
+        detail: planText(entry.detail, PLAN_STORAGE_LIMITS.detail),
+      };
+    });
+    if (steps.some((step) => step.title === '')) return null;
+    const status = Object.prototype.hasOwnProperty.call(PLAN_STATUS_LABELS, raw.status) ? raw.status : 'unanswered';
+    const feedback = planText(raw.feedback, PLAN_STORAGE_LIMITS.feedback);
+    return {
+      callId: planText(raw.callId, EXECUTION_FIELD_LIMITS.callId),
+      findings: planText(raw.findings, PLAN_STORAGE_LIMITS.findings),
+      estPeakMb: planCount(raw.estPeakMb, PLAN_STORAGE_LIMITS.peakMb),
+      steps,
+      runMode: raw.runMode === 'run_all' ? 'run_all' : 'pause',
+      status: status === 'draft' ? 'unanswered' : status,
+      ...(feedback ? { feedback } : {}),
+    };
+  }
+
+  // The step fields of a stored run: which step of the plan it was, which attempt, what
+  // the step was called and how long it took. Only a run attributed to a step has them.
+  function normalizePlanRunFields(run) {
+    if (!Number.isInteger(run.step) || run.step < 1 || run.step > PLAN_STORAGE_LIMITS.steps) return {};
+    return {
+      step: run.step,
+      attempt: planCount(run.attempt, 99) || 1,
+      stepTitle: planText(planOneLine(planText(run.stepTitle, PLAN_STORAGE_LIMITS.title * 4)), PLAN_STORAGE_LIMITS.title),
+      elapsedMs: Number.isFinite(run.elapsedMs) ? Math.max(0, Math.min(Math.round(run.elapsedMs), PLAN_MAX_ELAPSED_MS)) : 0,
+    };
+  }
+
+  // The step fields of a run the plan covers (see OSARuntime.plan.nextRun).
+  function plannedRunFields(planned, result) {
+    return normalizePlanRunFields({
+      step: planned.step,
+      attempt: planned.attempt,
+      stepTitle: planned.title,
+      elapsedMs: result && result.elapsed_ms,
+    });
+  }
+
+  // The stream handler's one hook: a `propose_plan` request puts its draft on the reply,
+  // so the card is on screen as soon as the run that asked has ended.
+  function notePlanProposal(message, event) {
+    if (!message || !event || event.tool !== PROPOSE_PLAN_TOOL || !runtimeApi || !runtimeApi.plan) return;
+    const plan = runtimeApi.plan.normalizeProposal(event.args, event.call_id);
+    if (plan) message.plan = plan;
+  }
+
+  // Answer a `propose_plan` request: the card is the question, and this resolves with
+  // the PlanDecision once the reader has decided. Left parked, with the input off, until
+  // they do; Ask for changes is how they send it back. Rejects when the request holds no
+  // plan the card can show, which ends the reply like any other request it cannot answer.
+  function answerPlanRequest(container, request, messageIndex) {
+    const message = messages[messageIndex];
+    if (!message || !message.plan || message.plan.callId !== request.call_id) {
+      const proposal = runtimeApi.plan.normalizeProposal(request.args, request.call_id);
+      if (!message || !proposal) {
+        return Promise.reject(new Error('the assistant proposed a plan that could not be shown'));
+      }
+      message.plan = proposal;
+    }
+    return new Promise((resolve) => {
+      planWait = { callId: request.call_id, messageIndex, resolve };
+      toolActivity = { phase: 'plan' };
+      isThinking = false;
+      renderMessages(container);
+    }).then((decision) => {
+      // Said until the continuing stream shows what comes of it, as after a run (#538).
+      activity = { kind: 'analyze', label: ACTIVITY_ANALYZING, messageIndex };
+      beginWait();
+      renderMessages(container);
+      return decision;
+    });
+  }
+
+  // A decision that did not reach the server is undone: the plan reads Not answered, is
+  // read-only, and covers no run (OSARuntime.plan.nextRun needs it approved).
+  function revokePlanDecision(messageIndex, callId) {
+    const message = messages[messageIndex];
+    const plan = message && message.plan;
+    if (!plan || plan.callId !== callId) return;
+    if (plan.status === 'approved' || plan.status === 'changes_requested' || plan.status === 'draft') {
+      plan.status = 'unanswered';
+    }
+    delete plan._ui;
+    if (planWait && planWait.callId === callId) planWait = null;
+  }
+
+  // The card's transient state: which step is being edited (and its unsaved text), the
+  // "Ask for changes" note, an error to show. Never stored (saveHistory drops it).
+  function planUi(plan) {
+    if (!plan._ui) plan._ui = { editing: -1, draft: null, asking: false, feedback: '', error: '' };
+    return plan._ui;
+  }
+
+  const PLAN_ICONS = Object.freeze({
+    edit: runIcon('<path d="M4 20h4L19 9l-4-4L4 16z"></path>'),
+    remove: runIcon('<line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line>'),
+  });
+
+  function planStepsLabel(count) {
+    return `${count} ${count === 1 ? 'step' : 'steps'}`;
+  }
+
+  function planStepHtml(plan, ui, index, id) {
+    const step = plan.steps[index];
+    const number = index + 1;
+    if (ui && ui.editing === index && ui.draft) {
+      return `<li class="osa-plan-step osa-plan-step-editing">
+          <span class="osa-plan-num" aria-hidden="true">${number}</span>
+          <div class="osa-plan-edit">
+            <label class="osa-plan-label" for="${escapeHtml(id)}-title">Step ${number} title</label>
+            <input class="osa-plan-input" id="${escapeHtml(id)}-title" type="text" data-plan-field="title"
+              maxlength="${escapeHtml(String(PLAN_STORAGE_LIMITS.title))}" value="${escapeHtml(ui.draft.title)}">
+            <label class="osa-plan-label" for="${escapeHtml(id)}-detail">Step ${number} detail</label>
+            <textarea class="osa-plan-textarea" id="${escapeHtml(id)}-detail" rows="3" data-plan-field="detail"
+              maxlength="${escapeHtml(String(PLAN_STORAGE_LIMITS.detail))}">${escapeHtml(ui.draft.detail)}</textarea>
+            ${ui.error ? `<div class="osa-plan-error" role="alert">${escapeHtml(ui.error)}</div>` : ''}
+            <div class="osa-plan-edit-actions">
+              <button type="button" class="osa-plan-btn osa-plan-save" data-plan-action="save">Save</button>
+              <button type="button" class="osa-plan-btn osa-plan-cancel" data-plan-action="cancel">Cancel</button>
+            </div>
+          </div>
+        </li>`;
+    }
+    const editing = Boolean(ui) && ui.editing >= 0;
+    const controls = ui
+      ? `<div class="osa-plan-step-actions">
+            <button type="button" class="osa-plan-icon-btn osa-plan-edit-btn" data-plan-action="edit" data-step="${escapeHtml(String(index))}"
+              aria-label="Edit step ${number}"${editing ? ' disabled' : ''}>${PLAN_ICONS.edit}</button>
+            <button type="button" class="osa-plan-icon-btn osa-plan-remove-btn" data-plan-action="remove" data-step="${escapeHtml(String(index))}"
+              aria-label="Remove step ${number}"${editing || plan.steps.length <= 1 ? ' disabled' : ''}>${PLAN_ICONS.remove}</button>
+          </div>`
+      : '';
+    return `<li class="osa-plan-step">
+        <span class="osa-plan-num" aria-hidden="true">${number}</span>
+        <div class="osa-plan-step-text">
+          <span class="osa-plan-step-title">${escapeHtml(step.title)}</span>
+          ${step.detail ? `<span class="osa-plan-step-detail">${escapeHtml(step.detail)}</span>` : ''}
+        </div>
+        ${controls}
+      </li>`;
+  }
+
+  // The plan on a reply, as a card: editable while the reader is being asked, read-only
+  // after (and in a restored chat). '' for a reply with no plan.
+  function planCardHtml(msg, msgIndex) {
+    const plan = msg && msg.role === 'assistant' ? msg.plan : null;
+    if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) return '';
+    const live = plan.status === 'draft' && planWait !== null && planWait.messageIndex === msgIndex;
+    const status = plan.status === 'draft' && !live ? 'unanswered' : plan.status;
+    const ui = live ? planUi(plan) : null;
+    const id = `osa-plan-${msgIndex}`;
+    const findings = plan.findings
+      ? `<div class="osa-plan-findings"><strong>What I found.</strong> ${escapeHtml(plan.findings)}</div>`
+      : '';
+    const peak = plan.estPeakMb > 0
+      ? `<div class="osa-plan-meta">Largest step needs about ${escapeHtml(String(plan.estPeakMb))} MB</div>`
+      : '';
+    const steps = plan.steps.map((_, index) => planStepHtml(plan, ui, index, id)).join('');
+    let tail;
+    if (ui) {
+      const editing = ui.editing >= 0;
+      const mode = plan.runMode === 'run_all' ? 'run_all' : 'pause';
+      const radio = (value, label) => `<label class="osa-plan-mode${mode === value ? ' osa-plan-mode-on' : ''}">
+              <input type="radio" name="${escapeHtml(id)}-mode" value="${escapeHtml(value)}" data-plan-field="mode"${mode === value ? ' checked' : ''}> ${label}
+            </label>`;
+      const asking = ui.asking
+        ? `<div class="osa-plan-feedback">
+            <label class="osa-plan-label" for="${escapeHtml(id)}-feedback">What should change? (optional)</label>
+            <textarea class="osa-plan-textarea" id="${escapeHtml(id)}-feedback" rows="3" data-plan-field="feedback"
+              maxlength="${escapeHtml(String(PLAN_STORAGE_LIMITS.feedback))}">${escapeHtml(ui.feedback)}</textarea>
+            <div class="osa-plan-edit-actions">
+              <button type="button" class="osa-plan-btn osa-plan-send-feedback" data-plan-action="send-feedback">Send to the assistant</button>
+              <button type="button" class="osa-plan-btn osa-plan-cancel" data-plan-action="cancel-feedback">Back</button>
+            </div>
+          </div>`
+        : '';
+      tail = `
+        ${plan.steps.length < PLAN_STORAGE_LIMITS.steps
+          ? `<button type="button" class="osa-plan-add" data-plan-action="add"${editing ? ' disabled' : ''}>+ Add a step</button>`
+          : ''}
+        <fieldset class="osa-plan-modes">
+          <legend class="osa-sr-only">When a step finishes</legend>
+          <div class="osa-plan-modes-title" aria-hidden="true">When a step finishes</div>
+          <div class="osa-plan-modes-row">
+            ${radio('pause', 'Pause so I can look')}
+            ${radio('run_all', 'Run all steps')}
+          </div>
+        </fieldset>
+        ${!editing && ui.error ? `<div class="osa-plan-error" role="alert">${escapeHtml(ui.error)}</div>` : ''}
+        <div class="osa-plan-actions">
+          <button type="button" class="osa-plan-approve" data-plan-action="approve"${editing ? ' disabled' : ''}>Approve and run step 1</button>
+          <button type="button" class="osa-plan-ask" data-plan-action="ask" aria-expanded="${escapeHtml(ui.asking ? 'true' : 'false')}"${editing ? ' disabled' : ''}>Ask for changes</button>
+        </div>
+        ${editing ? '<div class="osa-plan-note">Save or cancel the step you are editing first.</div>' : ''}
+        ${asking}
+        <div class="osa-plan-note">Approving lets these steps run their code in your browser. You can stop any step.</div>`;
+    } else {
+      const feedback = status === 'changes_requested' && plan.feedback
+        ? `<div class="osa-plan-meta osa-plan-mode-line">Your note: ${escapeHtml(plan.feedback)}</div>`
+        : '';
+      tail = `<div class="osa-plan-meta osa-plan-mode-line">${escapeHtml(PLAN_MODE_LABELS[plan.runMode === 'run_all' ? 'run_all' : 'pause'])}</div>${feedback}`;
+    }
+    return `<section class="osa-plan-card osa-plan-${escapeHtml(status)}${live ? ' osa-plan-live' : ''}" aria-label="Proposed plan" data-msg-index="${msgIndex}">
+        ${findings}
+        <div class="osa-plan-top">
+          <div class="osa-plan-head">
+            <h4 class="osa-plan-title" tabindex="-1">Proposed plan · ${planStepsLabel(plan.steps.length)}</h4>
+            <span class="osa-plan-badge">${escapeHtml(PLAN_STATUS_LABELS[status])}</span>
+          </div>
+          ${peak}
+        </div>
+        <ol class="osa-plan-steps">${steps}</ol>
+        ${tail}
+      </section>`;
+  }
+
+  // The decision the card's buttons make. `kind` is 'approved' or 'changes_requested'.
+  // The answer is built by OSARuntime.plan.buildDecision, which refuses what the server
+  // would (a step with no title); a refusal is shown on the card and nothing is sent.
+  function decidePlan(container, msgIndex, kind) {
+    const wait = planWait;
+    const plan = messages[msgIndex] && messages[msgIndex].plan;
+    if (!wait || wait.messageIndex !== msgIndex || !plan || !plan._ui) return;
+    const ui = plan._ui;
+    let decision;
+    try {
+      decision = runtimeApi.plan.buildDecision(plan, kind, kind === 'approved' ? '' : ui.feedback);
+    } catch (err) {
+      ui.error = (err && err.message) || 'The plan could not be sent.';
+      renderMessages(container, { follow: false });
+      return;
+    }
+    plan.steps = decision.steps;
+    plan.runMode = decision.run_mode;
+    plan.status = kind === 'approved' ? 'approved' : 'changes_requested';
+    if (decision.feedback) plan.feedback = decision.feedback;
+    delete plan._ui;
+    planWait = null;
+    toolActivity = null;
+    // The controls that had focus are gone with the redraw; the card's heading is where
+    // the reader's attention was.
+    planFocusAfterRender = `[data-msg-index="${msgIndex}"] .osa-plan-title`;
+    wait.resolve(decision);
+    // Drawn now, so the pending focus is used by this render and cannot outlive it.
+    renderMessages(container, { follow: false });
+  }
+
+  // What a click on one of the live card's controls does. `step` is the 0-based step it
+  // names, for the ones that name one.
+  function planAction(container, msgIndex, action, step) {
+    const plan = messages[msgIndex] && messages[msgIndex].plan;
+    if (!plan || !plan._ui || !runtimeApi || !runtimeApi.plan) return;
+    const ui = plan._ui;
+    const api = runtimeApi.plan;
+    const focus = (selector) => { planFocusAfterRender = `[data-msg-index="${msgIndex}"] ${selector}`; };
+    const redraw = () => renderMessages(container, { follow: false });
+    if (action === 'edit' && ui.editing < 0 && plan.steps[step]) {
+      ui.editing = step;
+      ui.draft = { ...plan.steps[step], isNew: false };
+      ui.error = '';
+      focus('.osa-plan-input');
+      redraw();
+    } else if (action === 'add' && ui.editing < 0 && api.canAddStep(plan.steps)) {
+      plan.steps = api.addStep(plan.steps);
+      ui.editing = plan.steps.length - 1;
+      ui.draft = { title: '', detail: '', isNew: true };
+      ui.error = '';
+      focus('.osa-plan-input');
+      redraw();
+    } else if (action === 'remove' && ui.editing < 0 && api.canRemoveStep(plan.steps)) {
+      plan.steps = api.removeStep(plan.steps, step);
+      ui.error = '';
+      focus(plan.steps.length < PLAN_STORAGE_LIMITS.steps ? '.osa-plan-add' : '.osa-plan-edit-btn');
+      redraw();
+    } else if (action === 'save' && ui.editing >= 0 && ui.draft) {
+      const edited = api.cleanStep(ui.draft);
+      if (edited.title === '') {
+        ui.error = 'Give the step a title.';
+        focus('.osa-plan-input');
+      } else {
+        plan.steps = api.editStep(plan.steps, ui.editing, edited);
+        focus(`.osa-plan-step:nth-child(${ui.editing + 1}) .osa-plan-edit-btn`);
+        ui.editing = -1;
+        ui.draft = null;
+        ui.error = '';
+      }
+      redraw();
+    } else if (action === 'cancel' && ui.editing >= 0) {
+      if (ui.draft && ui.draft.isNew) {
+        plan.steps = api.removeStep(plan.steps, ui.editing);
+        focus('.osa-plan-add');
+      } else {
+        focus(`.osa-plan-step:nth-child(${ui.editing + 1}) .osa-plan-edit-btn`);
+      }
+      ui.editing = -1;
+      ui.draft = null;
+      ui.error = '';
+      redraw();
+    } else if (action === 'ask' && ui.editing < 0) {
+      ui.asking = !ui.asking;
+      ui.error = '';
+      if (ui.asking) focus('.osa-plan-feedback textarea');
+      redraw();
+    } else if (action === 'cancel-feedback') {
+      ui.asking = false;
+      focus('.osa-plan-ask');
+      redraw();
+    } else if (action === 'send-feedback' && ui.editing < 0) {
+      decidePlan(container, msgIndex, 'changes_requested');
+    } else if (action === 'approve' && ui.editing < 0) {
+      decidePlan(container, msgIndex, 'approved');
+    }
+  }
+
+  // The live card's handlers. Delegated to the card, which is rebuilt on every redraw:
+  // clicks by the control's data-plan-action, typing kept on the plan (so a redraw
+  // caused by something else does not lose it), Enter and Escape in the step editor.
+  function wirePlanCard(container, card) {
+    const msgIndex = parseInt(card.getAttribute('data-msg-index'), 10);
+    const plan = messages[msgIndex] && messages[msgIndex].plan;
+    if (!plan || !plan._ui) return;
+    const ui = plan._ui;
+    card.addEventListener('click', (event) => {
+      const control = event.target && event.target.closest ? event.target.closest('[data-plan-action]') : null;
+      if (!control || !card.contains(control) || control.disabled) return;
+      event.stopPropagation();
+      const step = parseInt(control.getAttribute('data-step'), 10);
+      planAction(container, msgIndex, control.getAttribute('data-plan-action'), Number.isInteger(step) ? step : -1);
+    });
+    card.addEventListener('input', (event) => {
+      const field = event.target && event.target.getAttribute ? event.target.getAttribute('data-plan-field') : null;
+      if (field === 'title' && ui.draft) ui.draft.title = event.target.value;
+      else if (field === 'detail' && ui.draft) ui.draft.detail = event.target.value;
+      else if (field === 'feedback') ui.feedback = event.target.value;
+    });
+    card.addEventListener('change', (event) => {
+      const target = event.target;
+      if (!target || !target.getAttribute || target.getAttribute('data-plan-field') !== 'mode' || !target.checked) return;
+      plan.runMode = target.value === 'run_all' ? 'run_all' : 'pause';
+      card.querySelectorAll('.osa-plan-mode').forEach((label) => {
+        const input = label.querySelector('input');
+        label.classList.toggle('osa-plan-mode-on', Boolean(input && input.checked));
+      });
+    });
+    card.addEventListener('keydown', (event) => {
+      if (!event.target || !event.target.getAttribute) return;
+      const field = event.target.getAttribute('data-plan-field');
+      if (event.key === 'Enter' && field === 'title') {
+        event.preventDefault();
+        planAction(container, msgIndex, 'save', -1);
+      } else if (event.key === 'Escape' && (field === 'title' || field === 'detail')) {
+        event.preventDefault();
+        planAction(container, msgIndex, 'cancel', -1);
+      }
+    });
+  }
+
+  // "1.2 s", "340 ms", "1 min 5 s": how long a step took, or '' when it is not known.
+  function formatStepElapsed(ms) {
+    if (!(ms > 0)) return '';
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    const seconds = ms / 1000;
+    if (seconds < 59.95) return `${seconds.toFixed(1)} s`;
+    // Whole seconds first, so 119.6 s is "2 min 0 s", not "1 min 60 s".
+    const total = Math.round(seconds);
+    const minutes = Math.floor(total / 60);
+    return `${minutes} min ${total - minutes * 60} s`;
+  }
+
+  function isPlannedRun(run) {
+    return Number.isInteger(run.step) && run.step >= 1;
+  }
+
+  // A step that did not work, and is tried again: the statuses runFailed names, and
+  // `denied`, which under an approved plan is the runtime's refusal (a package it does
+  // not have, "denied_import"), since the gate answers Run. OSARuntime.plan.nextRun counts
+  // every run that is not ok as an attempt, so the card, the strip and the retry line
+  // agree with it.
+  function planStepFailed(run) {
+    return isPlannedRun(run) && (runFailed(run) || run.status === 'denied');
+  }
+
+  // The head of a run card: "Step 3 · title", "Step 4 failed · KeyError: 'x'" for a
+  // run that was a step of a plan, and the card's usual title for any other.
+  function runHeadingHtml(run, error) {
+    if (!isPlannedRun(run)) return escapeHtml(runTitle(run));
+    const title = planOneLine(run.stepTitle || run.description);
+    let head;
+    if (run.status === 'ok') {
+      head = `<strong>Step ${run.step}</strong>${title ? ` · ${escapeHtml(title)}` : ''}`;
+    } else if (planStepFailed(run)) {
+      const what = error ? [error.type, planOneLine(error.message)].filter(Boolean).join(': ') : '';
+      head = `<strong>Step ${run.step} failed</strong>${what ? ` · ${escapeHtml(what.slice(0, 160))}` : ''}`;
+    } else {
+      head = `<strong>Step ${run.step} stopped</strong>${title ? ` · ${escapeHtml(title)}` : ''}`;
+    }
+    return `<span class="osa-run-card-step-text">${head}</span>`;
+  }
+
+  function runElapsedHtml(run) {
+    const text = isPlannedRun(run) ? formatStepElapsed(run.elapsedMs) : '';
+    return text ? `<span class="osa-run-card-elapsed">${escapeHtml(text)}</span>` : '';
+  }
+
+  // The retry line of a failed step: it has an attempt left, and the assistant is about
+  // to use it. Null when the step has none; undefined when the run is not a step at all.
+  function planRetryOf(run) {
+    if (!isPlannedRun(run)) return undefined;
+    const attempt = planCount(run.attempt, 99) || 1;
+    return attempt < PLAN_STORAGE_LIMITS.attempts
+      ? { step: run.step, attempt: attempt + 1, of: PLAN_STORAGE_LIMITS.attempts }
+      : null;
+  }
+
+  // Where the newest plan stands, for the strip and the bar: null when there is no plan
+  // to follow (none, still a draft, or asked to change) or the runtime has not loaded.
+  function planProgressNow() {
+    if (!runtimeApi || !runtimeApi.plan) return null;
+    return runtimeApi.plan.progressOfConversation(messages, { active: isLoading || toolActivity !== null });
+  }
+
+  function planStripLabel(progress) {
+    if (progress.state === 'stopped') return `Plan stopped · step ${progress.step} of ${progress.total}`;
+    if (progress.state === 'done') return `Plan · all ${planStepsLabel(progress.total)} done`;
+    return `Plan · step ${progress.step} of ${progress.total}`;
+  }
+
+  function planStripHtml(progress) {
+    const stopped = progress.state === 'stopped';
+    const done = progress.state === 'done';
+    const label = planStripLabel(progress);
+    const mode = stopped || done ? '' : `<span class="osa-plan-strip-mode">${escapeHtml(PLAN_MODE_LABELS[progress.mode])}</span>`;
+    const segments = progress.segments.map((state) => `<span class="osa-plan-seg osa-plan-seg-${escapeHtml(state)}"></span>`).join('');
+    return `<span class="osa-plan-strip-label">${escapeHtml(label)}</span>
+        <span class="osa-plan-segments" aria-hidden="true" style="grid-template-columns: repeat(${progress.total}, minmax(0, 1fr))">${segments}</span>
+        <span class="osa-sr-only">${escapeHtml(`${progress.doneCount} of ${planStepsLabel(progress.total)} done`)}</span>
+        ${mode}`;
+  }
+
+  // The words in the bar under the conversation, and which of its buttons show.
+  function planBarParts(progress) {
+    const { state, step, total, attempt } = progress;
+    if (state === 'paused') {
+      return {
+        text: step > 1 ? `Paused after step ${step - 1}.` : 'Approved. Step 1 has not run yet.',
+        buttons: ['run', 'change', 'stop'],
+      };
+    }
+    if (state === 'retrying') {
+      return {
+        text: step < total ? `Step ${step + 1} waits until step ${step} works.` : `The plan finishes when step ${step} works.`,
+        buttons: ['stop'],
+      };
+    }
+    if (state === 'failed') {
+      return {
+        text: attempt >= PLAN_STORAGE_LIMITS.attempts ? `Step ${step} did not work after ${attempt} attempts.` : `Step ${step} did not work.`,
+        buttons: ['change', 'stop'],
+      };
+    }
+    return { text: `Working on step ${step} of ${total}.`, buttons: ['stop'] };
+  }
+
+  function planBarHtml(progress) {
+    const { text, buttons } = planBarParts(progress);
+    const labels = {
+      run: `Run step ${progress.step}`,
+      change: `Change step ${progress.step}`,
+      stop: 'Stop plan',
+    };
+    const buttonHtml = buttons.map((name) =>
+      `<button type="button" class="osa-plan-bar-btn osa-plan-bar-${escapeHtml(name)}" data-plan-bar="${escapeHtml(name)}">${escapeHtml(labels[name])}</button>`
+    ).join('');
+    return `<span class="osa-plan-bar-text">${escapeHtml(text)}</span><span class="osa-plan-bar-buttons">${buttonHtml}</span>`;
+  }
+
+  // Stop plan: no step of this plan runs again. Whatever is running is cancelled, and
+  // the reply stops answering requests for code (continueBrowserReply), leaving the
+  // parked call for the next message to repair, as the cap on runs does.
+  function stopPlan(container) {
+    const current = runtimeApi && runtimeApi.plan ? runtimeApi.plan.currentPlan(messages) : null;
+    if (!current) return;
+    current.plan.status = 'stopped';
+    if (currentReply) currentReply.stopped = true;
+    if (browserTools) browserTools.cancel();
+    try {
+      saveHistory();
+    } catch (saveError) {
+      console.error('[OSA] Failed to save history:', saveError);
+    }
+    renderMessages(container, { follow: false });
+  }
+
+  function fillChatInput(container, text) {
+    const input = container.querySelector('.osa-chat-input input');
+    if (!input) return;
+    input.value = text;
+    input.focus();
+    if (typeof input.setSelectionRange === 'function') input.setSelectionRange(text.length, text.length);
+  }
+
+  function onPlanBarClick(container, name, progress) {
+    if (name === 'stop') {
+      stopPlan(container);
+    } else if (name === 'run') {
+      // sendMessage returns without drawing while a reply is going on; nothing is then
+      // pending, so focus is not moved by some later, unrelated render.
+      if (isLoading) return;
+      // The bar the button was in is replaced; focus goes to the strip, which says what runs.
+      planFocusAfterRender = '.osa-plan-strip';
+      sendMessage(container, `Continue with step ${progress.step}.`);
+    } else if (name === 'change') {
+      fillChatInput(container, `Change step ${progress.step}: `);
+    }
+  }
+
+  // renderMessages' one hook, called once the conversation is drawn: the cards'
+  // handlers, the progress strip at the top, the bar at the bottom, and focus returned
+  // to the control the reader just used.
+  function renderPlanChrome(container, messagesEl) {
+    messagesEl.querySelectorAll('.osa-plan-card.osa-plan-live[data-msg-index]').forEach((card) => wirePlanCard(container, card));
+    const progress = planProgressNow();
+    // Said by the plan's own announcer, which a redraw does not replace: where the plan
+    // stands after each step, which the strip and the bar (rebuilt every time) cannot say.
+    const announcer = container.querySelector('.osa-plan-announcer');
+    if (announcer) {
+      // A finished or stopped plan has no bar, so there is nothing to add to the strip's words.
+      const ended = progress && (progress.state === 'done' || progress.state === 'stopped');
+      const spoken = !progress ? '' : ended ? `${planStripLabel(progress)}.` : `${planStripLabel(progress)}. ${planBarParts(progress).text}`;
+      if (announcer.textContent !== spoken) announcer.textContent = spoken;
+    }
+    if (progress) {
+      const strip = document.createElement('div');
+      strip.className = `osa-plan-strip osa-plan-strip-${progress.state}`;
+      strip.setAttribute('role', 'group');
+      strip.setAttribute('tabindex', '-1');
+      strip.setAttribute('aria-label', 'Plan progress');
+      strip.innerHTML = planStripHtml(progress);
+      messagesEl.insertBefore(strip, messagesEl.firstChild);
+      if (progress.state !== 'done' && progress.state !== 'stopped') {
+        const bar = document.createElement('div');
+        bar.className = 'osa-plan-bar';
+        bar.setAttribute('role', 'group');
+        bar.setAttribute('aria-label', 'Plan controls');
+        bar.innerHTML = planBarHtml(progress);
+        bar.querySelectorAll('[data-plan-bar]').forEach((button) => {
+          button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            onPlanBarClick(container, button.getAttribute('data-plan-bar'), progress);
+          });
+        });
+        messagesEl.appendChild(bar);
+      }
+    }
+    if (planFocusAfterRender) {
+      const target = messagesEl.querySelector(planFocusAfterRender);
+      planFocusAfterRender = null;
+      if (target && typeof target.focus === 'function') target.focus();
+    }
+  }
+  // --- End plan card ---
 
   // A malformed value is named here rather than dropped in silence: an embedder's
   // typo through setConfig() (or a hand-edited widget: block) otherwise looks
@@ -10672,6 +11861,7 @@
         </div>
         <div class="osa-chat-messages"></div>
         <div class="osa-status-announcer osa-sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+        <div class="osa-plan-announcer osa-sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
         <div class="osa-suggestions" style="display: none;">
           <span class="osa-suggestions-label">Try asking:</span>
           <div class="osa-suggestions-list"></div>
@@ -11127,9 +12317,9 @@
       // response can update it in place. While the model is thinking, that
       // state must stay invisible: the loading bubble below is the assistant
       // response placeholder until the first answer text arrives.
-      // A reply that has run code is shown even before it has text: the record
-      // of what ran is already part of it.
-      const ranCode = Array.isArray(msg.executions) && msg.executions.length > 0;
+      // A reply that has run code, or proposed a plan, is shown even before it has
+      // text: the record of what ran, or the plan to decide on, is already part of it.
+      const ranCode = Array.isArray(msg.executions) && msg.executions.length > 0 || Boolean(msg.plan);
       if (isLoading && msg.role === 'assistant' && !hasVisibleText(msg.content) && !ranCode && msgIndex === messages.length - 1) {
         return;
       }
@@ -11216,6 +12406,7 @@
           <span class="osa-message-label">${escapeHtml(label)}</span>
           ${copyBtn}
         </div>
+        ${msg.role === 'assistant' ? planCardHtml(msg, msgIndex) : ''}
         ${msg.role === 'assistant' ? executionsHtml(msg.executions, msgIndex, { pending: replyWaitingOnAssistant(msgIndex) }) : ''}
         <div class="osa-message-content">${content}</div>
         ${status && status.where === 'inline' && status.messageIndex === msgIndex ? statusLineHtml(status) : ''}
@@ -11478,6 +12669,7 @@
       messagesEl.appendChild(loadingEl);
     }
 
+    renderPlanChrome(container, messagesEl);
     renderContextNotice(container);
     messagesEl.scrollTop = !follow && awayFromBottom > SCROLL_FOLLOW_SLACK_PX
       ? scrolledFrom
@@ -12513,6 +13705,7 @@
             const streamed = hasVisibleText(accumulatedContent) ? accumulatedContent : '';
             const runText = hasVisibleText(sent) ? sent : streamed;
             messages[messageIndex].content = compose(runText);
+            notePlanProposal(messages[messageIndex], event);
             if (Array.isArray(event.citations)) {
               messages[messageIndex].citations = event.citations;
             }
@@ -12673,6 +13866,7 @@
 
     isLoading = true;
     isThinking = false;
+    currentReply = { stopped: false };
     beginWait();
 
     // Boot the browser runtime now if this community preloads on first message,
@@ -12806,6 +14000,14 @@
           answer: (request, index) => answerToolRequest(container, request, index),
           resume: postResume,
           stream: (resumed, index) => handleStreamingResponse(resumed, container, { messageIndex: index }),
+          // Stop plan ended the reply: what it ran is kept, as a finished reply's is.
+          stopped: () => {
+            try {
+              saveHistory();
+            } catch (saveError) {
+              console.error('[OSA] Failed to save history:', saveError);
+            }
+          },
         });
       } else {
         // Non-streaming response (either streaming not enabled, or fallback)
@@ -12917,6 +14119,8 @@
       updateStatusDisplay(false);
     } finally {
       modelOverride = null;
+      currentReply = null;
+      planWait = null;
       isLoading = false;
       isThinking = false;
       clearActivity();
@@ -13572,6 +14776,12 @@
       runtimeBundleUrl,
       toolPanelHtml,
       declaredClientTools,
+      withPlanTool,
+      PLAN_STORAGE_LIMITS,
+      PLAN_STATUS_LABELS,
+      formatStepElapsed,
+      normalizePersistedPlan,
+      planCardHtml,
       setUpBrowserTools,
       getBrowserTools: () => browserTools,
       getBrowserRuntime: () => browserRuntime,
