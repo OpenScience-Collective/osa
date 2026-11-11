@@ -516,6 +516,32 @@ console.log('\na SyntaxError, and an error the runtime found no line for');
   assert(plain.querySelector('.osa-run-card-code-toggle'), 'the code is still one click away');
 }
 
+console.log('\na message of several lines keeps the exception\'s own type');
+{
+  const { window, api } = loadWidget();
+  const card = failedCard(window, api, 'multiLineMessage');
+  assertEqual(textOf(card.querySelector('.osa-run-card-error-type')), 'RuntimeError', 'the type is the exception\'s, not a line of its message');
+  assertEqual(textOf(card.querySelector('.osa-run-card-error-text')),
+    'RuntimeError: could not merge the event files\nOtherError: column onset is missing', 'and the whole message follows it');
+  assertEqual(textOf(card.querySelector('.osa-run-card-line-marked .osa-run-card-lineno')), '2', 'the failing line is still marked');
+  const noTrace = failedCard(window, api, 'multiLineMessage', { traceback: '' });
+  assert(noTrace.querySelector('.osa-run-card-error-text').textContent.includes('column onset is missing'),
+    'without a traceback to read the type from, nothing the run said is hidden');
+}
+
+console.log('\na custom exception name that does not end in Error');
+{
+  const { window, api } = loadWidget();
+  for (const traceback of [undefined, '']) {
+    const card = failedCard(window, api, 'customName', traceback === undefined ? {} : { traceback });
+    assertEqual(textOf(card.querySelector('.osa-run-card-error-type')), 'MyFailure', `named${traceback === '' ? ' with no traceback' : ' from its traceback'}`);
+    assertEqual(textOf(card.querySelector('.osa-run-card-error-text')), 'MyFailure: nope', 'with its message');
+  }
+  const bare = holderOf(window, api.executionsHtml([run({ status: 'error', stderr: 'MyFailure: nope' })], 0)).querySelector('.osa-run-card');
+  assertEqual(textOf(bare.querySelector('.osa-run-card-error-text')), 'MyFailure: nope', 'with no traceback and no line, shown whole');
+  assert(!bare.querySelector('.osa-run-card-error-type'), 'with no type claimed, since nothing says it is one');
+}
+
 console.log('\nstderr that does not parse is shown whole rather than hidden');
 {
   const { window, api } = loadWidget();
@@ -532,9 +558,9 @@ console.log('\nthe retry line, only while the reply is still pending after a fai
   const failedRun = (over = {}) => recorded(api, 'keyErrorWithLine', over);
   const lineOf = (html) => textOf(holderOf(window, html).querySelector('.osa-run-card-retry'));
   assertEqual(lineOf(api.executionsHtml([failedRun()], 0, { pending: true })),
-    `The assistant is fixing this and will run it again (run 2 of ${max})`, 'a failed last run on a pending reply says it will be run again');
+    `The assistant is looking at this error and may run the code again (1 of ${max} runs used)`, 'a failed last run on a pending reply says the assistant may run again, not that it will');
   assertEqual(lineOf(api.executionsHtml([run(), failedRun()], 0, { pending: true })),
-    `The assistant is fixing this and will run it again (run 3 of ${max})`, 'counting the runs so far');
+    `The assistant is looking at this error and may run the code again (2 of ${max} runs used)`, 'counting the runs so far');
   assertEqual(lineOf(api.executionsHtml([failedRun()], 0, { pending: false })), null, 'not once the reply is done');
   assertEqual(lineOf(api.executionsHtml([failedRun()], 0)), null, 'nor by default');
   assertEqual(lineOf(api.executionsHtml([failedRun(), run()], 0, { pending: true })), null, 'not on a run that was followed by another');
@@ -563,7 +589,7 @@ console.log('\nthe retry line follows the page: shown while the assistant answer
   record.stderr = "ValueError: boom\n  line 1: ERR:30";
   api.renderMessages(container);
   assertEqual(textOf(container.querySelector('.osa-run-card-retry')),
-    `The assistant is fixing this and will run it again (run 2 of ${api.MAX_BROWSER_RUNS_PER_REPLY})`, 'a failed run on the reply the assistant is answering');
+    `The assistant is looking at this error and may run the code again (1 of ${api.MAX_BROWSER_RUNS_PER_REPLY} runs used)`, 'a failed run on the reply the assistant is answering');
   api.setMessages([{ role: 'assistant', content: 'Hi' }, { role: 'user', content: 'q' }, { role: 'assistant', content: 'earlier', executions: [record] }, { role: 'user', content: 'next' }, { role: 'assistant', content: '' }]);
   await api.answerToolRequest(container, { call_id: 'r2', tool: 'execute_code', args: { code: 'print(2)', description: 'd' } }, 4);
   api.renderMessages(container);

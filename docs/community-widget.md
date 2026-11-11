@@ -524,7 +524,7 @@ A run that raised an error, timed out or ran out of memory opens its card by def
 - **All code · N lines**, **Full traceback** and **Copy error**.
   The traceback is the one the browser kept for `get_full_output`; it is stored on the run (`traceback`, cut to 4,000 characters like the other output) and the button is not drawn for a run that has none.
   Copy error puts the error as written, `Type: message` and the failing line, on the clipboard and says "Copied".
-- **A retry line** on the last run of a reply that is still waiting on the assistant after the failure: "The assistant is fixing this and will run it again (run K of 20)", where 20 is the most runs one reply may make.
+- **A retry line** on the last run of a reply that is still waiting on the assistant after the failure: "The assistant is looking at this error and may run the code again (K of 20 runs used)", where 20 is the most runs one reply may make. It says "may" because the assistant can also answer in prose, and the line goes when its text starts.
   It is gone once the reply has finished, and is never shown for a run the reader started, which the assistant does not see.
 
 A run that worked and warned shows **N warnings**, collapsed, counting the lines of its stderr that hold `Warning:`; stderr with no warning in it shows nothing, as before.

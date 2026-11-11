@@ -45,6 +45,19 @@ const CODE = {
     'warnings.warn("sampling rate 512.0 differs from the file header", RuntimeWarning)',
     'print("averaged 882 epochs")',
   ].join('\n'),
+  // A message of several lines, one of which reads like an exception's own first line:
+  // the card must name RuntimeError, the type the exception has, and not OtherError.
+  multiLineMessage: [
+    'def check(rows):',
+    '    raise RuntimeError("could not merge the event files\\nOtherError: column onset is missing")',
+    'check([])',
+  ].join('\n'),
+  // An exception whose name does not end like one, raised from a line of the run's own code.
+  customName: [
+    'class MyFailure(Exception):',
+    '    pass',
+    'raise MyFailure("nope")',
+  ].join('\n'),
   cutStderr: [
     'import sys',
     'for i in range(400):',

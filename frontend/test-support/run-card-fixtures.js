@@ -37,6 +37,20 @@ export const RUN_CARD_FIXTURES = {
     "stderr": "<cell>:2: UserWarning: channel EEG065 has flat segments\n<cell>:3: RuntimeWarning: sampling rate 512.0 differs from the file header",
     "traceback": ""
   },
+  "multiLineMessage": {
+    "code": "def check(rows):\n    raise RuntimeError(\"could not merge the event files\\nOtherError: column onset is missing\")\ncheck([])",
+    "status": "error",
+    "stdout": "",
+    "stderr": "RuntimeError: could not merge the event files\nOtherError: column onset is missing\n  line 2: raise RuntimeError(\"could not merge the event files\\nOtherError: column onset is missing\")",
+    "traceback": "Traceback (most recent call last):\n  File \"<exec>\", line 728, in _execute\n  File \"/lib/python313.zip/_pyodide/_base.py\", line 597, in eval_code_async\n    await CodeRunner(\n    ...<9 lines>...\n    .run_async(globals, locals)\n  File \"/lib/python313.zip/_pyodide/_base.py\", line 411, in run_async\n    coroutine = eval(self.code, globals, locals)\n  File \"<cell>\", line 3, in <module>\n  File \"<cell>\", line 2, in check\nRuntimeError: could not merge the event files\nOtherError: column onset is missing\n"
+  },
+  "customName": {
+    "code": "class MyFailure(Exception):\n    pass\nraise MyFailure(\"nope\")",
+    "status": "error",
+    "stdout": "",
+    "stderr": "MyFailure: nope\n  line 3: raise MyFailure(\"nope\")",
+    "traceback": "Traceback (most recent call last):\n  File \"<exec>\", line 728, in _execute\n  File \"/lib/python313.zip/_pyodide/_base.py\", line 597, in eval_code_async\n    await CodeRunner(\n    ...<9 lines>...\n    .run_async(globals, locals)\n  File \"/lib/python313.zip/_pyodide/_base.py\", line 411, in run_async\n    coroutine = eval(self.code, globals, locals)\n  File \"<cell>\", line 3, in <module>\nMyFailure: nope\n"
+  },
   "cutStderr": {
     "code": "import sys\nfor i in range(400):\n    print(f\"loading recording {i:04d} from the archive, retry 1\", file=sys.stderr)\nraise ValueError(\"no recording had a usable event file\")",
     "status": "error",

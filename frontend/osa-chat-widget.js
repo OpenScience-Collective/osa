@@ -6313,6 +6313,25 @@
   // the exception came from a line of the run's own code).
   const ERROR_LINE_MARK = /^ {2}line (\d+)(?:: (.*))?$/;
 
+  // The type the exception itself has, read from the full traceback the browser kept:
+  // the first unindented line after the last indented one (a frame's "File" line or its
+  // source), which is where Python starts writing the exception. stderr alone cannot say
+  // this, since a message of several lines may hold a line that reads like "Name: text".
+  // '' when there is no traceback or it ends some other way.
+  function tracebackTypeName(traceback) {
+    const lines = String(traceback || '').replace(/\s+$/, '').split('\n');
+    let lastIndented = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^[ \t]/.test(lines[i])) {
+        lastIndented = i;
+        break;
+      }
+    }
+    const first = lines[lastIndented + 1];
+    const match = first === undefined ? null : ANY_TYPE_LINE.exec(first);
+    return match ? match[1] : '';
+  }
+
   // What a failed run's stderr says went wrong. The runtime writes "Type: message",
   // then "  line N: code" when it knows the line (osa-output.js _error_text), after
   // whatever the code itself wrote to stderr. A run it stopped (timeout, out of
@@ -6340,9 +6359,12 @@
     let typeAt = -1;
     let typeName = '';
     let rest = '';
+    // The exception's own type, when the traceback names it, wins over a line of its
+    // message that looks like one: the nearest line above the marker with that name.
+    const known = tracebackTypeName(run.traceback);
     for (let i = from; i >= 0; i--) {
       const match = ANY_TYPE_LINE.exec(lines[i]);
-      if (match && EXCEPTION_NAME.test(match[1])) {
+      if (match && (known !== '' ? match[1] === known : EXCEPTION_NAME.test(match[1]))) {
         typeAt = i;
         [, typeName, rest = ''] = match;
         break;
@@ -6451,8 +6473,8 @@
   //   run       a stored record (executionRecord's shape; transient _flags may ride on it)
   //   located   {msgIndex, runIndex} of the reply it belongs to, or null, in which case
   //             no button that acts on the record is drawn
-  //   retry     {next, of} while the reply is waiting on the assistant after this
-  //             failed run, else null
+  //   retry     {used, of} while the reply is waiting on the assistant after this
+  //             failed run (it may run again, or answer in prose), else null
   //   editable  whether "Edit and run" is offered
   //   editorHtml the inline editor, when the reader has it open
   function runDoneCardHtml({ run, located = null, retry = null, editable = false, editorHtml = '' }) {
@@ -6543,7 +6565,7 @@
 
     const retryLine = retry
       ? `<div class="osa-run-card-retry"><span class="osa-activity-pulse" aria-hidden="true"></span>` +
-        `<span>The assistant is fixing this and will run it again (run ${escapeHtml(String(retry.next))} of ${escapeHtml(String(retry.of))})</span></div>`
+        `<span>The assistant is looking at this error and may run the code again (${escapeHtml(String(retry.used))} of ${escapeHtml(String(retry.of))} runs used)</span></div>`
       : '';
     // Shown regardless of status, unlike stderr: a save failure matters most on a
     // run whose Python succeeded, and for the reader's own runs this is the only
@@ -6682,7 +6704,7 @@
       if (mirrored.has(run.callId)) return '';
       const last = runIndex === executions.length - 1;
       const retry = pending && last && runFailed(run) && run.local !== true && assistantRuns < MAX_BROWSER_RUNS_PER_REPLY
-        ? { next: assistantRuns + 1, of: MAX_BROWSER_RUNS_PER_REPLY }
+        ? { used: assistantRuns, of: MAX_BROWSER_RUNS_PER_REPLY }
         : null;
       return runCardHtml({
         phase: 'done',

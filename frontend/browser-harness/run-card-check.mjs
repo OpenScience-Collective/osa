@@ -348,7 +348,7 @@ async function runScheme(cdp, base, scheme, dir) {
   report(/UserWarning/.test(text('warnings-open')), `${scheme}: and open on request`);
   const statuses = text('statuses');
   report(['Stopped: took too long', 'Stopped: out of memory', 'Stopped', 'Not run'].every((label) => statuses.includes(label)), `${scheme}: each non-ok status names itself`);
-  report(/The assistant is fixing this and will run it again \(run 2 of \d+\)/.test(text('retry')), `${scheme}: the retry line`);
+  report(/The assistant is looking at this error and may run the code again \(1 of \d+ runs used\)/.test(text('retry')), `${scheme}: the retry line`);
   report(!measured.restored.stored.includes('data:image') && !/"_[A-Za-z]/.test(measured.restored.stored), `${scheme}: nothing transient and no figure is stored`);
   report(!(await call(`window.__card.show('restored').then(() => window.__card.figureShown())`)), `${scheme}: the restored card has no figure`);
 }
