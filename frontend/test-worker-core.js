@@ -328,6 +328,25 @@ console.log('\nthe value of a trailing expression is shown, as a notebook would'
   assertEqual((await plain.run('value = 3')).stdout, '', 'an assignment prints nothing');
 }
 
+console.log('\nthe heap: every result reports the size of the WebAssembly memory beside it, for the memory budget (E5.1)');
+{
+  const before = await plain.run('x = 1');
+  assert(Number.isFinite(before.heap_bytes) && before.heap_bytes >= 16 * 1024 * 1024,
+    `a run reports the interpreter's own memory, at least 16 MB (got ${before.heap_bytes})`);
+  assertEqual(before.heap_bytes, plain.pyodide._module.HEAPU8.byteLength, 'and it is the size of the heap Pyodide has now, in bytes');
+  const grown = await plain.run('big = bytearray(150 * 1024 * 1024)\nprint(len(big))');
+  assert(grown.heap_bytes >= before.heap_bytes + 140 * 1024 * 1024,
+    `after a run that holds 150 MB the heap is that much larger (${before.heap_bytes} -> ${grown.heap_bytes})`);
+  const freed = await plain.run('del big');
+  assertEqual(freed.heap_bytes, grown.heap_bytes, 'WebAssembly memory does not shrink, so freeing it leaves the figure where the run took it');
+  const denied = await plain.run('import notinstalledpackage');
+  assertEqual(denied.status, 'denied', 'a refused run');
+  assert(denied.heap_bytes > 0, 'reports it too');
+  const none = await bootRuntime();
+  none.pyodide._module = null;
+  assertEqual((await none.run('x = 1')).heap_bytes, 0, 'a memory that cannot be read reports 0 (no heap), not an error');
+}
+
 console.log('\nstreams that overflow are clipped here and kept whole in the browser');
 {
   const small = await bootRuntime({ limits: { stdout_chars: 512 } });
