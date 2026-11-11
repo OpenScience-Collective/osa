@@ -266,7 +266,19 @@ function startServer() {
 
 // ------------------------------------------------------------------ the driver
 
+// The dialog opens and docks with a 120 ms animation that scales the window from 98%, so a
+// measurement taken in its first frames would read a window that is 2% too small. Every
+// read waits for the animations that end (the infinite ones, a spinner's, are not waited
+// for); a call that carries a user gesture does not, so the gesture is spent on the call.
+const ANIMATIONS_SETTLED = `Promise.race([
+  Promise.all(document.getAnimations()
+    .filter((a) => a.effect && a.effect.getComputedTiming().endTime !== Infinity)
+    .map((a) => a.finished.catch(() => null))),
+  new Promise((resolve) => setTimeout(resolve, 1000)),
+]).then(() => true)`;
+
 async function evaluate(cdp, sessionId, expression, { userGesture = false } = {}) {
+  if (!userGesture) await cdp.send('Runtime.evaluate', { expression: ANIMATIONS_SETTLED, awaitPromise: true }, sessionId);
   const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', {
     expression, returnByValue: true, awaitPromise: true, userGesture,
   }, sessionId);
