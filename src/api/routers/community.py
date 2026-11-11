@@ -43,6 +43,7 @@ from src.agents.model_routing import (
     reader_turn,
     tier_for_turn,
 )
+from src.agents.plan_first import plan_first_section
 from src.api.config import Settings, get_settings
 from src.api.handover import stream_handover
 from src.api.routers.health import compute_community_health
@@ -59,8 +60,10 @@ from src.api.security import (
 from src.api.tool_results import (
     ClientToolResult,
     PendingClientCall,
+    PlanDecision,
     build_history_tool_message,
     build_live_tool_message,
+    build_plan_tool_message,
     build_unanswered_tool_message,
     scrub_stored_images,
 )
@@ -79,6 +82,7 @@ from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import (
     MAX_DECLARED_CLIENT_TOOLS,
+    PROPOSE_PLAN_TOOL_NAME,
     START_ANALYSIS_TOOL_NAME,
     ClientToolConfig,
     ClientToolRuntime,
@@ -267,12 +271,18 @@ class ChatRequest(BaseModel):
 
 
 class ResumeRequest(BaseModel):
-    """Run 2 of a browser-execution turn: the result of a call run 1 asked for."""
+    """Run 2 of a browser-execution turn: the result of a call run 1 asked for.
+
+    `result` is a `PlanDecision` for a `propose_plan` call and a `ClientToolResult` for
+    every other; the two shapes share no required field but `call_id`, and each forbids
+    extra keys, so a body parses as exactly one of them. `chat_resume` refuses a kind
+    that does not match the parked call.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(min_length=1, max_length=256)
-    result: ClientToolResult
+    result: ClientToolResult | PlanDecision
     model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
     page_context: PageContext | None = None
     client_tools: list[str] = Field(default_factory=list, max_length=MAX_DECLARED_CLIENT_TOOLS)
@@ -933,7 +943,9 @@ class ChatSession:
         if pending is None:
             return False
         self.pending_call = None
-        self.messages.append(build_unanswered_tool_message(pending.call_id, reason))
+        self.messages.append(
+            build_unanswered_tool_message(pending.call_id, reason, tool=pending.tool)
+        )
         self.last_active = datetime.now(UTC)
         return True
 
@@ -2165,7 +2177,9 @@ def create_community_assistant(
             and decides which client tools are bound. A quick turn also gets the prompt
             section that tells it to call ``start_analysis``, added to
             ``additional_instructions`` here because it must exist exactly when that tool
-            is bound, which is not something the YAML prompt can say.
+            is bound, which is not something the YAML prompt can say. An analysis turn
+            gets the community's ``plan_first_instructions`` on the same terms (see
+            ``src.agents.plan_first``).
         additional_instructions: Extra text for the system prompt.
 
     Returns:
@@ -2263,11 +2277,17 @@ def create_community_assistant(
         )
 
     # A quick turn gets the section that tells it to call `start_analysis`, after any
-    # instructions the caller passed.
+    # instructions the caller passed. An analysis turn gets the community's plan-first text
+    # when `propose_plan` is declared (`plan_first_section` says when), for the same reason:
+    # it must exist exactly when the tool it names is bound.
     merged_instructions = additional_instructions
     if tier == "quick":
         merged_instructions = "\n\n".join(
             part for part in (additional_instructions, QUICK_MODE_INSTRUCTIONS) if part
+        )
+    elif plan_first := plan_first_section(community_config, tier, declared_client_tools):
+        merged_instructions = "\n\n".join(
+            part for part in (additional_instructions, plan_first) if part
         )
 
     assistant = registry.create_assistant(
@@ -2995,7 +3015,7 @@ def create_community_router(community_id: str) -> APIRouter:
         # The person moved on instead of answering a browser call. Close it out before
         # anything else: leaving an assistant message with tool_calls and no matching
         # result makes the provider reject EVERY later turn, not just this one.
-        if session.abandon_pending_call("the conversation moved on before it was run"):
+        if session.abandon_pending_call("the conversation moved on before it was answered"):
             logger.info("Abandoned an unanswered browser call on session %s", session.session_id)
 
         # Add user message with constraint validation
@@ -3175,6 +3195,29 @@ def create_community_router(community_id: str) -> APIRouter:
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found or expired.")
 
+        # The kind of answer must match the kind of call, and is checked BEFORE the claim:
+        # a claim clears the parked call, so a refusal after it would strand a plan the
+        # reader can still answer. A plan answered with a code result, or a code call
+        # answered with a decision, is the caller's mistake, and the call stays parked
+        # so the right answer can still arrive. Only the outstanding call's own id is
+        # compared; any other id is refused by the claim below like it always was.
+        parked = session.pending_call
+        if (
+            parked is not None
+            and parked.call_id == body.result.call_id
+            and (parked.tool == PROPOSE_PLAN_TOOL_NAME) != isinstance(body.result, PlanDecision)
+        ):
+            logger.info(
+                "Browser result refused for session %s: the answer is not the kind %s takes",
+                session.session_id,
+                parked.tool,
+                extra={"session_id": session.session_id, "reason": "result_kind_mismatch"},
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="That answer is not the kind the outstanding browser call takes.",
+            )
+
         # Synchronous by construction; see ChatSession.claim_pending_call. One refusal
         # for all three cases, because telling a caller WHICH of "no call outstanding",
         # "a different call is outstanding" and "that call expired" applies is only
@@ -3198,11 +3241,18 @@ def create_community_router(community_id: str) -> APIRouter:
         # have nothing left to abandon. Nothing in these two builders can raise today;
         # the re-park is here so that stays true when someone adds something that can.
         try:
-            live_messages = [
-                *session.messages,
-                build_live_tool_message(body.result, allow_images=allow_images),
-            ]
-            session.messages.append(build_history_tool_message(body.result))
+            if isinstance(body.result, PlanDecision):
+                # A decision carries no image, so the live and the stored message are one
+                # object, built once.
+                decision_message = build_plan_tool_message(body.result, pending.args)
+                live_messages = [*session.messages, decision_message]
+                session.messages.append(decision_message)
+            else:
+                live_messages = [
+                    *session.messages,
+                    build_live_tool_message(body.result, allow_images=allow_images),
+                ]
+                session.messages.append(build_history_tool_message(body.result))
         except Exception:
             session.set_pending_call(pending)
             logger.exception(

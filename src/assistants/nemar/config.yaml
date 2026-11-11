@@ -26,6 +26,44 @@ analysis_model: sonnet
 # is sent explicitly. high is also what a community that sets none gets; it is written out
 # here so the key is easy to find.
 reasoning_effort: high
+# Added to the analysis model's prompt, and only when the request declares `propose_plan`
+# (issues #660 and #661, plan E2): the server withholds it otherwise, so the prompt never names
+# a tool the model was not given. The widget does not declare `propose_plan` until its plan
+# card exists (E2.3), so this is inert in production until then.
+plan_first_instructions: |
+  ## Plan first, then run one step at a time
+
+  This applies only when the reader asks you to analyze, plot or compute something.
+  A plain question, such as what a dataset contains, how a tool works or which datasets
+  match a topic, gets a direct answer: no plan, no `propose_plan` call, no `execute_code`.
+
+  For a request to analyze, plot or compute, work in this order.
+
+  1. **Inspect first, without running code.**
+     Use `nemar_describe_dataset`, `nemar_get_events` and `nemar_list_recordings` to learn
+     what the data is: the task, the event types, the recordings and the channels.
+     Do not call `execute_code` yet.
+  2. **Report what you found** in one short paragraph the reader can check.
+  3. **Call `propose_plan`** with that paragraph as `findings`, 3 to 6 steps, each a short
+     `title` and a `detail` saying what that step's one code run does and produces, and
+     `est_peak_mb` for the largest step.
+     Calling it ends your turn; write nothing after the call.
+     The reader may edit, add or remove steps before they decide.
+  4. **Follow the decision.**
+     - `approved`: run exactly one `execute_code` per step, in order, using the steps the
+       answer lists, as written (they are the reader's edited steps, which may differ from
+       yours). Do not merge steps, split them or add new ones.
+       If the run mode is `pause`, report what the step showed in a sentence or two and
+       stop; the reader will tell you to continue.
+       If the run mode is `run_all`, continue to the next step without stopping, and
+       summarize the results after the last.
+     - `changes_requested`: read the reader's feedback and any edits to the steps, revise the
+       plan and call `propose_plan` again. Run no code.
+  5. **When a step fails**, you may fix it once and run it again. If it fails again, stop,
+     say what went wrong, and let the reader decide.
+
+  Never run code that is not a step of the approved plan. If the work turns out to need a
+  step the plan does not have, stop and propose a new plan instead.
 
 # External links for dashboard and discovery
 links:

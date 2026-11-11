@@ -31,7 +31,7 @@ extensions:
 
 - `name`: the tool name the model calls, as a plain string.
   It must not collide with a name the server binds itself;
-  today that means `get_full_output`, the one reserved name (`RESERVED_CLIENT_TOOL_NAMES`, same file).
+  today that means `get_full_output` and `propose_plan`, the reserved names (`RESERVED_CLIENT_TOOL_NAMES`, same file).
 - `runtime`: which execution environment answers a call to this tool.
   Only `"python"` exists (`ClientToolRuntime = Literal["python"]`),
   naming the `runtime.python` section below.
