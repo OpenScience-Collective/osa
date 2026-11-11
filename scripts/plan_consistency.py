@@ -28,8 +28,8 @@ the operations so a reviewer can audit the rules.
 
 Limits of the comparison, which the report repeats. A step no rule matches is ``other``,
 and two ``other`` steps compare equal, so unlike steps can agree; a plan of one step
-agrees with itself trivially. The rules were tuned against the first live run (see
-``RULES``), so a share measured with the tuned table is not an independent measurement.
+agrees with itself trivially. The rules were tuned against the first live run and
+adjusted in review (see ``RULES``), so a share measured with the tuned table is not an independent measurement.
 Each repeat also has an overall time limit (``MAX_RUN_SECONDS``), because the read timeout
 alone is never hit by a stream that keeps sending events.
 
@@ -148,19 +148,27 @@ VOCABULARY = (
 # neither matches is `other`. `load` also takes the inspection steps (check, find, list:
 # reading what the data is), which the vocabulary has no word for. A reviewer tunes the
 # reading by editing this table and re-renders a saved run with `--from-raw`; the report
-# prints raw titles to check it against. This table was edited once after the first live
-# run (inspection steps read as `load`, "tabulate epochs" read as `stats`), so the shares of
-# that run are post hoc; the titles that run settled are pinned in the tests.
+# prints raw titles to check it against. This table was edited after the first live
+# run (inspection steps read as `load`, "tabulate epochs" read as `stats`, average-reference
+# wording as `rereference`) and again in review (word boundaries on `draw` and `figure`,
+# power-line wording as `filter`), so the shares of that run are post hoc; the titles that
+# settled the edits are pinned in the tests.
 RULES: tuple[tuple[str, str], ...] = (
-    ("plot", r"plot|figure|visuali[sz]|topograph|topomap|scalp map|chart|graph|display|draw"),
+    (
+        "plot",
+        r"plot|\bfigures?\b(?! out)|visuali[sz]|topograph|topomap|scalp map|chart|graph|display|\bdraw",
+    ),
     ("export", r"export|\bsave\b|\bcsv\b|write (?:out|to)|store (?:the )?results?"),
     (
         "stats",
         r"statistic|t-?test|anova|signific|correlat|compar|summari[sz]|tally|tabulat|"
         r"\bcounts?\b|number of|(?:epochs?|trials?|events?) per (?:event|condition|subject|type|class)|"
-        r"peak (?:latenc|amplitude)|latenc(?:y|ies)",
+        r"peak (?:latenc|amplitude)|latenc(?:y|ies)|mean (?:amplitude|value)s? per",
     ),
-    ("spectrum", r"spectr|\bpsd\b|welch|\bfft\b|wavelet|time-frequency|band[- ]?power|\bpower\b"),
+    (
+        "spectrum",
+        r"spectr|\bpsd\b|welch|\bfft\b|wavelet|time-frequency|band[- ]?power|\bpower\b(?![- ]line)",
+    ),
     (
         "rereference",
         r"re-?referenc|(?:average|common)[- ]referenc|referenc\w*(?: \w+){0,3} to (?:the )?(?:average|mastoids?)|"
@@ -169,11 +177,15 @@ RULES: tuple[tuple[str, str], ...] = (
     ("average", r"averag|grand mean|\bmean\b|\berps?\b|evoked|contrast"),
     (
         "reject",
-        r"reject|artifact|artefact|bad[- ](?:channels?|epochs?|segments?)|drop|exclud|"
+        r"reject|artifact|artefact|bad[- ](?:channels?|epochs?|segments?|trials?)|drop|exclud|"
         r"outlier|\bica\b|peak-to-peak|amplitude threshold",
     ),
     ("epoch", r"epoch|trial|baseline|time-locked|event-locked|\bcut\b"),
-    ("filter", r"filter|band-?pass|high-?pass|low-?pass|notch|resampl|downsampl|detrend|smooth"),
+    (
+        "filter",
+        r"filter|band-?pass|high-?pass|low-?pass|notch|resampl|downsampl|detrend|smooth|"
+        r"power[- ]line|line[- ]noise|mains",
+    ),
     (
         "load",
         r"\bload|\bread\b|fetch|\bopen\b|import|inspect|retriev|access|"
@@ -466,8 +478,9 @@ def _seq(sequence: tuple[str, ...]) -> str:
 def caveats(results: dict[PlanRequest, list[RunRecord]]) -> list[str]:
     """What a reader must know before trusting the shares, derived from these runs."""
     lines = [
-        "The normalization rules were tuned once against the first live run, so shares "
-        "measured with the tuned table are post hoc, not an independent measurement.",
+        "The normalization rules were tuned against the first live run and then widened in "
+        "review for titles audited from it, so shares measured with the table are post hoc, "
+        "not an independent measurement.",
         "A step no rule matches is `other`, and two `other` steps compare equal.",
     ]
     for request, runs in results.items():

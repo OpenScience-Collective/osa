@@ -242,6 +242,14 @@ def test_raw_runs_round_trip_and_are_renormalized_with_the_current_rules():
             ],
         ),
         ("average", ["Average the epochs", "Compute the ERP"]),
+        ("stats", ["Compute mean amplitude per condition"]),
+        (
+            "filter",
+            ["Remove power-line noise", "Notch filter at 60 Hz power line", "Filter out mains hum"],
+        ),
+        ("reject", ["Withdraw bad trials"]),
+        ("spectrum", ["Compute band power", "Estimate the power spectral density"]),
+        ("plot", ["Draw a figure", "Make a figure of the result"]),
     ],
 )
 def test_wording_variants_of_one_operation_agree(operation, titles):
@@ -355,7 +363,7 @@ def test_the_report_says_what_the_shares_cannot_show():
     runs = {pc.REQUESTS[3]: [one_step] * 4, pc.REQUESTS[0]: [vague] * 4}
     report = pc.render_report("https://x.test", 4, runs, "2026-01-01")
     assert "## Caveats" in report
-    assert "tuned once" in report
+    assert "post hoc" in report
     assert f"{pc.REQUESTS[3].kind}: the top sequence is a single step" in report
     assert f"{pc.REQUESTS[0].kind}: 4 step(s) across the runs are `other`" in report
 
@@ -403,3 +411,9 @@ def test_titles_audited_after_the_first_live_run_keep_their_operation():
     # tabulating epoch counts is `stats`, not epoching.
     assert pc.normalize_step({"title": "Check channel labels"}) == "load"
     assert pc.normalize_step({"title": "Tabulate epochs per subject and event type"}) == "stats"
+
+
+def test_short_stems_need_word_boundaries():
+    # "draw" inside "Withdraw" and "figure" in "Figure out" are not plotting
+    assert pc.normalize_step({"title": "Withdraw bad trials"}) == "reject"
+    assert pc.normalize_step({"title": "Figure out which channels are bad"}) != "plot"
