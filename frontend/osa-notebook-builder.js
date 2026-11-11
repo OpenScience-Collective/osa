@@ -24,10 +24,18 @@
  * the stored stdout but not the figures would show partial outputs that
  * mislead; Run all regenerates every output.
  *
- * Imports are hoisted only from column 0 (`import x`, `from x import y`,
- * including parenthesized multi-line forms and `as` aliases); an indented
- * import (inside `try:` or a function) stays where it is, and so does
- * `from __future__ import ...`, which must stay the first statement of its cell.
+ * Imports are hoisted only from the leading block of a run: column-0 imports
+ * (`import x`, `from x import y`, including parenthesized multi-line forms and
+ * `as` aliases) that come before any other statement, after at most blank
+ * lines, comments and a module docstring. An import after other code stays in
+ * its step (`sys.path.insert(...)` may be what makes it work); so does an
+ * indented import (inside `try:` or a function), a star import, a statement
+ * that shares its line with other code, and `from __future__ import ...`,
+ * which must stay the first statement of its cell. An import that binds a name
+ * another import already binds to something else (`from a import f`, then
+ * `from b import f`) also stays in its step, so each step sees the object it
+ * saw in the chat. Not covered: a name a step assigns in plain code, which a
+ * hoisted import of the same name would not know about.
  *
  * The script targets cell runners (VS Code, Spyder, Jupytext), not plain
  * `python`: it uses top-level `await`, which only a notebook kernel accepts.
@@ -166,24 +174,121 @@ function bracketBalance(text) {
 }
 
 /**
- * Split a run's code into the column-0 import statements to hoist and the
- * remaining lines. A statement is skipped (left in place) when it shares its
- * line with other code (`;`), is a `from __future__` import, or starts inside
- * a string.
+ * The names a clean import statement binds, each with what it resolves to, or
+ * null when the statement cannot be read with certainty (a star import, an
+ * odd form). `import a.b` and `import a` both bind `a` to the package `a`, so
+ * they do not collide; `from a import f` and `from b import f` bind `f` to two
+ * different things, so they do.
  *
+ * @param {string} code The statement's text with comments removed.
+ * @returns {Array<[string, string]>|null} `[name, target]` pairs.
+ */
+function importBindings(code) {
+  const text = code.replace(/\\/g, ' ').replace(/\s+/g, ' ').trim();
+  const plain = /^import (.+)$/.exec(text);
+  if (plain) {
+    const bindings = [];
+    for (const part of plain[1].split(',')) {
+      const match = /^\s*([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)(?:\s+as\s+([A-Za-z_]\w*))?\s*$/.exec(part);
+      if (!match) return null;
+      const module = match[1].replace(/\s+/g, '');
+      const top = module.split('.')[0];
+      bindings.push(match[2] ? [match[2], `module ${module}`] : [top, `module ${top}`]);
+    }
+    return bindings;
+  }
+  const from = /^from (\S+) import (.+)$/.exec(text);
+  if (!from) return null;
+  let names = from[2].trim();
+  if (names.startsWith('(')) {
+    if (!names.endsWith(')')) return null;
+    names = names.slice(1, -1);
+  }
+  const parts = names.split(',').map((part) => part.trim());
+  if (parts.at(-1) === '') parts.pop();
+  if (parts.length === 0) return null;
+  const bindings = [];
+  for (const part of parts) {
+    const match = /^([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?$/.exec(part);
+    if (!match) return null;
+    bindings.push([match[2] || match[1], `${from[1]} ${match[1]}`]);
+  }
+  return bindings;
+}
+
+/** A module docstring opens with a triple quote, optionally prefixed. */
+const DOCSTRING_START = /^[rRuU]?("""|''')/;
+
+/** What the setup cell and the kept imports bind, shared by every run of one notebook. */
+function newImportScope() {
+  return {
+    seen: new Set([SETUP_IMPORT]),
+    // name -> target, for the imports hoisted into the setup cell
+    owners: new Map([['eegprep_lean', 'module eegprep_lean']]),
+    // name -> target, for the imports left in a step; the latest one wins, as it does at run time
+    rebound: new Map(),
+  };
+}
+
+/**
+ * Split a run's code into the imports to hoist into the setup cell and the
+ * remaining lines.
+ *
+ * Only the leading block is hoisted: column-0 imports that come before any
+ * other statement (blank lines, comments and a module docstring may precede
+ * them). An import after other code stays in its step, because that code may
+ * be what makes it work (`sys.path.insert(...)` before `import mymod`). A
+ * statement also stays when it shares its line with other code (`;`), is a
+ * star import, starts inside a string, or cannot be read as a plain import;
+ * `from __future__` imports stay too, and do not end the leading block.
+ *
+ * An import is also left in its step when it binds a name that setup or an
+ * earlier step already binds to something else (`from a import f`, then
+ * `from b import f`), since hoisting it would hand an earlier step the wrong
+ * object. An import identical to one already in setup is dropped.
+ *
+ * @param {string[]} lines
+ * @param {{seen: Set<string>, owners: Map<string, string>, rebound: Map<string, string>}} scope
+ *   Updated in place so that later runs of the same notebook see this run's imports.
  * @returns {{imports: Array<{key: string, text: string}>, rest: string[]}}
  */
-function extractImports(lines) {
+function extractImports(lines, scope) {
   const imports = [];
   const rest = [];
   const quotes = new QuoteTracker();
+  let leading = true;
+  let docstringSeen = false;
   let i = 0;
+  const passThrough = (line) => {
+    quotes.readLine(line);
+    rest.push(line);
+    i += 1;
+  };
   while (i < lines.length) {
     const line = lines[i];
-    if (quotes.isQuoted() || !IMPORT_START.test(line) || FUTURE_IMPORT.test(line)) {
-      quotes.readLine(line);
-      rest.push(line);
-      i += 1;
+    if (quotes.isQuoted()) {
+      passThrough(line);
+      continue;
+    }
+    if (leading && (line.trim() === '' || line.trimStart().startsWith('#'))) {
+      passThrough(line);
+      continue;
+    }
+    if (leading && !docstringSeen && DOCSTRING_START.test(line)) {
+      // A module docstring, however many lines; the leading block goes on after it.
+      docstringSeen = true;
+      passThrough(line);
+      while (quotes.isQuoted() && i < lines.length) passThrough(lines[i]);
+      continue;
+    }
+    if (!IMPORT_START.test(line)) {
+      leading = false;
+      passThrough(line);
+      continue;
+    }
+    if (FUTURE_IMPORT.test(line)) {
+      // Runs nothing and must stay first in its cell, so the leading block goes on past it.
+      passThrough(line);
       continue;
     }
     const statement = [line];
@@ -197,18 +302,31 @@ function extractImports(lines) {
       continued = /\\\s*$/.test(stripComment(next));
       j += 1;
     }
+    i = j;
     const code = statement.map(stripComment).join(' ');
-    if (balance !== 0 || continued || code.includes(';')) {
-      // Not a clean, self-contained import: leave it exactly where it is.
+    const bindings = balance !== 0 || continued || code.includes(';') ? null : importBindings(code);
+    const collides =
+      bindings !== null &&
+      bindings.some(
+        ([name, target]) =>
+          (scope.owners.has(name) && scope.owners.get(name) !== target) ||
+          (scope.rebound.has(name) && scope.rebound.get(name) !== target)
+      );
+    if (!leading || bindings === null || collides) {
+      // Left exactly where it is. Code that is not a clean import ends the leading block.
+      if (bindings === null) leading = false;
       for (const kept of statement) {
         quotes.readLine(kept);
         rest.push(kept);
       }
-      i = j;
+      for (const [name, target] of bindings || []) scope.rebound.set(name, target);
       continue;
     }
-    imports.push({ key: oneLine(code), text: statement.join('\n') });
-    i = j;
+    for (const [name, target] of bindings) scope.owners.set(name, target);
+    const key = oneLine(code);
+    if (scope.seen.has(key)) continue;
+    scope.seen.add(key);
+    imports.push({ key, text: statement.join('\n') });
   }
   return { imports, rest };
 }
@@ -266,7 +384,7 @@ function firstErrorLine(stderr) {
 function planCells({ datasetId, title, createdAt, communityName, zarrBase, executions }) {
   const included = [];
   const leftOut = [];
-  const seenImports = new Set([SETUP_IMPORT]);
+  const scope = newImportScope();
   const hoisted = [];
 
   (Array.isArray(executions) ? executions : []).forEach((run, index) => {
@@ -284,12 +402,8 @@ function planCells({ datasetId, title, createdAt, communityName, zarrBase, execu
       leftOut.push(entry);
       return;
     }
-    const { imports, rest } = extractImports(code.split('\n'));
-    for (const item of imports) {
-      if (seenImports.has(item.key)) continue;
-      seenImports.add(item.key);
-      hoisted.push(item);
-    }
+    const { imports, rest } = extractImports(code.split('\n'), scope);
+    hoisted.push(...imports);
     const step = included.length + 1;
     included.push({
       step,

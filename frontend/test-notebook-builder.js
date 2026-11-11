@@ -177,12 +177,13 @@ console.log('\nImport hoisting');
       run({
         code: [
           'from __future__ import annotations',
+          'import a, \\',
+          '    b',
           'import os; os.getcwd()',
+          'import after_code',
           'x = """',
           'import not_really_an_import',
           '"""',
-          'import a, \\',
-          '    b',
           'print(x)',
         ].join('\n'),
       }),
@@ -190,10 +191,71 @@ console.log('\nImport hoisting');
   );
   const setup = notebook.cells[1].source;
   assert(!setup.includes('__future__'), 'from __future__ stays in its step (it must be first in its cell)');
+  assert(setup.includes('import a, \\\n    b'), 'a backslash continuation is hoisted whole, after a from __future__ line');
   assert(!setup.includes('os.getcwd'), 'an import sharing a line with other code stays in place');
+  assert(!setup.includes('after_code'), 'and an import after that code stays in its step');
   assert(!setup.includes('not_really_an_import'), 'text inside a string is never hoisted');
-  assert(setup.includes('import a, \\\n    b'), 'a backslash continuation is hoisted whole');
-  assert(notebook.cells[3].source.startsWith('from __future__ import annotations\nimport os; os.getcwd()'), 'those lines are left as they were');
+  assertEqual(
+    notebook.cells[3].source,
+    ['from __future__ import annotations', 'import os; os.getcwd()', 'import after_code', 'x = """', 'import not_really_an_import', '"""', 'print(x)'].join('\n'),
+    'those lines are left as they were'
+  );
+  const star = build(conversation([run({ code: 'from math import *\nprint(pi)' })]));
+  assert(!star.notebook.cells[1].source.includes('import *'), 'a star import binds names nobody can list, so it stays in its step');
+}
+{
+  const docstring = '"""Load the data.\nimport inside_docstring\n"""';
+  const { notebook } = build(
+    conversation([run({ code: `# a comment first\n\n${docstring}\nimport numpy as np\nx = np.zeros(2)` })])
+  );
+  assert(notebook.cells[1].source.includes('import numpy as np'), 'imports after blank lines, comments and a module docstring are still the leading block');
+  assert(!notebook.cells[1].source.includes('inside_docstring'), 'and the docstring is not scanned for imports');
+  assertEqual(notebook.cells[3].source, `# a comment first\n\n${docstring}\nx = np.zeros(2)`, 'the step keeps the comment, the docstring and the code');
+}
+console.log('\nImports that depend on earlier code, or on each other');
+{
+  const code = 'import sys\nsys.path.insert(0, "/tmp/x")\nimport mymod\nprint(mymod)';
+  const { notebook } = build(conversation([run({ code })]));
+  const setup = notebook.cells[1].source;
+  assert(setup.includes('import sys') && !setup.includes('import mymod'), 'an import after sys.path.insert is not hoisted above it');
+  assertEqual(notebook.cells[3].source, 'sys.path.insert(0, "/tmp/x")\nimport mymod\nprint(mymod)', 'it stays in its step, in order');
+}
+{
+  const code = 'import pathlib\npathlib.Path("helper.py").write_text("VALUE = 1")\nimport helper\nprint(helper.VALUE)';
+  const { notebook } = build(conversation([run({ code })]));
+  assert(!notebook.cells[1].source.includes('import helper'), 'an import of a module the run just wrote is not hoisted');
+}
+{
+  const { notebook } = build(
+    conversation([
+      run({ code: 'from a import f\nprint(f)' }),
+      run({ code: 'from b import f\nprint(f)' }),
+      run({ code: 'from a import f\nprint(f)' }),
+      run({ code: 'from b import f\nprint(f)' }),
+    ])
+  );
+  const setup = notebook.cells[1].source;
+  assert(setup.includes('from a import f') && !setup.includes('from b import f'), 'two different imports of one name: the first is hoisted, the second is not');
+  assertEqual(notebook.cells[3].source, 'print(f)', 'step 1 is left with its code only');
+  assertEqual(notebook.cells[5].source, 'from b import f\nprint(f)', 'step 2 keeps the import that rebinds the name');
+  assertEqual(notebook.cells[7].source, 'from a import f\nprint(f)', 'step 3 keeps its import too, since step 2 changed what f is');
+  assertEqual(notebook.cells[9].source, 'from b import f\nprint(f)', 'and step 4, for the same reason');
+}
+{
+  const { notebook } = build(
+    conversation([
+      run({ code: 'import numpy as np\nprint(1)' }),
+      run({ code: 'import numpy as np\nimport numpy.linalg\nimport pandas as np\nprint(2)' }),
+      run({ code: 'import eegprep_lean as e\nimport numpy as eegprep_lean\nprint(3)' }),
+    ])
+  );
+  const setup = notebook.cells[1].source;
+  assertEqual(setup.split('import numpy as np').length - 1, 1, 'the same import is still hoisted once');
+  assert(setup.includes('import numpy.linalg'), 'import a.b and import a bind the same package, so they do not collide');
+  assert(!setup.includes('import pandas as np'), 'a different module under the same alias stays in its step');
+  assertEqual(notebook.cells[5].source, 'import pandas as np\nprint(2)', 'with the rest of its step');
+  assert(setup.includes('import eegprep_lean as e'), 'an alias of the setup import is another name, so it is hoisted');
+  assertEqual(notebook.cells[7].source, 'import numpy as eegprep_lean\nprint(3)', 'a name the setup cell needs is never rebound there');
 }
 {
   const { notebook } = build(conversation([run({ code: 'import numpy as np\nimport eegprep_lean' }), run({ code: 'print(1)' })]));
