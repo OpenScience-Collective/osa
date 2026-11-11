@@ -816,7 +816,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-CmnMFZjJfOAdo5XJkHd0RsjwIScuK5C9zF9chl/sKT5RjblkrSbeAV8XRSrowKTX';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-vB7j6hj+E/nfpdAfFnqCSsO7rs/SDnMaWXCghT4fMT0XL+75kk6rs+NCtpvXgCGo';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -5904,6 +5904,232 @@
         padding: 10px 16px;
       }
     }
+
+    /* Continue in notebook, in the dialog's header (E6.1): the History and Move to corner
+       buttons' look, with the label dropped at 600px and under like theirs. Shown by
+       syncCenterNotebook, never outside the dialog. */
+    .osa-chat-window .osa-center-notebook-btn {
+      display: none;
+    }
+
+    .osa-chat-window.osa-center .osa-center-notebook-btn:not([hidden]) {
+      display: flex;
+      gap: 6px;
+      padding: 0 14px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      background: var(--osa-bg);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .osa-chat-window.osa-center .osa-center-notebook-btn:disabled {
+      opacity: 0.6;
+      cursor: progress;
+    }
+
+    @media (max-width: 600px) {
+      .osa-chat-window.osa-center .osa-center-notebook-btn:not([hidden]) {
+        padding: 0;
+      }
+    }
+
+    /* The plan rail (E6.1, board C3): 280px beside the thread, in the panel's own tokens.
+       Wider than 900px only: below that the strip and the bar in the thread carry the
+       same state, and the rail is not drawn. The container of the thread becomes a grid
+       while it has a rail (the window, or in the capsule the chat view inside it): the
+       header on top, the rail in the left column down the thread's rows, the thread and
+       its input in the right, the disclaimer and the footer across both. */
+    .osa-plan-rail {
+      display: none;
+      --osa-rail-ok: #15803d;
+      --osa-rail-danger: var(--osa-danger-text);
+    }
+
+    .osa-chat-widget.osa-dark .osa-plan-rail {
+      --osa-rail-ok: #4ade80;
+    }
+
+    .osa-plan-rail-heading {
+      margin: 0 0 6px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--osa-text);
+    }
+
+    .osa-plan-rail-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .osa-plan-rail-row {
+      margin: 0;
+      padding: 0;
+    }
+
+    .osa-plan-rail-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 36px;
+      margin: 0;
+      padding: 8px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--osa-text);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 400;
+      line-height: 1.4;
+      text-align: left;
+    }
+
+    button.osa-plan-rail-step {
+      cursor: pointer;
+    }
+
+    button.osa-plan-rail-step:hover {
+      background: var(--osa-bg);
+    }
+
+    .osa-plan-rail-current .osa-plan-rail-step {
+      background: var(--osa-bg);
+      border-color: var(--osa-notice-border);
+      font-weight: 500;
+    }
+
+    .osa-plan-rail-icon {
+      display: inline-flex;
+      flex: none;
+      width: 18px;
+      height: 18px;
+      margin-top: 1px;
+    }
+
+    .osa-plan-rail-icon svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .osa-plan-rail-done .osa-plan-rail-icon {
+      color: var(--osa-rail-ok);
+    }
+
+    .osa-plan-rail-failed .osa-plan-rail-icon,
+    .osa-plan-rail-failed .osa-plan-rail-title {
+      color: var(--osa-rail-danger);
+    }
+
+    .osa-plan-rail-stopped .osa-plan-rail-icon {
+      color: var(--osa-text);
+    }
+
+    .osa-plan-rail-dot {
+      width: 18px;
+      height: 18px;
+      box-sizing: border-box;
+      border-radius: 999px;
+      border: 2px solid var(--osa-text-light);
+    }
+
+    .osa-plan-rail-dot-current {
+      border-color: var(--osa-accent);
+    }
+
+    .osa-plan-rail-foot {
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid var(--osa-border);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12.5px;
+      color: var(--osa-text);
+    }
+
+    .osa-plan-rail-memory {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0 4px;
+    }
+
+    .osa-plan-rail-change {
+      min-height: 36px;
+      margin: 0;
+      padding: 0 6px;
+      border: 0;
+      background: transparent;
+      color: var(--osa-text);
+      font: inherit;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+
+    .osa-plan-rail-step:focus-visible,
+    .osa-plan-rail-change:focus-visible,
+    .osa-run-card[tabindex="-1"]:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-run-card[data-plan-step] {
+      scroll-margin-top: 8px;
+    }
+
+    @media (min-width: 901px) {
+      .osa-chat-widget:not(.osa-capsule) .osa-chat-window.osa-center.osa-center-has-rail.open,
+      .osa-chat-widget.osa-capsule .osa-chat-window.osa-center.osa-center-has-rail .osa-view-chat {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr) repeat(9, auto);
+      }
+
+      .osa-center-has-rail .osa-chat-header {
+        grid-column: 1 / -1;
+        grid-row: 1;
+      }
+
+      .osa-center-has-rail .osa-plan-rail {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        grid-column: 1;
+        grid-row: 2 / 10;
+        box-sizing: border-box;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 18px;
+        background: var(--osa-assistant-bg);
+        border-right: 1px solid var(--osa-border);
+        color: var(--osa-text);
+      }
+
+      .osa-center-has-rail .osa-chat-messages { grid-column: 2; grid-row: 2; }
+      .osa-center-has-rail .osa-suggestions { grid-column: 2; grid-row: 3; }
+      .osa-center-has-rail .osa-turnstile-container { grid-column: 2; grid-row: 4; }
+      .osa-center-has-rail .osa-error { grid-column: 2; grid-row: 5; }
+      .osa-center-has-rail .osa-warning { grid-column: 2; grid-row: 6; }
+      .osa-center-has-rail .osa-mode-note { grid-column: 2; grid-row: 7; }
+      .osa-center-has-rail .osa-context-notice-slot { grid-column: 2; grid-row: 8; }
+      .osa-center-has-rail .osa-chat-input { grid-column: 2; grid-row: 9; }
+      .osa-center-has-rail .osa-ai-disclaimer { grid-column: 1 / -1; grid-row: 10; }
+      .osa-center-has-rail .osa-combined-footer { grid-column: 1 / -1; grid-row: 11; }
+
+      /* The rail says where the plan is, so the strip over the thread would say it twice. */
+      .osa-center-has-rail .osa-plan-strip {
+        display: none;
+      }
+    }
   `;
 
   // Escape text for interpolation into HTML, including quoted attribute values.
@@ -8771,6 +8997,8 @@
   // a tab switch, an import ending), keeping focus on the same control. A no-op
   // when there is no card on screen, or its state is the same.
   function refreshNotebookEntry(container, { focus = null, fallbackFocus = null } = {}) {
+    // The center header's Continue button follows the same state as the card (E6.1).
+    syncCenterNotebook(container);
     const slot = container.querySelector('.osa-nb-entry');
     if (!slot) return;
     let next = null;
@@ -12035,7 +12263,7 @@
       : '';
 
     return `
-        <div class="osa-run-card osa-run-card-done osa-run-card-${outcome} osa-execution-run osa-code-block" data-status="${escapeHtml(run.status)}">
+        <div class="osa-run-card osa-run-card-done osa-run-card-${outcome} osa-execution-run osa-code-block" data-status="${escapeHtml(run.status)}"${isPlannedRun(run) ? ` data-plan-step="${escapeHtml(String(run.step))}"` : ''}>
           <div class="osa-run-card-head">
             <span class="osa-run-card-icon" aria-hidden="true">${RUN_ICONS[outcome]}</span>
             <div class="osa-run-card-title">${runHeadingHtml(run, error)}</div>
@@ -12807,11 +13035,32 @@
         messagesEl.appendChild(bar);
       }
     }
+    // The center-stage dialog's rail and header button read the same conversation (E6.1).
+    // The rail first: focus below may have to land on it.
+    syncPlanRail(container);
+    syncCenterNotebook(container);
     if (planFocusAfterRender) {
-      const target = messagesEl.querySelector(planFocusAfterRender);
+      const wanted = messagesEl.querySelector(planFocusAfterRender);
       planFocusAfterRender = null;
-      if (target && typeof target.focus === 'function') target.focus();
+      // focus() on an element that is not drawn does nothing, and the control that had
+      // focus has been replaced, so focus would fall to the page: the strip is hidden
+      // while the rail shows. The rail says the same, so it takes the focus, then the thread.
+      const fallback = Boolean(wanted) && !isDrawn(wanted);
+      const target = fallback
+        ? [container.querySelector('.osa-plan-rail'), messagesEl].find(isDrawn)
+        : wanted;
+      if (target && typeof target.focus === 'function') {
+        // Only a fallback is made focusable here: the wanted control is a real tab stop
+        // and a tabindex of -1 would take it out of the Tab order.
+        if (fallback && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+        target.focus();
+      }
     }
+  }
+  // Whether an element is on screen, which focus() needs: display:none, or an ancestor
+  // with it, leaves no boxes.
+  function isDrawn(el) {
+    return Boolean(el) && typeof el.focus === 'function' && typeof el.getClientRects === 'function' && el.getClientRects().length > 0;
   }
   // --- End plan card ---
 
@@ -13565,6 +13814,8 @@
 
     // Close modal only if save succeeded
     closeSettings(container);
+    // The plan rail names the budget (E6.1).
+    syncPlanRail(container);
   }
 
   // --- Feedback -----------------------------------------------------------
@@ -13942,6 +14193,9 @@
               ${ICONS.historyClock}<span class="osa-center-label">History</span>
             </button>
             <span id="osa-history-busy" class="osa-sr-only"></span>
+            <button type="button" class="osa-header-btn osa-center-notebook-btn" aria-label="Continue in notebook" title="Continue in notebook" hidden>
+              ${ICONS.notebook}<span class="osa-center-label">Continue in notebook</span>
+            </button>
             <button type="button" class="osa-header-btn osa-center-dock-btn" aria-label="Move to corner" title="Move to corner">
               ${ICONS.dock}<span class="osa-center-label">Move to corner</span>
             </button>
@@ -17039,6 +17293,8 @@
     else releaseCenter(container);
     syncCenterHeader(container);
     syncCenterStart(container);
+    syncPlanRail(container);
+    syncCenterNotebook(container);
     return true;
   }
 
@@ -17347,6 +17603,7 @@
 
   function bindCenterStage(container) {
     container.querySelector('.osa-center-dock-btn')?.addEventListener('click', () => dockCenter(container));
+    bindPlanRail(container);
     const field = container.querySelector('.osa-center-input');
     const main = container.querySelector('.osa-chat-input input');
     field?.addEventListener('input', () => { main.value = field.value; });
@@ -17362,6 +17619,188 @@
     });
   }
   // END host-api
+
+  // BEGIN plan-rail (E6.1, #701; board C3). What the center-stage dialog adds beside the
+  // conversation: the plan rail, and "Continue in notebook" in its header. Both read the
+  // conversation the thread already shows, so docking redraws nothing: the rail is
+  // inserted before the thread and removed again, and the thread's own nodes are never
+  // moved. The rows come from OSARuntime.planRail (frontend/osa-plan-rail.js), which
+  // reads the plan the way the progress strip does. The run mode is shown, not offered:
+  // it goes to the model once, in the plan's decision, and there is no way to change it
+  // afterwards.
+  const PLAN_RAIL_ICONS = Object.freeze({
+    done: RUN_ICONS.ok,
+    failed: RUN_ICONS.failed,
+    stopped: RUN_ICONS.stopped,
+    current: '<span class="osa-plan-rail-dot osa-plan-rail-dot-current"></span>',
+    pending: '<span class="osa-plan-rail-dot"></span>',
+  });
+
+  // What each rail on screen was last drawn from, so an unchanged rail is left alone.
+  const planRailDrawn = new WeakMap();
+
+  // What the rail shows now, or null: only in the center dialog, only with the runtime
+  // that carries the rail's logic, and only for a plan worth following.
+  function planRailModel() {
+    if (hostMode !== 'center' || !runtimeApi || !runtimeApi.plan || !runtimeApi.planRail) return null;
+    try {
+      return runtimeApi.planRail.planRailOf(messages, { active: isLoading || toolActivity !== null });
+    } catch (error) {
+      console.error('[OSA] Could not read the plan for the rail:', error);
+      return null;
+    }
+  }
+
+  function planRailHtml(model, memoryLabel) {
+    const rows = model.rows.map((row) => {
+      const icon = `<span class="osa-plan-rail-icon" aria-hidden="true">${PLAN_RAIL_ICONS[row.state] || PLAN_RAIL_ICONS.pending}</span>`;
+      const content = `${icon}<span class="osa-sr-only">${escapeHtml(row.label)}: </span><span class="osa-plan-rail-title">${escapeHtml(row.title)}</span>`;
+      // A step that has run has a card to go to; the others are only said.
+      const body = row.hasCard
+        ? `<button type="button" class="osa-plan-rail-step" data-plan-rail-step="${escapeHtml(String(row.n))}">${content}</button>`
+        : `<span class="osa-plan-rail-step">${content}</span>`;
+      return `<li class="osa-plan-rail-row osa-plan-rail-${escapeHtml(row.state)}"${row.state === 'current' ? ' aria-current="step"' : ''}>${body}</li>`;
+    }).join('');
+    const memory = memoryLabel
+      ? `<div class="osa-plan-rail-memory">Memory budget ${escapeHtml(memoryLabel)} <span aria-hidden="true">·</span> <button type="button" class="osa-plan-rail-change" aria-label="Change memory budget">change</button></div>`
+      : '';
+    return `<p class="osa-plan-rail-heading">${escapeHtml(model.heading)}</p>
+        <ol class="osa-plan-rail-list" role="list">${rows}</ol>
+        <div class="osa-plan-rail-foot">
+          <div class="osa-plan-rail-mode"><span class="osa-sr-only">Run mode: </span>${escapeHtml(model.modeLabel)}</div>
+          ${memory}
+        </div>`;
+  }
+
+  // Draw the rail for the conversation on screen, or take it away. Cheap when nothing it
+  // shows has changed, and a control in it that has focus keeps it across a redraw.
+  function syncPlanRail(container) {
+    const win = container.querySelector('.osa-chat-window');
+    const thread = win && win.querySelector('.osa-chat-messages');
+    if (!thread || !thread.parentElement) return;
+    const model = planRailModel();
+    let rail = win.querySelector('.osa-plan-rail');
+    if (!model) {
+      if (rail) rail.remove();
+      win.classList.remove('osa-center-has-rail');
+      return;
+    }
+    win.classList.add('osa-center-has-rail');
+    // The budget is named only where Settings has the field to change it.
+    const memoryLabel = browserTools ? memorySizeLabel(normalizeMemoryBudget(userSettings.memoryBudgetMb)) : '';
+    const key = JSON.stringify([model, memoryLabel]);
+    if (!rail) {
+      rail = document.createElement('aside');
+      rail.className = 'osa-plan-rail';
+      rail.setAttribute('aria-label', 'Plan');
+      // Focus goes here when the strip it stands for is hidden: see renderPlanChrome.
+      rail.setAttribute('tabindex', '-1');
+    }
+    // Beside the thread, before it: the header, the rail, the thread, the input.
+    if (rail.nextElementSibling !== thread) thread.parentElement.insertBefore(rail, thread);
+    if (planRailDrawn.get(rail) === key) return;
+    const active = document.activeElement;
+    const kept = active && rail.contains(active) && active.getAttribute
+      ? (active.getAttribute('data-plan-rail-step') || (active.classList.contains('osa-plan-rail-change') ? 'change' : null))
+      : null;
+    rail.innerHTML = planRailHtml(model, memoryLabel);
+    planRailDrawn.set(rail, key);
+    if (kept !== null) {
+      const again = kept === 'change'
+        ? rail.querySelector('.osa-plan-rail-change')
+        : [...rail.querySelectorAll('[data-plan-rail-step]')].find((button) => button.getAttribute('data-plan-rail-step') === kept);
+      if (again) again.focus();
+    }
+  }
+
+  // A row with a run card takes the reader to that card, which is focused so a screen
+  // reader says what it is. A step that was tried twice has two; the newest is the one
+  // that stands. Nothing here touches the address: a link to "#s3" would.
+  function goToPlanStep(container, step) {
+    const thread = container.querySelector('.osa-chat-messages');
+    if (!thread) return;
+    const runCards = [...thread.querySelectorAll('.osa-run-card[data-plan-step]')];
+    const cards = runCards.filter((el) => el.getAttribute('data-plan-step') === String(step));
+    // A row drawn as a button always has an effect: when its card is not in the thread
+    // (a run mirrored into an open local editor has none), the newest card, or the thread.
+    const card = cards.length ? cards[cards.length - 1] : (runCards.length ? runCards[runCards.length - 1] : thread);
+    if (!card.hasAttribute('tabindex')) card.setAttribute('tabindex', '-1');
+    if (typeof card.scrollIntoView === 'function') {
+      card.scrollIntoView({ block: 'start', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    }
+    card.focus({ preventScroll: true });
+  }
+
+  // "change": Settings, with the focus on the memory choices.
+  function openPlanRailMemory(container) {
+    openSettings(container);
+    const choice = container.querySelector('.osa-memory-radio:checked') || container.querySelector('.osa-memory-radio');
+    if (choice) choice.focus();
+  }
+
+  function bindPlanRail(container) {
+    const win = container.querySelector('.osa-chat-window');
+    if (!win) return;
+    // The rail is made and thrown away as the dialog is docked and raised, so the
+    // listeners are on the window, which stays.
+    win.addEventListener('click', (event) => {
+      const target = event.target && typeof event.target.closest === 'function' ? event.target.closest('.osa-plan-rail button') : null;
+      if (!target) return;
+      if (target.classList.contains('osa-plan-rail-change')) openPlanRailMemory(container);
+      else if (target.hasAttribute('data-plan-rail-step')) goToPlanStep(container, target.getAttribute('data-plan-rail-step'));
+    });
+    // The run mode on a draft plan's card changes what the rail says until it is decided.
+    win.addEventListener('change', (event) => {
+      if (event.target && event.target.getAttribute && event.target.getAttribute('data-plan-field') === 'mode') syncPlanRail(container);
+    });
+    container.querySelector('.osa-center-notebook-btn')?.addEventListener('click', () => continueFromCenterHeader(container));
+  }
+
+  // The header's Continue in notebook: in the dialog only, and only when the reply card
+  // would offer it too: a notebook for this dataset's page, nothing in the way, and a run
+  // that succeeded in the chat. Disabled while an import (or a reply) is in progress.
+  function centerNotebookOffer() {
+    if (hostMode !== 'center') return null;
+    const conversation = activeConversationRecord();
+    const datasetId = conversationDatasetId(conversation);
+    if (!datasetId || !hasSuccessfulRun(conversation)) return null;
+    const state = notebookContinueState(datasetId);
+    if (!state.offered || state.reason) return null;
+    return { id: conversation.id, busy: notebookEntry.importing.has(conversation.id) };
+  }
+
+  function syncCenterNotebook(container) {
+    const button = container.querySelector('.osa-center-notebook-btn');
+    if (!button) return;
+    const offer = centerNotebookOffer();
+    button.hidden = !offer;
+    button.disabled = !!offer && (offer.busy || isLoading);
+    if (offer && offer.busy) button.setAttribute('aria-busy', 'true');
+    else button.removeAttribute('aria-busy');
+  }
+
+  // The same path as the card's button: the chat's code is built again (a run may have
+  // been added), and runNotebookImport sends it. The import opens the notebook tab, and
+  // opening it docks the dialog.
+  function continueFromCenterHeader(container) {
+    const offer = centerNotebookOffer();
+    if (!offer || offer.busy || isLoading) return;
+    const conversation = activeConversationRecord();
+    const built = buildConversationCode(conversation);
+    if (built.error) {
+      showError(container, built.error);
+      return;
+    }
+    runNotebookImport(offer.id, built).then((result) => {
+      // A failure leaves focus nowhere (the button was disabled while it waited); the
+      // card under the reply says why, and the button is there to try again.
+      const failed = !result || !(result.ok || result.path);
+      const active = document.activeElement;
+      const live = document.querySelector('.osa-chat-widget .osa-center-notebook-btn');
+      if (failed && live && !live.hidden && !live.disabled && (!active || active === document.body)) live.focus();
+    });
+  }
+  // END plan-rail
 
   // Expose configuration for customization
   window.OSAChatWidget = {

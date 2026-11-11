@@ -463,6 +463,11 @@ Escape docks the window with the same message nodes, session and draft; Close gi
 Fourteen colors, among them the heading, the AI Mode pill, the dataset line, the buttons, a pill, a card, the note and the link, must reach 4.5:1 (an icon 3:1) in both schemes, measured where Chrome paints them; under `prefers-reduced-motion` the pills' transition is immediate.
 It is what CI runs, beside the History check; with a screenshot directory (or `CENTER_CHECK_SCREENSHOTS`) it writes the start screen in both schemes, the thread and the docked window at both sizes.
 
+The plan rail (board C3, E6.1) is checked on a second page, `/plan`, whose community has the runtime bundle and a stored conversation with an approved plan, three of five steps done.
+At 1280 x 900, on a capsule launcher (what NEMAR uses) and on a bubble: the rail is 280 px wide at the window's left edge with the header across the top and the footer across both columns, the thread and its input are in the right column, nothing scrolls sideways, the rows and "change" are at least 36 px tall, the heading reads `PLAN · 3 OF 5 DONE`, the strip in the thread is hidden and the paused bar stays, text reaches 4.5:1 (the check mark 3:1) in both schemes, the real Tab key goes header, rail, thread, input, a row's click focuses its run card without changing the address, "change" opens Settings on the memory choice, and docking removes the rail while the thread and its cards stay the same nodes.
+The capsule page also has **Continue in notebook** in the header.
+At 390 x 844 there is no rail, the strip and the bar show, nothing scrolls sideways, and the header's notebook button is an icon at least 36 px square.
+
 ### The notebook card and the History row menu's notebook items
 
 ```bash
