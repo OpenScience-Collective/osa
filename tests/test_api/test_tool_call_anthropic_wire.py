@@ -1,7 +1,7 @@
 """The `tool_call` SSE event from the Claude Messages API's own wire format (#538).
 
 `test_tool_call_streaming.py` feeds the graph chunks built the way langchain-anthropic
-yields them. This feeds langchain-anthropic itself: the server-sent events the Messages
+yields them (the builders are in `tests/helpers/tool_call_streaming.py`). This feeds langchain-anthropic itself: the server-sent events the Messages
 API streams for a reply that writes tool calls, as bytes, read by the real
 `ChatAnthropic` that `create_anthropic_llm` builds (the Anthropic SDK's stream decoder
 and langchain-anthropic's chunk conversion), then LangGraph and the router's SSE

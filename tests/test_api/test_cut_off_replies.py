@@ -481,7 +481,8 @@ def client(monkeypatch):
     from src.api.config import get_settings
     from src.assistants.registry import registry
 
-    # What is under test is the reply, not the API key check (see test_tool_call_streaming).
+    # What is under test is the reply, not the API key check (the same reasoning as
+    # `resume_client` in tests/helpers/tool_call_streaming.py).
     monkeypatch.setenv("REQUIRE_API_AUTH", "false")
     get_settings.cache_clear()
     registry.register_from_config(community_config())

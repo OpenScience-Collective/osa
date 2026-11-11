@@ -13,9 +13,9 @@ and the session store.
 
 What stands in: the chat model (`StreamingScriptedChatModel`), which yields chunks in
 the shapes the three provider adapters OSA uses yield them (Anthropic, Bedrock and
-OpenAI-style through LiteLLM; see the builders below), and the router's
-`create_community_assistant`, which would build a real LLM client from settings this
-suite has no keys for. `tests/test_api/test_client_tool_streaming.py` sets the same
+OpenAI-style through LiteLLM; the builders are in `tests/helpers/tool_call_streaming.py`),
+and the router's `create_community_assistant`, which would build a real LLM client from
+settings this suite has no keys for. `tests/test_api/test_client_tool_streaming.py` sets the same
 boundary, for the same reasons.
 """
 
