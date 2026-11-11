@@ -44,6 +44,7 @@ from src.core.config.community import (
 from src.core.services.anthropic_models import HAIKU, SONNET
 from src.metrics.db import init_metrics_db, metrics_connection
 from src.metrics.middleware import MetricsMiddleware
+from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
 from tests.helpers.chat_models import (
     FailingThenSayingChatModel,
     ScriptedChatModel,
@@ -249,8 +250,17 @@ class TestAKeywordHandover:
         events = _chat(client, "plot the ERP for famous faces", session_id="sess-quick")
 
         assert _stages(events) == ["summarizing", "summarized", "started"]
-        order = [i for i, e in enumerate(events) if e["event"] == "handover"]
-        assert order == sorted(order)
+        # Where the events sit in the stream: the old session's event first, the three
+        # stages, then the new session's own event, and `done` last.
+        at = {
+            "session": next(i for i, e in enumerate(events) if e["event"] == "session"),
+            "summarizing": next(i for i, e in enumerate(events) if e.get("stage") == "summarizing"),
+            "summarized": next(i for i, e in enumerate(events) if e.get("stage") == "summarized"),
+            "started": next(i for i, e in enumerate(events) if e.get("stage") == "started"),
+            "new session": max(i for i, e in enumerate(events) if e["event"] == "session"),
+            "done": next(i for i, e in enumerate(events) if e["event"] == "done"),
+        }
+        assert list(at.values()) == sorted(set(at.values())), at
         assert rig.tiers[0] == "quick"
         assert rig.tiers[-1] == "analysis"
 
@@ -586,6 +596,30 @@ class TestStartAnalysis:
 
         assert [e for e in events if e["event"] in ("tool_call", "tool_start", "tool_end")] == []
 
+    def test_text_the_quick_model_wrote_before_the_call_is_not_the_reply_or_the_seed(
+        self, client, monkeypatch
+    ) -> None:
+        _earlier_conversation()
+        preamble = "Let me hand this to the analysis assistant."
+        rig = _rig(
+            monkeypatch,
+            quick=[[text_chunk(preamble), call_start_analysis()[0]], say(SUMMARY)],
+            analysis=[say("Here is the plot.")],
+        )
+
+        events = _chat(client, "could you look at the alpha band instead?", session_id="sess-quick")
+
+        # It was streamed before the handover, as any quick text is, and no further.
+        names = _names(events)
+        content_at = next(i for i, e in enumerate(events) if e["event"] == "content")
+        assert content_at < names.index("handover")
+        done = _done(events)
+        assert done["content"] == "Here is the plot."
+        assert done["model"] == SONNET
+        human = [m for m in rig.analysis.seen_message_lists[0] if isinstance(m, HumanMessage)]
+        assert preamble not in human[0].content
+        assert "tool_request" not in names
+
     def test_the_summary_is_written_after_the_call_and_reaches_the_analysis_model(
         self, client, monkeypatch
     ) -> None:
@@ -858,7 +892,20 @@ class TestRoutingIsOff:
         assert "mode" not in _done(events)
         assert _stages(events) == []
         assert "start_analysis" not in rig.quick.bound_tool_names
-        assert rig.quick.bound_tool_names == [] or EXECUTE_CODE not in rig.quick.bound_tool_names
+        assert EXECUTE_CODE not in rig.quick.bound_tool_names
+
+    def test_the_client_tool_kill_switch_turns_routing_off(self, client, monkeypatch) -> None:
+        monkeypatch.setenv(CLIENT_TOOL_KILL_SWITCH_ENV, "1")
+        _earlier_conversation()
+        rig = _rig(monkeypatch, quick=[say("Hi.")], analysis=[say("No.")])
+
+        events = _chat(client, "plot the ERP for famous faces", session_id="sess-quick")
+
+        assert "tier" not in rig.calls[0]
+        assert _stages(events) == []
+        assert "mode" not in _done(events)
+        assert rig.analysis.calls == 0
+        assert "start_analysis" not in rig.quick.bound_tool_names
 
     def test_a_community_without_the_keys_behaves_as_it_did(self, client, monkeypatch) -> None:
         by_model = StreamingScriptedChatModel(chunk_script=[say("Hi.")])
