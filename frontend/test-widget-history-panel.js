@@ -150,8 +150,12 @@ const chat = (id, { title, context, sessionId, updatedAt, runs = [] }) => ({
   ],
 });
 
-// A real v3 record with three chats, and the empty one that is open: A today (two steps, one by the reader that is not
-// one, two figures), B yesterday (one step, one figure), C days ago (no runs).
+// A real v3 record: three chats with something said in them, and an empty one (the open chat, unless
+// another is named).
+//   A, today: three runs, of which two count as steps and drew a figure each; the third is
+//     the reader's own run (person-run-1), which is not a step and drew nothing.
+//   B, yesterday: one step, one figure.
+//   C, five days ago: a dataset search, no runs.
 function seededRecord(activeId = null) {
   return JSON.stringify({
     version: 3,
@@ -311,13 +315,19 @@ console.log('\nthe History button, and the sheet it opens');
   assertEqual(rowA.querySelector('.osa-history-meta code').textContent, A, 'the dataset id as code');
   const factsA = text(rowA.querySelector('.osa-history-meta'));
   assert(/2 steps/.test(factsA) && /2 figures/.test(factsA), `and its steps and figures (${factsA})`);
-  assert(/\d:\d\d/.test(factsA), 'and the time, for a chat of today');
+  // The widget writes the time and the date in the reader's locale; the test asks for them
+  // the same way, so it holds in any locale it runs in.
+  const timeOf = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  assert(factsA.endsWith(timeOf(TODAY)), `and the time, for a chat of today (${factsA})`);
   const factsB = text(rowFor(ctx, 'chat-b').querySelector('.osa-history-meta'));
   assert(/1 step\b/.test(factsB) && /1 figure\b/.test(factsB) && !/steps|figures/.test(factsB), `singular for one (${factsB})`);
   assert(factsB.startsWith(B), 'yesterday\'s row also names its dataset');
   const factsC = text(rowFor(ctx, 'chat-c').querySelector('.osa-history-meta'));
   assert(!/step|figure/.test(factsC) && /Dataset search/.test(factsC), `a chat with no runs says neither, and a search chat says so (${factsC})`);
-  assert(/[A-Z][a-z]{2}\s\d{1,2}/.test(factsC), 'an earlier chat has its date');
+  const earlier = new Date(noon(5));
+  const dateOf = earlier.toLocaleDateString([], earlier.getFullYear() === new Date().getFullYear()
+    ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+  assert(factsC.endsWith(dateOf), `an earlier chat has its date (${factsC})`);
   assertEqual(text(ctx.q('.osa-history-footer')), `Saved in this browser only, the last ${ctx.hooks.conversationStore.MAX_CONVERSATIONS} chats. Figures and code stay in this browser's workspace until you delete it in Settings.`,
     'the footer, with the cap from the store and the truth about figures');
   assert(rowFor(ctx, 'chat-a').querySelector('.osa-history-open').getAttribute('aria-current') !== 'true', 'no row is current: the open chat is the empty one');
