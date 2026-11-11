@@ -1,0 +1,62 @@
+name: Close issues on merge into develop
+
+# GitHub honours "Closes #N" only for a pull request merged into the DEFAULT
+# branch, which is `main`. Feature work merges into `develop`, so those keywords
+# did nothing and the issues were closed by hand, or not at all (#659 and #677).
+# This closes the issues a pull request names with a closing keyword once it is
+# merged into develop, with a comment that links the pull request.
+#
+# Rule: an issue closes when the pull request that resolves it merges into
+# develop. Epics are never named by a feature pull request, so they stay open
+# until their children close and someone closes them.
+#
+# Security: `pull_request_target` runs in the base-repo context with a token that
+# can write issues, so nothing from the pull request is checked out or executed.
+# Only the pull request's number and body are read, and the body reaches the shell
+# through an environment variable, never through ${{ }} interpolation into the
+# script. Only a merged pull request counts, and a maintainer merged it.
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [develop]
+
+permissions:
+  issues: write
+  pull-requests: read
+
+jobs:
+  close:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close the issues the pull request names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          # A closing keyword, optionally a colon, then #N or this repository's own
+          # owner/name#N, which is the form GitHub itself honours.
+          numbers=$(printf '%s\n' "$PR_BODY" \
+            | grep -oiE "\b(close[sd]?|fix(e[sd])?|resolve[sd]?):? +(${GH_REPO}#|#)[0-9]+" \
+            | grep -oE '[0-9]+$' | sort -un || true)
+          if [ -z "$numbers" ]; then
+            echo "No closing keyword in the pull request body."
+            exit 0
+          fi
+          for number in $numbers; do
+            if [ "$number" = "$PR_NUMBER" ]; then
+              continue
+            fi
+            state=$(gh issue view "$number" --json state --jq .state 2>/dev/null || echo "missing")
+            if [ "$state" != "OPEN" ]; then
+              echo "#$number is $state; nothing to close."
+              continue
+            fi
+            gh issue close "$number" --reason completed \
+              --comment "Merged into develop in #${PR_NUMBER}."
+            echo "Closed #$number."
+          done
