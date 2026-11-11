@@ -945,6 +945,25 @@ class TestTheTopographyAndTimeFrequencyDocuments:
         assert "PO8 for ERP CORE's N170" in flat
         assert "epochs x frequencies x times" in flat
 
+    def test_the_time_frequency_plan_warns_before_approval_that_the_run_is_slow(
+        self, documents: dict[str, str]
+    ) -> None:
+        document = documents[TIME_FREQUENCY]
+        plan = _flat(document.split("## Plan", 1)[1].split("\n## ", 1)[0])
+        for phrase in (
+            "single processor",
+            "limited compute and memory",
+            "likely take a long time",
+            "in the plan's findings",
+            "again in step 3",
+        ):
+            assert phrase in plan, phrase
+        # The warning comes before the numbered steps, so it is said before approval.
+        plan_section = document.split("## Plan", 1)[1]
+        assert plan_section.index("likely take a long time") < plan_section.index(
+            "1. **Read the recording**"
+        )
+
     def test_the_time_frequency_epochs_hold_the_lowest_frequencys_wavelet(
         self, documents: dict[str, str]
     ) -> None:

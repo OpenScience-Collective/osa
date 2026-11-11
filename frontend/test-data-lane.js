@@ -1194,6 +1194,33 @@ print(json.dumps(out))
         assert(Math.abs(m.baseline_db) < 1.5, `${name}: the pre-event window is near 0 dB by construction (${m.baseline_db} dB)`);
         assert(Math.abs(m.off_hz_db) < 3, `${name}: the lowest frequency, far from the tone, stays near 0 dB during the burst (${m.off_hz_db} dB)`);
       }
+
+      // How long the compute block takes at the size the plan quotes (80 epochs a condition, two
+      // conditions, 19 frequencies, 250 Hz), for the warning the document gives before approval.
+      // It is printed, never asserted: timing is flaky in CI. One warm-up run, then three timed
+      // ones, each with time.perf_counter around the compute block only (the epochs are made
+      // before it), and the median is the figure. This is Pyodide in Bun on this machine, not a
+      // browser tab, so it is a floor for what a reader sees, not a browser figure.
+      const timed = `import time
+import numpy as np
+rate = 250.0
+${epoching}
+rng = np.random.default_rng(11)
+epochs = {name: rng.standard_normal((80, pre + post)) * 10 for name in ("faces", "cars")}
+started = time.perf_counter()
+${compute}
+print(f"TIMING {time.perf_counter() - started:.3f} {len(freqs)} {sum(kept.values())}")
+`;
+      const seconds = [];
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const timing = await run(timed);
+        assertEqual(timing.status, 'ok', `the timed compute block runs (stderr: ${timing.stderr.slice(-300)})`);
+        const [, took, nFreqs, nEpochs] = (timing.stdout.match(/TIMING (\S+) (\d+) (\d+)/) || []);
+        assertEqual([Number(nFreqs), Number(nEpochs)], [19, 160], 'the timed run is 19 frequencies and 160 epochs');
+        if (attempt > 0) seconds.push(Number(took)); // the first run is the warm-up
+      }
+      seconds.sort((a, b) => a - b);
+      console.log(`      time-frequency compute block, 80 epochs x 2 conditions x 19 frequencies at 250 Hz: median ${seconds[1].toFixed(3)} s (runs ${seconds.map((s) => s.toFixed(3)).join(', ')} s; Pyodide in Bun, not a browser)`);
     }
   }
 } finally {
