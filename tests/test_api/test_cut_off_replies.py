@@ -54,7 +54,7 @@ from src.api.turn_outcome import (
     NO_ANSWER_MESSAGE,
 )
 from src.assistants.community import CommunityAssistant
-from src.core.config.community import FULL_OUTPUT_TOOL_NAME
+from src.core.config.community import FULL_OUTPUT_TOOL_NAME, PROPOSE_PLAN_TOOL_NAME
 from src.core.services.anthropic_models import BEDROCK_MODELS, DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_MODEL
 from src.core.services.model_outcome import (
@@ -919,13 +919,13 @@ def _park(tool: str, *, runs_before: int = 0, code_runs_before: int = 0) -> str:
     return session.session_id
 
 
-def _resume(client: TestClient, session_id: str) -> list[dict]:
+def _resume(client: TestClient, session_id: str, result: dict | None = None) -> list[dict]:
     response = client.post(
         f"/{COMMUNITY}/chat/resume",
         headers={"Origin": ORIGIN},
         json={
             "session_id": session_id,
-            "result": {"call_id": CALL_ID, "status": "ok", "summary": "done"},
+            "result": result or {"call_id": CALL_ID, "status": "ok", "summary": "done"},
             "client_tools": [],
         },
     )
@@ -985,6 +985,25 @@ class TestOnlyCodeTheWidgetKeepsCounts:
         events = _resume(client, _park(FULL_OUTPUT_TOOL_NAME, runs_before=1, code_runs_before=0))
 
         assert _names(events)[-1] == "error"
+
+    def test_a_decided_plan_is_not_code_either(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        """A plan runs nothing and leaves no record on the reply, so a reply that only
+        answered a plan and then wrote nothing is an error, as with read-back output. The
+        widget must treat the plan tool the same way (``runsCode`` in the widget)."""
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", cut_off=True)])
+        decision = {
+            "call_id": CALL_ID,
+            "decision": "approved",
+            "steps": [{"title": "Load", "detail": "Load the epochs."}],
+            "run_mode": "pause",
+        }
+
+        events = _resume(client, _park(PROPOSE_PLAN_TOOL_NAME), decision)
+
+        assert _names(events)[-1] == "error" and "done" not in _names(events)
+        assert events[-1]["message"] == NO_ANSWER_MESSAGE
 
 
 class TestTheResumeRoutesOnceAndLogsOnce:

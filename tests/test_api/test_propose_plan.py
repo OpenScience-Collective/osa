@@ -21,9 +21,14 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessageChunk, ToolMessage
 
 import src.api.routers.community as community_module
-from src.api.routers.community import _get_session_store, create_community_router
+from src.api.routers.community import (
+    ChatSession,
+    _get_session_store,
+    create_community_router,
+)
 from src.assistants.registry import registry
 from src.core.config.community import (
+    PROPOSE_PLAN_TOOL_NAME,
     ClientToolConfig,
     CommunityConfig,
     ExtensionsConfig,
@@ -40,7 +45,7 @@ COMMUNITY = "plantest"
 ORIGIN = "https://plan.example"
 BYOK = {"X-Anthropic-API-Key": "sk-ant-plan-test-key"}
 EXECUTE_CODE = "execute_code"
-PROPOSE_PLAN = "propose_plan"
+PROPOSE_PLAN = PROPOSE_PLAN_TOOL_NAME
 DECLARED = [EXECUTE_CODE, "get_full_output", PROPOSE_PLAN]
 ANALYSIS_REQUEST = "plot the ERP for famous faces"
 PLAN_TEXT = "PLAN-FIRST-MARKER: call propose_plan before any execute_code."
@@ -170,6 +175,17 @@ def _chat(client, *, declared=DECLARED, message=ANALYSIS_REQUEST) -> list[dict]:
     return _events(response)
 
 
+def _chat_in(client, session_id: str, message: str, *, declared=DECLARED) -> list[dict]:
+    """A follow-up message in an existing session."""
+    response = client.post(
+        f"/{COMMUNITY}/chat",
+        json={"message": message, "client_tools": declared, "session_id": session_id},
+        headers={"Origin": ORIGIN, **BYOK},
+    )
+    assert response.status_code == 200, response.text
+    return _events(response)
+
+
 def _resume_response(client, session_id: str, result: dict, *, declared=DECLARED):
     return client.post(
         f"/{COMMUNITY}/chat/resume",
@@ -256,7 +272,7 @@ class TestProposingAPlan:
         assert next(e for e in events if e["event"] == "done")
         error = next(m for m in rig.analysis.seen_message_lists[1] if isinstance(m, ToolMessage))
         assert error.status == "error"
-        assert "Invalid arguments for propose_plan" in error.content
+        assert f"Invalid arguments for {PROPOSE_PLAN}" in error.content
 
 
 class TestDecidingAPlan:
@@ -386,6 +402,27 @@ class TestTheAnswerMustMatchTheCall:
         )
 
 
+class TestALeftPlan:
+    def test_typing_instead_of_deciding_closes_the_plan_in_its_own_words(
+        self, client, monkeypatch
+    ) -> None:
+        rig, request = _parked_session(
+            client, monkeypatch, [plan(_call_id(1)), say("What should I look at instead?")]
+        )
+
+        events = _chat_in(client, request["session_id"], "Actually, just list the events.")
+
+        assert next(e for e in events if e["event"] == "done")
+        answer = next(m for m in rig.analysis.seen_message_lists[1] if isinstance(m, ToolMessage))
+        assert answer.tool_call_id == request["call_id"]
+        text = answer.content[0]["text"]
+        assert "did not decide on the plan" in text
+        assert "Run no code from it" in text
+        assert "Browser execution" not in text
+        session = _get_session_store(COMMUNITY)[request["session_id"]]
+        assert session.pending_call is None
+
+
 class TestPlansAndTheBrowserRunBudget:
     def test_twenty_plans_do_not_exhaust_the_budget_for_code(self, client, monkeypatch) -> None:
         rounds = MAX_BROWSER_RUNS_PER_REPLY
@@ -469,3 +506,23 @@ class TestThePlanFirstPrompt:
 
         assert len(rig.prompts) == 2
         assert all(PLAN_TEXT in prompt for prompt in rig.prompts)
+
+    def test_a_quick_session_that_hands_over_gets_it_on_the_new_analysis_session(
+        self, client, monkeypatch
+    ) -> None:
+        """How NEMAR reaches the analysis model in practice: a few quick turns, then a
+        request that hands the conversation to a new session. The declared tools are
+        carried through that hand-off, so the tool is bound and the text sent there."""
+        earlier = ChatSession("sess-quick", COMMUNITY)
+        earlier.add_user_message("find datasets with face stimuli")
+        earlier.add_assistant_message("The closest match is on002718, 18 participants.")
+        _get_session_store(COMMUNITY)[earlier.session_id] = earlier
+        rig = _rig(monkeypatch, [say("ok")])
+
+        events = _chat_in(client, "sess-quick", ANALYSIS_REQUEST)
+
+        handover = next(e for e in events if e.get("stage") == "started")
+        assert handover["session_id"] != "sess-quick"
+        assert PROPOSE_PLAN in rig.analysis.bound_tool_names
+        assert PLAN_TEXT in rig.prompts[-1]
+        assert PLAN_TEXT not in rig.prompts[0], "the quick turn that wrote the summary got none"

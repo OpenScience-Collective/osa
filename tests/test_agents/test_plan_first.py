@@ -5,6 +5,7 @@ declared, client tools not disabled, and text configured. The NEMAR text is read
 real `config.yaml`.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -85,12 +86,12 @@ class TestNemarPlanFirstText:
         assert text is not None
         assert PROPOSE_PLAN_TOOL_NAME in text
         assert EXECUTE_CODE_TOOL_NAME in text
-        for inspection_tool in (
-            "nemar_describe_dataset",
-            "nemar_get_events",
-            "nemar_list_recordings",
-        ):
-            assert inspection_tool in text
+        # The tools live on NEMAR's MCP server, so there is no listing to read here. The
+        # system prompt's tool ladder is the list `test_nemar_mcp_wiring` ties, against
+        # the live server, to the tools that exist; every tool this text names must be on it.
+        named = set(re.findall(r"nemar_[a-z_]+", text))
+        assert named, "the text names no inspection tool"
+        assert named <= set(re.findall(r"nemar_[a-z_]+", config.system_prompt or ""))
         for outcome in ("approved", "changes_requested", "pause", "run_all"):
             assert outcome in text
 
