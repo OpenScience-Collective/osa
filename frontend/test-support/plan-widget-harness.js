@@ -82,10 +82,13 @@ let pages = 0;
  * The widget in its own window, initialized and open. `bundle` is what the page's runtime
  * script is: 'full' (the bundle as built), 'old' (a bundle with no plan logic, as one
  * built before this feature), or 'none' (the script does not load). With 'full' or 'old'
- * the runtime runs over the test worker (test-workers/executing.js).
+ * the runtime runs over the test worker (test-workers/executing.js). `widgetConfig` is added
+ * to the community's widget config (a launcher, say), and `dataset` is what the page tells
+ * the widget it is on (setDataset).
  */
 export async function start({
   bundle = 'full', storage = null, storageKey = `osa-test-plan-${++pages}`, allowPageContext = false, settings = null,
+  widgetConfig = {}, dataset = null,
 } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
@@ -121,7 +124,7 @@ export async function start({
   Object.defineProperty(window.document, 'currentScript', { value: script, configurable: true });
 
   const config = {
-    default_model: 'm', offered_models: [], widget: { title: TITLE }, client_tools: TOOLS, runtime: { python: PYTHON },
+    default_model: 'm', offered_models: [], widget: { title: TITLE, ...widgetConfig }, client_tools: TOOLS, runtime: { python: PYTHON },
   };
   const queued = [];
   const requests = [];
@@ -145,6 +148,7 @@ export async function start({
   load(window, window.document, window.localStorage, fetch, window.navigator, AbortSignal, URL,
     TextDecoder, setTimeout, clearTimeout, console, globalThis.performance, Date);
   const widget = window.OSAChatWidget;
+  if (dataset) widget.setDataset(dataset);
   // No page context by default, so a body holds what the plan adds to it and nothing else.
   widget.setConfig({ apiEndpoint: API, communityId: 'test', storageKey, allowPageContext });
   widget.init();
