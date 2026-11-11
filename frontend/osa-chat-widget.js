@@ -6833,12 +6833,6 @@
     return 'osa-code-' + (++codeBlockId);
   }
 
-  // Render inline markdown (code, bold, italic, links, image references, plain URLs,
-  // citation markers)
-  // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
-  // When provided, a bare "[1]" (not followed by "(", so it never collides
-  // with a real markdown link) whose number is a known marker renders as a
-  // superscript link to its source; any other "[n]" is left as plain text.
   // options.figureAbove (#666): true when the reply's message has a run figure, so an
   // image reference can point to it ("figure above"); otherwise it shows its alt text only.
   function renderInlineMarkdown(text, citationsByMarker, options) {
@@ -6879,8 +6873,8 @@
       while (remaining.length > 0) {
         const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
         const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
-        const imageMatch = remaining.match(/!\[([^\]]*)\]\(([^)]+)\)/);
-        const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
+        const imageMatch = remaining.match(IMAGE_REFERENCE);
+        const linkMatch = remaining.match(LINK_WITH_IMAGES);
         const urlMatch = remaining.match(/(?<!\]\()(https?:\/\/[^\s\)]+)/);
         let citationMatch = null;
         if (citationsByMarker) {
@@ -6893,6 +6887,19 @@
             if (citationsByMarker[candidate[1]]) {
               citationMatch = candidate;
               break;
+    // An image reference, "![alt](address)": the address may hold one level of balanced
+    // parentheses ("y_(1).png"). A link whose text holds image references is the linked
+    // badge "[![alt](img)](link)"; its text may hold plain characters and those references.
+    const IMAGE_REFERENCE = /!\[([^\]]*)\]\(((?:[^()]|\([^()]*\))+)\)/;
+    const LINK_WITH_IMAGES = /\[((?:[^\[\]]|!\[[^\]]*\]\((?:[^()]|\([^()]*\))+\))+)\]\(([^)]+)\)/;
+
+    // Render inline markdown (code, bold, italic, links, image references, plain URLs,
+    // citation markers)
+    // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
+    // When provided, a bare "[1]" (not followed by "(", so it never collides
+    // with a real markdown link) whose number is a known marker renders as a
+    // superscript link to its source; any other "[n]" is left as plain text.
+
             }
           }
         }
@@ -6920,24 +6927,44 @@
           result += '<em>' + renderRun(italicMatch[1]) + '</em>';
           remaining = remaining.substring(italicIndex + italicMatch[0].length);
         } else if (minIndex === imageIndex && imageMatch) {
+    // An image reference: a span, escaped, never an img and never the address. The pointer to
+    // the run's figure is added only where `withHint` (not inside a link, where it would
+    // read as part of the link).
+    const imageReference = (rawAlt, withHint) => {
+      const alt = escapeRun(rawAlt.trim());
+      const hint = withHint && figureAbove
+        ? '<span class="osa-image-hint">' + (alt ? ' (see the figure above)' : '(see the figure above)') + '</span>'
+        : '';
+      return alt || hint ? '<span class="osa-image-reference">' + alt + hint + '</span>' : '';
+    };
+
+    // A link's text, which may hold image references (a badge that is a link):
+    // "[![badge](https://img/b.svg)](https://link)". Each reference becomes its alt text;
+    // the rest is escaped as it always was.
+    const renderLinkText = (linkText) => {
+      let html = '';
+      let last = 0;
+      for (const image of linkText.matchAll(new RegExp(IMAGE_REFERENCE.source, 'g'))) {
+        html += escapeRun(linkText.substring(last, image.index)) + imageReference(image[1], false);
+        last = image.index + image[0].length;
+      }
+      return html + escapeRun(linkText.substring(last));
+    };
+
           if (imageIndex > 0) result += escapeRun(remaining.substring(0, imageIndex));
           // The widget never loads an image a reply names: a model-written address is
           // somebody else's server. The alt text stands in, with a pointer to the run's own
-          // figure when the message has one. A span, escaped; never an img, never the address.
-          const alt = escapeRun(imageMatch[1].trim());
-          const hint = figureAbove
-            ? '<span class="osa-image-hint">' + (alt ? ' (see the figure above)' : '(see the figure above)') + '</span>'
-            : '';
-          if (alt || hint) result += '<span class="osa-image-reference">' + alt + hint + '</span>';
+          // figure when the message has one.
+          result += imageReference(imageMatch[1], true);
           remaining = remaining.substring(imageIndex + imageMatch[0].length);
         } else if (minIndex === linkIndex && linkMatch) {
           if (linkIndex > 0) result += escapeRun(remaining.substring(0, linkIndex));
           // Validate URL to prevent javascript: XSS
           const linkUrl = withRawCode(linkMatch[2]);
           if (isSafeUrl(linkUrl)) {
-            result += '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeRun(linkMatch[1]) + '</a>';
+            result += '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer">' + renderLinkText(linkMatch[1]) + '</a>';
           } else {
-            result += escapeRun(linkMatch[1]); // Just show text, no link
+            result += renderLinkText(linkMatch[1]); // Just show text, no link
           }
           remaining = remaining.substring(linkIndex + linkMatch[0].length);
         } else if (minIndex === urlIndex && urlMatch) {

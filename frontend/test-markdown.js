@@ -307,6 +307,25 @@ console.log('\nImage references point to the figure above, never load one (#666)
   );
   const inTable = markdownToHtml('| a |\n|---|\n| ![T](https://x/t.png) |', undefined, { figureAbove: true });
   assert(!inTable.includes('<img') && inTable.includes('(see the figure above)'), 'in a table cell, the option reaches the reference');
+  const badge = markdownToHtml('[![badge](https://img/b.svg)](https://link)');
+  assert(
+    badge === `<p><a href="https://link" target="_blank" rel="noopener noreferrer"><span class="osa-image-reference">badge</span></a></p>`,
+    'a linked image is a link to the link address whose text is the alt text'
+  );
+  assert(!badge.includes('img/b.svg') && !badge.includes('![') && !badge.includes(']('), 'with no image address, no stray "![" and no stray "]("');
+  const badgeWithFigure = markdownToHtml('[![badge](https://img/b.svg)](https://link)', undefined, { figureAbove: true });
+  assert(!badgeWithFigure.includes('see the figure above'), 'a linked image inside a link carries no figure pointer');
+  const twoBadges = markdownToHtml('[![a](https://i/a.svg) ![b](https://i/b.svg)](https://link) and [plain](https://p)');
+  assert(
+    twoBadges.replace(/<[^>]*>/g, '') === 'a b and plain' && !twoBadges.includes('i/a.svg'),
+    'two images in one link text, then an ordinary link, all render'
+  );
+  const unsafeBadge = markdownToHtml('[![badge](https://img/b.svg)](javascript:alert(1))');
+  assert(!unsafeBadge.includes('href') && !unsafeBadge.includes('javascript:') && unsafeBadge.includes('badge'), 'a linked image to an unsafe address shows the alt text, no link');
+  const parens = markdownToHtml('![a](https://x/y_(1).png) after');
+  assert(parens === '<p><span class="osa-image-reference">a</span> after</p>', 'an image address with parentheses is read whole, none of it leaks as text');
+  const parensBadge = markdownToHtml('[![a](https://x/y_(1).png)](https://link)');
+  assert(!parensBadge.includes('.png') && parensBadge.includes('href="https://link"'), 'and so is one inside a linked image');
   assert(markdownToHtml('wow! [x](https://y) ok').includes('wow! ' + SAFE_LINK('x', 'https://y')), 'a "!" ending a sentence before a link stays text beside the link');
 }
 
