@@ -6069,7 +6069,7 @@
       padding: 0 6px;
       border: 0;
       background: transparent;
-      color: var(--osa-accent);
+      color: var(--osa-text);
       font: inherit;
       text-decoration: underline;
       cursor: pointer;
@@ -17686,7 +17686,7 @@
     if (kept !== null) {
       const again = kept === 'change'
         ? rail.querySelector('.osa-plan-rail-change')
-        : rail.querySelector(`[data-plan-rail-step="${kept}"]`);
+        : [...rail.querySelectorAll('[data-plan-rail-step]')].find((button) => button.getAttribute('data-plan-rail-step') === kept);
       if (again) again.focus();
     }
   }
@@ -17697,7 +17697,7 @@
   function goToPlanStep(container, step) {
     const thread = container.querySelector('.osa-chat-messages');
     if (!thread) return;
-    const cards = thread.querySelectorAll(`.osa-run-card[data-plan-step="${step}"]`);
+    const cards = [...thread.querySelectorAll('.osa-run-card[data-plan-step]')].filter((el) => el.getAttribute('data-plan-step') === String(step));
     const card = cards.length ? cards[cards.length - 1] : null;
     if (!card) return;
     if (!card.hasAttribute('tabindex')) card.setAttribute('tabindex', '-1');
