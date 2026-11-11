@@ -36,7 +36,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { connect, findChrome, launch } from './chrome.js';
+import { connect, evaluate, findChrome, launch } from './chrome.js';
 
 const WIDGET = readFileSync(new URL('../osa-chat-widget.js', import.meta.url), 'utf8');
 
@@ -94,26 +94,6 @@ function startServer() {
 }
 
 // ------------------------------------------------------------------ the driver
-
-// The center-stage dialog opens and docks with a 120 ms animation that scales the window
-// from 98%, so a size read in its first frames is 2% too small. Every read waits for the
-// animations that end (the infinite ones are not waited for); a call that carries a user
-// gesture does not, so the gesture is spent on the call.
-const ANIMATIONS_SETTLED = `Promise.race([
-  Promise.all(document.getAnimations()
-    .filter((a) => a.effect && a.effect.getComputedTiming().endTime !== Infinity)
-    .map((a) => a.finished.catch(() => null))),
-  new Promise((resolve) => setTimeout(resolve, 1000)),
-]).then(() => true)`;
-
-async function evaluate(cdp, sessionId, expression, { userGesture = false } = {}) {
-  if (!userGesture) await cdp.send('Runtime.evaluate', { expression: ANIMATIONS_SETTLED, awaitPromise: true }, sessionId);
-  const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', {
-    expression, returnByValue: true, awaitPromise: true, userGesture,
-  }, sessionId);
-  if (exceptionDetails) throw new Error(`page exception: ${exceptionDetails.exception?.description || exceptionDetails.text}`);
-  return result.value;
-}
 
 async function waitFor(cdp, sessionId, expression, label, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;

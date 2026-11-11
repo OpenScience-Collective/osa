@@ -153,6 +153,29 @@ export function connect(wsUrl) {
 }
 
 /**
+ * Runtime.evaluate for a harness that drives the center-stage dialog. The dialog opens and
+ * docks with a 120 ms animation that scales the window from 98%, so a size read in its
+ * first frames is 2% too small. Every read waits for the animations that end (the infinite
+ * ones, a spinner's, are not waited for, and the wait gives up after a second); a call that
+ * carries a user gesture does not wait, so the gesture is spent on the call.
+ */
+export const ANIMATIONS_SETTLED = `Promise.race([
+  Promise.all(document.getAnimations()
+    .filter((a) => a.effect && a.effect.getComputedTiming().endTime !== Infinity)
+    .map((a) => a.finished.catch(() => null))),
+  new Promise((resolve) => setTimeout(resolve, 1000)),
+]).then(() => true)`;
+
+export async function evaluate(cdp, sessionId, expression, { userGesture = false } = {}) {
+  if (!userGesture) await cdp.send('Runtime.evaluate', { expression: ANIMATIONS_SETTLED, awaitPromise: true }, sessionId);
+  const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', {
+    expression, returnByValue: true, awaitPromise: true, userGesture,
+  }, sessionId);
+  if (exceptionDetails) throw new Error(`page exception: ${exceptionDetails.exception?.description || exceptionDetails.text}`);
+  return result.value;
+}
+
+/**
  * Every Network.* event CDP delivers, from every session fed into it, keyed
  * by session so two requests that happen to share a requestId (a different
  * worker, a different page) are never merged into one record.
