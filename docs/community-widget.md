@@ -548,9 +548,11 @@ A conversation with no question from the reader yet (only the greeting) does not
 - **A record from a newer widget is left alone.** If the stored version is above 3, the widget says so, does not save, and does not overwrite it.
 - **A corrupted record is reported, and a copy is kept before it is replaced.** If the stored text is not valid JSON, or is a version 3 record without a conversations list, the widget says it is corrupted and shows an empty chat; loading changes nothing.
   The first save after that (the reader's next message) copies the unreadable text, byte for byte, to `<storageKey>-unreadable`, then writes a fresh record.
-  If the copy cannot be written, nothing is overwritten and the save fails with the usual storage message.
+  If the browser storage is too full to hold the copy, the record is replaced anyway and the reader sees a notice that no copy was kept, because refusing to replace a record the widget cannot use would stop every later save.
+  If the copy fails for any other reason, nothing is overwritten and the save fails with the usual storage message.
+  The copy is never cleaned up by the widget, and a second corruption replaces the first copy; remove the `-unreadable` key by hand to free the space.
 - **A full browser storage drops the oldest other conversation** and tries again, before it reports that the chat could not be saved.
-  When that retry succeeds, the reader sees a notice that the oldest saved conversation was removed.
+  When that retry succeeds, the reader sees a notice that the oldest saved conversation was removed: at once, and until dismissed, if the panel is open; otherwise the next time it opens.
 - **Mixed widget versions share a record.** The record keeps the same `storageKey` as before, so a version 2 widget (a cached or integrity-pinned embed, or another page on the same origin) that reads a version 3 record finds no top-level `messages`, shows the greeting, and its first save overwrites the whole record with a version 2 one.
   Only a widget from the future is guarded against (the version above 3 rule); an older one is not.
   Embeds that pin the widget by its integrity hash should be updated together, and a release note says so.
