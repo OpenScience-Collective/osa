@@ -17,6 +17,7 @@ On startup, empty databases are automatically seeded with an immediate sync.
 
 import logging
 import os
+import sqlite3
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -32,7 +33,7 @@ from src.knowledge.github_sync import sync_repos
 from src.knowledge.papers_sync import sync_all_papers, sync_citing_papers
 from src.metrics.alerts import create_budget_alert_issue
 from src.metrics.budget import check_budget
-from src.metrics.db import metrics_connection
+from src.metrics.db import metrics_connection, purge_expired_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +340,18 @@ def _cleanup_mirrors() -> None:
         )
 
 
+def _purge_expired_metrics() -> None:
+    """Delete usage metrics and feedback past their retention period (#725).
+
+    Startup runs the same purge, so it happens at least once per deploy even when this
+    scheduler is off; this job keeps a long-running server within the period.
+    """
+    try:
+        purge_expired_metrics()
+    except (sqlite3.Error, OSError):
+        logger.error("Could not delete expired usage metrics and feedback", exc_info=True)
+
+
 def _check_community_budgets() -> None:
     """Check budget limits for all communities and create alert issues if exceeded."""
     global _budget_check_failures
@@ -634,6 +647,20 @@ def start_scheduler() -> BackgroundScheduler | None:
         logger.info("Mirror cleanup scheduled: hourly at :30")
     except ValueError as e:
         logger.error("Failed to schedule mirror cleanup: %s", e)
+
+    # Usage metrics and feedback retention (daily, deletes rows older than five years)
+    try:
+        retention_trigger = CronTrigger(hour="3", minute="15")  # Daily at 03:15
+        _scheduler.add_job(
+            _purge_expired_metrics,
+            trigger=retention_trigger,
+            id="metrics_retention",
+            name="Usage Metrics and Feedback Retention",
+            replace_existing=True,
+        )
+        logger.info("Metrics retention scheduled: daily at 03:15")
+    except ValueError as e:
+        logger.error("Failed to schedule metrics retention: %s", e)
 
     # Start the scheduler
     _scheduler.start()

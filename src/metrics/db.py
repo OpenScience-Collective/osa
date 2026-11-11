@@ -271,6 +271,63 @@ def init_metrics_db(db_path: Path | None = None) -> None:
         conn.close()
 
 
+# Usage metrics (request_log) and feedback (feedback_log) are kept for this many calendar
+# years, then deleted (#725). PRIVACY.md states it; change both together.
+METRICS_RETENTION_YEARS = 5
+
+
+class PurgeCounts(NamedTuple):
+    """How many rows ``purge_expired_metrics`` deleted from each table."""
+
+    requests: int
+    feedback: int
+
+
+def retention_cutoff(now: datetime | None = None) -> str:
+    """The UTC ISO timestamp before which rows are deleted.
+
+    ``METRICS_RETENTION_YEARS`` calendar years before ``now``; 29 February falls back to
+    28 February in a year without it. Every writer stores ``datetime.now(UTC).isoformat()``,
+    so rows compare against this as strings.
+    """
+    now = (now or datetime.now(UTC)).astimezone(UTC)
+    year = now.year - METRICS_RETENTION_YEARS
+    try:
+        cutoff = now.replace(year=year)
+    except ValueError:  # 29 February, and the cutoff year has none
+        cutoff = now.replace(year=year, day=28)
+    return cutoff.isoformat()
+
+
+def purge_expired_metrics(db_path: Path | None = None, now: datetime | None = None) -> PurgeCounts:
+    """Delete the usage-metrics rows and feedback older than the retention period.
+
+    Runs at startup and daily from the scheduler. Both deletes commit together.
+
+    Args:
+        db_path: Optional path override (for testing).
+        now: The current time (for testing); defaults to now in UTC.
+    """
+    cutoff = retention_cutoff(now)
+    conn = get_metrics_connection(db_path)
+    try:
+        requests = conn.execute("DELETE FROM request_log WHERE timestamp < ?", (cutoff,)).rowcount
+        feedback = conn.execute("DELETE FROM feedback_log WHERE timestamp < ?", (cutoff,)).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if requests or feedback:
+        logger.info(
+            "Deleted %d usage-metrics rows and %d feedback entries older than %s "
+            "(kept for %d years)",
+            requests,
+            feedback,
+            cutoff,
+            METRICS_RETENTION_YEARS,
+        )
+    return PurgeCounts(requests, feedback)
+
+
 def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
     """Insert a request log entry into the database.
 
