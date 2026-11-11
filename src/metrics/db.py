@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS request_log (
     stream INTEGER DEFAULT 0,
     tool_call_count INTEGER DEFAULT 0,
     error_message TEXT,
-    langfuse_trace_id TEXT
+    langfuse_trace_id TEXT,
+    tier TEXT,
+    conversation_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_request_log_community
@@ -86,6 +88,15 @@ _MIGRATION_COLUMNS = [
     ("tool_call_count", "INTEGER DEFAULT 0"),
     ("error_message", "TEXT"),
     ("langfuse_trace_id", "TEXT"),
+    ("tier", "TEXT"),
+    ("conversation_id", "TEXT"),
+]
+
+# Indexes on migrated columns. They cannot sit in METRICS_SCHEMA_SQL: that script runs
+# before the migration, and on a database from before the column existed the index
+# would fail with "no such column".
+_MIGRATION_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_request_log_conversation ON request_log(conversation_id)",
 ]
 
 
@@ -111,6 +122,13 @@ class RequestLogEntry:
     tool_call_count: int = 0
     error_message: str | None = None
     langfuse_trace_id: str | None = None
+    # Which model tier the turn ran on ("quick" or "analysis") for a community that
+    # routes between the two, None otherwise. `model` says which model; this says which
+    # side of the quick/analysis split a row belongs to without a model-name lookup.
+    tier: str | None = None
+    # Groups the rows of one conversation. A handover opens a new server session for the
+    # analysis model, so the session id changes mid-conversation; this id does not.
+    conversation_id: str | None = None
 
 
 @dataclass
@@ -216,6 +234,8 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
             else:
                 logger.error("Failed to add column %s to request_log: %s", col_name, e)
                 raise
+    for statement in _MIGRATION_INDEXES:
+        conn.execute(statement)
 
 
 def init_metrics_db(db_path: Path | None = None) -> None:
@@ -255,8 +275,8 @@ def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
                 request_id, timestamp, community_id, endpoint, method,
                 duration_ms, status_code, model, input_tokens, output_tokens,
                 total_tokens, estimated_cost, tools_called, key_source, stream,
-                tool_call_count, error_message, langfuse_trace_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tool_call_count, error_message, langfuse_trace_id, tier, conversation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.request_id,
@@ -277,6 +297,8 @@ def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
                 entry.tool_call_count,
                 entry.error_message,
                 entry.langfuse_trace_id,
+                entry.tier,
+                entry.conversation_id,
             ),
         )
         conn.commit()
