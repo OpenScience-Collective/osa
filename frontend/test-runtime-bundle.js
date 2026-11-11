@@ -65,6 +65,7 @@ console.log('\nthe bundle loads as a classic script and exposes one global');
     'ClientToolController',
     'GATE_DECISION',
     'highlightPython',
+    'buildConversationNotebook',
   ]) {
     assert(api && api[name] !== undefined, `it exposes ${name}`);
   }
@@ -87,6 +88,17 @@ console.log('\nthe gate pieces the BUNDLE carries work as built');
   assert(JSON.stringify(controller.declared) === '["execute_code","get_full_output"]', 'the bundled controller declares its tools');
   const denied = await controller.answer({ call_id: 'b-deny', tool: 'execute_code', args: { code: 'x', description: 'd' } });
   assert(denied.status === 'denied' && denied.call_id === 'b-deny', 'and answers a declined request');
+}
+
+console.log('\nthe notebook builder the BUNDLE carries gives what the source gives');
+{
+  const { buildConversationNotebook } = await import('./osa-notebook-builder.js');
+  const { NOTEBOOK_CONVERSATIONS } = await import('./test-support/notebook-conversations.js');
+  for (const name of Object.keys(NOTEBOOK_CONVERSATIONS)) {
+    const bundled = api.buildConversationNotebook(NOTEBOOK_CONVERSATIONS[name]());
+    const source = buildConversationNotebook(NOTEBOOK_CONVERSATIONS[name]());
+    assert(JSON.stringify(bundled) === JSON.stringify(source), `${name}: the minified builder's notebook, script and stats equal the source's`);
+  }
 }
 
 console.log('\nthe worker source the BUNDLE builds is real JavaScript');
