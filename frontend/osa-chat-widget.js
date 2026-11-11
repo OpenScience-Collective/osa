@@ -4897,8 +4897,7 @@
       ? (focused.classList.contains('osa-nb-rename-btn') ? 'osa-nb-rename-btn' : 'osa-nb-close-btn')
       : null;
     strip.textContent = '';
-    const selectedIndex = Math.max(0, open.findIndex((item) => item.path === notebookEmbed.tabs.active));
-    open.forEach((item, index) => {
+    open.forEach((item) => {
       const selected = item.path === notebookEmbed.tabs.active;
       const group = document.createElement('div');
       group.className = `osa-nb-tab${selected ? ' osa-nb-tab-on' : ''}`;
@@ -4949,7 +4948,6 @@
       tab.type = 'button';
       tab.className = 'osa-nb-tab-label';
       if (selected) tab.setAttribute('aria-current', 'true');
-      tab.tabIndex = index === selectedIndex ? 0 : -1;
       tab.title = item.title;
       tab.textContent = item.title;
       tab.dataset.path = item.path;
@@ -4963,7 +4961,6 @@
         if (target === undefined || tabs.length === 0) return;
         event.preventDefault();
         const next = tabs[(target + tabs.length) % tabs.length];
-        tabs.forEach((other) => { other.tabIndex = other === next ? 0 : -1; });
         next.focus();
       });
       group.appendChild(tab);
@@ -5005,13 +5002,15 @@
       const action = focusedAction && byPath ? byPath.closest('.osa-nb-tab').querySelector(`.${focusedAction}`) : null;
       const next = action || byPath || labels.find((label) => label.hasAttribute('aria-current')) || labels[0];
       if (next) {
-        if (next.classList.contains('osa-nb-tab-label')) labels.forEach((label) => { label.tabIndex = label === next ? 0 : -1; });
         next.focus();
       }
     }
 
     add.setAttribute('aria-expanded', notebookEmbed.menuOpen ? 'true' : 'false');
     menu.hidden = !notebookEmbed.menuOpen;
+    // The same goes for the menu: a list that arrives while an entry has focus
+    // gives focus to the entry at that place in the rebuilt menu.
+    const focusedEntry = [...menu.querySelectorAll('.osa-nb-menu-item')].indexOf(document.activeElement);
     menu.textContent = '';
     const entry = (label, onClick) => {
       const button = document.createElement('button');
@@ -5035,6 +5034,10 @@
       for (const item of closed) {
         entry(item.title, () => { sendNotebookRequest('open-notebook', { path: item.path }); });
       }
+    }
+    if (focusedEntry >= 0 && notebookEmbed.menuOpen) {
+      const entries = menu.querySelectorAll('.osa-nb-menu-item');
+      entries[Math.min(focusedEntry, entries.length - 1)].focus();
     }
   }
 
@@ -5093,7 +5096,10 @@
     // moves focus there and so blurs this window.
     window.addEventListener('blur', () => {
       const container = view.closest('.osa-chat-widget');
-      if (container && notebookEmbed.menuOpen) closeNotebookMenu(container);
+      // An entry that has focus when the window loses it would be removed with
+      // the menu; focus goes to the "+" button instead. A click into the frame
+      // leaves focus on the frame, which this must not take back.
+      if (container && notebookEmbed.menuOpen) closeNotebookMenu(container, menu.contains(document.activeElement));
     });
   }
 

@@ -6,7 +6,7 @@
  * What it holds the widget to: the strip is drawn from the notebook's `notebooks`
  * messages and nothing else, as a labelled group of buttons (not a tablist: it
  * also holds Rename, Close and the rename input, and there is no tab panel) with
- * aria-current on the open notebook, a roving tab stop, arrow keys, and focus
+ * aria-current on the open notebook, every tab a normal tab stop with arrow keys as an extra, and focus
  * kept on its control when the list is redrawn; the open notebook's tab has Rename (an inline input:
  * Enter commits, Escape cancels) and Close, and the Playground has neither; the
  * "+" menu offers a blank notebook and the closed ones to reopen; each action
@@ -212,13 +212,13 @@ console.log('\nthe strip is a labelled group of buttons, from the notebooks mess
   assert(tabs().every((tab) => tab.tagName === 'BUTTON' && !tab.hasAttribute('role')), 'each is a plain button');
   assertEqual(strip.querySelectorAll('[role="tab"], [role="presentation"]').length, 0, 'and nothing in it claims to be a tab');
   assertEqual(tabs().map((tab) => tab.hasAttribute('aria-current')), [false, true, false], 'aria-current follows the active notebook');
-  assertEqual(tabs().map((tab) => tab.tabIndex), [-1, 0, -1], 'only the selected tab is in the tab order');
+  assertEqual(tabs().map((tab) => tab.tabIndex), [0, 0, 0], 'every tab is in the tab order: nothing announces a roving stop, so none is used');
   assertEqual(tabs().map((tab) => tab.dataset.path), ITEMS.slice(0, 3).map((i) => i.path), 'each tab carries its notebook\'s path');
   assert(tabs().every((tab) => tab.title === tab.textContent), 'a long title can be read in full from the tooltip');
 
   list(ITEMS, PLAYGROUND);
   assertEqual(tabs().map((tab) => tab.hasAttribute('aria-current')), [true, false, false], 'another active notebook moves the selection');
-  assertEqual(tabs().map((tab) => tab.tabIndex), [0, -1, -1], 'and the tab stop');
+  assertEqual(tabs().map((tab) => tab.tabIndex), [0, 0, 0], 'and they stay in the tab order');
 
   list([item('', 'playground'), item('Third', 'chat'), item('ERPs', 'chat')], pathOf('Third'));
   assertEqual(tabTitles(), ['Playground', 'Third', 'ERPs'], 'a notebook opened inside JupyterLite shows up too: the strip follows the list');
@@ -306,7 +306,7 @@ console.log('\narrow keys move between the tabs; Home and End go to the ends');
   tabs()[1].focus();
   key(tabs()[1], 'ArrowRight');
   assert(window.document.activeElement === tabs()[2], 'ArrowRight: the next tab has focus');
-  assertEqual(tabs().map((tab) => tab.tabIndex), [-1, -1, 0], 'and the tab stop');
+  assertEqual(tabs().map((tab) => tab.tabIndex), [0, 0, 0], 'and no tab leaves the tab order');
   key(tabs()[2], 'ArrowRight');
   assert(window.document.activeElement === tabs()[0], 'ArrowRight at the end wraps to the first');
   key(tabs()[0], 'ArrowLeft');
@@ -499,7 +499,7 @@ console.log('\nfocus stays on its control when the list is redrawn');
   assert(active() === tabs()[2], 'set up: focus is on the third tab');
   list(ITEMS, ITEMS[2].path);
   assert(active() === tabs()[2] && active().dataset.path === ITEMS[2].path, 'the list moved the selection: focus is still on that tab');
-  assertEqual(tabs().map((tab) => tab.tabIndex), [-1, -1, 0], 'and the tab stop is on it');
+  assertEqual(tabs().map((tab) => tab.tabIndex), [0, 0, 0], 'and every tab is still in the tab order');
   list(ITEMS, ITEMS[2].path);
   assert(active() === tabs()[2], 'a redraw with nothing new changes nothing');
 
@@ -561,6 +561,35 @@ console.log('\nthe "+" menu: choosing an entry returns focus to the button, and 
   window.dispatchEvent(new window.Event('blur'));
   assert(q('.osa-nb-menu').hidden, 'the window losing focus (a click in the frame) closes it');
   assertEqual(add.getAttribute('aria-expanded'), 'false', 'and the button says so');
+}
+
+console.log('\nfocus in the "+" menu survives a redraw and a close');
+{
+  const { window, q, list, fire, key, container } = await startNotebook();
+  list(ITEMS, ITEMS[1].path);
+  const add = q('.osa-nb-add');
+  const entries = () => [...container.querySelectorAll('.osa-nb-menu-item')];
+  fire(add, 'click');
+  key(entries()[0], 'ArrowDown');
+  assert(window.document.activeElement === entries()[1], 'set up: the second entry has focus');
+  list(ITEMS, ITEMS[2].path);
+  assert(window.document.activeElement === entries()[1], 'a list that arrives while it has focus: the entry at that place has it again');
+  key(window.document.activeElement, 'Escape');
+  assert(q('.osa-nb-menu').hidden && window.document.activeElement === add, 'and Escape still closes the menu and returns to the button');
+
+  fire(add, 'click');
+  key(entries()[0], 'ArrowDown');
+  key(entries()[1], 'ArrowDown');
+  assert(window.document.activeElement === entries()[2], 'set up: the last entry has focus');
+  list(ITEMS.slice(0, 3), ITEMS[2].path);
+  assertEqual(entries().length, 1, 'set up: only Blank notebook is left in the menu');
+  assert(window.document.activeElement === entries()[0], 'a shorter menu: focus goes to the last entry there is');
+
+  // The window losing focus while an entry has it: focus goes to the button, not to the page.
+  entries()[0].focus();
+  window.dispatchEvent(new window.Event('blur'));
+  assert(q('.osa-nb-menu').hidden, 'the window losing focus closes the menu');
+  assert(window.document.activeElement === add, 'and focus is on the button, not dropped to the page');
 }
 
 console.log('\nstyles: tab labels read at AA contrast on the strip, in light and dark');
