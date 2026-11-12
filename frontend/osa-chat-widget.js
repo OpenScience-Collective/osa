@@ -2140,6 +2140,22 @@
       .osa-center-scrim.closing {
         display: none !important;
       }
+
+      /* The dialog's tab switch (#738) has no motion at all, not even the capsule's plain
+         120ms fade: the view and the header buttons change at once. More classes than the
+         rules above, which are !important too. */
+      .osa-chat-window.osa-center .osa-view,
+      .osa-chat-window.osa-center .osa-view.osa-view-on,
+      .osa-chat-window.osa-center .osa-view.osa-view-off,
+      .osa-capsule .osa-chat-window.osa-center .osa-history-btn,
+      .osa-capsule .osa-chat-window.osa-center .osa-settings-btn-open,
+      .osa-capsule .osa-chat-window.osa-center .osa-center-notebook-btn,
+      .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-history-btn,
+      .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-settings-btn-open,
+      .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-notebook-btn,
+      .osa-center-tab {
+        transition: none !important;
+      }
     }
 
     /* Above the launcher, --osa-panel-gap clear of it, and 30px short of the window's
@@ -5750,10 +5766,12 @@
     }
 
     .osa-chat-window.osa-center .osa-header-btn {
+      flex: none;
       min-width: 36px;
       min-height: 36px;
       color: var(--osa-text);
       opacity: 1;
+      white-space: nowrap;
     }
 
     .osa-chat-window.osa-center .osa-header-btn:hover {
@@ -6097,6 +6115,145 @@
     @media (max-width: 600px) {
       .osa-chat-window.osa-center .osa-center-notebook-btn:not([hidden]) {
         padding: 0;
+      }
+    }
+
+    /* The dialog's Chat and Notebook tabs (#738): in the header once the notebook has been
+       opened (syncCenterTabs), a pair of pills in the History and Move to corner buttons'
+       look, 36px tall like them: one border round both, the open tab filled with the
+       assistant surface and bold. No second filled pill, so the AI Mode
+       pill stays the one strong mark in the header. Every color is a token. */
+    .osa-chat-window .osa-center-tabs {
+      display: none;
+    }
+
+    .osa-chat-window.osa-center .osa-center-tabs:not([hidden]) {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      gap: 2px;
+      box-sizing: border-box;
+      height: 36px;
+      padding: 1px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      background: var(--osa-bg);
+    }
+
+    .osa-center-tab {
+      display: inline-flex;
+      flex: 1 1 auto;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      box-sizing: border-box;
+      height: 32px;
+      margin: 0;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--osa-text);
+      white-space: nowrap;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1;
+      cursor: pointer;
+      transition: background 60ms linear, color 60ms linear;
+    }
+
+    .osa-center-tab svg {
+      width: 14px;
+      height: 14px;
+      flex: none;
+    }
+
+    .osa-center-tab:hover {
+      background: var(--osa-assistant-bg);
+    }
+
+    /* The open tab: filled, bold and with its icon in the accent. The label stays in the
+       text color, since the accent on the assistant surface falls just under 4.5:1. */
+    .osa-center-tab[aria-selected="true"] {
+      background: var(--osa-assistant-bg);
+      font-weight: 600;
+      cursor: default;
+    }
+
+    .osa-center-tab[aria-selected="true"] svg {
+      color: var(--osa-accent);
+    }
+
+    .osa-center-tab:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    /* The header on the notebook tab: History, Settings and Continue in notebook are the
+       chat's. Hidden, not removed, as in the corner, so Move to corner and Close do not
+       move as the tabs switch; hidden controls are out of the Tab order too. The fade is
+       the capsule's, shortened to a few tens of milliseconds. */
+    .osa-capsule .osa-chat-window.osa-center .osa-history-btn,
+    .osa-capsule .osa-chat-window.osa-center .osa-settings-btn-open,
+    .osa-capsule .osa-chat-window.osa-center .osa-center-notebook-btn {
+      transition: opacity 60ms linear, background 0.2s, visibility 0s;
+    }
+
+    .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-history-btn,
+    .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-settings-btn-open,
+    .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-notebook-btn {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 60ms linear, background 0.2s, visibility 0s linear 60ms;
+    }
+
+    /* The two views in the dialog fade over each other in 60ms, with no scale: the
+       capsule's fade-through (out in 110ms, in over 210ms) is longer than a dialog's
+       tab switch needs. The notebook's frame is under one of them and is never moved. */
+    .osa-chat-window.osa-center .osa-view,
+    .osa-chat-window.osa-center .osa-view.osa-view-off {
+      transform: none;
+      transition: opacity 60ms linear, visibility 0s linear 60ms;
+    }
+
+    .osa-chat-window.osa-center .osa-view.osa-view-on {
+      transition: opacity 60ms linear, visibility 0s;
+    }
+
+    /* After the notebook's frame, in its view: a stop that takes the focus Tab carries
+       out of the frame (guardNotebookFrame). Painted nothing and clicked by nothing, but
+       still focusable, so no display:none, visibility:hidden or inert of its own. */
+    .osa-nb-guard {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+      outline: none;
+    }
+
+    /* The dialog's header with its tabs on a narrow window: the tabs take a row of their
+       own under the pill and the buttons, and share it. Below 1100px the dialog is under
+       about 940px wide, which is where the row of pill, tabs, History, Continue in
+       notebook, Move to corner, Settings and Close stops fitting. */
+    @media (max-width: 1100px) {
+      .osa-chat-window.osa-center.osa-center-tabbed .osa-chat-header {
+        flex-wrap: wrap;
+      }
+
+      .osa-chat-window.osa-center.osa-center-tabbed .osa-center-tabs:not([hidden]) {
+        order: 10;
+        flex: 1 0 100%;
+      }
+
+      /* The dataset line gives way (ellipsis) rather than wrapping to a row of its own. */
+      .osa-chat-window.osa-center.osa-center-tabbed .osa-center-context {
+        flex: 1 1 0;
       }
     }
 
@@ -6517,6 +6674,7 @@
     }
 
     renderTabStrip(container);
+    syncCenterTabs(container);
     // The notebook card under the chat's last reply says what the notebook can do now (E4.3).
     refreshNotebookEntry(container);
   }
@@ -6596,16 +6754,15 @@
   // follow, and the indicator slides (or, in a pop-out, the tab strip follows).
   // Opening the notebook tab creates its frame the first time. A bubble widget has
   // no tabs, so this is a no-op there.
+  //
+  // The center-stage dialog (E6.1) is the same window, so it has the same two views
+  // and the notebook's frame stays where it is: switching tabs, and docking, never
+  // move or reload it (#738). The first time the notebook opens, the dialog's header
+  // gains its Chat and Notebook tabs (syncCenterTabs); until then it is chat only.
   function setTab(container, tab) {
     if (!container.classList.contains('osa-capsule')) return;
     if (tab === 'notebook' && !isNotebookAvailable()) tab = 'chat';
-    // The dialog is the chat's (see engageCenter): the notebook opens in the corner, so
-    // the page is live again and the notebook's frame is never inside a modal. The
-    // "Keep going in a notebook" card and a host-driven import reach here with the
-    // dialog up.
-    if (tab === 'notebook' && hostMode === 'center' && applyHostMode(container, 'corner')) {
-      emitHostEvent('modechange', { mode: 'corner' });
-    }
+    if (tab === 'notebook') notebookTabSeen = true;
     activeTab = tab;
     if (tab === 'notebook') closeHistory(container, { restoreFocus: false });
     container.classList.toggle('osa-tab-notebook', tab === 'notebook');
@@ -6627,6 +6784,9 @@
     renderNotebookStatus(container);
     renderLauncherIcons(container);
     positionIndicator(container);
+    // The dialog's start screen belongs to the chat's view.
+    syncCenterStart(container);
+    rescueCenterFocus(container);
   }
 
   // setTab without its motion: the views, titles and header buttons take their
@@ -7391,8 +7551,10 @@
           <button type="button" class="osa-notebook-retry">Try again</button>
           <a class="osa-notebook-open-tab" target="_blank" rel="noopener">Open in a new tab</a>
         </div>
-      </div>`;
+      </div>
+      <span class="osa-nb-guard" data-osa-guard tabindex="-1"></span>`;
     wireNotebookTabs(view);
+    guardNotebookFrame(view);
     view.querySelector('.osa-notebook-retry').addEventListener('click', () => {
       const container = view.closest('.osa-chat-widget');
       if (!container) return;
@@ -7556,6 +7718,8 @@
       views.remove();
     }
     container.classList.remove('osa-capsule', 'osa-tab-chat', 'osa-tab-notebook');
+    // The dialog's tab row goes back to its markup too: hidden, Chat selected, no panels.
+    syncCenterTabs(container);
   }
 
   // Apply a setDataset(value) call: validates, stores the result (even before the
@@ -14516,6 +14680,10 @@
         <div class="osa-resize-handle"></div>
         <div class="osa-chat-header">
           <span class="osa-center-pill">${ICONS.sparkle}AI Mode</span>
+          <div class="osa-center-tabs" role="tablist" aria-label="Chat or notebook" hidden>
+            <button type="button" role="tab" class="osa-center-tab osa-center-tab-chat" id="osa-center-tab-chat" aria-selected="true" tabindex="0">${ICONS.chat}<span>Chat</span></button>
+            <button type="button" role="tab" class="osa-center-tab osa-center-tab-notebook" id="osa-center-tab-notebook" aria-selected="false" tabindex="-1">${ICONS.notebook}<span>Notebook</span></button>
+          </div>
           <div class="osa-center-context"></div>
           <div class="osa-chat-avatar">${ICONS.brain}</div>
           <div class="osa-chat-title-area">
@@ -17031,6 +17199,7 @@
       if (hostMode === 'center') engageCenter(container);
       syncCenterStart(container);
       if (activeTab === 'chat') focusChatField(container, hostMode === 'center');
+      else if (hostMode === 'center') focusActiveView(container);
       hostEvents.push(['open', { mode: hostMode }]);
       // Hide tooltip when chat opens
       if (tooltip) tooltip.classList.remove('visible');
@@ -17456,6 +17625,9 @@
   const HOST_MODES = ['corner', 'center'];
   const hostListeners = new Map(HOST_EVENTS.map((name) => [name, []]));
   let hostMode = 'corner';
+  // Whether the notebook has been opened in this page session: the dialog shows its
+  // Chat and Notebook tabs from then on, and a chat-only dialog keeps its plain header.
+  let notebookTabSeen = false;
   // Calls made before init() built the widget, replayed in order once it has.
   let hostQueue = [];
   let hostLive = false;
@@ -17709,7 +17881,7 @@
       return;
     }
     if (!applyHostMode(container, mode)) return;
-    if (isOpen) focusChatField(container, true);
+    if (isOpen) focusActiveView(container);
     emitHostEvent('modechange', { mode: hostMode });
   }
 
@@ -17737,6 +17909,7 @@
     syncCenterStart(container);
     syncPlanRail(container);
     syncCenterNotebook(container);
+    syncCenterTabs(container);
     return true;
   }
 
@@ -17768,10 +17941,6 @@
   // Modal for as long as the dialog is open: the page behind it is inert and does not
   // scroll, and Tab and Escape are the dialog's (handleCenterKey).
   function engageCenter(container) {
-    // The dialog is the chat's: around the notebook it would hide that tab's title and
-    // leave no control that goes back (the tab strip is the pop-out's), so it opens on
-    // the chat, as open() and ask() do.
-    if (activeTab !== 'chat') setTab(container, 'chat');
     if (centerKeyHandler) return;
     const scrim = container.querySelector('.osa-center-scrim');
     if (scrim) {
@@ -17825,12 +17994,123 @@
   function dockCenter(container) {
     if (hostMode !== 'center') return;
     if (applyHostMode(container, 'corner')) emitHostEvent('modechange', { mode: 'corner' });
-    focusChatField(container, true);
+    focusActiveView(container);
+  }
+
+  // Where focus goes when the window opens in the dialog, or changes mode, on the tab that
+  // is showing: the chat's field; on the notebook tab, the dialog's selected tab (the
+  // notebook's frame is not taken over by a key that only changed the mode); and in the
+  // corner on that tab, the window itself, so it is never left on a control that is gone.
+  function focusActiveView(container) {
+    if (activeTab === 'chat') {
+      focusChatField(container, true);
+      return;
+    }
+    const tab = hostMode === 'center' ? container.querySelector('.osa-center-tab[aria-selected="true"]') : null;
+    const target = tab && !tab.closest('[hidden]') ? tab : container.querySelector('.osa-chat-window');
+    if (target) target.focus();
+  }
+
+  // A tab switch can take away the control that had focus: the chat's field goes inert
+  // with its view, and the header's History, Settings and Continue in notebook buttons
+  // are hidden on the notebook tab. In the dialog, where the page behind is inert, focus
+  // that falls to the body is on nothing at all, so it goes to the selected tab.
+  function rescueCenterFocus(container) {
+    if (hostMode !== 'center' || !isOpen) return;
+    const active = document.activeElement;
+    const nowhere = !active || active === document.body || active === document.documentElement;
+    const gone = !nowhere && container.contains(active) && (
+      !!active.closest('[inert]') ||
+      (activeTab === 'notebook' && active.matches('.osa-history-btn, .osa-settings-btn-open, .osa-reset-btn, .osa-center-notebook-btn')));
+    if (nowhere || gone) focusActiveView(container);
+  }
+
+  // The dialog's Chat and Notebook tabs (#738), in its header, once the notebook has
+  // been opened in this page session and while it can be opened. A chat-only dialog keeps
+  // the header it always had, and the corner never shows them (its tabs are the launcher's
+  // circles). They are the same two views the corner shows: the tab only chooses which is
+  // up, so the notebook's frame and its Python session are untouched by a switch.
+  function syncCenterTabs(container) {
+    const win = container.querySelector('.osa-chat-window');
+    const tabs = container.querySelector('.osa-center-tabs');
+    if (!win || !tabs) return;
+    const show = hostMode === 'center' && container.classList.contains('osa-capsule') &&
+      notebookTabSeen && isNotebookAvailable();
+    tabs.hidden = !show;
+    win.classList.toggle('osa-center-tabbed', show);
+    for (const name of ['chat', 'notebook']) {
+      const tab = tabs.querySelector(`.osa-center-tab-${name}`);
+      const view = container.querySelector(`.osa-view-${name}`);
+      const on = activeTab === name;
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+      tab.tabIndex = on ? 0 : -1;
+      if (view) {
+        view.id = `osa-center-panel-${name}`;
+        tab.setAttribute('aria-controls', view.id);
+        // A tab panel only where there are tabs: the corner's views are plain regions.
+        if (show) {
+          view.setAttribute('role', 'tabpanel');
+          view.setAttribute('aria-labelledby', tab.id);
+        } else {
+          view.removeAttribute('role');
+          view.removeAttribute('aria-labelledby');
+        }
+      } else {
+        tab.removeAttribute('aria-controls');
+      }
+    }
+    // Tab can carry focus out of the notebook's frame only in the dialog, and only
+    // there is the guard that catches it a stop; in the corner it would be a stray one.
+    const guard = container.querySelector('.osa-nb-guard');
+    if (guard) guard.tabIndex = hostMode === 'center' ? 0 : -1;
+  }
+
+  function bindCenterTabs(container) {
+    const tabs = container.querySelector('.osa-center-tabs');
+    if (!tabs) return;
+    const pick = (name, focus) => {
+      if (name === 'notebook' && !isNotebookAvailable()) return;
+      if (activeTab !== name) setTab(container, name);
+      if (focus) tabs.querySelector(`.osa-center-tab-${name}`).focus();
+    };
+    for (const name of ['chat', 'notebook']) {
+      tabs.querySelector(`.osa-center-tab-${name}`).addEventListener('click', () => pick(name, false));
+    }
+    // Arrow keys move between the tabs and open the one they land on, Home and End go
+    // to the first and the last; the unselected tab is out of the Tab order, as in the
+    // pattern for tabs, so Tab goes past the pair in one press.
+    tabs.addEventListener('keydown', (event) => {
+      const names = { ArrowLeft: 'chat', ArrowRight: 'notebook', Home: 'chat', End: 'notebook' };
+      const name = names[event.key];
+      if (!name || event.altKey || event.ctrlKey || event.metaKey) return;
+      event.preventDefault();
+      pick(name, true);
+    });
+  }
+
+  // Focus Tab carries out of the notebook's frame lands on the guard that follows it in
+  // the notebook's view. The frame is another origin, so its keys never reach the
+  // dialog's own handler and the page behind the dialog is inert: without the guard the
+  // next stop is the browser's own controls. The guard hands focus to the dialog's first
+  // stop, the selected tab, which puts Close and the tabs within reach. (Shift+Tab out of
+  // the frame needs no help: the stop before the frame is the dialog's own.)
+  function guardNotebookFrame(view) {
+    const guard = view.querySelector('.osa-nb-guard');
+    if (!guard) return;
+    guard.addEventListener('focus', () => {
+      if (hostMode !== 'center') return;
+      const container = view.closest('.osa-chat-widget');
+      const win = container && container.querySelector('.osa-chat-window');
+      if (!win) return;
+      const stops = focusablesIn(win);
+      (stops[0] || win).focus();
+    });
   }
 
   // An iframe is a stop like any control; once focus is inside one, its keys stay in
   // the frame and never reach the dialog's handler, so the notebook's frame is the one
-  // place Tab can leave (the dialog docks before that tab opens, see setTab).
+  // place Tab can leave: the guard after it (see guardNotebookFrame) takes the focus
+  // Tab carries out of the frame and gives it back to the dialog.
   const FOCUSABLE_SELECTOR = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, iframe, [contenteditable]:not([contenteditable="false"]), [tabindex]';
 
   // Whether `node` can be seen: neither it nor an ancestor up to `scope` is hidden or not
@@ -17855,7 +18135,7 @@
   function focusablesIn(scope) {
     const seen = new Map();
     return [...scope.querySelectorAll(FOCUSABLE_SELECTOR)].filter((el) => {
-      if (el.disabled || el.closest('[inert]')) return false;
+      if (el.disabled || el.hasAttribute('data-osa-guard') || el.closest('[inert]')) return false;
       const tabindex = el.getAttribute('tabindex');
       if (tabindex !== null && Number(tabindex) < 0) return false;
       return isShown(el, scope, seen);
@@ -18081,6 +18361,7 @@
 
   function bindCenterStage(container) {
     container.querySelector('.osa-center-dock-btn')?.addEventListener('click', () => dockCenter(container));
+    bindCenterTabs(container);
     bindPlanRail(container);
     const field = container.querySelector('.osa-center-input');
     const main = container.querySelector('.osa-chat-input input');
@@ -18486,8 +18767,8 @@
   }
 
   // The same path as the card's button: the chat's code is built again (a run may have
-  // been added), and runNotebookImport sends it. The import opens the notebook tab, and
-  // opening it docks the dialog.
+  // been added), and runNotebookImport sends it. The import opens the notebook tab, in the
+  // dialog (#738): the dialog stays modal, with the Chat and Notebook tabs in its header.
   function continueFromCenterHeader(container) {
     const offer = centerNotebookOffer();
     if (!offer || offer.busy || isLoading) return;
