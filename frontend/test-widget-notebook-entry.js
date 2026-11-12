@@ -928,7 +928,7 @@ console.log('\nan import that another one replaced still opens the notebook it m
   assertEqual(opens.map((p) => p.message.path), [IMPORT_PATH], 'Open notebook asks for the path the answer named, not a record that never finished');
 }
 
-console.log('\nthe card in the host API\'s dialog docks the window before the notebook opens');
+console.log('\nthe card in the host API\'s dialog opens the notebook as a tab of the dialog (#738)');
 {
   const modes = [];
   const dialog = async () => {
@@ -941,29 +941,41 @@ console.log('\nthe card in the host API\'s dialog docks the window before the no
     assert(ctx.window.document.querySelectorAll('[inert]').length > 0, 'set up: the page behind it is inert');
     return { ctx, win };
   };
-  const docked = (ctx, win, what) => {
+  // The page, outside the widget's own window, is still inert: the dialog is still modal.
+  const stillModal = (ctx, win, what) => {
+    assert(win().classList.contains('osa-center') && win().getAttribute('role') === 'dialog' && win().getAttribute('aria-modal') === 'true',
+      `${what}: the window is still the modal dialog`);
+    const held = [...ctx.window.document.querySelectorAll('[inert]')].filter((node) => !win().contains(node));
+    assert(held.length > 0, `${what}: the page behind it is still inert`);
+    assert(ctx.q('.osa-center-scrim').classList.contains('open'), `${what}: and the scrim is up`);
+  };
+  const onNotebookTab = (ctx, what) => {
     assert(ctx.activeTab() === 'notebook', `${what}: the notebook tab is open`);
-    assert(!win().classList.contains('osa-center') && win().getAttribute('role') === null, `${what}: the window is docked, not a modal dialog`);
-    assert(ctx.window.document.querySelectorAll('[inert]').length === ctx.qa('.osa-view-off[inert]').length,
-      `${what}: the page is no longer inert`);
+    assert(ctx.q('.osa-center-tab-notebook').getAttribute('aria-selected') === 'true' && ctx.q('.osa-center-tab-chat').getAttribute('aria-selected') === 'false',
+      `${what}: and the dialog's Notebook tab is the selected one`);
   };
 
   const first = await dialog();
+  const frameBefore = first.ctx.q('.osa-notebook-frame');
   first.ctx.click(first.ctx.button('continue'));
-  docked(first.ctx, first.win, 'Continue in notebook');
-  assertEqual(modes, ['center', 'corner'], 'and the page hears the modechange to corner');
+  onNotebookTab(first.ctx, 'Continue in notebook');
+  stillModal(first.ctx, first.win, 'Continue in notebook');
+  assertEqual(modes, ['center'], 'the page hears no modechange: the dialog did not dock');
   assertEqual(first.ctx.importPosts().length, 1, 'the import still goes ahead');
+  assert(first.ctx.q('.osa-notebook-frame') === frameBefore && first.ctx.qa('.osa-notebook-frame').length === 1, 'into the one frame the corner already had');
 
   const second = await dialog();
   second.ctx.click(second.ctx.button('continue'));
   const [sent] = second.ctx.importPosts();
   second.ctx.say({ type: 'result', requestId: sent.message.requestId, ok: true, path: IMPORT_PATH });
+  second.ctx.click(second.ctx.q('.osa-center-tab-chat'));
+  assert(second.ctx.activeTab() === 'chat', 'the Chat tab goes back to the chat');
   await waitUntil(() => second.ctx.button('open') !== null, 'the card becomes Open notebook');
-  second.ctx.click(second.ctx.q('.osa-launcher-capsule .osa-chat-button'));
-  second.ctx.api.setMode('center');
-  assert(second.win().classList.contains('osa-center'), 'set up: the dialog again, on the chat');
   second.ctx.click(second.ctx.button('open'));
-  docked(second.ctx, second.win, 'Open notebook');
+  onNotebookTab(second.ctx, 'Open notebook');
+  stillModal(second.ctx, second.win, 'Open notebook');
+  const opens = second.ctx.posts.filter((p) => p.message.type === 'open-notebook');
+  assertEqual(opens.map((post) => post.message.path), [IMPORT_PATH], 'and the notebook it made is the one that opens');
 }
 
 console.log(`\n${'='.repeat(60)}`);

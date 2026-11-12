@@ -15,7 +15,11 @@
  * untouched; Escape closes the History sheet or Settings first; Close gives focus back
  * to what had it before the window opened. The start screen (board C2) is for an empty
  * conversation only, its pills send their text, and its cards, note and docs link come
- * from the community config, the link only when it is an https address.
+ * from the community config, the link only when it is an https address. The notebook is a
+ * tab of the dialog (#738): the header's Chat and Notebook tabs appear once the notebook
+ * has been opened and only for a capsule with one, the tab keeps the one frame (never moved)
+ * through switches and docking, open() and ask() show the chat, the tabs take arrow keys,
+ * and Tab cannot strand focus after the frame.
  *
  * What stands in: `fetch` (the community config, and a one-line chat reply that can be
  * held). Layout, the real Tab key and the contrast of the colors are
@@ -811,23 +815,249 @@ console.log('\nthe docs link: in the start footer and in Settings, https only, a
   assert(next.q('.osa-center-docs-link') === null && next.q('.osa-docs-link') === null, 'a fresh config that sets none takes the link away again');
 }
 
-console.log('\ncenter on the notebook tab goes to the chat, as open() and ask() do');
-{
-  const ctx = await start({ widget: { launcher: 'capsule', center_start: CENTER_START }, dataset: { id: A, title: TITLE, zarr: true } });
+// ---------------------------------------------------------------------------
+// The notebook as a tab of the dialog (#738)
+// ---------------------------------------------------------------------------
+
+// A capsule community's page on a dataset with a notebook, the window open in the corner
+// on the notebook tab, as a reader leaves it after pressing the notebook circle.
+const NOTEBOOK_DATASET = { id: A, title: TITLE, zarr: true };
+async function onNotebook(options = {}) {
+  const ctx = await start({ widget: { launcher: 'capsule', center_start: CENTER_START }, dataset: NOTEBOOK_DATASET, ...options });
   ctx.api.open();
   ctx.q('.osa-notebook-btn').click();
-  assert(ctx.container().classList.contains('osa-tab-notebook'), 'sanity: the window is on the notebook tab');
-  ctx.api.setMode('center');
-  assert(ctx.isCenter() && ctx.container().classList.contains('osa-tab-chat') && !ctx.container().classList.contains('osa-tab-notebook'),
-    'setMode("center") takes it to the chat tab');
-  assert(!ctx.q('.osa-center-start').hidden, 'so the dialog shows the chat\'s start screen, not the notebook');
+  ctx.tab = () => (ctx.container().classList.contains('osa-tab-notebook') ? 'notebook' : 'chat');
+  ctx.tabs = () => ctx.q('.osa-center-tabs');
+  ctx.frame = () => ctx.q('.osa-notebook-frame');
+  ctx.tabButton = (name) => ctx.q(`.osa-center-tab-${name}`);
+  return ctx;
+}
+
+console.log('\nthe dialog has no tabs until the notebook has been opened');
+{
+  const ctx = await start({ widget: { launcher: 'capsule', center_start: CENTER_START }, dataset: NOTEBOOK_DATASET });
+  ctx.api.open({ mode: 'center' });
+  assert(ctx.q('.osa-center-tabs').hidden && !ctx.win().classList.contains('osa-center-tabbed'), 'a chat-only dialog keeps the header it had: the tab row is hidden');
+  assert(ctx.api.__center.focusables(ctx.win()).every((el) => !el.classList.contains('osa-center-tab')), 'and neither tab is a stop');
+  assert(ctx.q('.osa-notebook-frame') === null, 'there is no notebook frame yet');
   ctx.api.setMode('corner');
   ctx.q('.osa-notebook-btn').click();
-  assert(ctx.container().classList.contains('osa-tab-notebook'), 'sanity: on the notebook again');
+  assert(ctx.q('.osa-center-tabs').hidden, 'the corner never shows them, on the notebook tab or not');
+  ctx.api.setMode('center');
+  assert(!ctx.q('.osa-center-tabs').hidden, 'raised once the notebook has been opened, the dialog shows them');
+  const tabs = ctx.q('.osa-center-tabs');
+  assertEqual([tabs.getAttribute('role'), tabs.getAttribute('aria-label')], ['tablist', 'Chat or notebook'], 'a tablist, named');
+  assertEqual([...tabs.querySelectorAll('[role="tab"]')].map((el) => text(el)), ['Chat', 'Notebook'], 'of the Chat and Notebook tabs');
+  assert([...tabs.querySelectorAll('button')].every((el) => el.type === 'button'), 'each a real button');
+  assertEqual(['chat', 'notebook'].map((n) => ctx.q(`.osa-center-tab-${n}`).getAttribute('aria-selected')), ['false', 'true'], 'aria-selected follows the open tab: Notebook');
+  assertEqual(['chat', 'notebook'].map((n) => ctx.q(`.osa-center-tab-${n}`).getAttribute('tabindex')), ['-1', '0'], 'with only the selected tab in the Tab order');
+  for (const name of ['chat', 'notebook']) {
+    const panel = ctx.q(`.osa-view-${name}`);
+    const tab = ctx.q(`.osa-center-tab-${name}`);
+    assert(panel.getAttribute('role') === 'tabpanel' && tab.getAttribute('aria-controls') === panel.id && panel.getAttribute('aria-labelledby') === tab.id,
+      `the ${name} view is the tab panel its tab controls and is named by`);
+  }
+  ctx.api.setMode('corner');
+  assert(ctx.q('.osa-view-chat').getAttribute('role') === null && ctx.q('.osa-view-notebook').getAttribute('role') === null, 'docked, the views are plain regions again');
+}
+
+console.log('\nthe tabs are for a capsule with a notebook: not a bubble, not a dataset without one, not the pop-out');
+{
+  const bubble = await start({ widget: { center_start: CENTER_START }, dataset: NOTEBOOK_DATASET });
+  bubble.api.open({ mode: 'center' });
+  assert(bubble.q('.osa-center-tabs').hidden && bubble.q('.osa-view') === null, 'a bubble widget has no tabs and no views, in the dialog too');
+  assert(bubble.api.__center.focusables(bubble.win()).length > 4, 'and its dialog is what it was');
+
+  const ctx = await onNotebook();
+  ctx.api.setMode('center');
+  assert(!ctx.q('.osa-center-tabs').hidden, 'set up: the dialog has its tabs');
+  ctx.api.setDataset({ id: A, title: TITLE, zarr: false });
+  assert(ctx.q('.osa-center-tabs').hidden && ctx.tab() === 'chat', 'a page with no Zarr copy takes them away, and the dialog to the chat');
+  ctx.api.setDataset(NOTEBOOK_DATASET);
+  assert(!ctx.q('.osa-center-tabs').hidden, 'and brings them back with the dataset that has one');
+
+  const popout = await load({ popout: true, widget: { launcher: 'capsule' }, dataset: NOTEBOOK_DATASET });
+  await popout.boot();
+  assert(popout.q('.osa-center-tabs').hidden && popout.q('.osa-tab-strip') !== null, 'the pop-out keeps its own tab strip, and has no dialog tabs');
+  popout.q('.osa-strip-notebook').click();
+  assert(popout.q('.osa-center-tabs').hidden && popout.container().classList.contains('osa-tab-notebook'), 'whichever tab it opens');
+}
+
+console.log('\nthe Notebook tab opens the notebook in the dialog: one frame, still modal');
+{
+  const ctx = await onNotebook();
+  const frame = ctx.frame();
+  assert(frame !== null && ctx.tab() === 'notebook', 'set up: the corner has opened the notebook');
+  ctx.api.setMode('center');
+  assert(ctx.isCenter() && ctx.tab() === 'notebook', 'setMode("center") on the notebook tab keeps the notebook');
+  assert(ctx.frame() === frame && ctx.qa('.osa-notebook-frame').length === 1, 'and the same frame');
+  assert(ctx.q('.osa-view-notebook').contains(frame) && ctx.win().contains(frame), 'which sits in the notebook view of the one window');
+  assert(ctx.win().getAttribute('role') === 'dialog' && ctx.win().getAttribute('aria-modal') === 'true', 'the dialog is modal');
+  assert(ctx.q('.osa-view-chat').hasAttribute('inert') && !ctx.q('.osa-view-notebook').hasAttribute('inert'), 'the chat view is inert, the notebook view is not');
+  assert(ctx.q('.osa-center-scrim').classList.contains('open') && ctx.document.getElementById('host-page').hasAttribute('inert'), 'the page behind is inert, under the scrim');
+  assert(active(ctx) === ctx.tabButton('notebook'), 'and focus is on the selected tab, not lost to the page');
+  assert(ctx.q('.osa-center-start').hidden && !ctx.win().classList.contains('osa-center-empty'), 'the chat\'s start screen is not what shows');
+
+  ctx.tabButton('chat').focus();
+  ctx.tabButton('chat').click();
+  assert(ctx.tab() === 'chat' && ctx.q('.osa-view-chat').hasAttribute('inert') === false && ctx.q('.osa-view-notebook').hasAttribute('inert'), 'the Chat tab opens the chat view and takes the notebook\'s out of play');
+  assert(ctx.frame() === frame && ctx.isCenter(), 'the same frame, and the same dialog');
+  assertEqual(['chat', 'notebook'].map((n) => ctx.tabButton(n).getAttribute('aria-selected')), ['true', 'false'], 'aria-selected follows');
+  assert(active(ctx) === ctx.tabButton('chat'), 'the tab the reader used keeps focus');
+  assert(!ctx.q('.osa-center-start').hidden, 'the start screen is back with the chat');
+  ctx.tabButton('notebook').click();
+  assert(ctx.tab() === 'notebook' && ctx.frame() === frame, 'the Notebook tab goes back, to the same frame');
+  assert(ctx.win().classList.contains('osa-center') && ctx.win().classList.contains('open'), 'with the dialog up');
+
+  // The frame is never moved: the same node, in the same place, through every switch and
+  // a dock, so the browser has no reason to reload it.
+  const parent = frame.parentElement;
+  const next = frame.nextSibling;
+  for (const step of [() => ctx.tabButton('chat').click(), () => ctx.tabButton('notebook').click(), () => ctx.api.setMode('corner'), () => ctx.api.setMode('center')]) {
+    step();
+    assert(ctx.frame() === frame && frame.parentElement === parent && frame.nextSibling === next, 'the frame has not moved');
+  }
+}
+
+console.log('\nthe header on the Notebook tab: Move to corner, Close and the tabs stay; the chat\'s buttons go');
+{
+  const ctx = await onNotebook({ widget: { launcher: 'capsule', center_start: CENTER_START } });
+  ctx.api.setMode('center');
+  const hiddenOn = (el) => ctx.window.getComputedStyle(el).visibility === 'hidden';
+  for (const selector of ['.osa-history-btn', '.osa-settings-btn-open', '.osa-center-notebook-btn']) {
+    assert(ctx.q(selector).closest('.osa-chat-header') !== null, `${selector} is a header button`);
+  }
+  assert(hiddenOn(ctx.q('.osa-history-btn')) && hiddenOn(ctx.q('.osa-settings-btn-open')), 'History and Settings are hidden on the notebook tab');
+  assert(!hiddenOn(ctx.q('.osa-center-dock-btn')) && !hiddenOn(ctx.q('.osa-close-btn')), 'Move to corner and Close are not');
+  const stops = ctx.api.__center.focusables(ctx.win());
+  for (const selector of ['.osa-center-dock-btn', '.osa-close-btn', '.osa-center-tab-notebook']) {
+    assert(stops.includes(ctx.q(selector)), `${selector} is a tab stop`);
+  }
+  for (const selector of ['.osa-history-btn', '.osa-settings-btn-open', '.osa-chat-input input', '.osa-center-input']) {
+    assert(!stops.includes(ctx.q(selector)), `${selector} is not`);
+  }
+  assert(stops.includes(ctx.frame()), 'and the notebook\'s frame is one');
+  assert(!stops.includes(ctx.q('.osa-nb-guard')), 'the focus guard after the frame is not counted as a control');
+  // A window that has not been asked before: happy-dom keeps the style it computed first.
+  const chat = await onNotebook();
+  chat.api.setMode('center');
+  chat.tabButton('chat').click();
+  const shownOn = (el) => chat.window.getComputedStyle(el).visibility !== 'hidden';
+  assert(shownOn(chat.q('.osa-history-btn')) && shownOn(chat.q('.osa-settings-btn-open')), 'on the chat tab, History and Settings are shown');
+}
+
+console.log('\nMove to corner and Escape keep the tab, the frame and the conversation');
+for (const how of ['Move to corner', 'Escape']) {
+  const ctx = await onNotebook();
+  ctx.api.setMode('center');
+  const frame = ctx.frame();
+  const heard = record(ctx);
+  if (how === 'Escape') ctx.document.dispatchEvent(key(ctx, 'Escape'));
+  else ctx.q('.osa-center-dock-btn').click();
+  assert(!ctx.isCenter() && ctx.isOpen() && ctx.tab() === 'notebook', `${how}: docked and open, on the notebook tab`);
+  assert(ctx.frame() === frame && ctx.q('.osa-view-notebook').contains(frame), `${how}: the same frame, in the same view`);
+  assertEqual(heard.events, [['modechange', { mode: 'corner' }]], `${how}: one modechange, no close`);
+  assert(ctx.q('.osa-center-tabs').hidden && ctx.document.getElementById('host-page').hasAttribute('inert') === false, `${how}: the corner has no tabs, and the page is live`);
+  assert(inWindow(ctx, active(ctx)), `${how}: focus is in the window, not on the page`);
+  ctx.api.setMode('center');
+  assert(ctx.tab() === 'notebook' && ctx.frame() === frame, `${how}: raised again, still the notebook, still the frame`);
+}
+
+console.log('\nopen() and ask() open on the chat, because they are about asking a question');
+{
+  const ctx = await onNotebook();
+  ctx.api.setMode('center');
+  assert(ctx.tab() === 'notebook', 'set up: the dialog is on the notebook tab');
+  ctx.api.open({ mode: 'center' });
+  assert(ctx.tab() === 'chat' && ctx.isCenter(), 'open() takes the dialog to the chat');
+  assert(ctx.frame() !== null && !ctx.q('.osa-center-tabs').hidden, 'the frame is kept, and so are the tabs');
+  ctx.tabButton('notebook').click();
   ctx.api.close();
   ctx.api.setMode('center');
   ctx.api.open();
-  assert(ctx.isCenter() && ctx.container().classList.contains('osa-tab-chat'), 'a dialog opened by open() is on the chat too');
+  assert(ctx.isCenter() && ctx.tab() === 'chat', 'a closed window opened by open() is on the chat too');
+  ctx.tabButton('notebook').click();
+  ctx.api.ask('Which channels are there?', { mode: 'center' });
+  await answered(ctx);
+  assert(ctx.tab() === 'chat' && ctx.isCenter(), 'ask() takes it to the chat, where the question and its answer are');
+  assert(ctx.qa('.osa-chat-messages .osa-message').some((m) => /Which channels are there\?/.test(m.textContent)), 'and the question is in the thread');
+}
+
+console.log('\nthe tabs by keyboard: arrows, Home and End move and open; only the selected tab is in the Tab order');
+{
+  const ctx = await onNotebook();
+  ctx.api.setMode('center');
+  const frame = ctx.frame();
+  ctx.tabButton('notebook').focus();
+  ctx.tabButton('notebook').dispatchEvent(key(ctx, 'ArrowLeft'));
+  assert(ctx.tab() === 'chat' && active(ctx) === ctx.tabButton('chat'), 'ArrowLeft goes to Chat, opens it and moves focus');
+  assertEqual(['chat', 'notebook'].map((n) => ctx.tabButton(n).getAttribute('tabindex')), ['0', '-1'], 'and the Tab order follows');
+  ctx.tabButton('chat').dispatchEvent(key(ctx, 'ArrowRight'));
+  assert(ctx.tab() === 'notebook' && active(ctx) === ctx.tabButton('notebook'), 'ArrowRight goes to Notebook');
+  ctx.tabButton('notebook').dispatchEvent(key(ctx, 'Home'));
+  assert(ctx.tab() === 'chat', 'Home is the first tab');
+  ctx.tabButton('chat').dispatchEvent(key(ctx, 'End'));
+  assert(ctx.tab() === 'notebook', 'End is the last');
+  const other = key(ctx, 'ArrowDown');
+  ctx.tabButton('notebook').dispatchEvent(other);
+  assert(!other.defaultPrevented && ctx.tab() === 'notebook', 'another key is left alone');
+  assert(ctx.frame() === frame, 'all of it with the one frame');
+}
+
+console.log('\nTab stays in the dialog on the notebook tab, and the frame cannot strand it');
+{
+  const ctx = await onNotebook();
+  ctx.api.setMode('center');
+  const stops = ctx.api.__center.focusables(ctx.win());
+  assert(stops.length >= 4 && stops.every((el) => inWindow(ctx, el) && !el.closest('[inert]')), `there are stops to cycle through, all in the dialog and none inert (${stops.length})`);
+  assert(stops[0] === ctx.tabButton('notebook'), 'the first is the selected tab');
+  assert(stops.at(-1) === ctx.frame(), 'the last is the notebook\'s frame');
+  const guard = ctx.q('.osa-nb-guard');
+  assert(guard.getAttribute('tabindex') === '0' && ctx.q('.osa-view-notebook').lastElementChild === guard, 'the guard is a tab stop, right after the frame\'s view content');
+  assert(!!ctx.frame().compareDocumentPosition(guard) && (ctx.frame().compareDocumentPosition(guard) & 4) === 4, 'after the frame in document order, so Tab out of the frame lands on it');
+  // Focus Tab carries out of the frame lands on the guard, which gives it back.
+  guard.focus();
+  assert(active(ctx) === stops[0] && inWindow(ctx, active(ctx)), 'focus that reaches the guard goes to the dialog\'s first stop, the tab');
+  // From the first stop Shift+Tab wraps to the last, the frame; from the frame's own
+  // element (focus never reaches the document\'s keydown from inside it), Tab is the browser's.
+  stops[0].focus();
+  const back = key(ctx, 'Tab', { shiftKey: true });
+  active(ctx).dispatchEvent(back);
+  assert(back.defaultPrevented && active(ctx) === stops.at(-1), 'Shift+Tab on the first stop goes to the frame, the last');
+  stops.at(-1).focus();
+  const forward = key(ctx, 'Tab');
+  ctx.document.dispatchEvent(forward);
+  assert(forward.defaultPrevented && active(ctx) === stops[0], 'Tab with focus on the frame element itself wraps to the first');
+  ctx.api.setMode('corner');
+  assert(ctx.q('.osa-nb-guard').getAttribute('tabindex') === '-1', 'in the corner the guard is no tab stop');
+  guard.focus();
+  assert(active(ctx) !== stops[0], 'and does nothing if it is reached');
+}
+
+console.log('\nEscape in the dialog\'s chrome on the notebook tab docks it, History and Settings aside');
+{
+  const ctx = await onNotebook();
+  ctx.api.setMode('center');
+  ctx.q('.osa-center-dock-btn').focus();
+  const esc = key(ctx, 'Escape');
+  active(ctx).dispatchEvent(esc);
+  assert(esc.defaultPrevented && !ctx.isCenter() && ctx.tab() === 'notebook', 'Escape with focus on a header control docks it, keeping the notebook');
+  assert(inWindow(ctx, active(ctx)), 'focus is in the window');
+}
+
+console.log('\nContinue in notebook and a host import take focus with them');
+{
+  const ctx = await onNotebook();
+  ctx.api.setMode('center');
+  ctx.tabButton('chat').click();
+  ctx.q('.osa-history-btn').focus();
+  ctx.tabButton('notebook').click();
+  assert(active(ctx) === ctx.tabButton('notebook'), 'a switch that hides the focused control puts focus on the selected tab');
+  ctx.tabButton('chat').click();
+  ctx.q('.osa-chat-input input').focus();
+  ctx.api.setDataset(NOTEBOOK_DATASET);
+  ctx.tabButton('notebook').click();
+  assert(inWindow(ctx, active(ctx)) && active(ctx) !== ctx.document.body, 'and so does a switch from the chat\'s input');
 }
 
 console.log('\nask() keeps what the reader had typed and not sent');
