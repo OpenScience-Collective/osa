@@ -1210,7 +1210,7 @@ OSAChatWidget.close();
 | `close()` | Closes the window, as the Close button does. |
 | `ask(text, {mode}?)` | Opens the window (in `mode` if given), then sends `text` through the same path as a typed question: it is in the saved conversation and History, the page-context reset of [A context change starts a new chat](#a-context-change-starts-a-new-chat) applies, and the browser runtime is preloaded as for any first message. `text` must be a non-empty string; a reply that is still loading refuses it. What the reader had typed in the chat's input and not sent is theirs: it stays there (and in the start screen's field) after `ask`. |
 | `seed(text, {mode}?)` | Opens the window (in `mode` if given) with `text` as the assistant's first message, and sends nothing; see [seed](#seed) below. |
-| `setMode(mode)` | `'center'` makes the window the dialog; `'corner'` docks it. On a closed window the mode is kept for the next open. The dialog is the chat's: a capsule community's window that is on the notebook tab is taken to the chat tab when it becomes the dialog, and the dialog docks to the corner (with a `modechange` event) when the notebook tab is opened from it, for example by the **Continue in notebook** or **Open notebook** button under a reply. |
+| `setMode(mode)` | `'center'` makes the window the dialog; `'corner'` docks it. On a closed window the mode is kept for the next open. A capsule community's window that is on the notebook tab keeps it when it becomes the dialog (and when it docks), and **Continue in notebook** or **Open notebook**, under a reply or in the header, open the notebook as a tab of the dialog rather than docking it; see "The Notebook tab in the dialog" below. `open()`, `ask()` and `seed()` always show the chat tab, because they are about asking a question. |
 | `on(event, handler)` | Listens for an event, below, and returns a function that stops listening. |
 
 - **Before `init()`.**
@@ -1252,7 +1252,7 @@ Center is the same `.osa-chat-window`, with an `osa-center` class and a scrim be
   The host page's other top-level elements and the launcher are `inert`, and the page does not scroll, until the dialog is closed or docked.
   Tab and Shift+Tab stay inside the dialog (or inside Settings or History when one is on top of it).
 - **Escape.**
-  It closes what is on top first: the History sheet, then Settings or the feedback panel, and then docks the dialog.
+  It closes what is on top first: the History sheet, then Settings or the feedback panel, and then docks the dialog (on the Notebook tab too, keeping the tab).
   The **Move to corner** button does the same as the last step.
 - **Focus.**
   Focus moves into the dialog on open, and **Close** (or `close()`) gives it back to the element that had it before the window opened, or to the launcher when there was none.
@@ -1262,7 +1262,14 @@ Center is the same `.osa-chat-window`, with an `osa-center` class and a scrim be
   A title that is not one is dropped alone, with a `console.warn`, and the id is shown without it.
 - **Continue in notebook.**
   A header button (`osa-center-notebook-btn`) that appears only in the dialog and only where the card under the reply offers it: the community has a notebook tab, the page is the chat's dataset and its notebook is available, and a run in the chat has succeeded.
-  It takes the same path as the card's button (`runNotebookImport`), is disabled with `aria-busy` while the import runs or a reply loads, and, as for the card, opening the notebook docks the dialog (with a `modechange` event).
+  It takes the same path as the card's button (`runNotebookImport`), is disabled with `aria-busy` while the import runs or a reply loads, and, as for the card, opening the notebook opens the Notebook tab of the dialog (below); the dialog does not dock and there is no `modechange` event.
+- **The Notebook tab in the dialog.**
+  A capsule community's dialog has a second view, the same notebook the corner shows, in the same window and the same `<iframe>`; the dialog is the corner window with a class, so the frame is never moved or reloaded, and switching tabs or docking keeps the reader's Python session and edits.
+  The header gets two tabs, **Chat** and **Notebook** (`role="tablist"`, `aria-selected`, arrow keys, Home and End, only the selected tab in the Tab order), from the first time the notebook is opened in the page session while a notebook is available; a dialog that has only been used for chat keeps the header above, and the corner never shows them.
+  On the Notebook tab History, Settings and **Continue in notebook** are hidden (they are the chat's), **Move to corner** and Close stay, and moving to the corner, with the button or with Escape, keeps the tab: the capsule shows the notebook.
+  Raising the dialog from a corner window that is on the notebook keeps it too.
+  The tab switch fades the two views over each other in 60 ms, with nothing at all under `prefers-reduced-motion`; at 1100 px and under the tabs take a row of their own under the pill and the buttons.
+  Tab and Shift+Tab stay in the dialog with focus inside the notebook's frame: its keys never reach the page, so a focus guard (`.osa-nb-guard`) after the frame takes the focus Tab carries out of it and gives it to the dialog's first stop, the selected tab, with Move to corner and Close next.
 - **The plan rail.**
   A plan the conversation holds shows as a rail beside the thread; see [The plan card and step progress](#the-plan-card-and-step-progress).
 - **Narrow screens.**
