@@ -1264,12 +1264,16 @@ Center is the same `.osa-chat-window`, with an `osa-center` class and a scrim be
   A header button (`osa-center-notebook-btn`) that appears only in the dialog and only where the card under the reply offers it: the community has a notebook tab, the page is the chat's dataset and its notebook is available, and a run in the chat has succeeded.
   It takes the same path as the card's button (`runNotebookImport`), is disabled with `aria-busy` while the import runs or a reply loads, and, as for the card, opening the notebook opens the Notebook tab of the dialog (below); the dialog does not dock and there is no `modechange` event.
 - **The Notebook tab in the dialog.**
-  A capsule community's dialog has a second view, the same notebook the corner shows, in the same window and the same `<iframe>`; the dialog is the corner window with a class, so the frame is never moved or reloaded, and switching tabs or docking keeps the reader's Python session and edits.
+  A capsule community's dialog has a second view, the same notebook the corner shows, in the same window and the same `<iframe>`; the dialog is the corner window with a class, so the frame is not moved or reloaded by tab switches, docking or mode changes, and those keep the reader's Python session and edits (only Try again, or a change of dataset, replaces the frame).
   The header gets two tabs, **Chat** and **Notebook** (`role="tablist"`, `aria-selected`, arrow keys, Home and End, only the selected tab in the Tab order), from the first time the notebook is opened in the page session while a notebook is available; a dialog that has only been used for chat keeps the header above, and the corner never shows them.
   On the Notebook tab History, Settings and **Continue in notebook** are hidden (they are the chat's), **Move to corner** and Close stay, and moving to the corner, with the button or with Escape, keeps the tab: the capsule shows the notebook.
   Raising the dialog from a corner window that is on the notebook keeps it too.
   The tab switch fades the two views over each other in 60 ms, with nothing at all under `prefers-reduced-motion`; at 1100 px and under the tabs take a row of their own under the pill and the buttons.
-  Tab and Shift+Tab stay in the dialog with focus inside the notebook's frame: its keys never reach the page, so a focus guard (`.osa-nb-guard`) after the frame takes the focus Tab carries out of it and gives it to the dialog's first stop, the selected tab, with Move to corner and Close next.
+  Tabbing inside the notebook's frame is the frame's own (its keys never reach the page, so the dialog cannot trap them there, and Escape inside it is the notebook's).
+  What the dialog guarantees is the way out: a focus guard (`.osa-nb-guard`) after the frame catches the focus when Tab leaves the frame's last stop and gives it to the dialog's first stop, the selected tab, with Move to corner and Close next, so focus never reaches the browser's controls behind the inert page.
+  A frame that swallows Tab itself (an editor) is the follow-up in #740.
+  A reply that ends while the Notebook tab is open puts a dot on the Chat tab (its name gains "new reply") and is announced by a live region in the header, since the chat's own live regions are in the inert chat view.
+  The header's labels become icons only at 900 px and under, so no control is clipped at any width.
 - **The plan rail.**
   A plan the conversation holds shows as a rail beside the thread; see [The plan card and step progress](#the-plan-card-and-step-progress).
 - **Narrow screens.**
