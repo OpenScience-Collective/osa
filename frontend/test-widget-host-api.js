@@ -873,6 +873,12 @@ console.log('\nthe tabs are for a capsule with a notebook: not a bubble, not a d
   assert(!ctx.q('.osa-center-tabs').hidden, 'set up: the dialog has its tabs');
   ctx.api.setDataset({ id: A, title: TITLE, zarr: false });
   assert(ctx.q('.osa-center-tabs').hidden && ctx.tab() === 'chat', 'a page with no Zarr copy takes them away, and the dialog to the chat');
+  assert(inWindow(ctx, active(ctx)) && active(ctx) !== ctx.q('.osa-center-tab-notebook'), 'focus is in the dialog, not on the tab that went');
+  ctx.api.setDataset(NOTEBOOK_DATASET);
+  ctx.tabButton('chat').focus();
+  ctx.api.setDataset({ id: A, title: TITLE, zarr: false });
+  assert(ctx.q('.osa-center-tabs').hidden && inWindow(ctx, active(ctx)) && !ctx.q('.osa-center-tabs').contains(active(ctx)),
+    'and from the Chat tab too: focus leaves the tab row that is hidden');
   ctx.api.setDataset(NOTEBOOK_DATASET);
   assert(!ctx.q('.osa-center-tabs').hidden, 'and brings them back with the dataset that has one');
 
@@ -881,6 +887,7 @@ console.log('\nthe tabs are for a capsule with a notebook: not a bubble, not a d
   assert(popout.q('.osa-center-tabs').hidden && popout.q('.osa-tab-strip') !== null, 'the pop-out keeps its own tab strip, and has no dialog tabs');
   popout.q('.osa-strip-notebook').click();
   assert(popout.q('.osa-center-tabs').hidden && popout.container().classList.contains('osa-tab-notebook'), 'whichever tab it opens');
+  assert(popout.q('.osa-nb-guard').getAttribute('tabindex') === '-1', 'and its focus guard is no tab stop');
 }
 
 console.log('\nthe Notebook tab opens the notebook in the dialog: one frame, still modal');
@@ -1043,6 +1050,21 @@ console.log('\nEscape in the dialog\'s chrome on the notebook tab docks it, Hist
   active(ctx).dispatchEvent(esc);
   assert(esc.defaultPrevented && !ctx.isCenter() && ctx.tab() === 'notebook', 'Escape with focus on a header control docks it, keeping the notebook');
   assert(inWindow(ctx, active(ctx)), 'focus is in the window');
+}
+
+console.log('\nopening the notebook closes what was laid over the chat, and Try again keeps focus in the dialog');
+{
+  const ctx = await onNotebook();
+  ctx.api.setMode('center');
+  ctx.tabButton('chat').click();
+  ctx.q('.osa-settings-btn-open').click();
+  assert(ctx.q('.osa-settings-overlay.open') !== null, 'set up: Settings is open over the chat');
+  ctx.tabButton('notebook').click();
+  assert(ctx.q('.osa-settings-overlay.open') === null, 'the notebook tab closes it');
+  assert(ctx.api.__center.focusables(ctx.win()).every((el) => !ctx.q('.osa-settings-overlay').contains(el)), 'so the Tab trap is the dialog\'s');
+  ctx.q('.osa-notebook-retry').focus();
+  ctx.q('.osa-notebook-retry').click();
+  assert(inWindow(ctx, active(ctx)) && active(ctx) === ctx.tabButton('notebook'), 'Try again puts focus on the selected tab, not on the inert page');
 }
 
 console.log('\nContinue in notebook and a host import take focus with them');

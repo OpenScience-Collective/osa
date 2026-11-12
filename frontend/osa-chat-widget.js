@@ -6169,7 +6169,7 @@
       flex: none;
     }
 
-    .osa-center-tab:hover {
+    .osa-center-tab:not([aria-selected="true"]):hover {
       background: var(--osa-assistant-bg);
     }
 
@@ -6764,7 +6764,14 @@
     if (tab === 'notebook' && !isNotebookAvailable()) tab = 'chat';
     if (tab === 'notebook') notebookTabSeen = true;
     activeTab = tab;
-    if (tab === 'notebook') closeHistory(container, { restoreFocus: false });
+    if (tab === 'notebook') {
+      // Nothing laid over the chat stays over the notebook: in the dialog the Tab trap is
+      // scoped to the topmost overlay, which would keep the reader out of the notebook.
+      closeHistory(container, { restoreFocus: false });
+      closeSettings(container);
+      closeFeedback(container);
+      closePrivacy(container, { restoreFocus: false });
+    }
     container.classList.toggle('osa-tab-notebook', tab === 'notebook');
     container.classList.toggle('osa-tab-chat', tab === 'chat');
     for (const [name, on] of [['chat', tab === 'chat'], ['notebook', tab === 'notebook']]) {
@@ -7561,6 +7568,9 @@
       discardNotebookFrame();
       ensureNotebookFrame(container);
       renderLauncherIcons(container);
+      // The fallback, and Try again with it, is gone: in the dialog focus goes to the
+      // selected tab rather than to the inert page.
+      if (hostMode === 'center') focusActiveView(container);
     });
     return view;
   }
@@ -18018,7 +18028,10 @@
   function rescueCenterFocus(container) {
     if (hostMode !== 'center' || !isOpen) return;
     const active = document.activeElement;
-    const nowhere = !active || active === document.body || active === document.documentElement;
+    // The window itself counts as nowhere: syncCenterStart parks focus there when the
+    // start screen's field leaves with its view.
+    const nowhere = !active || active === document.body || active === document.documentElement ||
+      active === container.querySelector('.osa-chat-window');
     const gone = !nowhere && container.contains(active) && (
       !!active.closest('[inert]') ||
       (activeTab === 'notebook' && active.matches('.osa-history-btn, .osa-settings-btn-open, .osa-reset-btn, .osa-center-notebook-btn')));
@@ -18063,6 +18076,9 @@
     // there is the guard that catches it a stop; in the corner it would be a stray one.
     const guard = container.querySelector('.osa-nb-guard');
     if (guard) guard.tabIndex = hostMode === 'center' ? 0 : -1;
+    // A tab row that goes away (the page left a dataset with a notebook) must not take
+    // the focus with it, into an inert page.
+    if (!show && isOpen && tabs.contains(document.activeElement)) focusActiveView(container);
   }
 
   function bindCenterTabs(container) {
