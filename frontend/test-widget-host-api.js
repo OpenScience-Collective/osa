@@ -1062,9 +1062,66 @@ console.log('\nopening the notebook closes what was laid over the chat, and Try 
   ctx.tabButton('notebook').click();
   assert(ctx.q('.osa-settings-overlay.open') === null, 'the notebook tab closes it');
   assert(ctx.api.__center.focusables(ctx.win()).every((el) => !ctx.q('.osa-settings-overlay').contains(el)), 'so the Tab trap is the dialog\'s');
+  // Focus inside a panel that the switch closes goes to the selected tab, not to nothing.
+  ctx.tabButton('chat').click();
+  ctx.q('.osa-settings-btn-open').click();
+  ctx.q('.osa-settings-select').focus();
+  assert(inWindow(ctx, active(ctx)) && ctx.q('.osa-settings-overlay').contains(active(ctx)), 'set up: focus is inside Settings');
+  ctx.tabButton('notebook').click();
+  assert(active(ctx) === ctx.tabButton('notebook'), 'focus inside the panel that closed goes to the selected tab');
   ctx.q('.osa-notebook-retry').focus();
   ctx.q('.osa-notebook-retry').click();
   assert(inWindow(ctx, active(ctx)) && active(ctx) === ctx.tabButton('notebook'), 'Try again puts focus on the selected tab, not on the inert page');
+}
+
+console.log('\nin the corner and the pop-out the notebook tab leaves Settings and the feedback panel as they were');
+{
+  const ctx = await onNotebook();
+  ctx.q('.osa-launcher-capsule .osa-chat-button').click();
+  assert(ctx.tab() === 'chat' && !ctx.isCenter(), 'set up: the corner window is on the chat');
+  ctx.q('.osa-settings-btn-open').click();
+  assert(ctx.q('.osa-settings-overlay.open') !== null, 'set up: Settings is open');
+  ctx.q('.osa-notebook-btn').click();
+  assert(ctx.tab() === 'notebook' && ctx.q('.osa-settings-overlay.open') !== null, 'corner: the notebook circle opens the notebook and Settings stays open');
+  ctx.q('.osa-launcher-capsule .osa-chat-button').click();
+  ctx.q('.osa-feedback-link').click();
+  const feedback = ctx.q('.osa-feedback-overlay.open');
+  assert(feedback !== null, 'set up: the feedback panel is open');
+  ctx.q('.osa-notebook-btn').click();
+  assert(ctx.tab() === 'notebook' && ctx.q('.osa-feedback-overlay.open') !== null, 'corner: and so does the feedback panel');
+
+  const popout = await load({ popout: true, widget: { launcher: 'capsule' }, dataset: NOTEBOOK_DATASET });
+  await popout.boot();
+  popout.q('.osa-settings-btn-open').click();
+  assert(popout.q('.osa-settings-overlay.open') !== null, 'set up: the pop-out has Settings open');
+  popout.q('.osa-strip-notebook').click();
+  assert(popout.container().classList.contains('osa-tab-notebook') && popout.q('.osa-settings-overlay.open') !== null, 'pop-out: the notebook tab opens and Settings stays open');
+}
+
+console.log('\na reply that ends on the Notebook tab is said and shown, and clears when the chat is opened');
+{
+  const ctx = await onNotebook();
+  ctx.api.setMode('center');
+  ctx.tabButton('chat').click();
+  const release = ctx.hold();
+  ctx.q('.osa-chat-input input').value = 'A question';
+  ctx.q('.osa-send-btn').click();
+  ctx.tabButton('notebook').click();
+  const unread = () => ctx.tabButton('chat').classList.contains('osa-tab-unread');
+  assert(!unread(), 'set up: no cue before the reply ends');
+  release();
+  await waitUntil(() => unread(), 'the reply ends on the Notebook tab');
+  assert(unread() && text(ctx.tabButton('chat')) === 'Chat (new reply)', 'the Chat tab has the cue and says "new reply" in its name');
+  const announcer = ctx.q('.osa-tab-announcer');
+  await waitUntil(() => /replied/.test(announcer.textContent), 'the announcement');
+  assertEqual([announcer.getAttribute('role'), announcer.getAttribute('aria-live')], ['status', 'polite'], 'a polite live region');
+  assert(announcer.closest('.osa-view') === null && announcer.closest('[inert]') === null, 'outside the views, so the inert chat view does not silence it');
+  ctx.tabButton('chat').click();
+  assert(!unread() && text(ctx.tabButton('chat')) === 'Chat' && announcer.textContent === '', 'opening the chat clears the cue and the announcement');
+  ctx.q('.osa-chat-input input').value = 'Another';
+  ctx.q('.osa-send-btn').click();
+  await answered(ctx, 2);
+  assert(!unread(), 'a reply that ends while the chat is open leaves no cue');
 }
 
 console.log('\nContinue in notebook and a host import take focus with them');

@@ -702,9 +702,9 @@ console.log('\nthe click goes the card\'s way: the same import, a busy button, a
   assert(page.container.classList.contains('osa-tab-notebook') && page.q('.osa-chat-window').classList.contains('osa-center'), 'the notebook tab opened, in the dialog');
   assert(card.length === 0 || card.every((c) => c.disabled), 'and the card\'s own button, if drawn, is waiting too');
 
-  // Back on the chat tab with the import in flight: the button is busy, and a click does nothing.
+  // Back on the chat tab (its tab clicked) with the import in flight: the button is busy, and a click does nothing.
   page.q('.osa-center-tab-chat').dispatchEvent(new page.window.Event('click', { bubbles: true }));
-  assert(page.shown() && page.header().disabled && page.header().getAttribute('aria-busy') === 'true', 'raised mid-import: the button is disabled with aria-busy');
+  assert(page.shown() && page.header().disabled && page.header().getAttribute('aria-busy') === 'true', 'back on the chat tab mid-import: the button is disabled with aria-busy');
   click(page, page.header());
   assertEqual(page.imports().length, 1, 'a click while it waits imports nothing more');
   page.say({ type: 'result', requestId: sent.message.requestId, ok: true, path: `nemar/${DATASET} · Count the onsets.ipynb` });

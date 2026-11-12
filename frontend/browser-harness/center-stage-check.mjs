@@ -41,6 +41,11 @@
  * Escape keep the tab and the one frame (the same element, loaded once), and the tab
  * switch's fade is a few tens of milliseconds and none under prefers-reduced-motion.
  *
+ * The header holds all of its controls at every width: a sweep from 360 to 1440 px (every
+ * 40 px, and 601, 700, 768, 800, 1000, 1100 and 1101) of the chat-only dialog with
+ * Continue in notebook showing and of the tabbed one on both tabs asserts no horizontal
+ * overflow, Close and Move to corner inside the dialog, and no label broken in two.
+ *
  * It stands up its own servers, so it needs no backend and no network. Screenshots are
  * written when a directory is given, as the argument or as CENTER_CHECK_SCREENSHOTS
  * (CI sets it, and uploads them when the check fails).
@@ -1151,6 +1156,81 @@ async function checkNotebookTab(cdp, base, screenshotDir, viewport, site) {
   await cdp.send('Target.closeTarget', { targetId: page.targetId });
 }
 
+// ------------------------------------------------------------------ the header at every width
+
+// Whether the dialog's header holds all of its controls: no horizontal overflow, nothing
+// outside the dialog's edges (Close and Move to corner above all), and no label broken
+// onto a second line.
+const HEADER_FIT = `(() => {
+  const win = document.querySelector('.osa-chat-window');
+  const header = document.querySelector('.osa-chat-header');
+  const edge = win.getBoundingClientRect();
+  const shown = [...header.querySelectorAll('.osa-center-pill, .osa-center-tabs, .osa-header-btn')]
+    .filter((el) => getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0);
+  const outside = shown.filter((el) => {
+    const r = el.getBoundingClientRect();
+    return r.left < edge.left - 0.5 || r.right > edge.right + 0.5;
+  }).map((el) => el.className.toString().split(' ').find((c) => c.startsWith('osa-')));
+  const inside = (selector) => {
+    const el = document.querySelector(selector);
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.left >= edge.left - 0.5 && r.right <= edge.right + 0.5;
+  };
+  return {
+    width: edge.width,
+    overflow: header.scrollWidth > header.clientWidth + 1,
+    outside,
+    close: inside('.osa-close-btn'),
+    dock: inside('.osa-center-dock-btn'),
+    wrapped: [...header.querySelectorAll('.osa-center-label')].filter((l) => getComputedStyle(l).display !== 'none').some((l) => l.getBoundingClientRect().height > 20),
+    continueShown: !document.querySelector('.osa-center-notebook-btn').hidden,
+    tabs: !document.querySelector('.osa-center-tabs').hidden,
+  };
+})()`;
+
+const SWEEP_WIDTHS = (() => {
+  const widths = new Set([601, 700, 768, 800, 1000, 1100, 1101]);
+  for (let w = 360; w <= 1440; w += 40) widths.add(w);
+  return [...widths].sort((a, b) => a - b);
+})();
+
+async function sweepHeader(cdp, sessionId, state) {
+  const call = (expression, options) => evaluate(cdp, sessionId, expression, options);
+  const bad = [];
+  for (const width of SWEEP_WIDTHS) {
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false }, sessionId);
+    await Bun.sleep(60);
+    const fit = await call(HEADER_FIT);
+    if (fit.overflow || fit.outside.length || !fit.close || !fit.dock || fit.wrapped) bad.push({ width, ...fit });
+  }
+  report(bad.length === 0, `header sweep, ${state}: at ${SWEEP_WIDTHS.length} widths from 360 to 1440 nothing overflows, Close and Move to corner are inside the dialog, no label wraps`, bad.slice(0, 3));
+}
+
+async function checkHeaderSweep(cdp, base, site) {
+  console.log('--- header sweep: every width from 360 to 1440');
+  const notebookBase = `http://127.0.0.1:${site.server.port}/`;
+  const page = await openPage(cdp, base, { name: 'sweep', width: 1280, height: 900 }, `/plan?launcher=capsule&notebook=${encodeURIComponent(notebookBase)}`);
+  const { sessionId } = page;
+  const call = (expression, options) => evaluate(cdp, sessionId, expression, options);
+  report(await call(WIDGET_READY), 'header sweep: the widget has its community config');
+  await call(`OSAChatWidget.open({ mode: 'center' })`, { userGesture: true });
+  report(
+    await waitFor(cdp, sessionId, `document.querySelector('.osa-chat-window.open.osa-center') !== null && OSAChatWidget.__browser.getBrowserTools() !== null && document.querySelector('.osa-chat-messages .osa-run-card') !== null`, 'the dialog'),
+    'header sweep: the dialog opens on the stored conversation'
+  );
+  const chatOnly = await call(HEADER_FIT);
+  report(chatOnly.continueShown && !chatOnly.tabs, 'header sweep: set up: a chat-only dialog with Continue in notebook showing', chatOnly);
+  await sweepHeader(cdp, sessionId, 'chat-only dialog with Continue in notebook');
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }, sessionId);
+  await call(`document.querySelector('.osa-center-notebook-btn').click()`, { userGesture: true });
+  report(await waitFor(cdp, sessionId, `document.querySelector('.osa-chat-widget').classList.contains('osa-tab-notebook') && !document.querySelector('.osa-center-tabs').hidden`, 'the tabs'), 'header sweep: the notebook opens and the tabs appear');
+  await sweepHeader(cdp, sessionId, 'tabbed dialog on the Notebook tab');
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }, sessionId);
+  await call(`document.querySelector('.osa-center-tab-chat').click()`, { userGesture: true });
+  await sweepHeader(cdp, sessionId, 'tabbed dialog on the Chat tab, with History and Continue in notebook showing');
+  await cdp.send('Target.closeTarget', { targetId: page.targetId });
+}
+
 async function check(screenshotDir) {
   const chromePath = findChrome();
   if (!chromePath) {
@@ -1194,6 +1274,7 @@ async function check(screenshotDir) {
     // The notebook as a tab of the dialog (#738), on a capsule widget.
     await checkNotebookTab(cdp, base, screenshotDir, { name: 'laptop', width: 1280, height: 900 }, notebookSite);
     await checkNotebookTab(cdp, base, screenshotDir, { name: 'phone', width: 390, height: 844 }, notebookSite);
+    await checkHeaderSweep(cdp, base, notebookSite);
   } finally {
     try { cdp?.close?.(); } catch (error) { /* already gone */ }
     chrome?.kill();

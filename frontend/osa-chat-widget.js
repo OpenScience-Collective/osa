@@ -5746,7 +5746,7 @@
 
     .osa-chat-window.osa-center .osa-center-context {
       display: block;
-      flex: 1 1 auto;
+      flex: 1 1 0;
       min-width: 0;
       font-size: 13px;
       color: var(--osa-text-light);
@@ -6169,8 +6169,10 @@
       flex: none;
     }
 
+    /* A lighter fill than the open tab's, so an unselected tab under the pointer does not
+       read as the selected one; the label stays in the text color on either. */
     .osa-center-tab:not([aria-selected="true"]):hover {
-      background: var(--osa-assistant-bg);
+      background: color-mix(in srgb, var(--osa-assistant-bg) 50%, transparent);
     }
 
     /* The open tab: filled, bold and with its icon in the accent. The label stays in the
@@ -6183,6 +6185,21 @@
 
     .osa-center-tab[aria-selected="true"] svg {
       color: var(--osa-accent);
+    }
+
+    /* A reply that came while the reader was on the Notebook tab: a small dot on the Chat
+       tab, in the accent as the open tab's icon, until the chat is opened. */
+    .osa-center-tab-cue {
+      display: none;
+      flex: none;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--osa-accent);
+    }
+
+    .osa-center-tab.osa-tab-unread .osa-center-tab-cue {
+      display: block;
     }
 
     .osa-center-tab:focus-visible {
@@ -6237,10 +6254,28 @@
       outline: none;
     }
 
-    /* The dialog's header with its tabs on a narrow window: the tabs take a row of their
-       own under the pill and the buttons, and share it. Below 1100px the dialog is under
-       about 940px wide, which is where the row of pill, tabs, History, Continue in
-       notebook, Move to corner, Settings and Close stops fitting. */
+    /* The header's buttons never shrink or wrap (the dataset line is what gives way, with
+       an ellipsis), so they must fit the dialog on their own. Measured in Chrome with
+       Continue in notebook showing: pill, History, Continue in notebook, Move to corner,
+       Settings and Close with their labels need about 700px, and the dialog is the
+       viewport less 160px, so below 900px (a dialog of 740px, with room to spare) they
+       keep their icons only, as they do on a phone. */
+    @media (max-width: 900px) {
+      .osa-chat-window.osa-center .osa-center-label {
+        display: none;
+      }
+
+      .osa-chat-window.osa-center .osa-history-btn,
+      .osa-chat-window.osa-center .osa-center-dock-btn,
+      .osa-chat-window.osa-center .osa-center-notebook-btn:not([hidden]) {
+        padding: 0;
+      }
+    }
+
+    /* The dialog's header with its tabs: the tabs share the pill's row while the row has
+       room for them (the labelled buttons, the pill and the tab pair need about 890px, a
+       dialog of a viewport of 1050px), and take a row of their own, shared between
+       them, from 1100px down. */
     @media (max-width: 1100px) {
       .osa-chat-window.osa-center.osa-center-tabbed .osa-chat-header {
         flex-wrap: wrap;
@@ -6249,11 +6284,6 @@
       .osa-chat-window.osa-center.osa-center-tabbed .osa-center-tabs:not([hidden]) {
         order: 10;
         flex: 1 0 100%;
-      }
-
-      /* The dataset line gives way (ellipsis) rather than wrapping to a row of its own. */
-      .osa-chat-window.osa-center.osa-center-tabbed .osa-center-context {
-        flex: 1 1 0;
       }
     }
 
@@ -6765,13 +6795,18 @@
     if (tab === 'notebook') notebookTabSeen = true;
     activeTab = tab;
     if (tab === 'notebook') {
-      // Nothing laid over the chat stays over the notebook: in the dialog the Tab trap is
-      // scoped to the topmost overlay, which would keep the reader out of the notebook.
       closeHistory(container, { restoreFocus: false });
-      closeSettings(container);
-      closeFeedback(container);
-      closePrivacy(container, { restoreFocus: false });
+      // In the dialog nothing laid over the chat stays over the notebook: the Tab trap is
+      // scoped to the topmost overlay, which would keep the reader out of the notebook.
+      // In the corner and the pop-out a panel is the reader's (an API key being typed, a
+      // comment being written), and a host import or a notebook button does not take it.
+      if (hostMode === 'center') {
+        closeSettings(container);
+        closeFeedback(container);
+        closePrivacy(container, { restoreFocus: false });
+      }
     }
+    if (tab === 'chat') clearUnreadReply(container);
     container.classList.toggle('osa-tab-notebook', tab === 'notebook');
     container.classList.toggle('osa-tab-chat', tab === 'chat');
     for (const [name, on] of [['chat', tab === 'chat'], ['notebook', tab === 'notebook']]) {
@@ -14691,10 +14726,11 @@
         <div class="osa-chat-header">
           <span class="osa-center-pill">${ICONS.sparkle}AI Mode</span>
           <div class="osa-center-tabs" role="tablist" aria-label="Chat or notebook" hidden>
-            <button type="button" role="tab" class="osa-center-tab osa-center-tab-chat" id="osa-center-tab-chat" aria-selected="true" tabindex="0">${ICONS.chat}<span>Chat</span></button>
+            <button type="button" role="tab" class="osa-center-tab osa-center-tab-chat" id="osa-center-tab-chat" aria-selected="true" tabindex="0">${ICONS.chat}<span>Chat</span><span class="osa-center-tab-cue" aria-hidden="true"></span><span class="osa-sr-only osa-center-tab-unread"></span></button>
             <button type="button" role="tab" class="osa-center-tab osa-center-tab-notebook" id="osa-center-tab-notebook" aria-selected="false" tabindex="-1">${ICONS.notebook}<span>Notebook</span></button>
           </div>
           <div class="osa-center-context"></div>
+          <div class="osa-tab-announcer osa-sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
           <div class="osa-chat-avatar">${ICONS.brain}</div>
           <div class="osa-chat-title-area">
             <h3 class="osa-chat-title">
@@ -17115,6 +17151,7 @@
       // The box was emptied when the question was sent and nothing has been typed since
       // (it was disabled), so the question goes back as it was written.
       if (questionRemoved && !input.value) input.value = question;
+      if (!questionRemoved) noteUnreadReply(container);
       // With the question back in the box, a reader who has seen no reply can send it again
       // on another model. One who has seen part of a reply keeps that conversation as it is.
       if (suggestion && questionRemoved) addModelSuggestion(container, suggestion, question);
@@ -18032,8 +18069,9 @@
     // start screen's field leaves with its view.
     const nowhere = !active || active === document.body || active === document.documentElement ||
       active === container.querySelector('.osa-chat-window');
+    const win = container.querySelector('.osa-chat-window');
     const gone = !nowhere && container.contains(active) && (
-      !!active.closest('[inert]') ||
+      !!active.closest('[inert]') || !isShown(active, win, new Map()) ||
       (activeTab === 'notebook' && active.matches('.osa-history-btn, .osa-settings-btn-open, .osa-reset-btn, .osa-center-notebook-btn')));
     if (nowhere || gone) focusActiveView(container);
   }
@@ -18074,11 +18112,41 @@
     }
     // Tab can carry focus out of the notebook's frame only in the dialog, and only
     // there is the guard that catches it a stop; in the corner it would be a stray one.
+    const chatTab = tabs.querySelector('.osa-center-tab-chat');
+    chatTab.classList.toggle('osa-tab-unread', chatUnread);
+    chatTab.querySelector('.osa-center-tab-unread').textContent = chatUnread ? ' (new reply)' : '';
     const guard = container.querySelector('.osa-nb-guard');
     if (guard) guard.tabIndex = hostMode === 'center' ? 0 : -1;
     // A tab row that goes away (the page left a dataset with a notebook) must not take
     // the focus with it, into an inert page.
     if (!show && isOpen && tabs.contains(document.activeElement)) focusActiveView(container);
+  }
+
+  // A reply that ends while the reader is on another tab (the Notebook tab, with the chat
+  // view inert): the chat's own live regions are inside that view, so a screen reader hears
+  // nothing from them, and nothing on the page says the reply came. The tab announcer is in
+  // the header, outside the views, and says it; the dialog's Chat tab gets a dot and "new
+  // reply" in its name until the chat is opened.
+  let chatUnread = false;
+  function noteUnreadReply(container) {
+    if (!isOpen || !container.classList.contains('osa-capsule') || activeTab === 'chat') return;
+    chatUnread = true;
+    const announcer = container.querySelector('.osa-tab-announcer');
+    if (announcer) {
+      const text = 'The assistant has replied. Open the Chat tab to read it.';
+      // A second reply says the same words: a live region only speaks a change.
+      announcer.textContent = '';
+      setTimeout(() => { if (chatUnread) announcer.textContent = text; }, 0);
+    }
+    syncCenterTabs(container);
+  }
+
+  function clearUnreadReply(container) {
+    if (!chatUnread) return;
+    chatUnread = false;
+    const announcer = container.querySelector('.osa-tab-announcer');
+    if (announcer) announcer.textContent = '';
+    syncCenterTabs(container);
   }
 
   function bindCenterTabs(container) {
