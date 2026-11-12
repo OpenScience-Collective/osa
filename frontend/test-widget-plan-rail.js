@@ -688,7 +688,7 @@ console.log('\n... and not without a successful run, a notebook tab, or the data
   assert(!late.shown(), 'and gone when the page is another dataset');
 }
 
-console.log('\nthe click goes the card\'s way: the same import, a busy button, and the dialog docks when the notebook opens');
+console.log('\nthe click goes the card\'s way: the same import, a busy button, and the notebook opens as a tab of the dialog, which stays up');
 {
   const page = await notebookPage({ storage: storedChat(goodRuns()) });
   const heard = [];
@@ -698,13 +698,13 @@ console.log('\nthe click goes the card\'s way: the same import, a busy button, a
   const [sent] = page.imports();
   assertEqual([sent.message.datasetId, sent.message.title, sent.targetOrigin], [DATASET, 'Count the onsets', NOTEBOOK_ORIGIN], 'with the chat\'s dataset and title, to the notebook\'s origin');
   const card = [...page.container.querySelectorAll('.osa-nb-entry-continue')];
-  assertEqual(heard, ['corner'], 'the dialog docked, with a modechange event');
-  assert(page.container.classList.contains('osa-tab-notebook'), 'as the notebook tab opened');
+  assertEqual(heard, [], 'the dialog did not dock: no modechange event');
+  assert(page.container.classList.contains('osa-tab-notebook') && page.q('.osa-chat-window').classList.contains('osa-center'), 'the notebook tab opened, in the dialog');
   assert(card.length === 0 || card.every((c) => c.disabled), 'and the card\'s own button, if drawn, is waiting too');
 
-  // Raise the dialog while the import is in flight: the button is busy, and a click does nothing.
-  page.widget.setMode('center');
-  assert(page.shown() && page.header().disabled && page.header().getAttribute('aria-busy') === 'true', 'raised mid-import: the button is disabled with aria-busy');
+  // Back on the chat tab (its tab clicked) with the import in flight: the button is busy, and a click does nothing.
+  page.q('.osa-center-tab-chat').dispatchEvent(new page.window.Event('click', { bubbles: true }));
+  assert(page.shown() && page.header().disabled && page.header().getAttribute('aria-busy') === 'true', 'back on the chat tab mid-import: the button is disabled with aria-busy');
   click(page, page.header());
   assertEqual(page.imports().length, 1, 'a click while it waits imports nothing more');
   page.say({ type: 'result', requestId: sent.message.requestId, ok: true, path: `nemar/${DATASET} · Count the onsets.ipynb` });
@@ -713,7 +713,7 @@ console.log('\nthe click goes the card\'s way: the same import, a busy button, a
 
   // The failure: nothing is left waiting, and the button is there to try again.
   click(page, page.header());
-  page.widget.setMode('center');
+  page.q('.osa-center-tab-chat').dispatchEvent(new page.window.Event('click', { bubbles: true }));
   assertEqual(page.imports().length, 2, 'a second click imports again');
   page.say({ type: 'result', requestId: page.imports()[1].message.requestId, ok: false, error: 'The notebook is busy.' });
   await waitUntil(() => !page.header().disabled, 'the failed import ends');
