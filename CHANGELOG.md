@@ -13,20 +13,6 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
-### Changed
-
-- **The center-stage dialog opens the notebook as a Notebook tab inside the dialog, not in the corner (#738)**: on nemar.org's AI Mode dialog, **Continue in notebook** (the header button, the reply card's "Keep going in a notebook", History's menu, and a host-driven import) no longer docks the window and closes the dialog; it opens a **Notebook** tab in the dialog, which stays modal, and the page hears no `modechange`.
-  The Notebook tab is the same notebook the corner shows, in the same `<iframe>` of the same window (the dialog is the corner window with a class, so the frame is not moved or reloaded by tab switches, docking or mode changes; only Try again or a change of dataset replaces it): switching tabs and **Move to corner** keep the reader's Python session and edits, and **Move to corner** (or Escape) keeps whichever tab is open, so the capsule shows the notebook.
-  `setMode('center')` on a window that is on the notebook keeps it; `open()`, `ask()` and `seed()` still open on the chat.
-  The header gains **Chat** and **Notebook** tabs (`role="tablist"`, `aria-selected`, arrow keys, Home and End, roving tabindex) once the notebook has been opened in the page session; a chat-only dialog keeps its header, and the corner, the pop-out and a bubble widget are unchanged.
-  On the Notebook tab History, Settings and Continue in notebook are hidden and Move to corner and Close stay.
-  Keyboard: tabbing inside the cross-origin frame is the frame's own; a focus guard after the frame catches the focus when Tab leaves the frame's last stop and returns it to the dialog's first stop, so focus cannot reach the browser's controls behind the inert page (a frame that swallows Tab itself is #740).
-  A reply that ends while the Notebook tab is open puts a dot on the Chat tab and is announced from the header, outside the inert chat view.
-  Motion: the views fade over each other in 60 ms (the capsule's fade-through is 110 ms out and 210 ms in), and nothing moves under `prefers-reduced-motion`.
-  At 1100 px and under, the tabs take a row of their own under the pill and the buttons; the header's buttons no longer wrap their labels and drop them for icons at 900 px and under, so nothing in the header is clipped at any width (a chat dialog with Continue in notebook showing used to push Close outside the dialog below about 816 px).
-  Tested by new cases in `frontend/test-widget-host-api.js` and `frontend/test-widget-notebook-entry.js` (the old "docks before the notebook opens" cases now assert the opposite), `frontend/test-widget-plan-rail.js` updated, and by the notebook tab checks added to `frontend/browser-harness/center-stage-check.mjs` against a stand-in notebook site on another origin: the Notebook tab's frame fills the dialog at 1280 x 900 and 390 x 844 in light and dark, the real Tab key never leaves the dialog and comes back to the tabs after the frame, arrow keys switch tabs, and docking keeps the same iframe element with the notebook page loaded once.
-  See `docs/community-widget.md`.
-
 ## [0.8.20] - 2026-11-11
 
 ### Added
@@ -133,6 +119,17 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
+- **The center-stage dialog opens the notebook as a Notebook tab inside the dialog, not in the corner (#738)**: on nemar.org's AI Mode dialog, **Continue in notebook** (the header button, the reply card's "Keep going in a notebook", History's menu, and a host-driven import) no longer docks the window and closes the dialog; it opens a **Notebook** tab in the dialog, which stays modal, and the page hears no `modechange`.
+  The Notebook tab is the same notebook the corner shows, in the same `<iframe>` of the same window (the dialog is the corner window with a class, so the frame is not moved or reloaded by tab switches, docking or mode changes; only Try again or a change of dataset replaces it): switching tabs and **Move to corner** keep the reader's Python session and edits, and **Move to corner** (or Escape) keeps whichever tab is open, so the capsule shows the notebook.
+  `setMode('center')` on a window that is on the notebook keeps it; `open()`, `ask()` and `seed()` still open on the chat.
+  The header gains **Chat** and **Notebook** tabs (`role="tablist"`, `aria-selected`, arrow keys, Home and End, roving tabindex) once the notebook has been opened in the page session; a chat-only dialog keeps its header, and the corner, the pop-out and a bubble widget are unchanged.
+  On the Notebook tab History, Settings and Continue in notebook are hidden and Move to corner and Close stay.
+  Keyboard: tabbing inside the cross-origin frame is the frame's own; a focus guard after the frame catches the focus when Tab leaves the frame's last stop and returns it to the dialog's first stop, so focus cannot reach the browser's controls behind the inert page (a frame that swallows Tab itself is #740).
+  A reply that ends while the Notebook tab is open puts a dot on the Chat tab and is announced from the header, outside the inert chat view.
+  Motion: the views fade over each other in 60 ms (the capsule's fade-through is 110 ms out and 210 ms in), and nothing moves under `prefers-reduced-motion`.
+  At 1100 px and under, the tabs take a row of their own under the pill and the buttons; the header's buttons no longer wrap their labels and drop them for icons at 900 px and under, so nothing in the header is clipped at any width (a chat dialog with Continue in notebook showing used to push Close outside the dialog below about 816 px).
+  Tested by new cases in `frontend/test-widget-host-api.js` and `frontend/test-widget-notebook-entry.js` (the old "docks before the notebook opens" cases now assert the opposite), `frontend/test-widget-plan-rail.js` updated, and by the notebook tab checks added to `frontend/browser-harness/center-stage-check.mjs` against a stand-in notebook site on another origin: the Notebook tab's frame fills the dialog at 1280 x 900 and 390 x 844 in light and dark, the real Tab key never leaves the dialog and comes back to the tabs after the frame, arrow keys switch tabs, and docking keeps the same iframe element with the notebook page loaded once.
+  See `docs/community-widget.md`.
 - **The search overview needs a search of at least three words (#728)**: `POST /{community}/overview` answers 422 ("an overview needs a search of at least 3 words") for a shorter `query`, before any model call.
   A word is a whitespace-separated token holding a letter or digit (`query_word_count`, `MIN_QUERY_WORDS = 3` in `src/api/overview.py`), so `P300` and `α-band` count and a lone `-` does not; nemar.org's Discover panel counts the same way and shows a note instead of calling.
   A one-word search such as "EEG" had come back as a 502 with no overview.
