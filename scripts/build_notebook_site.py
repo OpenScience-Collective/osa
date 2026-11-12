@@ -27,10 +27,13 @@ that names a ``notebook:`` block in its ``config.yaml``:
    gates a request against. ``{{dataset_id}}`` is left for ``open.js`` to fill
    client-side, per reader.
 5. The same-origin bootstrap (``open.html``, ``open.js``, vendored ``localforage``)
-   and ``osa-bridge.js``, copied verbatim from ``notebook/`` at the repository root.
+   and ``osa-bridge.js`` with its pure half ``osa-notebook-files.js``, copied
+   verbatim from ``notebook/`` at the repository root.
    The notebook page (``notebooks/index.html``) gains a script tag for the bridge
-   (``inject_bridge``), which runs a starter's setup cells when it opens and takes
-   the embedding widget's theme (docs/adr/0012-the-notebook-as-a-widget-tab.md).
+   (``inject_bridge``), which runs a starter's setup cells when it opens, takes
+   the embedding widget's theme (docs/adr/0012-the-notebook-as-a-widget-tab.md),
+   and keeps the dataset's notebooks as tabs and writes an import to storage
+   (docs/adr/0017-notebook-import-and-tabs.md).
 
 Everything above (1-5) is written under ``--output-dir/<subdir>``, where
 ``<subdir>`` is ``--site-url``'s own path component (``osa`` for
@@ -100,7 +103,15 @@ KERNEL_PLUGIN_ID = "@jupyterlite/pyodide-kernel-extension:kernel"
 #: The bootstrap and vendored files copied verbatim from notebook/ into the site's
 #: own subdirectory. ``_headers`` is NOT here: it is generated (path-prefixed) and
 #: written at the true publish root instead -- see ``write_headers``.
-BOOTSTRAP_FILES = ("open.html", "open.js", "localforage.min.js", "osa-bridge.js")
+BOOTSTRAP_FILES = (
+    "open.html",
+    "open.js",
+    "localforage.min.js",
+    "osa-bridge.js",
+    # The bridge's pure half (names, import rules, which messages to act on),
+    # loaded by it with a dynamic import(); it imports open.js for its checks.
+    "osa-notebook-files.js",
+)
 
 #: The page ``open.js`` redirects into, and the only one the bridge is added to.
 NOTEBOOK_PAGE = Path("notebooks") / "index.html"

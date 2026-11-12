@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from src.core.config.community import CommunityConfig
+from src.core.config.community import CommunityConfig, read_procedure_documents
 from src.core.services.anthropic_endpoints import API_VERSION, FIRST_PARTY_BASE_URL
 
 console = Console()
@@ -161,6 +161,18 @@ def validate(
         warnings.extend(str(w.message) for w in caught if issubclass(w.category, UserWarning))
         logger.debug("Schema validation passed for community: %s", config.id)
         checks.append(("Schema Validation", "✓ Valid", "green"))
+        if config.procedures:
+            # The schema checks each procedure's shape; the server also reads the files
+            # at start and refuses to run if one is missing, so check them here too.
+            try:
+                read_procedure_documents(config.procedures, config_path.parent)
+            except ValueError as e:
+                logger.error("Procedure documents invalid for %s: %s", config_path, e)
+                errors.append(f"Procedure documents: {e}")
+                checks.append(("Procedure Documents", f"✗ {e}", "red"))
+                _display_results(checks, warnings, errors)
+                raise typer.Exit(1)
+            checks.append(("Procedure Documents", f"✓ {len(config.procedures)} readable", "green"))
     except ValidationError as e:
         logger.error("Schema validation failed for %s", config_path, exc_info=True)
         errors.append("Schema validation failed")

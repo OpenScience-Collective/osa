@@ -382,7 +382,9 @@ see ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) and `.context/notebook-su
 `paced-reveal-check.mjs` runs the widget's paced reveal of streamed text in headless Chrome,
 against its own local server (the widget, a community config and a `/chat` stream shaped like GPT-6 Luna's:
 1.5 s of silence, then about 900 characters with a code block in about 40 ms).
-It samples what the reader sees every 25 ms and compares it with when the stream's chunks arrived.
+It records what the reader sees at every redraw of the conversation (a MutationObserver in the page, whose callback runs right after the redraw and before any timer, so a starved main thread cannot make it miss one)
+and compares it with when the stream's chunks arrived.
+A 25 ms timer remains only to say how late a timer ran (`stall`, which stretches the time bounds) and when the reply stopped changing.
 It needs no backend and no network, and runs in the Frontend Tests job.
 
 ```bash
@@ -397,6 +399,21 @@ Measured 2026-09-29 in Chrome 154: the first words are drawn within about 20 ms 
 the reply grows through about 7 lengths and is fully on screen about 0.5 s after the last chunk
 (a reveal that took about 2 s before #538), and the code block is drawn once, whole.
 With the widget's pacing removed, or with the first text waiting for a tick, the check fails and exits 1.
+
+Run on a starved runner (#691), the widget itself draws fewer steps: its reveal is a deadline, so a tick that runs late draws a bigger slice
+(five 300 ms stalls in the reveal window turned the 7 lengths above into 3, with 5 redraws, and the check failed with a timer sampler and with the observer alike; the exact stall pattern of the CI runner that first failed is not known, and five 150 ms stalls did not reproduce it).
+So the widget's clock, in this check only, does not count how late its own timers fired: it sees each tick on time, as on a quiet machine,
+while the timers stay the browser's and the widget's code is untouched; the lateness (`lateTicks` in the printed line) is added to the time bounds.
+The threshold of 4 distinct lengths is unchanged.
+The widget's coalescing of late ticks into larger steps is therefore intentionally not tested here; the check still fails with the widget's pacing forced off, with or without a stall.
+`PACED_REVEAL_STALL_MS=<ms>` blocks the page's main thread for that long, five times, 240 ms apart, starting 90 ms after the first text arrives.
+To see the failure, run with the clock left alone and the page starved on purpose:
+
+```bash
+PACED_REVEAL_REAL_CLOCK=1 PACED_REVEAL_STALL_MS=300 bun frontend/browser-harness/paced-reveal-check.mjs   # fails: 3 different lengths
+PACED_REVEAL_STALL_MS=300 bun frontend/browser-harness/paced-reveal-check.mjs                              # passes
+PACED_REVEAL_CPU_THROTTLE=50 bun frontend/browser-harness/paced-reveal-check.mjs                           # CDP CPU throttling, rate 50; with PACED_REVEAL_REAL_CLOCK=1 the check fails some runs at this rate
+```
 
 ## The activity status (#538)
 
@@ -434,3 +451,63 @@ whitespace drawn as the reply, whitespace kept as a finished reply, whitespace e
 an announcer rewritten on every redraw, a visible label that is a live region, a new label restarting the time,
 and text that does not begin a new wait.
 A whitespace placeholder is reachable only by writing one into a message directly, which the Bun suite does.
+
+### The History sheet and saved figures
+
+```bash
+bun frontend/browser-harness/history-check.mjs [screenshot-dir]
+```
+
+stands up its own server (the widget, the runtime bundle, the test worker and a community config that declares the Python tool) and drives headless Chrome at 390 x 844 (#657, #658, #493).
+A run that draws a figure (a PNG drawn by the page's canvas, returned by `test-workers/executing.js` for `IMAGE:<base64>`) goes through a real `ClientToolController` and `WorkspaceStore` into the real IndexedDB.
+After a reload the figure has to come back, as an image the browser decoded, three ways: in the chat the reload restores, in the chat opened from the History sheet (whose row also carries it as its thumbnail, an object URL revoked when the sheet closes), and in the pop-out, which reads the same database through its own init.
+The stored history must hold no figure, only `images: []` and the run's `figureCount`.
+The sheet must sit inside the window with nothing scrolling sideways and every button at least 44 px; in the dark scheme it takes the dark panel's color, and Escape closes it and returns focus to the History button.
+It is what CI runs, beside the run card check; with a screenshot directory it writes the light and dark sheet, the opened and restored chats and the pop-out.
+
+### The center-stage dialog
+
+```bash
+bun frontend/browser-harness/center-stage-check.mjs [screenshot-dir]
+```
+
+stands up its own server (the widget and a community config shaped like NEMAR's: cards, a footer note, a docs link, dataset questions and the teal theme) and drives headless Chrome at 1280 x 900 and 390 x 844, in the light scheme (the device emulated as light) and the dark one (E6.1, #701).
+The page behind the dialog has a long body of its own and a button that opens AI Mode.
+The dialog must sit inside the viewport (the board's 80 and 36 px margins on the laptop, the whole screen on the phone) with nothing scrolling sideways, the start screen included, and the page behind it inert and not scrolling.
+The question field is 60 px tall; every pill, the start screen's send button and the chat's own send button and field are at least 44 px; the header's buttons at least 36 px.
+The real Tab key, as trusted key events through the DevTools protocol (the only kind that moves focus in a browser), is pressed 40 times each way and must never leave the dialog or reach the page's own controls, and must wrap.
+Escape docks the window with the same message nodes, session and draft; Close gives focus back to the page's own button.
+Fourteen colors, among them the heading, the AI Mode pill, the dataset line, the buttons, a pill, a card, the note and the link, must reach 4.5:1 (an icon 3:1) in both schemes, measured where Chrome paints them; under `prefers-reduced-motion` the pills' transition is immediate.
+It is what CI runs, beside the History check; with a screenshot directory (or `CENTER_CHECK_SCREENSHOTS`) it writes the start screen in both schemes, the thread and the docked window at both sizes.
+
+### The Privacy choices dialog
+
+```bash
+bun frontend/browser-harness/privacy-choices-check.mjs [screenshot-dir]
+```
+
+stands up its own server (the widget and a community config shaped like NEMAR's, with a `privacy_url`) and drives headless Chrome at 1280 x 900 and 390 x 844, in the light and the dark scheme, with the window in the corner and in the center (#706).
+The footer's **Privacy choices** button must be on screen, at least 24 px each way, with the opt-out symbol at 30 x 14 in its own fixed colors and its text at 4.5:1.
+The dialog it opens must sit inside the viewport and the chat window with nothing scrolling sideways; its close button, checkboxes and link must be at least 24 px, its rows 44 px; and its title, labels, helper lines and link must reach 4.5:1 (the close icon 3:1).
+The real Tab key, as trusted key events through the DevTools protocol, is pressed 20 times each way and must never leave the dialog and must cycle through exactly its four controls; the real Space key must toggle the checkbox it is on and store the choice; the real Escape key must close only the dialog, leave the window where it was, and give focus back to the button (in the center, a second Escape docks it).
+It is what CI runs, beside the center-stage check; with a screenshot directory (or `PRIVACY_CHECK_SCREENSHOTS`) it writes the open dialog for each of the eight combinations.
+
+The plan rail (board C3, E6.1) is checked on a second page, `/plan`, whose community has the runtime bundle and a stored conversation with an approved plan, three of five steps done.
+At 1280 x 900, on a capsule launcher (what NEMAR uses) and on a bubble: the rail is 280 px wide at the window's left edge with the header across the top and the footer across both columns, the thread and its input are in the right column, nothing scrolls sideways, the rows and "change" are at least 36 px tall, the heading reads `PLAN · 3 OF 5 DONE`, the strip in the thread is hidden and the paused bar stays, text reaches 4.5:1 (the check mark 3:1) in both schemes, the real Tab key goes header, rail, thread, input, a row's click focuses its run card without changing the address, "change" opens Settings on the memory choice, and docking removes the rail while the thread and its cards stay the same nodes.
+The capsule page also has **Continue in notebook** in the header.
+At 390 x 844 there is no rail, the strip and the bar show, nothing scrolls sideways, and the header's notebook button is an icon at least 36 px square.
+
+### The notebook card and the History row menu's notebook items
+
+```bash
+bun frontend/browser-harness/notebook-entry-check.mjs [screenshot-dir]
+```
+
+stands up its own server (the widget, the runtime bundle that carries the notebook builder, and a capsule community config that declares the Python tool) and drives headless Chrome at 400 px, in light and in dark (#675, E4.3).
+Seven chats are seeded in storage: the open one and three more on the page's dataset, and three on another dataset, whose Continue is disabled with its reason.
+The card under the last reply must sit inside the panel with nothing scrolling sideways, every control at least 44 px tall, and its sentence and both buttons at 4.5:1 or better.
+The Download code menu must open inside the panel with its two 44 px items and its note, readable at 4.5:1.
+The History sheet's last row, the one nearest the end of the list, gets its menu opened and Download code unfolded: the tallest the menu gets.
+The list clips what runs past it, so the menu must be wholly inside the list; the widget caps its height at the list's and scrolls it into view.
+Without that cap, the check fails: the menu is taller than the list.
+It is what CI runs; with a screenshot directory (or `NOTEBOOK_ENTRY_CHECK_SCREENSHOTS`) it writes the card, the open menu and the History menu in both schemes.

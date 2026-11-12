@@ -4,6 +4,7 @@ Creates parameterized routers for any registered community.
 Each community gets endpoints like /{community_id}/ask, /{community_id}/chat, etc.
 """
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -11,18 +12,20 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 import time
 import uuid
 from collections.abc import AsyncGenerator, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal, NamedTuple
+from typing import Annotated, Any, Literal, NamedTuple, Self
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from src.agents.base import (
     CLIENT_TOOLS_NODE,
@@ -37,7 +40,34 @@ from src.agents.content import (
     encode_citation_markers,
     normalize_citation_markers,
 )
+from src.agents.model_routing import (
+    OMITTED_TURNS_MARKER,
+    QUICK_MODE_INSTRUCTIONS,
+    RESEED_TURN_MAX_CHARS,
+    RESEED_TURNS_MAX,
+    SUMMARY_INPUT_MAX_CHARS,
+    Summary,
+    fit_turns,
+    history_transcript,
+    reader_turn,
+    reseeded_message,
+    routing_applies,
+    strip_fences,
+    tier_for_turn,
+)
+from src.agents.plan_first import plan_first_section
 from src.api.config import Settings, get_settings
+from src.api.handover import stream_handover
+from src.api.overview import (
+    OVERVIEW_MAX_TOKENS,
+    OVERVIEW_REASONING_EFFORT,
+    OverviewRequest,
+    OverviewResponse,
+    OverviewUnanswered,
+    cache_key,
+    generate_overview,
+    overview_caches,
+)
 from src.api.routers.health import compute_community_health
 from src.api.security import (
     AuthScope,
@@ -52,8 +82,10 @@ from src.api.security import (
 from src.api.tool_results import (
     ClientToolResult,
     PendingClientCall,
+    PlanDecision,
     build_history_tool_message,
     build_live_tool_message,
+    build_plan_tool_message,
     build_unanswered_tool_message,
     scrub_stored_images,
 )
@@ -71,13 +103,17 @@ from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import (
+    GET_PROCEDURE_TOOL_NAME,
     MAX_DECLARED_CLIENT_TOOLS,
+    PROPOSE_PLAN_TOOL_NAME,
+    START_ANALYSIS_TOOL_NAME,
     ClientToolConfig,
     ClientToolRuntime,
     CommunityConfig,
     LauncherOffsetPx,
     LauncherSizePx,
     RuntimeConfig,
+    Tier,
     WidgetConfig,
 )
 from src.core.config.deployment import current_deployment
@@ -108,6 +144,7 @@ from src.knowledge.search import FAQResult, get_citation_stats, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
     RequestLogEntry,
+    TokenUsage,
     extract_token_usage,
     extract_tool_names,
     log_request,
@@ -164,6 +201,52 @@ class ChatMessage(BaseModel):
     content: str = Field(..., description="Message content")
 
 
+# A dataset id as a host page names it, the widget's own rule (isValidDatasetId).
+DATASET_ID_PATTERN = r"^[A-Za-z0-9._-]{1,64}$"
+
+
+class MovedFrom(BaseModel):
+    """The context a reader left in this conversation: a dataset, or the search page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["dataset", "search"] = Field(..., description="What the reader left")
+    id: str | None = Field(
+        default=None,
+        pattern=DATASET_ID_PATTERN,
+        description="The dataset id; required for a dataset, absent for search",
+    )
+
+    @model_validator(mode="after")
+    def dataset_needs_id(self) -> Self:
+        """A dataset context needs an id; the search page has none to give."""
+        if self.type == "dataset" and self.id is None:
+            raise ValueError("moved_from of type 'dataset' needs an id")
+        if self.type == "search" and self.id is not None:
+            raise ValueError("moved_from of type 'search' takes no id")
+        return self
+
+
+class PriorTurn(BaseModel):
+    """One earlier turn of a conversation, as the widget stored it: who said it, and the text."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"] = Field(..., description="Who said it")
+    text: str = Field(
+        ...,
+        max_length=RESEED_TURN_MAX_CHARS,
+        description="What was said: plain text only, no tool result, code or figure",
+    )
+
+    @model_validator(mode="after")
+    def text_is_not_blank(self) -> Self:
+        """A turn with nothing in it carries no context, and a client that sends one is wrong."""
+        if not self.text.strip():
+            raise ValueError("a prior turn needs text")
+        return self
+
+
 class PageContext(BaseModel):
     """Context about the page where the widget is embedded."""
 
@@ -182,6 +265,22 @@ class PageContext(BaseModel):
         description="Per-page instructions for the assistant set by the widget embedder",
         max_length=2000,
     )
+    dataset_id: str | None = Field(
+        default=None,
+        pattern=DATASET_ID_PATTERN,
+        description="The dataset the page names with setDataset; sent whether or not the reader shares the page URL",
+    )
+    moved_from: MovedFrom | None = Field(
+        default=None,
+        description="Set on the first request after the reader chose to continue a conversation in a new context",
+    )
+    memory_budget_mb: Literal[256, 512, 1024, 2048] | None = Field(
+        default=None,
+        description=(
+            "How much of the reader's browser memory one step of an analysis may use, in MB; "
+            "sent by a widget that runs code in the browser, and stated in the system prompt"
+        ),
+    )
 
     @field_validator("url")
     @classmethod
@@ -192,6 +291,29 @@ class PageContext(BaseModel):
         if not url.startswith(("http://", "https://")):
             raise ValueError("URL must start with http:// or https://")
         return url
+
+
+SHARE_USAGE_DESCRIPTION = (
+    'False when the reader turned off "Share usage data" in the widget\'s Privacy choices. '
+    "The usage row for this request is then written without its conversation id and the "
+    "tools it called (tokens, cost, tier and counts are kept, so budgets still add up). "
+    "Feedback is unaffected."
+)
+
+# The `code` of the 409 a /chat answers when the client expected a live session and the
+# server holds none. A sibling of the string `detail`, so a client that reads only
+# `detail` still gets text it can show.
+SESSION_UNKNOWN_CODE = "session_unknown"
+SESSION_UNKNOWN_DETAIL = "The server no longer holds this conversation, so the message was not run."
+
+EXPECT_SESSION_DESCRIPTION = (
+    "True from a client that holds the conversation's earlier turns and has stopped "
+    "sending them as `prior_turns` because the server confirmed the session. If the server "
+    "then holds no live session for `session_id` (restarted, evicted or expired) and the "
+    "request has no `prior_turns`, it answers 409 with code `session_unknown` and creates "
+    "nothing, instead of silently starting an empty conversation. Needs `session_id`; "
+    "`prior_turns` present reseeds as usual. Off by default, so other clients are unaffected."
+)
 
 
 class ChatRequest(BaseModel):
@@ -220,18 +342,54 @@ class ChatRequest(BaseModel):
             "rather than fail it."
         ),
     )
+    prior_turns: list[PriorTurn] | None = Field(
+        default=None,
+        max_length=RESEED_TURNS_MAX,
+        description=(
+            "The conversation so far, oldest first, for a client that cannot tell whether "
+            "the server still holds its session. Used only when this request creates the "
+            "session (it has no messages yet): the server then starts it from a transcript "
+            f"of these turns, whole oldest turns dropped to fit {SUMMARY_INPUT_MAX_CHARS:,} "
+            "characters. A session that already exists ignores it, so a live conversation "
+            "is never altered."
+        ),
+    )
+    mode: Literal["quick", "analysis"] | None = Field(
+        default=None,
+        description=(
+            "The tier the conversation was last on. Used only together with `prior_turns` "
+            "on a request that is routed between a quick and an analysis model, where the "
+            "reseeded session starts on it; ignored otherwise."
+        ),
+    )
+    share_usage: bool = Field(default=True, description=SHARE_USAGE_DESCRIPTION)
+    expect_session: bool = Field(default=False, description=EXPECT_SESSION_DESCRIPTION)
+
+    @model_validator(mode="after")
+    def expectation_needs_a_session(self) -> Self:
+        """There is nothing to expect without an id to look up."""
+        if self.expect_session and not self.session_id:
+            raise ValueError("expect_session needs a session_id")
+        return self
 
 
 class ResumeRequest(BaseModel):
-    """Run 2 of a browser-execution turn: the result of a call run 1 asked for."""
+    """Run 2 of a browser-execution turn: the result of a call run 1 asked for.
+
+    `result` is a `PlanDecision` for a `propose_plan` call and a `ClientToolResult` for
+    every other; the two shapes share no required field but `call_id`, and each forbids
+    extra keys, so a body parses as exactly one of them. `chat_resume` refuses a kind
+    that does not match the parked call.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(min_length=1, max_length=256)
-    result: ClientToolResult
+    result: ClientToolResult | PlanDecision
     model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
     page_context: PageContext | None = None
     client_tools: list[str] = Field(default_factory=list, max_length=MAX_DECLARED_CLIENT_TOOLS)
+    share_usage: bool = Field(default=True, description=SHARE_USAGE_DESCRIPTION)
 
 
 class AskRequest(BaseModel):
@@ -244,6 +402,7 @@ class AskRequest(BaseModel):
         description="Optional context about the page where the widget is embedded",
     )
     model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
+    share_usage: bool = Field(default=True, description=SHARE_USAGE_DESCRIPTION)
 
 
 class ToolCallInfo(BaseModel):
@@ -374,6 +533,29 @@ class DatasetQuestionResponse(BaseModel):
     needs_zarr: bool = Field(..., description="Shown only when the dataset has a Zarr copy")
 
 
+class CenterStartCapabilityResponse(BaseModel):
+    """One card of the center-stage dialog's start screen."""
+
+    title: str = Field(..., description="The card's heading")
+    text: str = Field(..., description="One or two sentences under the heading")
+
+
+class CenterStartResponse(BaseModel):
+    """The center-stage dialog's start screen copy, as the widget draws it."""
+
+    capabilities: list[CenterStartCapabilityResponse] = Field(
+        default_factory=list, description="Up to three cards: what the assistant can do"
+    )
+    note: str | None = Field(default=None, description="A line in the start screen's footer")
+
+
+class AnalysisDocsResponse(BaseModel):
+    """A docs page the widget links from its start screen and its Settings."""
+
+    title: str = Field(..., description="The link's text in Settings")
+    url: str = Field(..., description="An https URL, opened in a new tab")
+
+
 class WidgetConfigResponse(BaseModel):
     """Widget display configuration returned to the frontend."""
 
@@ -388,6 +570,34 @@ class WidgetConfigResponse(BaseModel):
         description=(
             "Question templates for a page that names a dataset with setDataset, in place "
             "of suggested_questions; omitted when the community sets none"
+        ),
+    )
+    search_paths: list[str] | None = Field(
+        default=None,
+        description=(
+            "Page paths where the reader is searching; the widget gives the conversation "
+            "the 'search' context there. Omitted when the community sets none"
+        ),
+    )
+    center_start: CenterStartResponse | None = Field(
+        default=None,
+        description=(
+            "Copy for the center-stage dialog's start screen (capability cards and a "
+            "footer note); omitted when the community sets none"
+        ),
+    )
+    analysis_docs: AnalysisDocsResponse | None = Field(
+        default=None,
+        description=(
+            "A docs page linked from the start screen and the widget's Settings, "
+            "https only; omitted when the community sets none"
+        ),
+    )
+    privacy_url: str | None = Field(
+        default=None,
+        description=(
+            "The privacy page the widget's Privacy choices dialog links to, https only; "
+            "omitted when the community sets none (the widget then links to the platform's)"
         ),
     )
     logo_url: str | None = Field(
@@ -670,6 +880,20 @@ def _trim_preserving_tool_turns(messages: Sequence[BaseMessage], limit: int) -> 
     return list(messages[start:])
 
 
+class Reseed(NamedTuple):
+    """What a session reseeded from a client transcript started from.
+
+    `stored` is the one message the history holds (framing, transcript and the reader's
+    message); `turns` are the earlier turns inside it as messages, and `reader_message` is
+    the reader's own words. Later steps that read the history as the reader's words (the
+    tier decision, a handover's summary) use the last two, never the framing in `stored`.
+    """
+
+    stored: str
+    turns: list[BaseMessage]
+    reader_message: str
+
+
 class ChatSession:
     """A chat session with message history.
 
@@ -695,9 +919,28 @@ class ChatSession:
         self.last_active = self.created_at
         self.pending_call: PendingClientCall | None = None
         self.turn_started_at: datetime | None = None
+        # Which model tier this conversation runs on, for a community that routes between
+        # a quick and an analysis model (`src.agents.model_routing`). Starts quick and
+        # only ever moves one way: a handover opens a NEW session already in analysis, and
+        # a first message that asks for analysis flips its own, so a session never changes
+        # model with quick-model thinking blocks in its history (issue #522).
+        self.mode: Tier = "quick"
+        # Set when the session was started from a transcript the client carried (see
+        # `reseed`). The tier decision and a handover read the parts inside the stored
+        # message, so a keyword in the transcript is not the reader asking for analysis
+        # and the framing is not summarized as if the reader had said it.
+        self.reseeded_as: Reseed | None = None
+        # Groups the usage-metrics rows of one conversation. It is this session's id until
+        # a handover opens the analysis session, which inherits the old session's value,
+        # so a conversation that changed sessions is still one conversation in the report.
+        self.conversation_id = session_id
 
-    def add_user_message(self, content: str) -> None:
+    def add_user_message(self, content: str, *, stored: str | None = None) -> None:
         """Add a user message to history.
+
+        `content` is what the person sent and is the text the length limit applies to.
+        `stored` is what goes into the history instead, for a message that carries more
+        than the person typed (a reseed transcript).
 
         Raises:
             ValueError: If message exceeds length limit or session at max messages.
@@ -709,8 +952,44 @@ class ChatSession:
                 f"Session has reached max messages ({MAX_MESSAGES_PER_SESSION}). "
                 "Start a new session."
             )
-        self.messages.append(HumanMessage(content=content))
+        self.messages.append(HumanMessage(content=content if stored is None else stored))
         self.last_active = datetime.now(UTC)
+
+    def reseed(self, prior_turns: Sequence[PriorTurn], message: str) -> None:
+        """Start this empty session from the client's transcript and the reader's message.
+
+        One user message, never two in a row: the transcript and `message` are combined
+        by `reseeded_message`. The tier is not touched here; the caller sets `mode`.
+
+        Raises:
+            ValueError: As `add_user_message`, about `message`.
+        """
+        kept, dropped = fit_turns(
+            [
+                (HumanMessage if turn.role == "user" else AIMessage)(
+                    content=strip_fences(turn.text)
+                )
+                for turn in prior_turns
+            ]
+        )
+        transcript = history_transcript(kept, max_chars=SUMMARY_INPUT_MAX_CHARS)
+        if transcript and dropped:
+            transcript = f"{OMITTED_TURNS_MARKER}\n\n{transcript}"
+        seeded = reseeded_message(transcript, message) if transcript else message
+        self.add_user_message(message, stored=seeded)
+        self.reseeded_as = Reseed(seeded, kept, message)
+
+    def handover_history(self, earlier: Sequence[BaseMessage]) -> list[BaseMessage]:
+        """`earlier` (the messages before the reader's latest) as the reader and assistant said them.
+
+        In a reseeded session the first message holds a transcript wrapped in framing; it
+        is replaced by the turns it was built from and the reader's own message, so a
+        summary is written from what was said and not from the framing.
+        """
+        seeded = self.reseeded_as
+        if seeded and earlier and earlier[0].content == seeded.stored:
+            return [*seeded.turns, HumanMessage(content=seeded.reader_message), *earlier[1:]]
+        return list(earlier)
 
     def add_assistant_message(self, content: str) -> None:
         """Add an assistant message to history.
@@ -876,7 +1155,9 @@ class ChatSession:
         if pending is None:
             return False
         self.pending_call = None
-        self.messages.append(build_unanswered_tool_message(pending.call_id, reason))
+        self.messages.append(
+            build_unanswered_tool_message(pending.call_id, reason, tool=pending.tool)
+        )
         self.last_active = datetime.now(UTC)
         return True
 
@@ -985,6 +1266,23 @@ def get_or_create_session(community_id: str, session_id: str | None) -> ChatSess
     session = ChatSession(new_id, community_id)
     store[new_id] = session
     return session
+
+
+def _restore_tier(community_id: str, session: ChatSession, body: ChatRequest) -> None:
+    """Put a reseeded session back on the tier the conversation was on.
+
+    The widget sends the tier of the last reply it showed. It is used only where the
+    request is routed (`routing_applies`), because only there does a session's tier mean
+    anything; elsewhere it is ignored. Setting `session.mode` before the turn is what
+    keeps the turn on that tier: an analysis session is not "handing over", so no
+    handover runs and no summary is asked for.
+    """
+    if body.mode is None:
+        return
+    info = registry.get(community_id)
+    config = info.community_config if info else None
+    if routing_applies(config, set(body.client_tools), body.model):
+        session.mode = body.mode
 
 
 def get_session(community_id: str, session_id: str) -> ChatSession | None:
@@ -1424,8 +1722,13 @@ def _select_model(
     has_byok: bool,
     *,
     log: bool = True,
+    tier: Tier | None = None,
 ) -> tuple[str, str | None]:
     """Select the model (and, on OpenRouter, its provider-routing hint).
+
+    A routed turn's ``tier`` stands in for the community's default model (see
+    ``_configured_default``); a caller-named ``requested_model`` is never combined with one,
+    because a request that names a model is not routed.
 
     **Anthropic:** the requested model, or else the community/platform
     default, is normalized against the offered models (see
@@ -1450,6 +1753,7 @@ def _select_model(
         has_byok: Whether the caller provided their own API key.
         log: Whether to log a configured default that cannot be served. False for a
             probe of a request that is routed again for real (see ``_route_request``).
+        tier: The routed turn's model tier, or None when the request is not routed.
 
     Returns:
         Tuple of (model, provider_routing_hint). The routing hint is always
@@ -1462,7 +1766,7 @@ def _select_model(
             requested without BYOK.
     """
     # The community's default model, else the platform's
-    default_model, default_provider = _configured_default(community_info, get_settings())
+    default_model, default_provider = _configured_default(community_info, get_settings(), tier)
 
     if provider in ("anthropic", "bedrock"):
         try:
@@ -1650,8 +1954,20 @@ def _bedrock_default_outcome(
     return "unavailable"
 
 
-def _configured_default(info: AssistantInfo, settings: Settings) -> tuple[str, str | None]:
-    """A community's default model and OpenRouter routing hint: its own, else the platform's."""
+def _configured_default(
+    info: AssistantInfo, settings: Settings, tier: Tier | None = None
+) -> tuple[str, str | None]:
+    """A community's default model and OpenRouter routing hint: its own, else the platform's.
+
+    A routed turn's `tier` picks the community's quick or analysis model in place of its
+    default. It is threaded down here rather than passed as the request's `requested_model`
+    because a caller-named model other than the default is a 403 on OpenRouter without a
+    key of the caller's own, and a tier is the community's choice, not the caller's. The
+    OpenRouter routing hint belongs to the default model, so a tier's model has none.
+    """
+    config = info.community_config
+    if tier and config and config.quick_model and config.analysis_model:
+        return (config.quick_model if tier == "quick" else config.analysis_model, None)
     if info.community_config and info.community_config.default_model:
         return (
             info.community_config.default_model,
@@ -1859,6 +2175,7 @@ def _route_request(
     requested_model: str | None,
     *,
     log: bool = True,
+    tier: Tier | None = None,
 ) -> RequestRoute:
     """Decide the provider and model for a request, with authorization checks.
 
@@ -1878,6 +2195,9 @@ def _route_request(
             be served, a Bedrock default replaced by Claude. A caller that routes the same
             request a second time (``/chat/resume`` probes the route before the stream
             makes it for real) passes False, so the request logs once.
+        tier: The routed turn's model tier (``src.agents.model_routing``): the community's
+            quick or analysis model runs in place of its default. None for a request that
+            is not routed.
 
     Raises:
         HTTPException: As ``_resolve_provider``, ``_select_model`` and
@@ -1890,6 +2210,7 @@ def _route_request(
         provider=choice.provider,
         has_byok=choice.key_source == "byok",
         log=log,
+        tier=tier,
     )
     if choice.provider == "anthropic" and is_bedrock_model(model):
         settings = get_settings()
@@ -2018,6 +2339,69 @@ def _get_cache_user_id(community_id: str, api_key: str | None, user_id: str | No
     return f"{community_id}_widget"
 
 
+def _build_chat_model(
+    route: RequestRoute,
+    community_id: str,
+    *,
+    byok: ByokCredential | None,
+    user_id: str | None,
+    reasoning_effort: str | None,
+    max_tokens: int | None = None,
+) -> BaseChatModel:
+    """The bare chat model for a routed request, built by the provider that serves it.
+
+    Shared by ``create_community_assistant`` (which wraps the model in an agent) and the
+    endpoints that call a model directly (``/overview``), so the three provider paths and
+    their settings live in one place.
+
+    Args:
+        route: The provider, key and model ``_route_request`` chose.
+        community_id: The community, for the OpenRouter prompt-cache lane.
+        byok: The caller's own credential, if any.
+        user_id: The ``X-User-ID`` header, for the OpenRouter prompt-cache lane.
+        reasoning_effort: The level from the neutral scale, or None for high. Every
+            provider path resolves it against the model it actually runs.
+        max_tokens: The most tokens to generate, or None for the provider's default.
+    """
+    settings = get_settings()
+    provider_choice = route.choice
+    limits: dict[str, Any] = {} if max_tokens is None else {"max_tokens": max_tokens}
+
+    if provider_choice.provider == "anthropic":
+        # Prompt caching on this path is handled by the provider layer
+        # (CachingChatAnthropic's cache_control breakpoints in
+        # src/core/services/anthropic_llm.py), not by a per-user cache
+        # lane, so there is no cache_user_id to compute here.
+        return create_anthropic_llm(
+            model=route.model,
+            api_key=provider_choice.api_key,
+            temperature=settings.llm_temperature,
+            reasoning_effort=reasoning_effort,
+            **limits,
+        )
+    if provider_choice.provider == "bedrock":
+        # Automatic prompt caching (Luna) needs nothing from this layer: the
+        # provider reports cache reads and writes, and a stable prompt prefix,
+        # which the agent already keeps, is what earns the reads.
+        return create_bedrock_llm(
+            model=route.model,
+            temperature=settings.llm_temperature,
+            reasoning_effort=reasoning_effort,
+            **limits,
+        )
+    # Determine user_id for prompt caching optimization
+    cache_user_id = _get_cache_user_id(community_id, byok.key if byok else None, user_id)
+    return create_openrouter_llm(
+        model=route.model,
+        api_key=provider_choice.api_key,
+        temperature=settings.llm_temperature,
+        provider=route.provider_hint,
+        user_id=cache_user_id,
+        reasoning_effort=reasoning_effort,
+        **limits,
+    )
+
+
 @dataclass
 class AssistantWithMetrics:
     """Community assistant bundled with metadata for metrics logging."""
@@ -2056,6 +2440,9 @@ def create_community_assistant(
     declared_client_tools: set[str] | None = None,
     browser_runs_left: int | None = None,
     session_id: str | None = None,
+    tier: Tier | None = None,
+    additional_instructions: str = "",
+    trace: bool = True,
 ) -> AssistantWithMetrics:
     """Create a community assistant instance with authorization checks.
 
@@ -2078,6 +2465,18 @@ def create_community_assistant(
         page_context: Optional context about the page where the widget is embedded
         session_id: Chat session ID, recorded on the LangFuse trace so a
             conversation's turns can be grouped (chat endpoints only)
+        trace: False when the reader turned "Share usage data" off: no LangFuse config or
+            trace id is attached, so no trace (with its messages and tool calls) is made
+            and the request row has no trace id to link one by
+        tier: The model tier of a routed turn (``src.agents.model_routing``), or None for a
+            request that is not routed. It picks the community's quick or analysis model
+            and decides which client tools are bound. A quick turn also gets the prompt
+            section that tells it to call ``start_analysis``, added to
+            ``additional_instructions`` here because it must exist exactly when that tool
+            is bound, which is not something the YAML prompt can say. An analysis turn
+            gets the community's ``plan_first_instructions`` on the same terms (see
+            ``src.agents.plan_first``).
+        additional_instructions: Extra text for the system prompt.
 
     Returns:
         AssistantWithMetrics containing the assistant, resolved model, and key source.
@@ -2097,9 +2496,9 @@ def create_community_assistant(
 
     # Select provider, API key and model with authorization checks (including the
     # BYOK requirement for OpenRouter custom models)
-    route = _route_request(community_info, community_id, byok, origin, requested_model)
+    route = _route_request(community_info, community_id, byok, origin, requested_model, tier=tier)
     provider_choice = route.choice
-    selected_model, selected_provider = route.model, route.provider_hint
+    selected_model = route.model
     logger.debug(
         "Using %s API key for provider %s",
         provider_choice.key_source,
@@ -2126,37 +2525,13 @@ def create_community_assistant(
     community_config = community_info.community_config
     reasoning_effort = community_config.reasoning_effort if community_config else None
 
-    if provider_choice.provider == "anthropic":
-        # Prompt caching on this path is handled by the provider layer
-        # (CachingChatAnthropic's cache_control breakpoints in
-        # src/core/services/anthropic_llm.py), not by a per-user cache
-        # lane, so there is no cache_user_id to compute here.
-        model = create_anthropic_llm(
-            model=selected_model,
-            api_key=provider_choice.api_key,
-            temperature=settings.llm_temperature,
-            reasoning_effort=reasoning_effort,
-        )
-    elif provider_choice.provider == "bedrock":
-        # Automatic prompt caching (Luna) needs nothing from this layer: the
-        # provider reports cache reads and writes, and a stable prompt prefix,
-        # which the agent already keeps, is what earns the reads.
-        model = create_bedrock_llm(
-            model=selected_model,
-            temperature=settings.llm_temperature,
-            reasoning_effort=reasoning_effort,
-        )
-    else:
-        # Determine user_id for prompt caching optimization
-        cache_user_id = _get_cache_user_id(community_id, byok.key if byok else None, user_id)
-        model = create_openrouter_llm(
-            model=selected_model,
-            api_key=provider_choice.api_key,
-            temperature=settings.llm_temperature,
-            provider=selected_provider,
-            user_id=cache_user_id,
-            reasoning_effort=reasoning_effort,
-        )
+    model = _build_chat_model(
+        route,
+        community_id,
+        byok=byok,
+        user_id=user_id,
+        reasoning_effort=reasoning_effort,
+    )
 
     # Convert Pydantic PageContext to agent's dataclass PageContext
     agent_page_context = None
@@ -2165,6 +2540,27 @@ def create_community_assistant(
             url=page_context.url,
             title=page_context.title,
             widget_instructions=page_context.widget_instructions,
+            dataset_id=page_context.dataset_id,
+            memory_budget_mb=page_context.memory_budget_mb,
+            moved_from=(
+                page_context.moved_from.model_dump(exclude_none=True)
+                if page_context.moved_from
+                else None
+            ),
+        )
+
+    # A quick turn gets the section that tells it to call `start_analysis`, after any
+    # instructions the caller passed. An analysis turn gets the community's plan-first text
+    # when `propose_plan` is declared (`plan_first_section` says when), for the same reason:
+    # it must exist exactly when the tool it names is bound.
+    merged_instructions = additional_instructions
+    if tier == "quick":
+        merged_instructions = "\n\n".join(
+            part for part in (additional_instructions, QUICK_MODE_INSTRUCTIONS) if part
+        )
+    elif plan_first := plan_first_section(community_config, tier, declared_client_tools):
+        merged_instructions = "\n\n".join(
+            part for part in (additional_instructions, plan_first) if part
         )
 
     assistant = registry.create_assistant(
@@ -2191,36 +2587,39 @@ def create_community_assistant(
         # than by a check.
         declared_client_tools=declared_client_tools,
         browser_runs_left=browser_runs_left,
+        tier=tier,
+        additional_instructions=merged_instructions,
     )
 
-    # Wire LangFuse tracing if configured
+    # Wire LangFuse tracing if configured, unless the reader opted out of usage sharing
     langfuse_config = None
     langfuse_trace_id = None
-    try:
-        from src.core.services.llm import get_llm_service
-    except ImportError:
-        logger.debug("LangFuse tracing not available (module not installed)")
-    else:
+    if trace:
         try:
-            llm_service = get_llm_service(settings)
-            # LangFuse requires a 32-char lowercase hex trace id. It rejects
-            # anything else (such as a community prefix), which leaves the root
-            # span unset: every LLM and tool call then becomes its own trace and
-            # request_log.langfuse_trace_id matches nothing (issue #515). The
-            # community is recorded as a tag instead.
-            trace_id = uuid.uuid4().hex
-            config = llm_service.get_config_with_tracing(trace_id=trace_id)
-            if config.get("callbacks"):
-                config["metadata"] = _langfuse_trace_metadata(community_id, user_id, session_id)
-                langfuse_config = config
-                langfuse_trace_id = trace_id
-        except (AttributeError, ValueError, RuntimeError, OSError, ImportError) as e:
-            logger.warning(
-                "LangFuse tracing setup failed for %s: %s, continuing without it",
-                community_id,
-                e,
-                exc_info=True,
-            )
+            from src.core.services.llm import get_llm_service
+        except ImportError:
+            logger.debug("LangFuse tracing not available (module not installed)")
+        else:
+            try:
+                llm_service = get_llm_service(settings)
+                # LangFuse requires a 32-char lowercase hex trace id. It rejects
+                # anything else (such as a community prefix), which leaves the root
+                # span unset: every LLM and tool call then becomes its own trace and
+                # request_log.langfuse_trace_id matches nothing (issue #515). The
+                # community is recorded as a tag instead.
+                trace_id = uuid.uuid4().hex
+                config = llm_service.get_config_with_tracing(trace_id=trace_id)
+                if config.get("callbacks"):
+                    config["metadata"] = _langfuse_trace_metadata(community_id, user_id, session_id)
+                    langfuse_config = config
+                    langfuse_trace_id = trace_id
+            except (AttributeError, ValueError, RuntimeError, OSError, ImportError) as e:
+                logger.warning(
+                    "LangFuse tracing setup failed for %s: %s, continuing without it",
+                    community_id,
+                    e,
+                    exc_info=True,
+                )
 
     return AssistantWithMetrics(
         assistant=assistant,
@@ -2487,12 +2886,28 @@ def _usage_for_event(
     return usage.model_dump(mode="json") if usage else None
 
 
+def _shares_usage(http_request: Request | None) -> bool:
+    """Whether the reader lets this request's usage row carry its conversation and tools.
+
+    The handlers record the body's ``share_usage`` on ``request.state`` once it is parsed;
+    a request with none (an overview, a route that has no such field) shares, as before.
+    ``log_request`` does the blanking, so every writer of the row goes through one place.
+    """
+    return getattr(http_request.state, "share_usage", True) if http_request else True
+
+
 def _set_metrics_on_request(
     http_request: Request,
     awm: AssistantWithMetrics,
     agent_result: AgentResult,
+    *,
+    conversation_id: str | None = None,
 ) -> None:
     """Store agent metrics on request.state for the metrics middleware to log.
+
+    ``conversation_id`` groups the row with the rest of its conversation in
+    ``osa metrics cost-report`` (``/chat``; ``/ask`` has none). A request that is not
+    streamed is never routed between the quick and the analysis model, so it has no tier.
 
     A request whose runs reported no usage is NULL in the row, not zero tokens at no cost,
     as for a streamed one (``_log_streaming_metrics``): a zero would read as a free
@@ -2522,7 +2937,141 @@ def _set_metrics_on_request(
         "tool_call_count": len(agent_result.tools_called),
         "langfuse_trace_id": awm.langfuse_trace_id,
         "stream": False,
+        "tier": None,
+        "conversation_id": conversation_id,
     }
+
+
+def _overview_metrics(
+    route: RequestRoute, usage: TokenUsage | None, error_message: str | None
+) -> dict[str, Any]:
+    """The metrics of an overview request: model, key source, tokens, cost, quick tier.
+
+    The row is what the community's budget sums (``src.metrics.budget``), so it carries
+    the model, the key source, the tokens and the cost, and the quick tier. ``usage`` is
+    None for a request that called no model (a cache hit, or one that shared another's
+    call): it spent nothing, which is zero and not missing. A call that reported no usage
+    is NULL, as for every other request (see ``_set_metrics_on_request``).
+    """
+    if usage is None:
+        tokens: tuple[int | None, int | None, int | None] = (0, 0, 0)
+        cost: float | None = 0.0
+    elif usage.input_tokens + usage.output_tokens > 0:
+        tokens = (usage.input_tokens, usage.output_tokens, usage.total_tokens)
+        cost = estimate_cost(
+            route.model,
+            usage.input_tokens,
+            usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_creation_tokens=usage.cache_creation_tokens,
+            longest_prompt_tokens=usage.longest_prompt_tokens,
+        )
+    else:
+        tokens = (None, None, None)
+        cost = None
+    return {
+        "model": route.model,
+        "key_source": route.choice.key_source,
+        "input_tokens": tokens[0],
+        "output_tokens": tokens[1],
+        "total_tokens": tokens[2],
+        "estimated_cost": cost,
+        "tools_called": [],
+        "tool_call_count": 0,
+        "langfuse_trace_id": None,
+        "stream": False,
+        "tier": "quick",
+        "conversation_id": None,
+        "error_message": error_message,
+    }
+
+
+def _set_overview_metrics(
+    http_request: Request,
+    route: RequestRoute,
+    usage: TokenUsage | None,
+    *,
+    error_message: str | None = None,
+) -> None:
+    """Store an overview request's metrics on request.state for the middleware's row.
+
+    The row is what the community's budget sums (``src.metrics.budget``). See
+    ``_overview_metrics`` for what it carries.
+    """
+    http_request.state.metrics_agent_data = _overview_metrics(route, usage, error_message)
+
+
+@dataclass
+class _OverviewSpend:
+    """What an overview's model call spent, and who books it.
+
+    Normally the request that started the call books it, on its own row (written by the
+    metrics middleware). When that request is cancelled (the reader left) the call goes on,
+    because others may be waiting on it and its result is cached, so the call's own tail
+    books the cost instead, on a 499 row: once, whoever is still waiting.
+    """
+
+    route: RequestRoute
+    http_request: Request
+    community_id: str
+    called: bool = False
+    finished: bool = False
+    abandoned: bool = False
+    booked: bool = False
+    usage: TokenUsage | None = None
+
+    def usage_of_this_request(self) -> TokenUsage | None:
+        """None when this request called no model (it hit the cache or joined a call);
+        zero tokens, read as missing, when its call reported none."""
+        if not self.called:
+            return None
+        return self.usage if self.usage is not None else TokenUsage(0, 0, 0)
+
+    def abandon(self) -> None:
+        """The request that started the call is gone: book the call's cost on its own row."""
+        if not self.called:
+            return
+        self.abandoned = True
+        if self.finished:
+            self.book()
+
+    def finish(self) -> None:
+        """The call has ended (answered, unanswered or failed)."""
+        self.finished = True
+        if self.abandoned:
+            self.book()
+
+    def book(self) -> None:
+        if self.booked:
+            return
+        self.booked = True
+        state = self.http_request.state
+        try:
+            data = _overview_metrics(
+                self.route,
+                self.usage_of_this_request(),
+                "client disconnected before the overview was returned",
+            )
+            started = getattr(state, "start_time", None)
+            log_request(
+                RequestLogEntry(
+                    request_id=getattr(state, "request_id", str(uuid.uuid4())),
+                    timestamp=now_iso(),
+                    endpoint=self.http_request.url.path,
+                    method=self.http_request.method,
+                    community_id=self.community_id,
+                    duration_ms=(
+                        round((time.monotonic() - started) * 1000, 1) if started else None
+                    ),
+                    status_code=CLIENT_DISCONNECTED_STATUS,
+                    **data,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Failed to book the spend of an abandoned overview for community %s",
+                self.community_id,
+            )
 
 
 class UnansweredReply(Exception):
@@ -2767,11 +3316,14 @@ def create_community_router(community_id: str) -> APIRouter:
         **Cache Optimization:**
         Pass a stable user ID in the `X-User-ID` header for better cache hit rates.
         """
+        # The reader's usage-data choice, read by every writer of this request's row.
+        http_request.state.share_usage = body.share_usage
         # Extract origin for authorization
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
         if body.stream:
+            _claim_metrics_row(http_request)
             return StreamingResponse(
                 _stream_ask_response(
                     community_id,
@@ -2799,6 +3351,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 user_id=x_user_id,
                 requested_model=body.model,
                 page_context=body.page_context,
+                trace=body.share_usage,
             )
             messages = [HumanMessage(content=body.question)]
             result = await awm.assistant.ainvoke(messages, config=awm.langfuse_config)
@@ -2838,11 +3391,142 @@ def create_community_router(community_id: str) -> APIRouter:
             ) from e
 
     @router.post(
+        "/overview",
+        response_model=OverviewResponse,
+        responses={
+            200: {"description": "The overview, as text and result-id segments"},
+            403: {"description": "No authorized origin and no BYOK key"},
+            404: {"description": "The community has no quick model"},
+            422: {"description": "The query, filters or results are out of bounds"},
+            502: {"description": "The model wrote nothing that could be shown"},
+        },
+    )
+    async def overview(
+        body: OverviewRequest,
+        http_request: Request,
+        _auth: RequireAuth,
+        x_anthropic_key: Annotated[
+            str | None, Header(alias=anthropic_key_header.model.name)
+        ] = None,
+        x_openrouter_key: Annotated[
+            str | None, Header(alias=openrouter_key_header.model.name)
+        ] = None,
+        x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
+    ) -> OverviewResponse:
+        """A short, cited overview of the top results of a search, on the quick model.
+
+        The caller sends the query, its filters and up to 10 results; the community's
+        quick model writes a summary of at most about 100 words, as text and result-id
+        segments, with up to 3 picks. Only ids from the request's results can appear.
+
+        The overview is cached in memory for 24 hours, keyed on the normalized query, the
+        filters and the results, and identical requests in flight share one model call.
+        See `.context/api-structure.md`.
+        """
+        config = info.community_config
+        if config is None or not config.quick_model:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Community '{community_id}' has no quick model, so no search overview.",
+            )
+        origin = http_request.headers.get("origin")
+        byok = resolve_byok(x_anthropic_key, x_openrouter_key)
+        route = _route_request(info, community_id, byok, origin, None, tier="quick")
+        _check_model_cost(route.model, route.choice.key_source)
+
+        spend = _OverviewSpend(route=route, http_request=http_request, community_id=community_id)
+
+        async def compute() -> OverviewResponse:
+            spend.called = True
+            try:
+                chat_model = _build_chat_model(
+                    route,
+                    community_id,
+                    byok=byok,
+                    user_id=x_user_id,
+                    reasoning_effort=OVERVIEW_REASONING_EFFORT,
+                    max_tokens=OVERVIEW_MAX_TOKENS,
+                )
+                try:
+                    run = await generate_overview(chat_model, body, model=route.model)
+                except OverviewUnanswered as unanswered:
+                    spend.usage = unanswered.usage
+                    raise
+                spend.usage = run.usage
+                return run.response
+            finally:
+                spend.finish()
+
+        usage_of_this_request = spend.usage_of_this_request
+
+        try:
+            answer, source = await overview_caches.for_community(community_id).get_or_compute(
+                cache_key(body), compute
+            )
+        except asyncio.CancelledError:
+            # The reader left. The call goes on for whoever else waits on it, so its cost
+            # is booked by the call, not lost with this request's row.
+            spend.abandon()
+            raise
+        except OverviewUnanswered as unanswered:
+            logger.warning(
+                "Search overview for community %s had no sentence to show: %s",
+                community_id,
+                unanswered.reason,
+                extra={"community_id": community_id, "model": route.model},
+            )
+            _set_overview_metrics(
+                http_request, route, usage_of_this_request(), error_message=unanswered.reason
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="The model wrote no overview that could be shown. Try again.",
+            ) from unanswered
+        except Exception as error:
+            failure = classify_model_error(error)
+            error_id = str(uuid.uuid4())
+            logger.error(
+                "Search overview failed for community %s (ID: %s): %s [%s]: %s",
+                community_id,
+                error_id,
+                failure.detail,
+                failure.kind,
+                exception_text(error),
+                extra={"community_id": community_id, "error_id": error_id, "model": route.model},
+                # A provider's failure says what it was; anything else is our own bug or
+                # configuration, which needs its traceback.
+                exc_info=None if failure.from_provider else error,
+            )
+            _set_overview_metrics(
+                http_request, route, usage_of_this_request(), error_message=failure.detail
+            )
+            if not failure.from_provider:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Internal server error (ID: {error_id}). "
+                    "Please contact support if the issue persists.",
+                ) from error
+            raise HTTPException(
+                status_code=502,
+                detail=f"The model could not write an overview (ID: {error_id}). Try again.",
+            ) from error
+
+        _set_overview_metrics(http_request, route, usage_of_this_request())
+        return answer if source == "computed" else answer.model_copy(update={"cached": True})
+
+    @router.post(
         "/chat",
         response_model=ChatResponse,
         responses={
             200: {"description": "Successful response"},
             400: {"description": "Invalid request"},
+            409: {
+                "description": (
+                    "`expect_session` was set, no `prior_turns` came with it, and the server "
+                    "holds no live session for `session_id`. Body: `detail` (text) and "
+                    f"`code` ({SESSION_UNKNOWN_CODE!r}). Nothing was created or run."
+                ),
+            },
             500: {"description": "Internal server error"},
             502: {
                 "model": UnansweredReplyResponse,
@@ -2880,26 +3564,65 @@ def create_community_router(community_id: str) -> APIRouter:
         **Cache Optimization:**
         Pass a stable user ID in the `X-User-ID` header for better cache hit rates.
         """
+        # The reader's usage-data choice, read by every writer of this request's row.
+        http_request.state.share_usage = body.share_usage
         # Extract origin for authorization
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
+        # A client that stopped sending its turns because the server confirmed the session
+        # asks to be told when the server has lost it. Checked before anything is created
+        # or claimed, so a refused request leaves no session, no usage row and no stream.
+        if (
+            body.expect_session
+            and body.session_id
+            and not body.prior_turns
+            and get_session(community_id, body.session_id) is None
+        ):
+            logger.info(
+                "Refused /chat for session %s: expected a live session, the server holds none",
+                body.session_id,
+                extra={"community_id": community_id, "reason": SESSION_UNKNOWN_CODE},
+            )
+            # An expected recovery (a restart or an eviction), not a failed request: the
+            # middleware writes no stub row for it, so it is not counted as an error.
+            http_request.state.metrics_logged = True
+            return JSONResponse(
+                status_code=409,
+                content={"detail": SESSION_UNKNOWN_DETAIL, "code": SESSION_UNKNOWN_CODE},
+            )
+
         session = get_or_create_session(community_id, body.session_id)
         user_id = x_user_id or session.session_id
+        # Only a session this request just made is seeded: one that has messages is the
+        # server's own record and is never overwritten by a client's.
+        turns = body.prior_turns
 
         # The person moved on instead of answering a browser call. Close it out before
         # anything else: leaving an assistant message with tool_calls and no matching
         # result makes the provider reject EVERY later turn, not just this one.
-        if session.abandon_pending_call("the conversation moved on before it was run"):
+        if session.abandon_pending_call("the conversation moved on before it was answered"):
             logger.info("Abandoned an unanswered browser call on session %s", session.session_id)
 
         # Add user message with constraint validation
         try:
-            session.add_user_message(body.message)
+            if turns and not session.messages:
+                _restore_tier(community_id, session, body)
+                session.reseed(turns, body.message)
+                logger.info(
+                    "Reseeded session %s from %d prior turns (mode: %s)",
+                    session.session_id,
+                    len(turns),
+                    session.mode,
+                    extra={"community_id": community_id, "reseeded": True},
+                )
+            else:
+                session.add_user_message(body.message)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
         if body.stream:
+            _claim_metrics_row(http_request)
             return StreamingResponse(
                 _stream_chat_response(
                     community_id,
@@ -2930,11 +3653,12 @@ def create_community_router(community_id: str) -> APIRouter:
                 requested_model=body.model,
                 page_context=body.page_context,
                 session_id=session.session_id,
+                trace=body.share_usage,
             )
             result = await awm.assistant.ainvoke(session.messages, config=awm.langfuse_config)
 
             ar = _extract_agent_result(result)
-            _set_metrics_on_request(http_request, awm, ar)
+            _set_metrics_on_request(http_request, awm, ar, conversation_id=session.conversation_id)
             warnings = _check_unstreamed_reply(
                 http_request, community_id, f"/{community_id}/chat", awm, ar
             )
@@ -3024,6 +3748,8 @@ def create_community_router(community_id: str) -> APIRouter:
         only ever learns from a `tool_request` on its own stream, and it is accepted at
         most once.
         """
+        # The reader's usage-data choice, read by every writer of this request's row.
+        http_request.state.share_usage = body.share_usage
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
@@ -3037,9 +3763,25 @@ def create_community_router(community_id: str) -> APIRouter:
             route_info = registry.get(community_id)
             if route_info is None:
                 raise HTTPException(status_code=404, detail="Unknown community.")
-            # A probe: the stream routes this request again, and that one logs.
+            # A probe: the stream routes this request again, and that one logs. It runs
+            # on the tier the stream will, which is the session's: a resume always
+            # continues on the model its turn began on.
+            probed = get_session(community_id, body.session_id)
             allow_images = _route_request(
-                route_info, community_id, byok, origin, body.model, log=False
+                route_info,
+                community_id,
+                byok,
+                origin,
+                body.model,
+                log=False,
+                tier=tier_for_turn(
+                    route_info.community_config,
+                    set(body.client_tools),
+                    body.model,
+                    session_mode=probed.mode if probed else "quick",
+                    message=None,
+                    resuming=True,
+                ),
             ).choice.takes_native_blocks
         except HTTPException as err:
             logger.debug(
@@ -3053,6 +3795,29 @@ def create_community_router(community_id: str) -> APIRouter:
         session = get_session(community_id, body.session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found or expired.")
+
+        # The kind of answer must match the kind of call, and is checked BEFORE the claim:
+        # a claim clears the parked call, so a refusal after it would strand a plan the
+        # reader can still answer. A plan answered with a code result, or a code call
+        # answered with a decision, is the caller's mistake, and the call stays parked
+        # so the right answer can still arrive. Only the outstanding call's own id is
+        # compared; any other id is refused by the claim below like it always was.
+        parked = session.pending_call
+        if (
+            parked is not None
+            and parked.call_id == body.result.call_id
+            and (parked.tool == PROPOSE_PLAN_TOOL_NAME) != isinstance(body.result, PlanDecision)
+        ):
+            logger.info(
+                "Browser result refused for session %s: the answer is not the kind %s takes",
+                session.session_id,
+                parked.tool,
+                extra={"session_id": session.session_id, "reason": "result_kind_mismatch"},
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="That answer is not the kind the outstanding browser call takes.",
+            )
 
         # Synchronous by construction; see ChatSession.claim_pending_call. One refusal
         # for all three cases, because telling a caller WHICH of "no call outstanding",
@@ -3077,11 +3842,18 @@ def create_community_router(community_id: str) -> APIRouter:
         # have nothing left to abandon. Nothing in these two builders can raise today;
         # the re-park is here so that stays true when someone adds something that can.
         try:
-            live_messages = [
-                *session.messages,
-                build_live_tool_message(body.result, allow_images=allow_images),
-            ]
-            session.messages.append(build_history_tool_message(body.result))
+            if isinstance(body.result, PlanDecision):
+                # A decision carries no image, so the live and the stored message are one
+                # object, built once.
+                decision_message = build_plan_tool_message(body.result, pending.args)
+                live_messages = [*session.messages, decision_message]
+                session.messages.append(decision_message)
+            else:
+                live_messages = [
+                    *session.messages,
+                    build_live_tool_message(body.result, allow_images=allow_images),
+                ]
+                session.messages.append(build_history_tool_message(body.result))
         except Exception:
             session.set_pending_call(pending)
             logger.exception(
@@ -3092,6 +3864,7 @@ def create_community_router(community_id: str) -> APIRouter:
             )
             raise
 
+        _claim_metrics_row(http_request)
         return StreamingResponse(
             _stream_chat_response(
                 community_id,
@@ -3456,6 +4229,8 @@ def create_community_router(community_id: str) -> APIRouter:
                     tools.append(f"search_{config.id}_faq")
                 if config.discourse:
                     tools.append(f"search_{config.id}_forum")
+                if config.procedures:
+                    tools.append(GET_PROCEDURE_TOOL_NAME)
                 result["available_tools_list"] = tools
             except (AttributeError, TypeError) as e:
                 logger.error(
@@ -3670,6 +4445,9 @@ def _tool_call_sse_events(
     run: `run_id` keeps the runs of one turn apart, since their indices restart at 0.
     `announced` belongs to the caller, one per stream, and remembers what was sent.
 
+    The `start_analysis` call is never announced: it is not a tool the reader's client
+    runs or shows, it ends the quick turn and the stream moves on to the analysis run.
+
     Never raises. This is a courtesy to the reader, and a stream must not fail over it.
     """
     try:
@@ -3682,6 +4460,11 @@ def _tool_call_sse_events(
                 continue
             name = call.get("name")
             if not isinstance(name, str) or not name.strip():
+                continue
+            if name.strip() == START_ANALYSIS_TOOL_NAME:
+                # Not a tool the reader's client runs or shows: calling it ends the quick
+                # turn and the stream moves on to the analysis run. Announcing it would
+                # leave a "writing" label with no tool_start or tool_end after it.
                 continue
             index = call.get("index")
             call_id = call.get("id")
@@ -3733,6 +4516,89 @@ def _extract_token_usage(event_data: dict) -> tuple[int, int, int, int]:
         return 0, 0, 0, 0
 
 
+def _claim_metrics_row(http_request: Request | None) -> None:
+    """Tell the metrics middleware that a streamed request logs its own row.
+
+    The middleware decides whether to write its stub row (no model, no tokens) as soon as
+    the response starts, which for a stream is before the generator has run, so a route
+    that streams calls this before it returns the ``StreamingResponse`` (issue #687). The
+    generator then owes the request exactly one row: it writes it where the stream ends,
+    and ``_log_unfinished_stream``, in the generator's outermost ``finally``, writes one
+    when the stream ended without reaching that call (the reader disconnected, or
+    something raised first). ``_log_streaming_metrics`` records that the row was written
+    in ``request.state.stream_row_written``, which is separate from ``metrics_logged`` so
+    the middleware stays quiet either way.
+    """
+    if http_request:
+        http_request.state.metrics_logged = True
+
+
+#: Status recorded for a stream whose reader went away before the reply finished (the
+#: non-standard 499 "client closed request" that nginx also uses).
+CLIENT_DISCONNECTED_STATUS = 499
+
+
+def _log_unfinished_stream(
+    http_request: Request | None,
+    community_id: str,
+    endpoint: str,
+    awm: AssistantWithMetrics | None,
+    tools_called: list[str],
+    start_time: float,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    longest_prompt_tokens: int | None = None,
+    tier: Tier | None = None,
+    conversation_id: str | None = None,
+) -> None:
+    """Write the request's row when a stream ended without writing one.
+
+    Called from a streaming generator's outermost ``finally``. Every normal ending logs
+    its row just after yielding its last event, so a generator closed at (or before) that
+    yield, by the reader disconnecting or by the server cancelling the task, never gets to
+    it, and the middleware has been told to stay quiet (``_claim_metrics_row``). Without
+    this the request would leave no row at all. The call is synchronous, so it runs to the
+    end inside a closing or cancelled generator.
+
+    A closed generator or a cancelled task is recorded as status 499 ("client
+    disconnected"); an exception that escaped is recorded as 500 with its type; a
+    generator that simply returned without a row is a 500 too, since that is a path that
+    should have logged. The tokens are those counted so far, so a reply cut short is still
+    priced for what was spent. Does nothing once the request's row exists.
+    """
+    if http_request is None or getattr(http_request.state, "stream_row_written", False):
+        return
+    escaped = sys.exc_info()[1]
+    if escaped is None:
+        status_code = 500
+        error_message = "stream ended without logging a row"
+    elif isinstance(escaped, GeneratorExit | asyncio.CancelledError):
+        status_code = CLIENT_DISCONNECTED_STATUS
+        error_message = "client disconnected"
+    else:
+        status_code = 500
+        error_message = type(escaped).__name__
+    _log_streaming_metrics(
+        http_request=http_request,
+        community_id=community_id,
+        endpoint=endpoint,
+        awm=awm,
+        tools_called=tools_called,
+        start_time=start_time,
+        status_code=status_code,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        error_message=error_message,
+        longest_prompt_tokens=longest_prompt_tokens,
+        tier=tier,
+        conversation_id=conversation_id,
+    )
+
+
 def _log_streaming_metrics(
     http_request: Request | None,
     community_id: str,
@@ -3747,6 +4613,9 @@ def _log_streaming_metrics(
     cache_creation_tokens: int = 0,
     error_message: str | None = None,
     longest_prompt_tokens: int | None = None,
+    request_id_suffix: str = "",
+    tier: Tier | None = None,
+    conversation_id: str | None = None,
 ) -> None:
     """Log metrics at the end of a streaming response.
 
@@ -3754,6 +4623,15 @@ def _log_streaming_metrics(
     before streaming completes. Wrapped in try/except to never disrupt
     the SSE stream on failure. ``error_message`` says why a row that is an error
     (status 400 and up) is one.
+
+    ``request_id_suffix`` is for a request that logs a second row: a handover logs the
+    quick model's work (its run and the summary) under ``<request id>:quick``, so the
+    request id the widget's feedback joins on (``done.request_id``) names one row, the
+    analysis run's, and the quick row is found next to it by its prefix.
+
+    ``tier`` is the model tier the row ran on (None for a community that does not route),
+    and ``conversation_id`` groups the rows of one conversation across a handover; both
+    are what ``osa metrics cost-report`` prices quick against analysis with.
     """
     try:
         duration_ms = (time.monotonic() - start_time) * 1000
@@ -3762,6 +4640,7 @@ def _log_streaming_metrics(
             request_id = getattr(http_request.state, "request_id", request_id)
             # Mark as logged so middleware doesn't double-log
             http_request.state.metrics_logged = True
+        request_id += request_id_suffix
 
         total_tokens = input_tokens + output_tokens
         has_tokens = total_tokens > 0
@@ -3798,8 +4677,13 @@ def _log_streaming_metrics(
             total_tokens=total_tokens if has_tokens else None,
             estimated_cost=cost,
             error_message=error_message,
+            tier=tier,
+            conversation_id=conversation_id,
+            share_usage=_shares_usage(http_request),
         )
         log_request(entry)
+        if not request_id_suffix and http_request:
+            http_request.state.stream_row_written = True
     except Exception:
         logger.exception(
             "Failed to log streaming metrics for %s (community=%s, status=%d)",
@@ -4131,6 +5015,7 @@ async def _stream_ask_response(
             requested_model=requested_model,
             preload_docs=True,
             page_context=page_context,
+            trace=_shares_usage(http_request),
         )
         graph = awm.assistant.build_graph()
 
@@ -4404,6 +5289,21 @@ async def _stream_ask_response(
             error_message=failure.detail,
         )
 
+    finally:
+        _log_unfinished_stream(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/ask",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
+            longest_prompt_tokens=longest_prompt_tokens,
+        )
+
 
 def _finish_with_tool_request(
     session: ChatSession,
@@ -4466,6 +5366,7 @@ async def _stream_chat_response(
     carried_citations: Sequence[CitationMark] = (),
     browser_runs_answered: int = 0,
     code_runs_answered: int = 0,
+    turn_claimed: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -4476,16 +5377,40 @@ async def _stream_chat_response(
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "session", "session_id": "..."}  (sent first)
+        data: {"event": "handover", "stage": "summarizing"}
+        data: {"event": "handover", "stage": "summarized", "messages": 4, "words": 90,
+               "summary": "...", "degraded": true}  (`degraded` only when the quick model
+               failed and the summary is the reader's own words)
+        data: {"event": "handover", "stage": "started", "session_id": "...", "model": "..."}
+               (see "Handover" below; only a community that routes between two models)
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
         data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done;
                `codes` lists every kind when more than one applies)
         data: {"event": "done", "session_id": "...", "request_id": "...", "model": "...", "content": "final answer", "citations": [...],
-               "usage": {...}}  (`usage`: this run's tokens, cache tokens and estimated cost, or null;
-               see ReplyUsage, whose `input_tokens` includes the cached ones)
+               "usage": {...}, "mode": "quick"}  (`usage`: this run's tokens, cache tokens and
+               estimated cost, or null; see ReplyUsage, whose `input_tokens` includes the
+               cached ones; `mode`: "quick" or "analysis", the tier the turn ran on, present
+               only on a request that is routed between the two)
         data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
                "retryable": true, "suggested_model": {"id": "claude-haiku-5-5", "label": "..."}}
                (ends the stream, no `done`; `retryable` only when known; `suggested_model` only
                when the message tells the reader to try another model, and names it)
+
+    **Handover.** A community that sets `quick_model` and `analysis_model` answers most
+    turns on the quick model. A turn that asks to run code, plot or analyze, or in which the
+    quick model calls `start_analysis`, moves to the analysis model, never by switching
+    models inside a session (issue #522) but into a NEW session. When the conversation has
+    earlier turns, three `handover` events come first, in this order: `summarizing`; then
+    `summarized`, with the summary the analysis model is told (at most 150 words, written
+    by the quick model), `messages`, how many earlier messages it stands for, and `words`;
+    then `started`, with the new `session_id` and the analysis `model`. The analysis run
+    then streams as any turn does, on the new session: its own `session` event and
+    `done.session_id` carry the new id, which the client adopts. The old session is left as
+    it was, valid and on the quick model. A first message has no earlier turns to
+    summarize: its own session is flipped to analysis and no `handover` event is sent.
+    A session that is already in analysis stays there. Routing applies only to a request
+    that declares `execute_code` and names no `model`, and `/chat/resume` always runs on
+    its session's tier. A client that does not know the `handover` events ignores them.
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
@@ -4526,6 +5451,12 @@ async def _stream_chat_response(
     `code_runs_answered` is how many of those were runs of code the widget keeps on the
     reply (`PendingClientCall.runs_code`): a reply with one is shown even when it ends
     with no text, so it is what decides whether an empty ending is an error.
+
+    `turn_claimed` is True when the caller already holds `session`'s turn (`begin_turn`):
+    a handover claims the session it opens, and a first message that calls
+    `start_analysis` keeps its own claim, because releasing and re-claiming across this
+    function's first `yield` would leave the session open to a second request in between.
+    The turn is released in this function's `finally` either way.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -4537,6 +5468,11 @@ async def _stream_chat_response(
     longest_prompt_tokens = 0
     model_runs = ModelRuns()
     retry = RetryState()
+    # The tier of the model whose work this request's metrics row records, set once the
+    # turn is routed (see `row_tier` below). None for a community that does not route.
+    row_tier: Tier | None = None
+    # Set once the turn is routed; read by the `finally` that logs an unfinished stream.
+    handing_over = False
 
     # The metrics middleware assigns a per-request UUID. The widget attaches the one on the
     # final `done` event to a reply for feedback, which joins it back to request_log, so it
@@ -4557,7 +5493,7 @@ async def _stream_chat_response(
     sse_event = {"event": "session", "session_id": session.session_id}
     yield f"data: {json.dumps(sse_event)}\n\n"
 
-    if not session.begin_turn():
+    if not turn_claimed and not session.begin_turn():
         # Refusing is the honest answer. Running anyway means both turns write the
         # whole message list back and the later one silently discards the earlier,
         # including any browser call it had parked.
@@ -4579,6 +5515,17 @@ async def _stream_chat_response(
             )
             + "\n\n"
         )
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=metrics_endpoint,
+            awm=None,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=409,
+            error_message="a reply is already in progress on this session",
+            conversation_id=session.conversation_id,
+        )
         return
 
     try:
@@ -4593,18 +5540,161 @@ async def _stream_chat_response(
             # a server fault and goes to the generic handler with an error id.
             raise RuntimeError(f"the parked call's citations are malformed: {e}") from e
 
+        # Which model tier this turn runs on, or None when the request is not routed
+        # (see src.agents.model_routing). A resume runs on its session's tier.
+        routing_info = registry.get(community_id)
+        routing_config = routing_info.community_config if routing_info else None
+        resuming = initial_messages is not None
+        reader_message, earlier_messages = reader_turn(session.messages)
+        if session.reseeded_as and reader_message == session.reseeded_as.stored:
+            # The first message of a reseeded session holds a transcript as well as the
+            # reader's words; only the words can ask for analysis.
+            reader_message = session.reseeded_as.reader_message
+        tier = tier_for_turn(
+            routing_config,
+            declared_client_tools,
+            requested_model,
+            session_mode=session.mode,
+            message=reader_message,
+            resuming=resuming,
+        )
+        # A message that asks for analysis in a session still on the quick model: the
+        # quick model writes the summary, and a new session runs the analysis.
+        handing_over = tier == "analysis" and session.mode == "quick"
+        if handing_over and not earlier_messages:
+            # Nothing to summarize on a first message: this session simply runs analysis.
+            session.mode = "analysis"
+            handing_over = False
+        # What this request's own row says it ran on: a handover's request row is the
+        # analysis run's, but until the analysis session starts the assistant in hand is
+        # the quick model, and an error before that is the quick model's.
+        row_tier = "quick" if handing_over else tier
+
+        def run_on(target: ChatSession) -> AsyncGenerator[str, None]:
+            """The analysis turn on `target`, through this same path."""
+            return _stream_chat_response(
+                community_id,
+                target,
+                byok,
+                origin,
+                user_id,
+                None,
+                page_context=page_context,
+                http_request=http_request,
+                declared_client_tools=declared_client_tools,
+                endpoint=endpoint,
+                turn_claimed=True,
+            )
+
+        quick_row_logged = False
+
+        def log_quick_row(summary: Summary | None) -> None:
+            """Log what the quick model did for a handover, as its own row, once.
+
+            That is the quick run that called `start_analysis` (none, for a keyword
+            handover) and the summary. The analysis run logs the request's own row
+            under `request_id`; this one is `request_id:quick`, so a feedback vote
+            (`done.request_id`) joins one row, and each row is priced at its own
+            model. Nothing is logged when the quick model did no work to account for.
+            """
+            nonlocal quick_row_logged
+            if quick_row_logged:
+                return
+            quick_row_logged = True
+            input_tokens = total_input_tokens
+            output_tokens = total_output_tokens
+            cache_read = total_cache_read_tokens
+            cache_creation = total_cache_creation_tokens
+            longest = longest_prompt_tokens
+            if summary is not None and summary.response is not None:
+                s_in, s_out, s_read, s_creation = _extract_token_usage({"output": summary.response})
+                input_tokens += s_in
+                output_tokens += s_out
+                cache_read += s_read
+                cache_creation += s_creation
+                longest = max(longest, s_in)
+                model_runs.note(summary.response)
+            if not (model_runs.runs or tools_called):
+                return
+            model_runs.warn_about_usage(
+                community_id=community_id,
+                model=awm.model if awm else None,
+                endpoint=metrics_endpoint,
+                request_id=request_id,
+            )
+            _log_streaming_metrics(
+                http_request=http_request,
+                community_id=community_id,
+                endpoint=metrics_endpoint,
+                awm=awm,
+                tools_called=tools_called,
+                tier=row_tier,
+                conversation_id=session.conversation_id,
+                start_time=start_time,
+                status_code=200,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_creation,
+                longest_prompt_tokens=longest,
+                request_id_suffix=":quick",
+            )
+
+        def open_analysis_session() -> ChatSession:
+            """The new session a handover runs the analysis on, in the same conversation."""
+            analysis_session = get_or_create_session(community_id, None)
+            analysis_session.conversation_id = session.conversation_id
+            return analysis_session
+
+        async def hand_over() -> AsyncGenerator[str, None]:
+            """Summarize this session on the quick model; run the analysis on a new one."""
+            # Handing over needs a routing config, and `awm` is built before this runs.
+            assert routing_info is not None
+            assert awm is not None
+            analysis_route = _route_request(
+                routing_info, community_id, byok, origin, None, log=False, tier="analysis"
+            )
+            try:
+                async for line in stream_handover(
+                    summarizer=awm.assistant.model,
+                    history=session.handover_history(earlier_messages),
+                    reader_message=reader_message,
+                    open_session=open_analysis_session,
+                    analysis_model=analysis_route.model,
+                    run_analysis=run_on,
+                    summarizer_config=awm.langfuse_config,
+                    record_summary=log_quick_row,
+                ):
+                    yield line
+            finally:
+                # A no-op once the summary has been logged; the row for a request that
+                # ended while the summary was being written.
+                log_quick_row(None)
+
+        routing_kwargs: dict[str, Any] = {}
+        if tier is not None:
+            # Only a routed request passes a tier, so a community that does not route
+            # calls this exactly as it always did.
+            routing_kwargs["tier"] = "quick" if handing_over else tier
         awm = create_community_assistant(
             community_id,
             byok=byok,
             origin=origin,
             user_id=user_id,
             requested_model=requested_model,
-            preload_docs=True,
+            preload_docs=not handing_over,
             page_context=page_context,
             declared_client_tools=declared_client_tools,
             browser_runs_left=MAX_BROWSER_RUNS_PER_REPLY - browser_runs_answered,
             session_id=session.session_id,
+            trace=_shares_usage(http_request),
+            **routing_kwargs,
         )
+        if handing_over:
+            async with contextlib.aclosing(hand_over()) as handed_over:
+                async for line in handed_over:
+                    yield line
+            return
         graph = awm.assistant.build_graph()
 
         # `initial_messages` is how run 2 of a browser-execution turn seeds the graph:
@@ -4751,6 +5841,31 @@ async def _stream_chat_response(
             yield f"data: {json.dumps({'event': 'error', 'message': 'The assistant could not start a browser task.', 'error_id': error_id})}\n\n"
             return
 
+        if (
+            pending_payload
+            and tier == "quick"
+            and pending_payload.get("tool") == START_ANALYSIS_TOOL_NAME
+        ):
+            # The quick model asked for the analysis model. Not a tool_request, because
+            # no browser runs anything: the parked call is dropped with the rest of this
+            # run's state, so the session never holds a tool call with no result.
+            # Its row is logged by `log_quick_row`, with the summary's tokens, once the
+            # summary is written (a first message has none, and logs it just below).
+            tools_called.append(START_ANALYSIS_TOOL_NAME)
+            if earlier_messages:
+                source = hand_over()
+            else:
+                # A first message: no summary, and the same session runs the analysis.
+                # Its claim is passed on, not released, so no request can take the
+                # session while the run below sends its first event.
+                session.mode = "analysis"
+                log_quick_row(None)
+                source = run_on(session)
+            async with contextlib.aclosing(source) as handed_over:
+                async for line in handed_over:
+                    yield line
+            return
+
         if pending_payload:
             # Recorded like any other tool use. `on_tool_start` never fires for a
             # client tool, on either run: run 1 parks it instead of invoking it, and
@@ -4792,6 +5907,8 @@ async def _stream_chat_response(
                 endpoint=metrics_endpoint,
                 awm=awm,
                 tools_called=tools_called,
+                tier=row_tier,
+                conversation_id=session.conversation_id,
                 start_time=start_time,
                 status_code=200,
                 input_tokens=total_input_tokens,
@@ -4837,6 +5954,8 @@ async def _stream_chat_response(
                 endpoint=metrics_endpoint,
                 awm=awm,
                 tools_called=tools_called,
+                tier=row_tier,
+                conversation_id=session.conversation_id,
                 start_time=start_time,
                 status_code=502,
                 input_tokens=total_input_tokens,
@@ -4867,6 +5986,8 @@ async def _stream_chat_response(
                     endpoint=metrics_endpoint,
                     awm=awm,
                     tools_called=tools_called,
+                    tier=row_tier,
+                    conversation_id=session.conversation_id,
                     start_time=start_time,
                     status_code=500,
                     input_tokens=total_input_tokens,
@@ -4919,6 +6040,8 @@ async def _stream_chat_response(
                 request_id=request_id,
             ),
         }
+        if tier is not None:
+            sse_event["mode"] = tier
         yield f"data: {json.dumps(sse_event)}\n\n"
 
         # Log metrics at end of streaming
@@ -4928,6 +6051,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=200,
             input_tokens=total_input_tokens,
@@ -4955,6 +6080,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=e.status_code,
             input_tokens=total_input_tokens,
@@ -4995,6 +6122,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=status_code,
             input_tokens=total_input_tokens,
@@ -5023,6 +6152,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
             start_time=start_time,
             status_code=500,
             input_tokens=total_input_tokens,
@@ -5045,4 +6176,21 @@ async def _stream_chat_response(
         # Anthropic (langchain-anthropic's own `_merge_messages`). The OpenRouter path merges
         # nothing: LiteLLM sends two consecutive user messages, which the OpenAI-style chat
         # format allows.
+        # What the request spent is the quick row's when it handed over (the analysis run,
+        # on the new session, writes this request's row itself), so none is counted here.
+        _log_unfinished_stream(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=metrics_endpoint,
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            input_tokens=0 if handing_over else total_input_tokens,
+            output_tokens=0 if handing_over else total_output_tokens,
+            cache_read_tokens=0 if handing_over else total_cache_read_tokens,
+            cache_creation_tokens=0 if handing_over else total_cache_creation_tokens,
+            longest_prompt_tokens=None if handing_over else longest_prompt_tokens,
+            tier=row_tier,
+            conversation_id=session.conversation_id,
+        )
         session.end_turn()

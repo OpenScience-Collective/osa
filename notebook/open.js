@@ -30,8 +30,10 @@
  * function above `main()` touches no `document`, `window`, `fetch` or
  * `localforage` -- only plain data -- so `notebook/test-open.js` runs them under
  * Bun exactly as they run in a browser. `main()` is the only part that needs a
- * real page, and only runs when `document` exists, so importing this module for
- * its pure functions never fires a network request or a storage write.
+ * real page, and only runs on a page with an #app element (open.html), so
+ * importing this module for its pure functions, as test-open.js does and as
+ * osa-notebook-files.js does inside the notebook page, never fires a network
+ * request or a storage write.
  */
 
 /** The token a starter notebook's cells carry (must match
@@ -357,7 +359,10 @@ async function main() {
   window.location.replace(`./notebooks/index.html?path=${encodeURIComponent(path)}`);
 }
 
-if (typeof document !== 'undefined') {
+// Only on the bootstrap page itself, the one with an #app element: osa-notebook-files.js
+// imports this module into the notebook page, where `document` exists too and
+// main() must not run.
+if (typeof document !== 'undefined' && document.getElementById('app')) {
   main().catch(() => {
     const app = document.getElementById('app');
     if (app) app.textContent = 'Something went wrong opening this notebook. Try again in a moment.';

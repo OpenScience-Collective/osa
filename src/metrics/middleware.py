@@ -5,8 +5,13 @@ For agent requests, the handler sets metrics on request.state which the
 middleware reads after the response completes.
 
 Streaming caveat: For streaming responses, the middleware fires before
-streaming completes. Streaming handlers log metrics directly at the end
-of the generator instead.
+streaming completes. Streaming handlers set ``request.state.metrics_logged``
+before they return the response (``_claim_metrics_row``), so the middleware
+writes no row for them, and the generator guarantees the request's one row
+instead: it logs at the end of the stream, or, if the stream is cut short
+(the reader disconnects, something raises), in its outermost ``finally``
+(``_log_unfinished_stream``), so no streamed request is left without a row
+and none has a stub beside the real one (issue #687).
 """
 
 import logging
@@ -22,7 +27,7 @@ from src.metrics.db import RequestLogEntry, log_request, now_iso
 logger = logging.getLogger(__name__)
 
 # Path suffixes that indicate a community-scoped route
-_COMMUNITY_SUFFIXES = {"ask", "chat", "sessions", "metrics", "config"}
+_COMMUNITY_SUFFIXES = {"ask", "chat", "overview", "sessions", "metrics", "config"}
 
 # Top-level path prefixes that are NOT community IDs
 _RESERVED_PREFIXES = {"health", "metrics", "sync", "docs", "redoc", "openapi.json", "frontend"}
@@ -89,6 +94,8 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                     "tool_call_count": agent_data.get("tool_call_count", 0),
                     "error_message": agent_data.get("error_message"),
                     "langfuse_trace_id": agent_data.get("langfuse_trace_id"),
+                    "tier": agent_data.get("tier"),
+                    "conversation_id": agent_data.get("conversation_id"),
                 }
 
             entry = RequestLogEntry(
@@ -99,6 +106,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                 community_id=community_id,
                 duration_ms=round(duration_ms, 1),
                 status_code=response.status_code,
+                share_usage=getattr(request.state, "share_usage", True),
                 **agent_kwargs,
             )
 

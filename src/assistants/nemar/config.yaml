@@ -12,12 +12,125 @@ status: available
 # to the newest model of its kind (MODEL_CLASSES in src/core/services/anthropic_models.py), so
 # this line stays as it is when a new generation arrives. Write a model id only to pin a generation.
 default_model: haiku
+# Turns are routed between two models (issue #670, plan E8). Most turns are questions and
+# search, which the quick model answers; a turn that asks to run code, plot or analyze is
+# handed to the analysis model in a NEW session, because switching models inside one
+# session would send the quick model's thinking blocks to a model that cannot take them
+# (issue #522). Both keys or neither; routing applies only to a request that declares
+# execute_code and names no model of its own.
+quick_model: haiku
+analysis_model: sonnet
 # The level every model this community runs is asked to reason at, on every provider
 # (issue #545): none, low, medium, high, xhigh or max. A model clamps it to the levels it
 # accepts (the Claude models never run above high). Haiku 5.5 defaults to medium, so high
 # is sent explicitly. high is also what a community that sets none gets; it is written out
 # here so the key is easy to find.
 reasoning_effort: high
+# Added to the analysis model's prompt, and only when the request declares `propose_plan`
+# (issues #660 and #661, plan E2): the server withholds it otherwise, so the prompt never names
+# a tool the model was not given. The widget declares `propose_plan` once its runtime bundle
+# has loaded (the plan card and step progress, E2.3 and E2.4), so this applies to every
+# analysis turn from a widget that has it.
+plan_first_instructions: |
+  ## Plan first, then run one step at a time
+
+  This applies only when the reader asks you to analyze, plot or compute something.
+  A plain question, such as what a dataset contains, how a tool works or which datasets
+  match a topic, gets a direct answer: no plan, no `propose_plan` call, no `execute_code`.
+
+  For a request to analyze, plot or compute, work in this order.
+
+  1. **Inspect first, without running code.**
+     Use `nemar_describe_dataset`, `nemar_get_events` and `nemar_list_recordings` to learn
+     what the data is: the task, the event types, the recordings and the channels.
+     Do not call `execute_code` yet.
+  2. **Report what you found** in one short paragraph the reader can check.
+  3. **Cut the plan into steps by kind of work**, so the same request always gets the same
+     steps. Use one step per kind, in this order, and leave out every kind the request does not
+     need: read the recording; inspect; preprocess; epoch; compute; plot.
+     - Inspect is a step only when the request depends on something you cannot know yet,
+       such as channel or event names the `nemar_*` calls in item 1 did not return;
+       otherwise there is no inspection step.
+     - Preprocess is ONE step for all filtering, re-referencing and artifact rejection.
+       Whatever it contains, title it "Filter and clean the recording" and put the specifics
+       (re-referencing, rejection) in its `detail`.
+     - Never fold plotting into computing, and never fold preparation (read, preprocess,
+       epoch) into the step that follows it.
+       Never split one kind of work across steps, except as item 4 requires to fit the
+       memory budget.
+     - The 3 to 6 steps of item 4 is applied after the kinds are chosen: a request that needs
+       only two kinds, such as read and plot, gets two steps, and you never split a kind of
+       work to reach 3.
+     - Open each `title` with the plain verb of its kind, then say what it works on.
+       These are examples; name each step for what it actually does:
+       "Read the recording", "Inspect the event names", "Filter and clean the recording",
+       "Epoch around the events", "Compute the band power", "Plot the result".
+  4. **Call `propose_plan`** with that paragraph as `findings`, 3 to 6 steps, each a short
+     `title` and a `detail` saying what that step's one code run does and produces, and
+     `est_peak_mb` for the largest step.
+     `est_peak_mb` must not exceed the reader's browser memory budget, which the
+     "Browser memory budget" section of this prompt states; when the largest step would,
+     split it into steps that read the data in pieces, so each fits.
+     Calling it ends your turn; write nothing after the call.
+     The reader may edit, add or remove steps before they decide.
+  5. **Follow the decision.**
+     - `approved`: run exactly one `execute_code` per step, in order, using the steps the
+       answer lists, as written (they are the reader's edited steps, which may differ from
+       yours). Do not merge steps, split them or add new ones.
+       If the run mode is `pause`, report what the step showed in a sentence or two and
+       stop; the reader will tell you to continue.
+       If the run mode is `run_all`, the reader will not tell you to continue: the plan
+       is shown to them as running, and a reply that ends after a step leaves it waiting
+       for a click they were told they would not have to make.
+       So after each step's result, call `execute_code` for the next step in the same turn,
+       and write no closing message until the last step has run.
+       A single sentence of what the step showed may come with the next call, never in
+       place of it.
+       Summarize the results once, after the last step.
+       If a step fails twice, or the plan needs a step it does not have, stop and say so as
+       item 6 and the rule below require.
+     - `changes_requested`: read the reader's feedback and any edits to the steps, revise the
+       plan and call `propose_plan` again. Run no code.
+  6. **When a step fails**, you may fix it once and run it again. If it fails again, stop,
+     say what went wrong, and let the reader decide.
+
+  Never run code that is not a step of the approved plan. If the work turns out to need a
+  step the plan does not have, stop and propose a new plan instead.
+
+# Known analysis procedures (#719): each a Markdown document in procedures/, listed in the
+# prompt by id, title and `when` and fetched by the model (get_procedure) before it proposes
+# a plan, so their text and code cost context only on the turns that use them. They are
+# offered only on a turn that can run code. The Welch block, the filter block, the scalp-map
+# block and the time-frequency block in them are run as written by frontend/test-data-lane.js.
+procedures:
+  - id: power-spectrum
+    title: Power spectrum
+    when: A power spectrum or power spectral density (PSD) of a recording, such as "show the power spectrum" or "plot the PSD"
+    file: procedures/power-spectrum.md
+  - id: band-power
+    title: Band power
+    when: The power of a recording in frequency bands (delta, theta, alpha, beta, or the reader's own), as a bar chart or a table of one value per band
+    file: procedures/band-power.md
+  - id: erp-by-condition
+    title: ERP by condition
+    when: The average ERP (evoked response) waveform at one channel, one line per condition, such as target against non-target or face against scrambled face
+    file: procedures/erp-by-condition.md
+  - id: erp-image-by-condition
+    title: ERP image by condition
+    when: An ERP image (single-trial epochs as the rows of an image, with the average beneath it) of a channel, one panel per condition
+    file: procedures/erp-image-by-condition.md
+  - id: band-power-topography
+    title: Band power topography
+    when: A scalp map or topography of the power in one frequency band, such as "plot the alpha topography" or "scalp map of mu, 8 to 12 Hz, power"
+    file: procedures/band-power-topography.md
+  - id: erp-topography
+    title: ERP topography
+    when: Scalp maps (topographies) of the ERP in a time window, one map per condition and their difference, such as "scalp maps of faces against cars from 150 to 190 ms"
+    file: procedures/erp-topography.md
+  - id: time-frequency-by-condition
+    title: Time-frequency by condition
+    when: An event-related spectral perturbation (ERSP), time-frequency map or spectrogram of a channel around events, one map per condition
+    file: procedures/time-frequency-by-condition.md
 
 # External links for dashboard and discovery
 links:
@@ -31,6 +144,10 @@ widget:
   title: NEMAR Assistant
   initial_message: "Hi! I'm the NEMAR Assistant. I can help you discover and explore BIDS-formatted EEG, MEG, and iEEG datasets from the NEMAR archive. What are you looking for?"
   placeholder: Search for datasets...
+  # nemar.org's dataset search page (#656): a conversation started there is about the
+  # search, and moving to a dataset page or back starts a new chat on the next message.
+  search_paths:
+    - /discover
   # nemar.org's own brand teal (#5bbad5, its --brand-teal), the exact color of its home
   # page search button. White text on it is only 2.2:1, so unlike the platform default
   # this surface pairs with a dark theme_text_color rather than white.
@@ -44,6 +161,9 @@ widget:
   # platform's blue-with-white-text.
   user_bubble_color: "#5bbad5"
   user_bubble_text_color: "#04121f"
+  # The Privacy choices dialog links here: NEMAR's own policy, whose assistant section
+  # covers the widget on nemar.org and links on to the OSA privacy page.
+  privacy_url: https://docs.nemar.org/policies/privacy/#the-open-science-assistant
   # theme_color used as a FOREGROUND on the widget's white panel (links, borders, focus
   # rings) reads poorly at brand-teal lightness, so this names a separate, darker step of
   # the same 193-degree hue for that use: nemar.org's brand teal darkened in lightness
@@ -69,6 +189,21 @@ widget:
   # the reader's own choice from nemar.org's theme button once the site passes it on
   # with setColorScheme (a website change, not yet made).
   color_scheme: auto
+  # The center-stage AI Mode dialog's start screen (E6.1, board C2): what the assistant
+  # can do, and what runs where. The widget carries no copy of its own about NEMAR.
+  center_start:
+    capabilities:
+      - title: Describe
+        text: "Summaries, methods and citations, from the dataset's own files."
+      - title: Look closer
+        text: "Events, channels and recordings, read live from NEMAR."
+      - title: Analyze
+        text: "Plans the steps with you, then runs Python in your browser."
+    note: "Code runs in your browser on NEMAR's streaming copy, which is lossy. Nothing you run is uploaded. AI can make mistakes."
+  # Linked from the start screen's "How it works" and from the widget's Settings.
+  analysis_docs:
+    title: Analyze data in your browser
+    url: https://docs.nemar.org/web/analyze-in-browser/
   suggested_questions:
     - Find EEG datasets with resting state recordings
     - What datasets have HED annotations?
@@ -269,31 +404,8 @@ system_prompt: |
     channels beside the EEG (ERP CORE's `eeg_250hz` has 30 EEG channels and three EOG,
     labeled `HEOG_left`, `HEOG_right` and `VEOG_lower`). Leave out every label that
     contains `EOG`, `ECG`, `EKG` or `EMG`, matched in upper case anywhere in the label
-    rather than by exact name, and say which you left out and how many EEG channels remain.
-  - **Power spectrum.** Welch's method over a long read (a minute or more, or the
-    whole recording), with 2-second segments, ONE CHANNEL AT A TIME and at most
-    `most` samples of it:
-
-    ```python
-    from scipy import signal
-    nperseg = int(2 * rate)
-    most = 2**28 // nperseg  # the most samples one welch call takes here
-    freqs = signal.welch(eeg[0, :most], fs=rate, nperseg=nperseg)[0]
-    power = np.array([signal.welch(ch[:most], fs=rate, nperseg=nperseg)[1] for ch in eeg])
-    ```
-
-    `signal.welch` makes a view of every window at once, and this runtime (32-bit
-    WebAssembly) refuses a view of 2 GiB or more, which is channels x samples x
-    nperseg x 8 bytes. So a channels-by-samples array raises "array is too big" even
-    at 33 channels by 30,000 samples, and so does one channel past `most` samples
-    (about 36 minutes at 250 Hz, 2 at 1000 Hz). Never pass it more than one channel,
-    and when `most` cut the read short, say how many seconds the spectrum covers.
-    Plot power on a log y-axis over the band that matters (1 to 40 Hz for most EEG).
-    Before drawing, set the y-limits from the median spectrum across channels in that
-    band: a third of its lowest value at the bottom, three times its highest at the top,
-    raised to include any peak you name. That keeps a flat or noisy channel from
-    squashing the rest; say how many channels fall outside, if any. Name any peak you
-    describe with its channel and frequency.
+    rather than by exact name, and say which you left out and how many EEG channels remain
+    (the code in the procedure documents prints the count and the labels it left out).
   - **Events.** Call `nemar_get_events` with `limit: 1` first. Its `columns_summary`
     lists every column and, when a column has few, its values, and that is where the
     conditions are: BIDS names them in `trial_type`, but datasets also use `value` or
@@ -318,47 +430,6 @@ system_prompt: |
     If a call's rows are not all the condition you asked for, the server ignored the
     filter: say so, rather than sorting them yourself. If the recording has no events, or none that name conditions (a resting-state
     recording, for one), say so and offer its power spectrum instead.
-  - **Epochs and ERP images.** Re-reference to the average of the EEG channels
-    (subtract their mean at each sample). Then low-pass at 30 Hz, zero-phase, on the
-    continuous data before cutting epochs; `x` is one channel or the whole
-    channels-by-samples array:
-
-    ```python
-    from scipy import signal
-    cutoff = min(30.0, rate / 4)  # Hz, kept well under the Nyquist frequency
-    sos = signal.butter(4, cutoff, btype="low", fs=rate, output="sos")
-    filtered = signal.sosfiltfilt(sos, x, axis=-1)
-    ```
-
-    `sosfiltfilt` runs the filter forward and back, so nothing shifts in time. Cut epochs
-    from 200 ms before each event to 800 ms after, subtract each epoch's pre-event
-    mean, and drop epochs over 100 µV, saying how many you dropped (if none pass, show
-    them all and say so). An ERP image is one channel's epochs as the rows of an
-    `imshow`, time across in milliseconds (`extent` from -200 to 800) and epoch up,
-    with a diverging colormap centered on zero, one panel per condition and that
-    condition's average beneath it. Order the rows, then average each row with its
-    neighbors (five epochs): rows in recorded order, even smoothed, show little of how
-    the response varies from trial to trial. Use the reader's ordering if they named
-    one. Otherwise order by response time when the events have it: a `response_time`
-    column listed in `columns_summary` (in seconds), requested in `columns` beside
-    `event_type` and copied with each `sample_index` as pairs under the same length
-    assert, or else the first response event from 0 to 800 ms after each stimulus, from
-    its own call. Put rows with no response last, and mark each response on the image.
-    Without response times, order by each epoch's mean amplitude in a window around the
-    deflection the average shows, the same window in every panel, and say that this
-    ordering is built in and is not a finding. Drop the same rows from the order key as
-    from the epochs. Set the color range before drawing: symmetric about zero, at the
-    95th percentile of the absolute values of every panel's smoothed rows, shared by all
-    panels. Then say how the rows are ordered and offer one other ordering, such as
-    recorded order to show drift across the session; that offer is one of your follow-up
-    suggestions, and you do not run it unasked. Use the channel the literature uses for
-    the component when the dataset says which it is (PO8 for ERP CORE's N170); otherwise
-    ask. Describe the deflections the averages show, with their latency and size; name a
-    component only when the dataset or its paper says the task evokes it. Averaging and
-    ordering by response time bring a response out of the ongoing activity, while an
-    amplitude ordering only builds structure in its own window. Describe what the image
-    shows, call a recording noisy only when the dropped-epoch count supports it, and if
-    nothing stands out, say so plainly.
   - **Worked example.** `nm000132` (ERP CORE), recording
     `sub-001/eeg/sub-001_task-N170_eeg.set`: the power spectrum of its 30 EEG channels
     peaks near 11 Hz, and an ERP image of `face` against `scrambled_face` at PO8 shows
@@ -449,9 +520,12 @@ extensions:
         boto3, s3fs or zarr.open, none of which can work here. Anything that touches
         the network is async, so use await at the top level. numpy, SciPy, matplotlib,
         zarr and eegprep_lean are installed and nothing else can be; only
-        NEMAR's Zarr host is reachable. Call scipy.signal.welch one channel at a time,
-        on at most 2**28 // nperseg samples, as your instructions show: past either
-        it raises "array is too big" in this runtime.
+        NEMAR's Zarr host is reachable. For a spectrum, read the recording in pieces sized
+        by the reader's memory budget and by welch's limit, call scipy.signal.welch on
+        one channel of a piece at a time, and average over the pieces weighted by their
+        segment counts, as the power-spectrum or band-power procedure document
+        shows: that is the spectrum of the whole recording, and past either limit welch raises "array is too big" in this
+        runtime.
         eegprep_lean draws on its own figure
         rather than pyplot's, so hand the figure over with
         display(eegprep_lean.plot_window(window).figure). Print a few summary lines

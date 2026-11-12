@@ -1,0 +1,43 @@
+{
+  "query": "recordings of people performing a motor task",
+  "filters": {},
+  "total_count": 6,
+  "results": [
+    {
+      "id": "xx099903",
+      "title": "[TEST COPY] MUniverse Caillet et al 2023",
+      "description": "High-density surface electromyography (HDsEMG) recordings from six healthy male subjects performing isometric contractions of the tibialis anterior muscle at 30% and 50% maximum voluntary contraction. The dataset comprises 256-channel electrode grids positioned on the muscle belly with synchronized force measurements, designed to characterize motor unit recruitment patterns and muscle activation strategies during controlled force production tasks.",
+      "modalities": "emg"
+    },
+    {
+      "id": "xx099901",
+      "title": "[TEST COPY] MEG-BIDS Brainstorm data sample",
+      "description": "A single-subject magnetoencephalography (MEG) dataset acquired during an auditory oddball paradigm using a CTF 275 system. The dataset comprises two 6-minute acquisition runs containing 200 standard tones (440 Hz) and 40 deviant tones (554.4 Hz) presented binaurally, with the subject performing a button-press response task. Complementary structural MRI, head digitization, and empty-room recordings are included, making this dataset suitable for auditory evoked field analysis and MEG...",
+      "modalities": "anat,meg"
+    },
+    {
+      "id": "xx099906",
+      "title": "[TEST COPY] Electrophysiological markers of surprise-induced failures of visual and auditory awareness",
+      "description": "This dataset contains electrophysiological recordings from 33 participants performing visual and auditory surprise tasks. The study investigates electrophysiological markers associated with surprise-induced failures of awareness across sensory modalities. EEG data were collected during counterbalanced presentation of visual and auditory oddball-like tasks, with detailed event annotations and preprocessing information provided for reproducibility.",
+      "modalities": "beh,eeg"
+    },
+    {
+      "id": "xx099902",
+      "title": "[TEST COPY] OWM-Dataset",
+      "description": "This dataset comprises processed intracranial EEG recordings from frontal and temporal cortical regions in 13 epilepsy patients performing a load-3 object working memory task. The recordings were obtained from bilateral medial frontal gyrus (LMFG, RMFG) and medial temporal gyrus (LMTG, RMTG) and include artifact-rejected trials with associated behavioral performance metrics. The data are formatted as concatenated trials with standardized trial structure (6498 ms duration) and include...",
+      "modalities": "ieeg"
+    },
+    {
+      "id": "xx099905",
+      "title": "[TEST COPY] BNCI 2014-004 Motor Imagery dataset",
+      "description": "This dataset contains EEG recordings from 9 healthy, BCI-naive participants performing two-class motor imagery (left vs. right hand), known as BCI Competition IV Dataset 2b (Graz data set B). Each participant completed five sessions: two screening sessions without feedback and three sessions with smiley feedback. Three bipolar EEG channels (C3, Cz, C4) and three EOG channels were recorded at 250 Hz.",
+      "modalities": "eeg"
+    },
+    {
+      "id": "xx099904",
+      "title": "[TEST COPY] BNCI 2015-003 P300 dataset",
+      "description": "An EEG dataset of an online auditory P300 speller based on the AMUSE (Auditory Multi-class Spatial ERP) paradigm, in which spatial auditory cues from six speakers are used for character selection without any visual stimulation. Ten healthy participants with no prior BCI experience took part in calibration and online spelling in up to two sessions, including a dynamic stopping method in the second session. Eight EEG channels were recorded at 256 Hz. The data support research on auditory...",
+      "modalities": "eeg"
+    }
+  ]
+}

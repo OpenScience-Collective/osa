@@ -65,6 +65,9 @@ console.log('\nthe bundle loads as a classic script and exposes one global');
     'ClientToolController',
     'GATE_DECISION',
     'highlightPython',
+    'buildConversationNotebook',
+    'plan',
+    'planRail',
   ]) {
     assert(api && api[name] !== undefined, `it exposes ${name}`);
   }
@@ -87,6 +90,50 @@ console.log('\nthe gate pieces the BUNDLE carries work as built');
   assert(JSON.stringify(controller.declared) === '["execute_code","get_full_output"]', 'the bundled controller declares its tools');
   const denied = await controller.answer({ call_id: 'b-deny', tool: 'execute_code', args: { code: 'x', description: 'd' } });
   assert(denied.status === 'denied' && denied.call_id === 'b-deny', 'and answers a declined request');
+}
+
+console.log('\nthe notebook builder the BUNDLE carries gives what the source gives');
+{
+  const { buildConversationNotebook } = await import('./osa-notebook-builder.js');
+  const { NOTEBOOK_CONVERSATIONS } = await import('./test-support/notebook-conversations.js');
+  for (const name of Object.keys(NOTEBOOK_CONVERSATIONS)) {
+    const bundled = api.buildConversationNotebook(NOTEBOOK_CONVERSATIONS[name]());
+    const source = buildConversationNotebook(NOTEBOOK_CONVERSATIONS[name]());
+    assert(JSON.stringify(bundled) === JSON.stringify(source), `${name}: the minified builder's notebook, script and stats equal the source's`);
+  }
+}
+
+console.log('\nthe plan logic the BUNDLE carries gives what the source gives');
+{
+  const source = await import('./osa-plan.js');
+  const same = (actual, expected, msg) => assert(JSON.stringify(actual) === JSON.stringify(expected), msg);
+  assert(Object.isFrozen(api.plan), 'the plan logic is frozen with the rest');
+  same(Object.keys(api.plan).sort(), Object.keys(source).sort(), 'the bundle exposes every export of osa-plan.js');
+  const args = {
+    findings: 'Found.',
+    est_peak_mb: 120,
+    steps: [{ title: 'Load  it', detail: 'd' }, { title: 'Plot', detail: '' }],
+  };
+  const proposal = api.plan.normalizeProposal(args, 'c1');
+  same(proposal, source.normalizeProposal(args, 'c1'), 'a proposal is normalized the same');
+  same(api.plan.buildDecision(proposal, 'approved'), source.buildDecision(proposal, 'approved'), 'a decision is built the same');
+  const approved = { ...proposal, status: 'approved' };
+  const runs = [{ step: 1, attempt: 1, status: 'error' }];
+  same(api.plan.nextRun(approved, runs), source.nextRun(approved, runs), 'the next run is attributed the same');
+  same(api.plan.progressOf(approved, runs, { active: true }), source.progressOf(approved, runs, { active: true }), 'progress is the same');
+}
+
+console.log('\nthe plan rail logic the BUNDLE carries gives what the source gives');
+{
+  const source = await import('./osa-plan-rail.js');
+  assert(Object.isFrozen(api.planRail), 'the rail logic is frozen with the rest');
+  assert(JSON.stringify(Object.keys(api.planRail).sort()) === JSON.stringify(Object.keys(source).sort()), 'the bundle exposes every export of osa-plan-rail.js');
+  const plan = {
+    callId: 'c1', findings: '', estPeakMb: 0, runMode: 'pause', status: 'approved',
+    steps: [{ title: 'Load', detail: '' }, { title: 'Plot', detail: '' }],
+  };
+  const messages = [{ role: 'assistant', content: 'Plan', plan }, { role: 'assistant', content: 'Ran', executions: [{ step: 1, attempt: 1, status: 'ok', callId: 'a' }] }];
+  assert(JSON.stringify(api.planRail.planRailOf(messages)) === JSON.stringify(source.planRailOf(messages)), 'the minified rail reads a conversation as the source does');
 }
 
 console.log('\nthe worker source the BUNDLE builds is real JavaScript');

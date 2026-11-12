@@ -12,13 +12,29 @@
  * characters a second).
  *
  * What is measured is what a reader sees: the text of the last assistant message,
- * sampled every 25 ms in the page, against when the stream's chunks arrived (read from
- * a clone of the response, in the page).
+ * recorded in the page at every redraw of the conversation (a MutationObserver, whose
+ * callback runs right after the redraw and before any timer, so a busy main thread
+ * cannot make it miss one; a timer sampling every 25 ms did, #691), against when the
+ * stream's chunks arrived (read from a clone of the response, in the page). The 25 ms
+ * sampler remains only to say how late a timer ran, and when the reply stopped changing.
+ *
+ * The widget's reveal is a deadline, so a tick that runs late draws a bigger slice, and
+ * a runner that stalls the page for a few hundred ms (five 300 ms stalls reproduced it
+ * here; 150 ms ones did not) makes the widget itself draw fewer, larger steps: nothing that counts them can count steps that were not taken. So the
+ * widget's clock does not count how late its own timers fired (see MEASURE): it sees
+ * every tick on time, as on a quiet machine, with the browser's real timers and the
+ * widget's real code, and the lateness is added to the bounds on time below.
+ * That the widget draws fewer, larger steps under late ticks is therefore intentionally
+ * not tested here. PACED_REVEAL_REAL_CLOCK=1 turns that off; PACED_REVEAL_CPU_THROTTLE=<rate> (CDP CPU
+ * throttling) and PACED_REVEAL_STALL_MS=<ms> (the main thread blocked that long, five
+ * times in the reveal) starve the page on purpose, to show the failure and the fix.
  *
  * The bounds on time are for a quiet machine, and a shared runner is not one: each is
- * stretched by how late the page's own 25 ms sampler ran in the window it is timing
- * (`stall`, capped), so a stalled runner does not fail what a quiet one passes, and the
- * numbers that say what the reveal does are unchanged when nothing stalled.
+ * stretched by how late the page's timers ran in the window it is timing (`stall`: the
+ * worst late sample of the 25 ms sampler, or the total lateness of the widget's ticks,
+ * whichever is more; capped), so a stalled runner does not fail what a quiet one
+ * passes, and the numbers that say what the reveal does are unchanged when nothing
+ * stalled.
  *
  * Every run carries its controls, so that a pass measures something:
  *   - the page is visible and its timers run at their asked-for rate (a hidden page's
@@ -132,11 +148,44 @@ function startServer() {
 
 // ------------------------------------------------------------------ in the page
 
+// PACED_REVEAL_REAL_CLOCK=1 leaves the widget's clock alone (see MEASURE), which is how
+// the failure of #691 is reproduced: with PACED_REVEAL_STALL_MS=300 it fails every run,
+// with PACED_REVEAL_CPU_THROTTLE at about 50x only some runs (4x to 8x does not fail).
+const STALL_MS = Number(process.env.PACED_REVEAL_STALL_MS || 0);
+const FORGIVE_LATE_TICKS = process.env.PACED_REVEAL_REAL_CLOCK !== '1';
+
 // Send one question and record what the reader saw and when the stream's text arrived.
 const MEASURE = `(async () => {
   const widget = document.querySelector('.osa-chat-widget');
   const arrivals = [];
-  const t0 = performance.now();
+
+  // The browser's own clock and timers, which every measurement below uses.
+  const now = performance.now.bind(performance);
+  const realSetTimeout = window.setTimeout.bind(window);
+  const wait = (ms) => new Promise((r) => realSetTimeout(r, ms));
+  // The clock and timers the widget's reveal sees. The reveal is a deadline: a tick that
+  // runs late draws a bigger slice to keep to it, so on a starved runner the widget
+  // itself draws fewer, larger steps, and no sampling can count steps it did not take.
+  // Here each of the widget's timers, when it fires late, moves the widget's clock back by
+  // how late it was: the widget sees every tick on time, as on a quiet machine, while
+  // the timers stay the browser's and what is drawn is still drawn by the widget. The
+  // lateness is added up in \`forgiven\`, and the time bounds are stretched by the stall.
+  let forgiven = 0;
+  let lastReported = 0;
+  if (${FORGIVE_LATE_TICKS}) {
+    // Monotone, like the real clock: \`forgiven\` only grows, but a read taken just before a
+    // late timer fired must not be larger than one taken just after it.
+    performance.now = () => (lastReported = Math.max(lastReported, now() - forgiven));
+    window.setTimeout = (fn, delay, ...rest) => {
+      if (typeof fn !== 'function') return realSetTimeout(fn, delay, ...rest);
+      const due = now() + (delay || 0);
+      return realSetTimeout((...args) => {
+        forgiven += Math.max(0, now() - due);
+        return fn(...args);
+      }, delay, ...rest);
+    };
+  }
+  const t0 = now();
   const realFetch = window.fetch;
   window.fetch = async function (...args) {
     const res = await realFetch.apply(this, args);
@@ -151,45 +200,76 @@ const MEASURE = `(async () => {
           for (const m of decoder.decode(value, { stream: true }).matchAll(/data: (\\{.*\\})/g)) {
             try { const e = JSON.parse(m[1]); if (e.event === 'content') chars += e.content.length; } catch (err) { /* a split event */ }
           }
-          if (chars) arrivals.push([performance.now() - t0, chars]);
+          if (chars && !arrivals.length && ${STALL_MS} > 0) {
+            // Opt-in starvation (PACED_REVEAL_STALL_MS): block the main thread for that long,
+            // five times from 90 ms after the first text, 240 ms apart, as a busy runner does.
+            for (let k = 0; k < 5; k++) {
+              realSetTimeout(() => { const end = now() + ${STALL_MS}; while (now() < end); }, 90 + k * 240);
+            }
+          }
+          if (chars) arrivals.push([now() - t0, chars]);
         }
       })();
     }
     return res;
   };
   widget.querySelector('.osa-chat-button').click();
-  await new Promise((r) => setTimeout(r, 300));
+  await wait(300);
   const input = widget.querySelector('.osa-chat-input input');
   input.value = 'How do I read an NWB file?';
   const assistantBefore = widget.querySelectorAll('.osa-message.assistant').length;
-  const sentAt = performance.now();
+  const sentAt = now();
   widget.querySelector('.osa-send-btn').click();
 
-  const frames = [];
-  let redrawSeen = 0;
+  // What the reader sees, recorded at every redraw: [ms since sending, the reply's text
+  // length, the length of each code block in it, how many sources it lists]. A
+  // MutationObserver callback is a microtask that runs right after the task that redrew
+  // the conversation and before any timer, so a main thread too busy to run a sampler on
+  // time still records every state the widget drew. The widget rebuilds the whole
+  // conversation on each redraw, which is a childList change on the container; subtree
+  // and characterData are watched as well, in case a later widget updates text in place.
   const messages = widget.querySelector('.osa-chat-messages');
-  const observer = new MutationObserver((records) => { redrawSeen += records.length ? 1 : 0; });
-  observer.observe(messages, { childList: true });
-  let lastChange = performance.now();
+  const lastReply = () => {
+    const all = [...messages.querySelectorAll('.osa-message.assistant')];
+    return all.length > assistantBefore ? all[all.length - 1] : null;
+  };
+  const snapshots = [];
+  let redrawSeen = 0;
+  const observer = new MutationObserver((records) => {
+    if (records.some((r) => r.type === 'childList' && r.target === messages)) redrawSeen++;
+    const reply = lastReply();
+    const content = reply && reply.querySelector('.osa-message-content');
+    snapshots.push([
+      now() - sentAt,
+      content ? content.textContent.length : 0,
+      reply ? [...reply.querySelectorAll('pre code')].map((c) => c.textContent.length) : [],
+      reply ? reply.querySelectorAll('.osa-message-sources li').length : 0,
+      forgiven,
+    ]);
+  });
+  observer.observe(messages, { childList: true, subtree: true, characterData: true });
+
+  // The sampler stays for what only a timer can say: how late a timer ran (the stall that
+  // the time bounds stretch by), and when the reply stopped changing.
+  const frames = [];
+  let lastChange = now();
   let lastLen = -1;
   for (;;) {
-    await new Promise((r) => setTimeout(r, 25));
-    const all = [...messages.querySelectorAll('.osa-message.assistant')];
-    const reply = all.length > assistantBefore ? all[all.length - 1] : null;
+    await wait(25);
+    const reply = lastReply();
     const content = reply && reply.querySelector('.osa-message-content');
     const len = content ? content.textContent.length : 0;
-    const codeLens = reply ? [...reply.querySelectorAll('pre code')].map((c) => c.textContent.length) : [];
-    const sources = reply ? reply.querySelectorAll('.osa-message-sources li').length : 0;
-    frames.push([performance.now() - sentAt, len, codeLens, sources]);
-    if (len !== lastLen) { lastLen = len; lastChange = performance.now(); }
+    frames.push([now() - sentAt, len]);
+    if (len !== lastLen) { lastLen = len; lastChange = now(); }
     const idle = !widget.querySelector('.osa-loading') && !widget.querySelector('.osa-chat-input input').disabled;
-    if (len > 0 && idle && performance.now() - lastChange > 1500) break;
-    if (performance.now() - sentAt > 60000) break;
+    if (len > 0 && idle && now() - lastChange > 1500) break;
+    if (now() - sentAt > 60000) break;
   }
   observer.disconnect();
   const sentOffset = sentAt - t0;
   return {
     visibility: document.visibilityState,
+    snapshots,
     frames,
     arrivals: arrivals.map(([t, n]) => [t - sentOffset, n]),
     redraws: redrawSeen,
@@ -199,28 +279,39 @@ const MEASURE = `(async () => {
 })()`;
 
 function summarize(run) {
-  const { frames, arrivals } = run;
-  const shown = frames.filter(([, len]) => len > 0);
-  const full = frames.at(-1)[1];
-  const at = (p) => (shown.find(([, len]) => len >= full * p) || shown.at(-1))[0];
-  const distinct = [...new Set(frames.map(([, len]) => len))].filter((n) => n > 0);
-  const codeLens = new Set(frames.flatMap(([, , lens]) => lens));
-  const sourcesAhead = frames.filter(([, , , sources]) => sources > 3).length;
+  const { snapshots, frames, arrivals } = run;
+  if (!snapshots.some(([, len]) => len > 0) || !arrivals.length) return null;
+  // What was drawn, and when, is read from the redraw records; the timer's frames say only
+  // how late a timer ran.
+  const shown = snapshots.filter(([, len]) => len > 0);
+  const full = snapshots.at(-1)[1];
+  const rowAt = (p) => shown.find(([, len]) => len >= full * p) || shown.at(-1);
+  const at = (p) => rowAt(p)[0];
+  const distinct = [...new Set(snapshots.map(([, len]) => len))].filter((n) => n > 0);
+  const codeLens = new Set(snapshots.flatMap(([, , lens]) => lens));
+  const sourcesAhead = snapshots.filter(([, , , sources]) => sources > 3).length;
   const firstArrival = arrivals[0][0];
   // The page's own main thread, as the sampler saw it, between the first text arriving and
-  // the last frame of the reveal: the longest a sample came later than its 25 ms, which is
+  // the last redraw of the reveal: the longest a sample came later than its 25 ms, which is
   // how late a timer of the widget's could have run too. Nothing on a quiet machine, and
   // what a busy runner adds to every time here.
   const inWindow = frames.filter(([t]) => t >= firstArrival - 100 && t <= at(1) + 100);
-  const stall = inWindow.slice(1).reduce((worst, [t], i) => Math.max(worst, t - inWindow[i][0] - SAMPLE_MS), 0);
+  const worstLate = inWindow.slice(1).reduce((worst, [t], i) => Math.max(worst, t - inWindow[i][0] - SAMPLE_MS), 0);
+  // The widget's clock forgives each late tick (see MEASURE), so the reveal takes in real
+  // time as long as the ticks were late in all: the time bounds are stretched by that too.
+  const lateTicks = rowAt(1)[4] - shown[0][4];
+  const stall = Math.max(worstLate, lateTicks);
   return {
     stall: Math.min(MAX_STALL_MS, Math.max(0, Math.round(stall))),
+    lateTicks: Math.round(lateTicks),
     firstArrival,
     lastArrival: arrivals.at(-1)[0],
     arrivedChars: arrivals.reduce((n, [, c]) => n + c, 0),
     firstText: shown[0][0],
     p25: at(0.25), p50: at(0.5), p75: at(0.75), p100: at(1),
     distinctLengths: distinct.length,
+    // Printed to compare with distinctLengths (observer versus sampler); not asserted.
+    sampledLengths: new Set(frames.map(([, len]) => len).filter((n) => n > 0)).size,
     codeLens: [...codeLens],
     sourcesAhead,
     full,
@@ -252,6 +343,10 @@ async function openPage(cdp, base, { reducedMotion }) {
   if (reducedMotion) {
     await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] }, sessionId);
   }
+  // Opt-in, to reproduce a starved runner on a quiet machine: PACED_REVEAL_CPU_THROTTLE=6
+  // runs the page's main thread six times slower (CDP Emulation.setCPUThrottlingRate).
+  const throttle = Number(process.env.PACED_REVEAL_CPU_THROTTLE || 1);
+  if (throttle > 1) await cdp.send('Emulation.setCPUThrottlingRate', { rate: throttle }, sessionId);
   await cdp.send('Page.navigate', { url: `${base}/` }, sessionId);
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
@@ -294,6 +389,8 @@ async function check(screenshotDir) {
     const paced = await measuring;
     await screenshot(cdp, page.sessionId, screenshotDir, 'after-reveal.png');
     const p = summarize(paced);
+    report(p !== null, 'the observer recorded the reply being drawn', `${paced.snapshots.length} redraws, ${paced.arrivals.length} chunks`);
+    if (!p) return;
     console.log('--- paced (a reader with default motion)');
     console.log(JSON.stringify({ ...p, redraws: paced.redraws }));
 
@@ -309,7 +406,7 @@ async function check(screenshotDir) {
     report(p.p100 - p.lastArrival <= 650 + p.stall, `the whole reply is on screen within about half a second of the last chunk (${Math.round(p.p100 - p.lastArrival)} ms, within ${650 + p.stall})`);
     report(p.p100 - p.firstText <= 700 + p.stall, `so the reveal adds little (${Math.round(p.p100 - p.firstText)} ms from the first words to the last, within ${700 + p.stall})`);
     report(p.distinctLengths >= 4, `the reader saw the reply grow through ${p.distinctLengths} different lengths`);
-    // Quartiles are read off sampled frames, and two can land on one frame where frames are far apart: so in order, and the first and third apart.
+    // Quartiles are read off the redraw records, and two can land on one redraw when a late tick draws a big slice: so in order, and the first and third apart.
     report(p.p25 < p.p75 && p.p25 <= p.p50 && p.p50 <= p.p75 && p.p75 <= p.p100, `25%, 50%, 75% and 100% arrive in order (${[p.p25, p.p50, p.p75, p.p100].map(Math.round).join(', ')} ms)`);
     const codeChars = CODE.split('\n').slice(1, -1).join('\n').length;
     report(p.codeLens.length === 1 && Math.abs(p.codeLens[0] - codeChars) <= 2,
@@ -320,6 +417,8 @@ async function check(screenshotDir) {
     const still = await openPage(cdp, base, { reducedMotion: true });
     const reduced = await evaluate(cdp, still.sessionId, MEASURE);
     const r = summarize(reduced);
+    report(r !== null, 'the observer recorded the reply being drawn (reduced motion)', `${reduced.snapshots.length} redraws, ${reduced.arrivals.length} chunks`);
+    if (!r) return;
     console.log('--- prefers-reduced-motion: reduce');
     console.log(JSON.stringify({ ...r, redraws: reduced.redraws }));
     report(reduced.reducedMotion === true, 'control: the browser reports prefers-reduced-motion: reduce', reduced.reducedMotion);

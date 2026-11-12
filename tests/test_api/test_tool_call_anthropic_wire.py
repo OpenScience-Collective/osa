@@ -1,12 +1,12 @@
 """The `tool_call` SSE event from the Claude Messages API's own wire format (#538).
 
-`test_tool_call_streaming.py` feeds the graph chunks built the way langchain-anthropic
-yields them. This feeds langchain-anthropic itself: the server-sent events the Messages
-API streams for a reply that writes tool calls, as bytes, read by the real
-`ChatAnthropic` that `create_anthropic_llm` builds (the Anthropic SDK's stream decoder
-and langchain-anthropic's chunk conversion), then LangGraph and the router's SSE
-assembly for `/chat`. An upgrade that changes the chunks the adapter yields (the name
-arriving later, the index going away) fails here, where hand-built chunks would not
+`test_tool_call_streaming.py` feeds the graph chunks built the way langchain-anthropic yields
+them (the builders are in `tests/helpers/tool_call_streaming.py`). This feeds
+langchain-anthropic itself: the server-sent events the Messages API streams for a reply that
+writes tool calls, as bytes, read by the real `ChatAnthropic` that `create_anthropic_llm` builds
+(the Anthropic SDK's stream decoder and langchain-anthropic's chunk conversion), then LangGraph
+and the router's SSE assembly for `/chat`. An upgrade that changes the chunks the adapter yields
+(the name arriving later, the index going away) fails here, where hand-built chunks would not
 notice.
 
 What stands in: the HTTP transport under the Anthropic SDK, patched where
@@ -30,7 +30,7 @@ from src.api.routers.community import AssistantWithMetrics, ChatSession, _stream
 from src.assistants.community import CommunityAssistant
 from src.core.services.anthropic_llm import create_anthropic_llm
 from src.core.services.anthropic_models import HAIKU
-from tests.test_api.test_tool_call_streaming import (
+from tests.helpers.tool_call_streaming import (
     COMMUNITY,
     SEARCH_ARGS,
     SECRET_QUERY,

@@ -31,7 +31,7 @@ from src.assistants import discover_assistants, registry
 from src.core.logging import configure_secure_logging
 from src.knowledge.db import reset_active_mirror, set_active_mirror
 from src.knowledge.mirror import CorruptMirrorError, get_mirror
-from src.metrics.db import init_metrics_db
+from src.metrics.db import init_metrics_db, purge_expired_metrics
 from src.metrics.middleware import MetricsMiddleware
 
 # Must run before any getLogger() calls to ensure handlers with
@@ -84,12 +84,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
     # Initialize metrics database (non-critical; degrade gracefully if unavailable)
+    metrics_ready = False
     try:
         init_metrics_db()
+        metrics_ready = True
     except Exception:
         logger.error(
             "Failed to initialize metrics database. Metrics collection will be unavailable. "
             "Check DATA_DIR permissions and disk space.",
+            exc_info=True,
+        )
+
+    # Delete usage metrics and feedback past their retention period (#725). The scheduler
+    # repeats it daily, but only when sync is enabled, so every start runs it once. Skipped
+    # when the database could not be initialized, which was just logged.
+    try:
+        if metrics_ready:
+            purge_expired_metrics()
+    except Exception:
+        logger.error(
+            "Could not delete expired usage metrics and feedback at startup. The app is "
+            "starting anyway; the daily job tries again if the scheduler runs.",
             exc_info=True,
         )
 

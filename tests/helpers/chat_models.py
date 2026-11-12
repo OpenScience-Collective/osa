@@ -130,3 +130,26 @@ class StreamingScriptedChatModel(ScriptedChatModel):
     ) -> ChatResult:
         chunks = [ChatGenerationChunk(message=chunk) for chunk in self._next_script(messages)]
         return generate_from_stream(iter(chunks))
+
+
+class FailingThenSayingChatModel(ScriptedChatModel):
+    """Raises each of `failures` in turn, one per call, then replays `responses`.
+
+    For the paths where a model call fails and the code around it has to decide what
+    happens next. `attempts` counts every call, the failed ones too.
+    """
+
+    failures: list[Exception]
+    attempts: int = 0
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.attempts += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return super()._generate(messages, stop, run_manager, **kwargs)

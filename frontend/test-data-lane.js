@@ -657,25 +657,30 @@ window = await read_window(index, index.stores[0], start_sample=0, n_samples=2)
     }
   }
 
-  // The prompt's own blocks, run as the prompt writes them: a model copies them, so a
-  // filter that stops filtering or a spectrum call this runtime refuses would reach
-  // every figure it draws.
-  const promptBlock = (bulletHeading) => {
-    const at = NEMAR.system_prompt.indexOf(bulletHeading);
-    const fence = at === -1 ? null : NEMAR.system_prompt.slice(at).match(/```python\n([\s\S]*?)\n\s*```/);
-    if (!fence) return { fence: null, code: '' };
+  // The procedure documents' own blocks (#719), run as the documents write them: a model
+  // fetches a document with get_procedure and copies its blocks, so a filter that stops
+  // filtering or a spectrum call this runtime refuses would reach every figure it draws.
+  // The first python fence of the document the community declares under `id`; `before` is
+  // the text ahead of it, which names what the block is for.
+  const procedureBlock = async (id) => {
+    const entry = (NEMAR.procedures || []).find((p) => p.id === id);
+    if (!entry) return { fence: null, code: '', before: '' };
+    const document = await Bun.file(new URL(entry.file, COMMUNITY_DIR)).text();
+    const fence = document.match(/```python\n([\s\S]*?)\n\s*```/);
+    if (!fence) return { fence: null, code: '', before: '' };
     const lines = fence[1].split('\n');
     const indent = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
-    return { fence, code: lines.map((l) => l.slice(indent)).join('\n') };
+    return { fence, code: lines.map((l) => l.slice(indent)).join('\n'), before: document.slice(0, fence.index) };
   };
   const indented = (code) => code.split('\n').map((l) => `    ${l}`).join('\n');
 
-  console.log('\nthe prompt\'s ERP low-pass keeps 5 Hz and removes the high tone, at 60 to 5000 Hz');
+  console.log('\nthe ERP procedure\'s low-pass keeps 5 Hz and removes the high tone, at 60 to 5000 Hz');
   {
-    const { fence, code } = promptBlock('**Epochs and ERP images.**');
-    assert(fence !== null, 'the ERP section carries a python block');
+    const { fence, code, before } = await procedureBlock('erp-by-condition');
+    assert(fence !== null, 'the ERP procedure carries a python block');
     // The block belongs to the sentence that introduces it, not to a later section.
-    assert(fence !== null && fence.index < 400, `it follows the bullet's opening lines (at ${fence && fence.index})`);
+    assert(before.trimEnd().endsWith('the whole channels-by-samples array:'), 'it follows the sentence that introduces the filter');
+    assert(before.includes('low-pass at 30 Hz'), 'and that sentence is the 30 Hz low-pass');
     if (fence) {
       // Defined as a function so each rate runs the block exactly as written, with
       // only `rate` and `x` bound, the two names the prompt says it takes.
@@ -721,21 +726,96 @@ print(json.dumps(out))
     }
   }
 
-  console.log('\nthe prompt\'s spectrum runs one channel at a time, and no longer than this runtime allows');
+  console.log('\nthe spectrum procedure reads the recording in pieces, one channel at a time, and averages them over the whole recording');
   {
-    const { fence, code } = promptBlock('**Power spectrum.**');
-    assert(fence !== null, 'the spectrum bullet carries a python block');
-    if (fence) {
-      // Two reads: many channels at 250 Hz, and a few minutes at 1000 Hz, which is
-      // past the most samples one welch call takes here. The block runs exactly as
-      // written with only `eeg` and `rate` bound, the names the prompt uses.
-      const result = await run(`import json
+    const { fence, code } = await procedureBlock('power-spectrum');
+    assert(fence !== null, 'the spectrum procedure carries a python block');
+    // The recipe takes its piece from the reader's budget as well as from this runtime's
+    // limit, and the document has the model write that budget in. The block runs as written,
+    // and again with another budget on that line; a swap that found nothing to replace
+    // would run the same code twice, so the line is checked.
+    // The recipe prints a line of its own (how many segments and seconds it covered), so what a
+    // run reports as data is its last line.
+    const lastJson = (stdout, fallback) => JSON.parse((stdout || '').trim().split('\n').at(-1) || fallback);
+    const BUDGET_LINE = 'budget_mb = 512';
+    assert(code.includes(BUDGET_LINE), `the block names the reader's budget on one line ("${BUDGET_LINE}")`);
+    // The block opens its own read, so a fresh execute_code can copy it alone: the three
+    // lines the model fills in with the dataset and the recording. Here they give way to a
+    // pass, since the recording is held in memory and the stand-in library is handed in.
+    const SETUP = 'import eegprep_lean\nindex = await eegprep_lean.read_index("DATASET_ID")\nstore = index.store("RECORDING_PATH")';
+    assert(code.includes(`${SETUP}\ngroup = store.group("GROUP")`), 'the block opens its own index and store, so it stands alone');
+    if (fence && code.includes(BUDGET_LINE) && code.includes(SETUP)) {
+      // The block as an async function over a recording held in memory. The only thing that
+      // stands in is its read: `eegprep_lean.read_window` slices an array here (and records
+      // each read), where the shipped runtime reads NEMAR's Zarr store, which the checks
+      // above this one cover. Everything the block does with the data, scipy.signal.welch
+      // included, is real, and a by-hand Welch estimate that shares no code with
+      // scipy.signal.welch is the reference: every segment is cut, detrended, windowed and
+      // transformed with numpy alone.
+      const preamble = `import json
 import numpy as np
 from scipy import signal
 
-def prompt_spectrum(eeg, rate):
-${indented(code)}
-    return freqs, power, most
+BLOCK = ${JSON.stringify(code.replace(SETUP, 'pass  # the runtime opens the index and the store'))}
+BUDGET_LINE = ${JSON.stringify(BUDGET_LINE)}
+
+class Window:
+    def __init__(self, data, labels):
+        self.data, self.labels = data, labels
+
+class Group:
+    def __init__(self, rate, n_samples, n_channels):
+        self.rate, self.n_samples, self.n_channels = rate, n_samples, n_channels
+
+class Store:
+    def __init__(self, group):
+        self._group = group
+    def group(self, name):
+        return self._group
+
+class Lib:
+    def __init__(self, eeg, labels):
+        self.eeg, self.labels, self.reads = eeg, labels, []
+    async def read_window(self, index, store, group, start_sample, n_samples):
+        self.reads.append((start_sample, n_samples))
+        return Window(self.eeg[:, start_sample:start_sample + n_samples], self.labels)
+
+async def spectrum_with(eeg, rate, budget=None, labels=None):
+    # The prompt's block, with a budget swapped onto its budget line (None runs it as
+    # written), over eeg as the recording of one channel group.
+    labels = labels or [f"E{i}" for i in range(eeg.shape[0])]
+    text = BLOCK if budget is None else BLOCK.replace(BUDGET_LINE, f"budget_mb = {budget}")
+    body = "\\n".join("    " + line for line in text.split("\\n"))
+    scope = {}
+    exec("async def prompt_spectrum(eegprep_lean, index, store):\\n" + body
+         + "\\n    return dict(freqs=freqs, power=power, total=total, used=used, m=m, piece=piece, keep=keep)",
+         {"np": np}, scope)
+    lib = Lib(eeg, labels)
+    out = await scope["prompt_spectrum"](lib, None, Store(Group(rate, eeg.shape[1], eeg.shape[0])))
+    out["reads"] = lib.reads
+    return out
+
+def by_hand(x, rate):
+    # Welch's estimate segment by segment: constant detrend, Hann window, density scaling,
+    # one-sided, the mean of every segment's periodogram.
+    nperseg = int(2 * rate)
+    noverlap = nperseg // 2
+    hop = nperseg - noverlap
+    win = signal.get_window("hann", nperseg)
+    scale = 1.0 / (rate * (win * win).sum())
+    n_seg = (x.size - noverlap) // hop
+    acc = np.zeros(nperseg // 2 + 1)
+    for first in range(0, n_seg, 400):
+        k = min(400, n_seg - first)
+        segs = np.stack([x[(first + i) * hop:(first + i) * hop + nperseg] for i in range(k)])
+        segs = segs - segs.mean(axis=1, keepdims=True)
+        spec = np.abs(np.fft.rfft(segs * win, axis=1)) ** 2 * scale
+        if nperseg % 2 == 0:
+            spec[:, 1:-1] *= 2
+        else:
+            spec[:, 1:] *= 2
+        acc += spec.sum(axis=0)
+    return acc / n_seg, n_seg
 
 def refused(x, rate):
     try:
@@ -744,39 +824,403 @@ def refused(x, rate):
     except ValueError as e:
         return str(e)
 
+def relative(a, b):
+    a, b = np.asarray(a), np.asarray(b)
+    return float(np.max(np.abs(a - b) / np.abs(b)))
+`;
+
+      // (a) A signal that fits one welch call: the pieces' average is that call's, to 1e-9, at
+      // rates with an even and an odd segment length, with one piece and with many. One channel
+      // of each is an electrooculography channel, which the block leaves out by its label.
+      {
+        const result = await run(`${preamble}
 out = []
-rng = np.random.default_rng(0)
-for rate, channels, seconds in ((250.0, 33, 120), (1000.0, 4, 300)):
+rng = np.random.default_rng(1)
+for rate, channels, seconds in ((250.0, 4, 150), (128.5, 3, 120), (1000.0, 2, 60)):
     t = np.arange(int(seconds * rate)) / rate
     eeg = rng.standard_normal((channels, t.size)) + 3 * np.sin(2 * np.pi * 10 * t)
-    freqs, power, most = prompt_spectrum(eeg, rate)
-    out.append({
-        "rate": rate, "channels": channels, "samples": int(t.size), "most": int(most),
-        "shape": list(power.shape), "bins": int(freqs.size),
-        "peak_hz": float(freqs[np.argmax(power.mean(axis=0))]),
-        "whole": refused(eeg, rate), "one_channel": refused(eeg[0], rate),
-        "twice_most": refused(eeg[0, : 2 * most], rate) if 2 * most <= t.size else None,
-    })
+    labels = [f"E{i}" for i in range(channels - 1)] + ["VEOG_lower"]
+    nperseg = int(2 * rate)
+    whole = np.array([signal.welch(ch, fs=rate, nperseg=nperseg)[1] for ch in eeg[:-1]])
+    whole_freqs = signal.welch(eeg[0], fs=rate, nperseg=nperseg)[0]
+    for budget in (None, 1):
+        # None: the block as written. 1: a 1 MB budget, which cuts the read into pieces.
+        r = await spectrum_with(eeg, rate, budget, labels)
+        hop = nperseg - nperseg // 2
+        out.append({
+            "rate": rate, "nperseg": nperseg, "samples": int(t.size), "budget": budget, "m": int(r["m"]), "total": int(r["total"]),
+            "used": int(r["used"]), "pieces": len(r["reads"]), "channels": channels, "rows": int(r["power"].shape[0]),
+            "keep": r["keep"], "difference": relative(r["power"], whole), "freqs_equal": bool(np.array_equal(r["freqs"], whole_freqs)),
+            "by_hand": max(relative(r["power"][c], by_hand(eeg[c], rate)[0]) for c in range(channels - 1)),
+            "starts_on_hops": all(start == i * int(r["m"]) * hop for i, (start, n) in enumerate(r["reads"])),
+            "longest_read": max(n for start, n in r["reads"]),
+            "read_bytes": max(n for start, n in r["reads"]) * channels * 8,
+        })
 print(json.dumps(out))
 `);
-      assertEqual(result.status, 'ok', `it runs (stderr: ${result.stderr.slice(-300)})`);
-      const [many, long] = JSON.parse(result.stdout || '[{}, {}]');
-      for (const r of [many, long]) {
-        const at = `${r.channels} channels by ${r.samples} samples at ${r.rate} Hz`;
-        assertEqual(r.shape, [r.channels, r.bins], `${at}: one spectrum per channel`);
-        assert(Math.abs(r.peak_hz - 10) < 0.6, `${at}: the 10 Hz tone is the peak (${r.peak_hz} Hz)`);
+        assertEqual(result.status, 'ok', `pieces against one call: it runs (stderr: ${result.stderr.slice(-400)})`);
+        const rows = lastJson(result.stdout, '[]');
+        assert(rows.length === 6, `six runs: three rates, with and without a small budget (got ${rows.length})`);
+        for (const r of rows) {
+          const at = `${r.rate} Hz, nperseg ${r.nperseg}, ${r.samples} samples, ${r.budget === null ? 'the block as written' : `a ${r.budget} MB budget`}`;
+          assert(r.difference < 1e-9, `${at}: equals one welch call per channel (largest relative difference ${r.difference})`);
+          assert(r.freqs_equal, `${at}: the same frequencies`);
+          assert(r.by_hand < 1e-9, `${at}: and a by-hand estimate that shares no code with welch (${r.by_hand})`);
+          assertEqual(r.keep, Array.from({ length: r.channels - 1 }, (_, i) => i), `${at}: the electrooculography channel is left out by its label`);
+          assertEqual(r.rows, r.channels - 1, `${at}: one row of power per EEG channel`);
+          assertEqual(r.used, r.total, `${at}: all ${r.total} segments were averaged, on every channel (not the first piece's)`);
+          assert(r.starts_on_hops, `${at}: each piece starts at a multiple of m * hop`);
+          if (r.budget === 1) {
+            assert(r.pieces > 1, `${at}: the small budget made ${r.pieces} pieces, so the carried sums were exercised`);
+            assert(r.read_bytes <= 0.25 * 2 ** 20, `${at}: no read passes a quarter of the budget (${r.read_bytes} bytes)`);
+          } else {
+            assert(r.pieces === 1, `${at}: this read fits one piece (${r.pieces})`);
+          }
+        }
       }
-      assert(long.most < long.samples, `the 1000 Hz read is longer than one welch call takes (${long.most} of ${long.samples})`);
-      // The controls: the reasons for both limits. If a later Pyodide lifts
-      // either, the check says so and the prompt's sentence can go.
-      assert(/array is too big/.test(many.whole),
-        `control: welch on the whole 33-channel array is refused here (${String(many.whole).slice(0, 80)})`);
-      assert(/array is too big/.test(long.one_channel),
-        `control: and so is one channel of the 1000 Hz read, past most (${String(long.one_channel).slice(0, 80)})`);
-      // And the bound is not needlessly short: twice it is already refused, so
-      // `most` cuts a long read by less than half of what one call could take.
-      assert(/array is too big/.test(long.twice_most),
-        `control: one channel of twice most samples is refused too (${String(long.twice_most).slice(0, 80)})`);
+
+      // (b) Fifty minutes at 250 Hz, which one welch call refuses, read in pieces of a small
+      // budget: every segment is counted, and the average is a by-hand estimate over all of
+      // them, not over the first `2**28 // nperseg` samples a capped read would take (536,870 of
+      // these 750,000).
+      {
+        const MINUTES = 50;
+        const result = await run(`${preamble}
+rate = 250.0
+n = int(${MINUTES} * 60 * rate)
+rng = np.random.default_rng(2)
+t = np.arange(n) / rate
+# A tone carried only by the last tenth of the recording, so a read that stopped early
+# shows it missing.
+tail = (t > 0.9 * t[-1]).astype(float)
+eeg = rng.standard_normal((3, n)) + 4 * np.sin(2 * np.pi * 10 * t) * tail
+nperseg = int(2 * rate)
+hop = nperseg // 2
+# 64 MB: the recording is read in several pieces, each of which fits the budget.
+r = await spectrum_with(eeg, rate, 64)
+freqs, power, total = r["freqs"], r["power"], r["total"]
+by = [by_hand(eeg[c], rate) for c in range(3)]
+expected_segments = (n - nperseg // 2) // hop
+most = 2**28 // nperseg
+capped, _ = by_hand(eeg[0, :most], rate)
+peak = int(np.argmax(power[0]))
+reads = r["reads"]
+print(json.dumps({
+    "samples": n, "most": most, "m": int(r["m"]), "total": int(total), "expected": expected_segments, "used": int(r["used"]),
+    "pieces": len(reads), "by_hand_segments": by[0][1], "rows": int(power.shape[0]),
+    "difference": max(relative(power[c], by[c][0]) for c in range(3)),
+    "tone_hz": float(freqs[peak]), "tone_over_capped": float(power[0][peak] / capped[peak]),
+    "whole_call": refused(eeg[0], rate),
+    "covered_seconds": float((total * hop + hop) / rate),
+    "read_to": max(start + n_ for start, n_ in reads), "longest_read_mb": max(n_ for start, n_ in reads) * 3 * 8 / 2**20,
+}))
+`);
+        assertEqual(result.status, 'ok', `fifty minutes at 250 Hz: it runs (stderr: ${result.stderr.slice(-400)})`);
+        const r = lastJson(result.stdout, '{}');
+        assert(r.samples > r.most, `the recording is longer than one welch call takes (${r.samples} > ${r.most})`);
+        assert(/array is too big/.test(r.whole_call), `control: one welch call over the channel is refused (${String(r.whole_call).slice(0, 60)})`);
+        assertEqual(r.total, r.expected, `every segment one call would average is counted (${r.total} of ${r.expected})`);
+        assertEqual(r.used, r.total, 'and every one of them was averaged, on every channel');
+        assertEqual(r.by_hand_segments, r.total, 'by hand, the same number of segments');
+        assert(r.pieces > 1, `in ${r.pieces} pieces of up to ${r.m} segments`);
+        assert(r.longest_read_mb <= 16, `each read fits a quarter of the 64 MB budget (${r.longest_read_mb.toFixed(1)} MB)`);
+        assertEqual(r.read_to, r.samples, 'the last piece ends at the end of the recording');
+        assertEqual(r.covered_seconds, MINUTES * 60, `the segments span the whole ${MINUTES} minutes (${r.covered_seconds} s)`);
+        assert(result.stdout.startsWith(`${r.total} segments of 2 s, ${r.covered_seconds} s of the recording, in pieces of ${r.m} segments, 3 EEG channels, left out: none`),
+          `the recipe says what it covered, for the model to report (${JSON.stringify(result.stdout.split('\n')[0])})`);
+        assert(r.difference < 1e-9, `and the average is the by-hand estimate over all of them (${r.difference})`);
+        assert(Math.abs(r.tone_hz - 10) < 0.6, `the tone only the last tenth carries is the peak (${r.tone_hz} Hz)`);
+        assert(r.tone_over_capped > 2, `a read capped at ${r.most} samples ends before it starts, and its value at that frequency is ${r.tone_over_capped.toFixed(1)} times smaller`);
+      }
+
+      // (c) The reasons for the limits, and the budget's part in the piece.
+      {
+        const result = await run(`${preamble}
+out = {}
+rng = np.random.default_rng(3)
+# The whole channels-by-samples array, and a channel past one welch call's limit.
+out["whole_array"] = refused(rng.standard_normal((33, 30000)), 250.0)
+long = rng.standard_normal((1, 300000))
+r = await spectrum_with(long, 1000.0)
+out["piece_1000"] = int(r["piece"])
+out["one_piece"] = refused(long[0, :r["piece"]], 1000.0)
+out["twice_piece"] = refused(long[0, : 2 * r["piece"]], 1000.0)
+# The piece follows the budget while the budget binds, and never passes the runtime's limit.
+short = rng.standard_normal((1, 20000))
+out["pieces"] = {}
+for rate in (60.0, 1000.0):
+    for budget in (256, 512, 1024, 2048):
+        out["pieces"][f"{int(rate)}:{budget}"] = int((await spectrum_with(short, rate, budget))["piece"])
+out["limits"] = {str(int(rate)): 2**28 // int(2 * rate) for rate in (60.0, 1000.0)}
+# A group of 33 channels at 250 Hz: the budget binds there too, since a piece is every channel's read.
+many = rng.standard_normal((33, 20000))
+out["many"] = {str(budget): int((await spectrum_with(many, 250.0, budget))["piece"]) for budget in (256, 2048)}
+out["many_limit"] = 2**28 // 500
+print(json.dumps(out))
+`);
+        assertEqual(result.status, 'ok', `the controls: it runs (stderr: ${result.stderr.slice(-400)})`);
+        const r = lastJson(result.stdout, '{}');
+        assert(/array is too big/.test(r.whole_array),
+          `control: welch on the whole 33-channel array is refused here (${String(r.whole_array).slice(0, 80)})`);
+        assertEqual(r.one_piece, 'ok', `one piece (${r.piece_1000} samples at 1000 Hz) is accepted`);
+        assert(/array is too big/.test(r.twice_piece),
+          `control: one channel of twice a piece is refused, so the piece is not needlessly short (${String(r.twice_piece).slice(0, 80)})`);
+        for (const [rate, limit] of Object.entries(r.limits)) {
+          const sizes = [256, 512, 1024, 2048].map((budget) => r.pieces[`${rate}:${budget}`]);
+          assert(sizes.every((size) => size <= limit), `${rate} Hz: no piece is past the runtime's ${limit} samples (${sizes.join(', ')})`);
+          assert(sizes.every((size, i) => i === 0 || size >= sizes[i - 1]), `${rate} Hz: a larger budget never means a smaller piece (${sizes.join(', ')})`);
+        }
+        assert(r.pieces['60:256'] < r.pieces['60:2048'],
+          `at 60 Hz the budget sets the piece, so 256 MB is smaller than 2 GB (${r.pieces['60:256']} < ${r.pieces['60:2048']})`);
+        assertEqual(r.pieces['1000:256'], r.limits['1000'], 'at 1000 Hz the runtime\'s limit sets it, for every budget');
+        assert(r.many['256'] < r.many['2048'] && r.many['256'] < r.many_limit,
+          `at 250 Hz with 33 channels the budget binds: 256 MB gives ${r.many['256']} samples, 2 GB ${r.many['2048']}, the limit ${r.many_limit}`);
+      }
+    }
+  }
+
+  console.log('\nthe band-power procedure integrates the whole-recording spectrum over each band');
+  {
+    // Both python fences of the document, as written: the Welch recipe, then the integration
+    // the document says to run directly after it, in the same run.
+    const entry = (NEMAR.procedures || []).find((p) => p.id === 'band-power');
+    const document = entry ? await Bun.file(new URL(entry.file, COMMUNITY_DIR)).text() : '';
+    const fences = [...document.matchAll(/```python\n([\s\S]*?)\n\s*```/g)].map((m) => m[1]);
+    assertEqual(fences.length, 2, 'the band-power procedure carries the Welch block and the integration block');
+    const SETUP = 'import eegprep_lean\nindex = await eegprep_lean.read_index("DATASET_ID")\nstore = index.store("RECORDING_PATH")';
+    assert(fences[0]?.includes(SETUP), 'the band-power Welch block opens its own index and store, so it stands alone');
+    assert(fences[0]?.includes('budget_mb = 512'), 'the band-power Welch block names the reader\'s budget on one line ("budget_mb = 512")');
+    if (fences.length === 2 && fences[0].includes(SETUP) && fences[0].includes('budget_mb = 512')) {
+      // A 1 MB budget cuts the read into several pieces, so the carried sums are exercised.
+      const welch = fences[0].replace(SETUP, 'pass  # the runtime opens the index and the store').replace('budget_mb = 512', 'budget_mb = 1');
+      const result = await run(`import json
+import numpy as np
+from scipy import signal
+
+WELCH = ${JSON.stringify(welch)}
+INTEGRATION = ${JSON.stringify(fences[1])}
+
+class Window:
+    def __init__(self, data, labels):
+        self.data, self.labels = data, labels
+
+class Group:
+    def __init__(self, rate, n_samples, n_channels):
+        self.rate, self.n_samples, self.n_channels = rate, n_samples, n_channels
+
+class Store:
+    def __init__(self, group):
+        self._group = group
+    def group(self, name):
+        return self._group
+
+class Lib:
+    def __init__(self, eeg, labels):
+        self.eeg, self.labels, self.reads = eeg, labels, 0
+    async def read_window(self, index, store, group, start_sample, n_samples):
+        self.reads += 1
+        return Window(self.eeg[:, start_sample:start_sample + n_samples], self.labels)
+
+async def band_power_run(eegprep_lean, index, store):
+    # Both blocks in one function body, so they share names as two blocks of one run do.
+    text = WELCH + "\\n" + INTEGRATION
+    body = "\\n".join("    " + line for line in text.split("\\n"))
+    scope = {}
+    exec("async def run_blocks(eegprep_lean, index, store):\\n" + body
+         + "\\n    return dict(bands=bands, band_power=band_power, keep=keep)", {"np": np, "signal": signal}, scope)
+    return await scope["run_blocks"](eegprep_lean, index, store)
+
+rate = 250.0
+t = np.arange(int(120 * rate)) / rate
+rng = np.random.default_rng(4)
+amplitude = 3.0
+eeg = rng.standard_normal((4, t.size)) + amplitude * np.sin(2 * np.pi * 10 * t)
+lib = Lib(eeg, ["E0", "E1", "E2", "VEOG_lower"])
+out = await band_power_run(lib, None, Store(Group(rate, t.size, 4)))
+print(json.dumps({
+    "bands": {k: list(v) for k, v in out["bands"].items()},
+    "band_power": {k: [float(x) for x in v] for k, v in out["band_power"].items()},
+    "keep": out["keep"], "reads": lib.reads, "expected": amplitude ** 2 / 2,
+}))
+`);
+      assertEqual(result.status, 'ok', `band power: both blocks run in one namespace (stderr: ${result.stderr.slice(-400)})`);
+      const r = JSON.parse((result.stdout || '').trim().split('\n').at(-1) || '{}');
+      assertEqual(Object.keys(r.bands), ['delta', 'theta', 'alpha', 'beta'], 'the default bands are named for step 2');
+      assertEqual(Object.keys(r.band_power), Object.keys(r.bands), 'band_power has one entry per band');
+      assertEqual(r.keep, [0, 1, 2], 'the electrooculography channel is left out by its label');
+      assert(r.reads > 1, `the small budget made ${r.reads} reads, so the pieces were averaged`);
+      for (const [name, values] of Object.entries(r.band_power)) {
+        assertEqual(values.length, 3, `${name}: one value per EEG channel`);
+      }
+      for (let channel = 0; channel < 3; channel++) {
+        const power = Object.fromEntries(Object.entries(r.band_power).map(([name, values]) => [name, values[channel]]));
+        const others = ['delta', 'theta', 'beta'].map((name) => power[name]);
+        assert(others.every((value) => power.alpha > 20 * value),
+          `channel ${channel}: the 10 Hz tone puts the power in alpha (${JSON.stringify(power)})`);
+        assert(Math.abs(power.alpha / r.expected - 1) < 0.05,
+          `channel ${channel}: alpha holds the tone's power, amplitude squared over two (${power.alpha} against ${r.expected})`);
+      }
+    }
+  }
+
+  // The scalp-map, time-frequency and matching blocks of the topography and time-frequency
+  // documents (#721), run as the documents write them in the real Pyodide runtime. Every
+  // python fence of a document, in order, so a block is found by what it defines.
+  const documentFences = async (id) => {
+    const entry = (NEMAR.procedures || []).find((p) => p.id === id);
+    const document = entry ? await Bun.file(new URL(entry.file, COMMUNITY_DIR)).text() : '';
+    return [...document.matchAll(/```python\n([\s\S]*?)\n```/g)].map((m) => m[1]);
+  };
+  const fenceWith = (fences, marker) => fences.filter((f) => f.includes(marker));
+
+  console.log('\nthe scalp-map block draws an interpolated head for 30 channels and markers only for 3, one figure each');
+  {
+    const band = await documentFences('band-power-topography');
+    const erp = await documentFences('erp-topography');
+    const [positions] = fenceWith(band, 'positions = {');
+    const [locate] = fenceWith(band, 'def locate(');
+    const [scalp] = fenceWith(band, 'def scalp_maps(');
+    assert(positions && locate && scalp, 'the band power topography carries the table, the matching and the drawing blocks');
+    assertEqual(
+      [positions, locate, scalp],
+      [fenceWith(erp, 'positions = {')[0], fenceWith(erp, 'def locate(')[0], fenceWith(erp, 'def scalp_maps(')[0]],
+      'and the ERP topography carries the same three, byte for byte'
+    );
+    if (positions && locate && scalp) {
+      // The 30 EEG labels of ERP CORE's nm000132, and values that are a plane over the head:
+      // an interpolation through them returns the plane at any point inside their hull.
+      const labels30 = JSON.stringify(['FP1', 'F3', 'F7', 'FC3', 'C3', 'C5', 'P3', 'P7', 'P9', 'PO7', 'PO3', 'O1', 'Oz', 'Pz', 'CPz',
+        'FP2', 'Fz', 'F4', 'F8', 'FC4', 'FCz', 'Cz', 'C4', 'C6', 'P4', 'P8', 'P10', 'PO8', 'PO4', 'O2']);
+      const blocks = `${positions}\n${locate}\n${scalp}\n`;
+      const summary = (labels) => `import json
+labels = ${labels}
+at, xy = locate(labels)
+values = 10 * xy[:, 0] + 4 * xy[:, 1]  # a plane over the head
+fig = scalp_maps([("synthetic", values)], xy, [labels[i] for i in at], "synthetic unit", "synthetic title",
+                 float(values.min()), float(values.max()))
+ax, bar = fig.axes[0], fig.axes[-1]
+out = {
+    "positioned": len(at), "axes": len(fig.axes), "images": len(ax.images), "markers": int(ax.collections[0].get_offsets().shape[0]),
+    "named": len(ax.texts), "bar_label": bar.get_ylabel(), "title": fig._suptitle.get_text(),
+    "patches": len(ax.patches), "lines": len(ax.lines),
+}
+if ax.images:
+    surface = np.ma.filled(np.ma.masked_invalid(ax.images[0].get_array()).astype(float), np.nan)
+    n = surface.shape[0]
+    mid = n // 2
+    step = round(0.1 / (1.0 / (n - 1)))  # grid cells in 0.1
+    out["outside"] = float(np.isnan(surface).mean())
+    out["corner_is_empty"] = bool(np.isnan(surface[0, 0]) and np.isnan(surface[-1, -1]))
+    out["plane_error"] = float(abs(surface[mid + step, mid + step] - (10 * 0.1 + 4 * 0.1)))
+    out["centre_error"] = float(abs(surface[mid, mid]))
+print(json.dumps(out))
+`;
+      const thirty = await run(blocks + summary(labels30));
+      assertEqual(thirty.status, 'ok', `30 positioned channels: the blocks run (stderr: ${thirty.stderr.slice(-400)})`);
+      const r30 = JSON.parse((thirty.stdout || '').trim().split('\n').at(-1) || '{}');
+      assertEqual(thirty.images.length, 1, '30 channels: exactly one figure comes out');
+      assertEqual(thirty.images[0] && thirty.images[0].mime, 'image/png', '30 channels: and it is a PNG');
+      assertEqual(r30.positioned, 30, '30 channels: every label has a position');
+      assertEqual([r30.images, r30.markers, r30.named], [1, 30, 0], '30 channels: one interpolated surface, 30 markers, none named');
+      assertEqual(r30.axes, 2, '30 channels: one head and one color bar');
+      assertEqual([r30.bar_label, r30.title], ['synthetic unit', 'synthetic title'], '30 channels: the color bar carries the unit and the figure its title');
+      assert(r30.patches >= 2 && r30.lines >= 2, `30 channels: a head outline, a nose and two ears (${r30.patches} patches, ${r30.lines} lines)`);
+      assert(r30.corner_is_empty, '30 channels: nothing is interpolated outside the head');
+      assert(r30.outside > 0.19 && r30.outside < 0.24, `30 channels: about a fifth of the square is outside the circle (${r30.outside})`);
+      assert(r30.plane_error < 0.02, `30 channels: the interpolation returns the plane inside the head (error ${r30.plane_error})`);
+      assert(r30.centre_error < 0.02, `30 channels: and 0 at Cz, which is the origin (error ${r30.centre_error})`);
+
+      const three = await run(blocks + summary(JSON.stringify(['C3', 'Cz', 'C4'])));
+      assertEqual(three.status, 'ok', `3 positioned channels: the blocks run (stderr: ${three.stderr.slice(-400)})`);
+      const r3 = JSON.parse((three.stdout || '').trim().split('\n').at(-1) || '{}');
+      assertEqual(three.images.length, 1, '3 channels: exactly one figure comes out');
+      assertEqual(r3.positioned, 3, '3 channels: all three have a position');
+      assertEqual([r3.images, r3.markers, r3.named], [0, 3, 3], '3 channels: no interpolated surface, only 3 named colored markers');
+      assertEqual(r3.axes, 2, '3 channels: one head and one color bar');
+
+      // Labels as other recordings write them: a prefix, a reference suffix, other case, and some with no place.
+      const odd = await run(`${positions}\n${locate}\nimport json\nat, xy = locate(["EEG Fp1-REF", "eeg cz-le", "Pz-AVG", "HEOG_left", "T3", "T7", "Foo9"])\nprint(json.dumps(at.tolist()))\n`);
+      assertEqual(odd.status, 'ok', `the matching runs on odd labels (stderr: ${odd.stderr.slice(-300)})`);
+      assertEqual(JSON.parse((odd.stdout || '').trim().split('\n').at(-1) || '[]'), [0, 1, 2, 4],
+        'prefix, suffix and case are ignored, the unmatched are left out, and T7 repeats the place of T3');
+      assert(/left out, no position: \['HEOG_left', 'Foo9'\]/.test(odd.stdout), 'and the labels left out are printed');
+    }
+  }
+
+  console.log('\nthe time-frequency block puts a tone of known frequency at that frequency, over the burst, in dB');
+  {
+    const fences = await documentFences('time-frequency-by-condition');
+    const [epoching] = fenceWith(fences, 'pad_s =');
+    const [compute] = fenceWith(fences, 'fftconvolve');
+    assert(epoching && compute, 'the time-frequency document carries the epoch block and the compute block');
+    if (epoching && compute) {
+      // Two conditions of 40 epochs each: a burst of a Gaussian envelope (sd 80 ms) around 400 ms,
+      // at 12 Hz in one and 24 Hz in the other, with a random phase in each epoch, on noise.
+      // A rectangle or a fixed phase would be a different test.
+      const result = await run(`import json
+import numpy as np
+rate = 250.0
+${epoching}
+rng = np.random.default_rng(7)
+t = (np.arange(pre + post) - pre) / rate
+envelope = np.exp(-((t - 0.4) ** 2) / (2 * 0.08**2))
+def condition(hz):
+    phase = rng.uniform(0, 2 * np.pi, size=(40, 1))
+    return 20 * envelope * np.sin(2 * np.pi * hz * t + phase) + rng.standard_normal((40, t.size))
+epochs = {"twelve": condition(12.0), "twenty_four": condition(24.0)}
+${compute}
+out = {"freqs": freqs.tolist(), "shown": [float(shown[0]), float(shown[-1]), len(shown)], "pre": pre, "post": post, "kept": kept, "maps": {}}
+for name, db in tf_db.items():
+    f, k = np.unravel_index(np.argmax(db), db.shape)
+    before = (shown >= -0.4) & (shown <= -0.1)
+    out["maps"][name] = {"shape": list(db.shape), "peak_hz": float(freqs[f]), "peak_s": float(shown[k]), "peak_db": float(db[f, k]),
+                         "baseline_db": float(db[:, before].mean()), "off_hz_db": float(db[0, (shown > 0.2) & (shown < 0.6)].mean())}
+print(json.dumps(out))
+`);
+      assertEqual(result.status, 'ok', `the epoch and compute blocks run (stderr: ${result.stderr.slice(-400)})`);
+      const r = JSON.parse((result.stdout || '').trim().split('\n').at(-1) || '{}');
+      assertEqual(r.pre + r.post, 615, 'at 250 Hz an epoch is 0.5 s and 1 s plus a 0.48 s pad on each side: 615 samples');
+      assertEqual(r.kept, { twelve: 40, twenty_four: 40 }, 'every synthetic epoch is counted');
+      assertEqual(r.freqs[0], 4, 'the frequencies start at 4 Hz');
+      assertEqual(r.freqs.at(-1), 40, 'and stop at 40 Hz, a quarter of the rate being 62.5');
+      assert(Math.abs(r.shown[0] + 0.5) < 0.005 && Math.abs(r.shown[1] - 1.0) < 0.005, `the maps show -500 to 1,000 ms (${r.shown[0]} to ${r.shown[1]})`);
+      assertEqual(r.shown[2], 376, 'with 376 time points, the pad cut off');
+      for (const [name, hz] of [['twelve', 12], ['twenty_four', 24]]) {
+        const m = r.maps[name];
+        assertEqual(m.shape, [r.freqs.length, 376], `${name}: frequencies by times`);
+        assertEqual(m.peak_hz, hz, `${name}: the dB map peaks at the tone's ${hz} Hz (${m.peak_hz})`);
+        assert(Math.abs(m.peak_s - 0.4) < 0.1, `${name}: at the burst's 400 ms (${m.peak_s} s)`);
+        assert(m.peak_db > 20, `${name}: the burst is more than 20 dB over the pre-event power (${m.peak_db} dB)`);
+        assert(Math.abs(m.baseline_db) < 1.5, `${name}: the pre-event window is near 0 dB by construction (${m.baseline_db} dB)`);
+        assert(Math.abs(m.off_hz_db) < 3, `${name}: the lowest frequency, far from the tone, stays near 0 dB during the burst (${m.off_hz_db} dB)`);
+      }
+
+      // How long the compute block takes at the size the plan quotes (80 epochs a condition, two
+      // conditions, 19 frequencies, 250 Hz), for the warning the document gives before approval.
+      // It is printed, never asserted: timing is flaky in CI. One warm-up run, then three timed
+      // ones, each with time.perf_counter around the compute block only (the epochs are made
+      // before it), and the median is the figure. This is Pyodide in Bun on this machine, not a
+      // browser tab, so it is a floor for what a reader sees, not a browser figure.
+      const timed = `import time
+import numpy as np
+rate = 250.0
+${epoching}
+rng = np.random.default_rng(11)
+epochs = {name: rng.standard_normal((80, pre + post)) * 10 for name in ("faces", "cars")}
+started = time.perf_counter()
+${compute}
+print(f"TIMING {time.perf_counter() - started:.3f} {len(freqs)} {sum(kept.values())}")
+`;
+      const seconds = [];
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const timing = await run(timed);
+        assertEqual(timing.status, 'ok', `the timed compute block runs (stderr: ${timing.stderr.slice(-300)})`);
+        const [, took, nFreqs, nEpochs] = (timing.stdout.match(/TIMING (\S+) (\d+) (\d+)/) || []);
+        assertEqual([Number(nFreqs), Number(nEpochs)], [19, 160], 'the timed run is 19 frequencies and 160 epochs');
+        if (attempt > 0) seconds.push(Number(took)); // the first run is the warm-up
+      }
+      seconds.sort((a, b) => a - b);
+      console.log(`      time-frequency compute block, 80 epochs x 2 conditions x 19 frequencies at 250 Hz: median ${seconds[1].toFixed(3)} s (runs ${seconds.map((s) => s.toFixed(3)).join(', ')} s; Pyodide in Bun, not a browser)`);
     }
   }
 } finally {

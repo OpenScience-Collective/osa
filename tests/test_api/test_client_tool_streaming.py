@@ -773,7 +773,7 @@ class TestARefusedCallStillReplies:
     async def test_invalid_arguments_stream_a_reply_not_a_tool_request(self) -> None:
         """Missing `description` would have rendered a blank permission gate. Now
         the model is told, and its reply is what the person sees."""
-        from tests.test_api.test_tool_call_streaming import _anthropic_call
+        from tests.helpers.tool_call_streaming import _anthropic_call
 
         assistant, model = _assistant(
             [],
@@ -809,7 +809,7 @@ class TestAReplyHasABudgetOfBrowserRuns:
 
     @pytest.mark.asyncio
     async def test_with_no_runs_left_the_call_is_refused_and_the_model_answers(self) -> None:
-        from tests.test_api.test_tool_call_streaming import _anthropic_call
+        from tests.helpers.tool_call_streaming import _anthropic_call
 
         assistant, model = _assistant(
             [],

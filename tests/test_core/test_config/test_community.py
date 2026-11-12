@@ -1097,6 +1097,202 @@ class TestDatasetSuggestedQuestions:
         )
 
 
+class TestWidgetSearchPaths:
+    """widget.search_paths (#656): where the reader is searching, not viewing a dataset."""
+
+    def test_default_is_empty_and_not_resolved(self) -> None:
+        widget = WidgetConfig()
+        assert widget.search_paths == []
+        assert "search_paths" not in widget.resolve("HED")
+
+    def test_resolved_when_set(self) -> None:
+        widget = WidgetConfig(search_paths=["/discover", "/find/datasets"])
+        assert widget.resolve("NEMAR")["search_paths"] == ["/discover", "/find/datasets"]
+
+    @pytest.mark.parametrize("bad", ["discover", "", "https://nemar.org/discover"])
+    def test_needs_a_leading_slash(self, bad: str) -> None:
+        with pytest.raises(ValidationError, match="must start with"):
+            WidgetConfig(search_paths=[bad])
+
+    @pytest.mark.parametrize("bad", ["/discover?q=1", "/discover#top", "/dis cover"])
+    def test_no_query_fragment_or_whitespace(self, bad: str) -> None:
+        with pytest.raises(ValidationError, match="query, a fragment or whitespace"):
+            WidgetConfig(search_paths=[bad])
+
+    def test_the_home_page_is_a_path(self) -> None:
+        assert WidgetConfig(search_paths=["/"]).search_paths == ["/"]
+
+    def test_at_most_200_characters(self) -> None:
+        longest = "/" + "a" * 199
+        assert WidgetConfig(search_paths=[longest]).search_paths == [longest]
+        with pytest.raises(ValidationError, match="longer than 200"):
+            WidgetConfig(search_paths=[longest + "a"])
+
+    def test_at_most_five(self) -> None:
+        paths = [f"/p{i}" for i in range(6)]
+        with pytest.raises(ValidationError, match="Maximum is 5"):
+            WidgetConfig(search_paths=paths)
+        assert len(WidgetConfig(search_paths=paths[:5]).search_paths) == 5
+
+    def test_a_bare_string_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            WidgetConfig(search_paths="/discover")
+
+
+class TestWidgetCenterStart:
+    """widget.center_start (E6.1, #701): the center-stage start screen's copy."""
+
+    CARD = {"title": "Describe", "text": "Summaries, methods and citations."}
+
+    def test_default_is_unset_and_not_resolved(self) -> None:
+        widget = WidgetConfig()
+        assert widget.center_start is None
+        assert "center_start" not in widget.resolve("HED")
+
+    def test_resolved_when_set(self) -> None:
+        widget = WidgetConfig(center_start={"capabilities": [self.CARD], "note": "A note."})
+        assert widget.resolve("NEMAR")["center_start"] == {
+            "capabilities": [self.CARD],
+            "note": "A note.",
+        }
+
+    def test_a_note_alone_or_cards_alone_is_enough(self) -> None:
+        note_only = WidgetConfig(center_start={"note": "Only a note."}).resolve("X")
+        assert note_only["center_start"] == {"capabilities": [], "note": "Only a note."}
+        cards_only = WidgetConfig(center_start={"capabilities": [self.CARD]}).resolve("X")
+        assert "note" not in cards_only["center_start"]
+
+    def test_at_most_three_cards(self) -> None:
+        cards = [{"title": f"T{i}", "text": f"Text {i}."} for i in range(4)]
+        three = WidgetConfig(center_start={"capabilities": cards[:3]})
+        assert len(three.center_start.capabilities) == 3
+        with pytest.raises(ValidationError, match="Maximum is 3"):
+            WidgetConfig(center_start={"capabilities": cards})
+
+    def test_lengths_are_bounded(self) -> None:
+        title, text, note = 40, 160, 300
+        card = {"title": "t" * title, "text": "x" * text}
+        assert WidgetConfig(center_start={"capabilities": [card], "note": "n" * note})
+        for bad in (
+            {"capabilities": [{**card, "title": "t" * (title + 1)}]},
+            {"capabilities": [{**card, "text": "x" * (text + 1)}]},
+            {"note": "n" * (note + 1)},
+        ):
+            with pytest.raises(ValidationError, match="at most"):
+                WidgetConfig(center_start=bad)
+
+    @pytest.mark.parametrize("bad", ["", "   ", "<b>bold</b>"])
+    def test_a_card_is_plain_text_and_not_empty(self, bad: str) -> None:
+        for field in ("title", "text"):
+            with pytest.raises(ValidationError):
+                WidgetConfig(center_start={"capabilities": [{**self.CARD, field: bad}]})
+
+    def test_a_note_refuses_markup_and_an_empty_note_is_none(self) -> None:
+        with pytest.raises(ValidationError, match="plain text"):
+            WidgetConfig(center_start={"note": "see <a href='x'>this</a>"})
+        assert WidgetConfig(center_start={"note": "  "}).center_start.note is None
+
+    def test_unknown_keys_are_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            WidgetConfig(center_start={"cards": []})
+        with pytest.raises(ValidationError):
+            WidgetConfig(center_start={"capabilities": [{**self.CARD, "icon": "x"}]})
+
+
+class TestWidgetAnalysisDocs:
+    """widget.analysis_docs (E6.1, #701): the docs page the widget links to."""
+
+    DOCS = {"title": "Analyze data in your browser", "url": "https://docs.nemar.org/web/x/"}
+
+    def test_default_is_unset_and_not_resolved(self) -> None:
+        widget = WidgetConfig()
+        assert widget.analysis_docs is None
+        assert "analysis_docs" not in widget.resolve("HED")
+
+    def test_resolved_when_set(self) -> None:
+        assert WidgetConfig(analysis_docs=self.DOCS).resolve("NEMAR")["analysis_docs"] == self.DOCS
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://docs.nemar.org/x",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "//docs.nemar.org/x",
+            "/web/analyze",
+            "docs.nemar.org/x",
+            "https://",
+            "https://user:pass@docs.nemar.org/x",
+            "https://docs.nemar.org/a b",
+            "ftp://docs.nemar.org/x",
+        ],
+    )
+    def test_only_an_https_url_with_a_host(self, url: str) -> None:
+        with pytest.raises(ValidationError, match="analysis_docs url"):
+            WidgetConfig(analysis_docs={**self.DOCS, "url": url})
+
+    def test_lengths_are_bounded(self) -> None:
+        long_url = "https://docs.nemar.org/" + "a" * (500 - len("https://docs.nemar.org/"))
+        assert WidgetConfig(analysis_docs={**self.DOCS, "url": long_url})
+        with pytest.raises(ValidationError, match="at most 500"):
+            WidgetConfig(analysis_docs={**self.DOCS, "url": long_url + "a"})
+        with pytest.raises(ValidationError, match="at most 80"):
+            WidgetConfig(analysis_docs={**self.DOCS, "title": "t" * 81})
+
+    @pytest.mark.parametrize("bad", ["", "  ", "<i>x</i>"])
+    def test_the_title_is_plain_text(self, bad: str) -> None:
+        with pytest.raises(ValidationError):
+            WidgetConfig(analysis_docs={**self.DOCS, "title": bad})
+
+    def test_both_keys_are_required(self) -> None:
+        with pytest.raises(ValidationError):
+            WidgetConfig(analysis_docs={"url": self.DOCS["url"]})
+        with pytest.raises(ValidationError):
+            WidgetConfig(analysis_docs={"title": self.DOCS["title"]})
+
+
+class TestWidgetPrivacyUrl:
+    """widget.privacy_url (#706): the privacy page the Privacy choices dialog links to."""
+
+    URL = "https://example.org/privacy/"
+
+    def test_default_is_unset_and_not_resolved(self) -> None:
+        widget = WidgetConfig()
+        assert widget.privacy_url is None
+        assert "privacy_url" not in widget.resolve("HED")
+
+    def test_resolved_when_set(self) -> None:
+        assert WidgetConfig(privacy_url=self.URL).resolve("NEMAR")["privacy_url"] == self.URL
+
+    def test_surrounding_whitespace_is_stripped(self) -> None:
+        assert WidgetConfig(privacy_url=f"  {self.URL}\n").privacy_url == self.URL
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://example.org/privacy",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "//example.org/privacy",
+            "/privacy",
+            "example.org/privacy",
+            "https://",
+            "https://user:pass@example.org/privacy",
+            "https://example.org/a b",
+            "ftp://example.org/privacy",
+        ],
+    )
+    def test_only_an_https_url_with_a_host(self, url: str) -> None:
+        with pytest.raises(ValidationError, match="privacy_url"):
+            WidgetConfig(privacy_url=url)
+
+    def test_length_is_bounded(self) -> None:
+        long_url = "https://example.org/" + "a" * (500 - len("https://example.org/"))
+        assert WidgetConfig(privacy_url=long_url).privacy_url == long_url
+        with pytest.raises(ValidationError, match="at most 500"):
+            WidgetConfig(privacy_url=long_url + "a")
+
+
 class TestWidgetConfigLogoUrl:
     """Tests for WidgetConfig.logo_url field and validation."""
 
@@ -3308,3 +3504,109 @@ class TestModelInstructions:
     def test_other_shapes_are_still_rejected(self, model: str) -> None:
         with pytest.raises(ValidationError, match="Invalid model name"):
             CommunityConfig(id="d", name="D", description="x", default_model=model)
+
+
+def _routing_kwargs(**overrides: object) -> dict[str, object]:
+    """A community that can run code, which is what model routing needs, plus overrides."""
+    kwargs: dict[str, object] = {
+        "id": "routed",
+        "name": "Routed",
+        "description": "Routes turns between two models",
+        "extensions": ExtensionsConfig(
+            client_tools=[
+                ClientToolConfig(name="execute_code", runtime="python", description="Run code.")
+            ]
+        ),
+        "runtime": _python_runtime_config(),
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+class TestModelRoutingConfig:
+    """`quick_model` and `analysis_model` (issue #670, plan E8.1)."""
+
+    def test_neither_set_is_an_ordinary_community(self) -> None:
+        config = CommunityConfig(id="plain", name="Plain", description="No routing")
+        assert config.quick_model is None
+        assert config.analysis_model is None
+
+    def test_both_set_with_execute_code_loads(self) -> None:
+        config = CommunityConfig(**_routing_kwargs(quick_model="haiku", analysis_model="sonnet"))
+        assert config.quick_model == "haiku"
+        assert config.analysis_model == "sonnet"
+
+    @pytest.mark.parametrize("only", ["quick_model", "analysis_model"])
+    def test_one_without_the_other_is_rejected(self, only: str) -> None:
+        with pytest.raises(ValidationError, match="both be set or both unset"):
+            CommunityConfig(**_routing_kwargs(**{only: "haiku"}))
+
+    @pytest.mark.parametrize("field", ["quick_model", "analysis_model"])
+    def test_a_model_that_does_not_resolve_is_rejected(self, field: str) -> None:
+        kwargs = {"quick_model": "haiku", "analysis_model": "sonnet", field: "not-a-model"}
+        with pytest.raises(ValidationError, match="not an offered model"):
+            CommunityConfig(**_routing_kwargs(**kwargs))
+
+    def test_a_model_is_resolved_through_normalize_model(self) -> None:
+        """A class name and the id it stands for are both accepted, as for default_model."""
+        config = CommunityConfig(**_routing_kwargs(quick_model=HAIKU, analysis_model="sonnet"))
+        assert normalize_model(config.quick_model) == HAIKU
+        assert normalize_model(config.analysis_model) == normalize_model("sonnet")
+
+    def test_without_an_execute_code_client_tool_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="execute_code"):
+            CommunityConfig(
+                id="nocode", name="N", description="x", quick_model="haiku", analysis_model="sonnet"
+            )
+
+    def test_a_client_tool_that_is_not_execute_code_is_not_enough(self) -> None:
+        other = ExtensionsConfig(
+            client_tools=[ClientToolConfig(name="other", runtime="python", description="Run.")]
+        )
+        with pytest.raises(ValidationError, match="execute_code"):
+            CommunityConfig(
+                **_routing_kwargs(extensions=other, quick_model="haiku", analysis_model="sonnet")
+            )
+
+    def test_start_analysis_cannot_be_configured(self) -> None:
+        with pytest.raises(ValidationError, match="reserved"):
+            ClientToolConfig(name="start_analysis", runtime="python", description="Run.")
+
+    def test_plan_first_instructions_load_beside_the_pair(self) -> None:
+        config = CommunityConfig(
+            **_routing_kwargs(
+                quick_model="haiku", analysis_model="sonnet", plan_first_instructions="Plan."
+            )
+        )
+        assert config.plan_first_instructions == "Plan."
+        assert (
+            CommunityConfig(
+                **_routing_kwargs(quick_model="haiku", analysis_model="sonnet")
+            ).plan_first_instructions
+            is None
+        )
+
+    def test_plan_first_instructions_without_the_pair_are_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="plan_first_instructions"):
+            CommunityConfig(**_routing_kwargs(plan_first_instructions="Plan."))
+
+    @pytest.mark.parametrize("blank", ["", "   \n"])
+    def test_blank_plan_first_instructions_are_rejected(self, blank: str) -> None:
+        with pytest.raises(ValidationError, match="must not be blank"):
+            CommunityConfig(
+                **_routing_kwargs(
+                    quick_model="haiku", analysis_model="sonnet", plan_first_instructions=blank
+                )
+            )
+
+    def test_propose_plan_cannot_be_configured(self) -> None:
+        with pytest.raises(ValidationError, match="reserved"):
+            ClientToolConfig(name="propose_plan", runtime="python", description="Run.")
+
+    def test_nemar_routes_haiku_to_sonnet(self) -> None:
+        config = CommunityConfig.from_yaml(
+            Path(__file__).parents[3] / "src" / "assistants" / "nemar" / "config.yaml"
+        )
+        assert config.quick_model == "haiku"
+        assert config.analysis_model == "sonnet"
+        assert normalize_model(config.quick_model) == HAIKU

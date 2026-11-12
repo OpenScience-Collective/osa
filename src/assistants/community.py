@@ -16,12 +16,18 @@ Features:
 import importlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from langchain_core.tools import BaseTool, StructuredTool, tool
 
 from src.agents.base import ToolAgent
-from src.core.config.community import CommunityConfig
+from src.core.config.community import (
+    EXECUTE_CODE_TOOL_NAME,
+    GET_PROCEDURE_TOOL_NAME,
+    PROPOSE_PLAN_TOOL_NAME,
+    CommunityConfig,
+    Tier,
+)
 from src.core.services.anthropic_models import BEDROCK_MODELS
 from src.core.services.tagged_citations import CITATION_INSTRUCTION
 from src.tools.base import DocRegistry
@@ -43,6 +49,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# The browser memory budgets a reader may choose, in MB. The API model
+# (src/api/routers/community.py PageContext) types the field with the same four sizes;
+# a test holds the two to each other.
+MemoryBudgetMb = Literal[256, 512, 1024, 2048]
+MEMORY_BUDGETS_MB: tuple[int, ...] = get_args(MemoryBudgetMb)
+
+
 @dataclass
 class PageContext:
     """Context about the page where the assistant widget is embedded."""
@@ -50,6 +63,22 @@ class PageContext:
     url: str | None = None
     title: str | None = None
     widget_instructions: str | None = None
+    # The dataset the page names (setDataset); validated at the API boundary.
+    dataset_id: str | None = None
+    # {"type": "dataset", "id": ...} or {"type": "search"}: where the reader was before
+    # choosing to continue this conversation in the page's context.
+    moved_from: dict[str, str] | None = None
+    # How much of the reader's browser memory one step of an analysis may use, in MB
+    # (one of MEMORY_BUDGETS_MB). Checked here as well as at the API boundary, because the
+    # value is written into the system prompt and any caller can build this directly.
+    memory_budget_mb: MemoryBudgetMb | None = None
+
+    def __post_init__(self) -> None:
+        if self.memory_budget_mb is not None and self.memory_budget_mb not in MEMORY_BUDGETS_MB:
+            raise ValueError(
+                f"memory_budget_mb must be one of {list(MEMORY_BUDGETS_MB)} or None, "
+                f"got {self.memory_budget_mb!r}"
+            )
 
 
 # Default system prompt template for generic communities
@@ -135,6 +164,38 @@ def _create_fetch_current_page_tool(page_url: str, citations: bool = False) -> B
         return result.content
 
     return fetch_current_page
+
+
+def _create_get_procedure_tool(documents: dict[str, str]) -> BaseTool:
+    """Create the tool that returns one known procedure's document.
+
+    Args:
+        documents: The community's procedure documents by id
+            (``CommunityConfig.procedure_documents``), read once at load.
+    """
+    known = ", ".join(f"'{procedure_id}'" for procedure_id in documents)
+
+    @tool(GET_PROCEDURE_TOOL_NAME)
+    def get_procedure(procedure_id: str) -> str:
+        """Fetch the document of one of the known procedures listed in your instructions.
+
+        The document opens with the plan to propose and then gives the rules and code for
+        each step. Call it when a request matches a listed procedure, before you propose
+        a plan.
+
+        Args:
+            procedure_id: The id of a listed procedure, for example the one named in
+                the "Known procedures" section.
+
+        Returns:
+            The procedure's Markdown document, or an error naming the known ids.
+        """
+        text = documents.get(procedure_id.strip())
+        if text is None:
+            return f"Error: unknown procedure {procedure_id!r}. The known procedures are: {known}."
+        return text
+
+    return get_procedure
 
 
 def _create_retrieve_docs_tool(
@@ -263,8 +324,13 @@ class CommunityAssistant(ToolAgent):
         browser_runs_left: int | None = None,
         tagged_citations: bool = False,
         model_id: str | None = None,
+        tier: Tier | None = None,
     ) -> None:
         """Initialize the community assistant.
+
+        `tier` is the model tier of a routed turn (`src.agents.model_routing`), or None for
+        a community that does not route. It decides which client tools are bound: see
+        `build_client_tools`.
 
         `declared_client_tools` names the client-executed tools the CALLER says it can
         run. Only tools that are both configured on the community and declared here are
@@ -283,6 +349,7 @@ class CommunityAssistant(ToolAgent):
         self._citations = citations
         self._tagged_citations = tagged_citations
         self._model_id = model_id
+        self.tier = tier
         self._preloaded_content: dict[str, str] = {}
 
         # Build doc registry from config
@@ -326,7 +393,19 @@ class CommunityAssistant(ToolAgent):
 
         # Tools this server binds but never executes; the browser does. Empty unless
         # the community configures them AND the caller declares it can run them.
-        client_tools = build_client_tools(config, declared_client_tools)
+        client_tools = build_client_tools(config, declared_client_tools, tier=tier)
+
+        # Known procedures are offered only when this turn can run code: a procedure is a
+        # recipe for a plan that ends in code, so a quick turn (which has no execute_code)
+        # and a widget that does not declare it get neither the tool nor the prompt section.
+        # Asked of the config on every build, offered or not, so a config that declares
+        # procedures without their documents fails here and not on some later turn.
+        procedures = config.procedure_documents()
+        client_tool_names = {tool.name for tool in client_tools}
+        self._procedures_offered = bool(procedures) and EXECUTE_CODE_TOOL_NAME in client_tool_names
+        self._plan_tool_bound = PROPOSE_PLAN_TOOL_NAME in client_tool_names
+        if self._procedures_offered:
+            tools.append(_create_get_procedure_tool(procedures))
 
         # A client tool sharing a name with a real server tool is the one configuration
         # mistake here with no symptom. `BaseAgent` partitions by name, so the server
@@ -548,17 +627,83 @@ class CommunityAssistant(ToolAgent):
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _describe_context(context: dict[str, str]) -> str:
+        """A reader context as a phrase: the dataset's id, or the dataset search."""
+        if context.get("type") == "dataset" and context.get("id"):
+            return f"dataset `{context['id']}`"
+        return "the dataset search"
+
+    def _format_reader_context(self) -> str:
+        """The dataset the reader is on, and where they came from in this conversation.
+
+        Without a dataset id the reader is on the community's search page, the only
+        other context the widget reports a move to.
+        """
+        page = self._page_context
+        if page is None or not (page.dataset_id or page.moved_from):
+            return ""
+        paragraphs: list[str] = []
+        if page.dataset_id:
+            paragraphs.append(
+                f"The reader is on the page for dataset `{page.dataset_id}`. Questions about "
+                '"this dataset" mean this one, whether or not the page URL is shared.'
+            )
+        if page.moved_from:
+            now = self._describe_context(
+                {"type": "dataset", "id": page.dataset_id}
+                if page.dataset_id
+                else {"type": "search"}
+            )
+            before = self._describe_context(page.moved_from)
+            # A reader back where the chat started has not moved: say nothing false.
+            if before != now:
+                paragraphs.append(
+                    f"In this conversation the reader moved from {before} to {now}, and "
+                    "chose to keep talking here. Earlier answers were about the first one; "
+                    "compare or continue as they ask."
+                )
+        if not paragraphs:
+            return ""
+        return "## Reader Context\n\n" + "\n\n".join(paragraphs)
+
+    def _format_memory_budget(self) -> str:
+        """The reader's browser memory budget, which every step has to fit in."""
+        page = self._page_context
+        if page is None or page.memory_budget_mb is None:
+            return ""
+        return (
+            "## Browser memory budget\n\n"
+            f"Each step must fit in {page.memory_budget_mb} MB of the reader's browser memory; "
+            "read long recordings in pieces."
+        )
+
     def _format_page_context_section(self) -> str:
         """Format page context section for system prompt."""
         if not self.config.enable_page_context:
             return ""
         if not self._page_context:
             return ""
-        # Need at least a URL or widget instructions to include this section
-        if not self._page_context.url and not self._page_context.widget_instructions:
+        # Need at least a URL, widget instructions, a dataset or a memory budget to include
+        # this section
+        if (
+            not self._page_context.url
+            and not self._page_context.widget_instructions
+            and not self._page_context.dataset_id
+            and not self._page_context.moved_from
+            and self._page_context.memory_budget_mb is None
+        ):
             return ""
 
         sections = []
+
+        reader_context = self._format_reader_context()
+        if reader_context:
+            sections.append(reader_context)
+
+        memory_budget = self._format_memory_budget()
+        if memory_budget:
+            sections.append(memory_budget)
 
         if self._page_context.url:
             sections.append(
@@ -610,6 +755,43 @@ class CommunityAssistant(ToolAgent):
         if not notes:
             return ""
         return "## Working Notes For This Model\n\n" + "\n\n".join(notes)
+
+    def _format_procedures_section(self) -> str:
+        """The ``## Known procedures`` list and the rule for using it, or "".
+
+        Empty unless this turn offers ``get_procedure`` (``self._procedures_offered``). It
+        names ``propose_plan`` only when that client tool is bound, since a prompt that
+        names a tool the model was not given would send it to invent one.
+        """
+        if not self._procedures_offered:
+            return ""
+        listed = "\n".join(
+            f"- `{procedure.id}`: {procedure.title}. Use for: {procedure.when}"
+            for procedure in self.config.procedures
+        )
+        if self._plan_tool_bound:
+            rule = (
+                f"When a request matches one of them, call `{GET_PROCEDURE_TOOL_NAME}` with "
+                f"its id before `{PROPOSE_PLAN_TOOL_NAME}`, then propose the steps of the "
+                "document's plan as written (its titles, in its order), filling in only the "
+                "dataset, recording, channel, conditions and bands. Where a document's plan "
+                "differs from the plan-first step rules (for instance it has no separate read "
+                "step), the document wins. A request that matches none of them uses the "
+                "plan-first step rules."
+            )
+        else:
+            rule = (
+                f"When a request matches one of them, call `{GET_PROCEDURE_TOOL_NAME}` with "
+                "its id before running code, then run the steps of the document's plan as "
+                "written (its titles, in its order), filling in only the dataset, recording, "
+                "channel, conditions and bands."
+            )
+        return (
+            "## Known procedures\n\n"
+            "These analyses have a fixed procedure: a document with the plan to follow and "
+            "the rules and code for each step.\n\n"
+            f"{listed}\n\n{rule}"
+        )
 
     def _format_citation_fallback_section(self) -> str:
         """Instruction added only when tools return plain strings (``citations=False``).
@@ -676,6 +858,7 @@ class CommunityAssistant(ToolAgent):
                 self._format_tagged_citation_section(),
                 citation_fallback_section,
                 self._format_model_instructions_section(),
+                self._format_procedures_section(),
                 additional_instructions,
             )
             if section

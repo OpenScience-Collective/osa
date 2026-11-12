@@ -17,6 +17,7 @@ On startup, empty databases are automatically seeded with an immediate sync.
 
 import logging
 import os
+import sqlite3
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -32,7 +33,7 @@ from src.knowledge.github_sync import sync_repos
 from src.knowledge.papers_sync import sync_all_papers, sync_citing_papers
 from src.metrics.alerts import create_budget_alert_issue
 from src.metrics.budget import check_budget
-from src.metrics.db import metrics_connection
+from src.metrics.db import metrics_connection, purge_expired_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +340,47 @@ def _cleanup_mirrors() -> None:
         )
 
 
+_metrics_retention_failures = 0
+
+
+def _purge_expired_metrics() -> None:
+    """Delete usage metrics and feedback past their retention period (#725).
+
+    Startup runs the same purge, so it happens at least once per deploy even when this
+    scheduler is off; this job keeps a long-running server within the period. PRIVACY.md
+    promises the deletion, so repeated failures escalate like the other jobs'.
+    """
+    global _metrics_retention_failures
+    try:
+        purge_expired_metrics()
+        _metrics_retention_failures = 0
+    except (sqlite3.Error, OSError):
+        _metrics_retention_failures += 1
+        logger.error(
+            "Could not delete expired usage metrics and feedback (attempt %d/%d)",
+            _metrics_retention_failures,
+            MAX_CONSECUTIVE_FAILURES,
+            exc_info=True,
+        )
+        if _metrics_retention_failures >= MAX_CONSECUTIVE_FAILURES:
+            logger.critical(
+                "Metrics retention has failed %d times consecutively, so rows past the "
+                "retention period are not being deleted. Manual intervention required.",
+                _metrics_retention_failures,
+            )
+
+
+def _add_metrics_retention_job(scheduler: BackgroundScheduler) -> None:
+    """Register the daily retention purge (03:15) on ``scheduler``."""
+    scheduler.add_job(
+        _purge_expired_metrics,
+        trigger=CronTrigger(hour="3", minute="15"),
+        id="metrics_retention",
+        name="Usage Metrics and Feedback Retention",
+        replace_existing=True,
+    )
+
+
 def _check_community_budgets() -> None:
     """Check budget limits for all communities and create alert issues if exceeded."""
     global _budget_check_failures
@@ -634,6 +676,13 @@ def start_scheduler() -> BackgroundScheduler | None:
         logger.info("Mirror cleanup scheduled: hourly at :30")
     except ValueError as e:
         logger.error("Failed to schedule mirror cleanup: %s", e)
+
+    # Usage metrics and feedback retention (daily, deletes rows older than five years)
+    try:
+        _add_metrics_retention_job(_scheduler)
+        logger.info("Metrics retention scheduled: daily at 03:15")
+    except ValueError as e:
+        logger.error("Failed to schedule metrics retention: %s", e)
 
     # Start the scheduler
     _scheduler.start()

@@ -1,0 +1,4 @@
+{
+  "detail": "The server no longer holds this conversation, so the message was not run.",
+  "code": "session_unknown"
+}

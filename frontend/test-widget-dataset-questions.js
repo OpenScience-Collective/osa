@@ -125,6 +125,8 @@ async function start({ widget = { dataset_suggested_questions: TEMPLATES }, data
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
   });
   window.__OSA_TEST__ = true;
+  // A load in the same browser session, as a reload is: it keeps its chat (E1.2).
+  window.sessionStorage.setItem(`${HISTORY_KEY}-session`, '1');
   for (const [key, value] of Object.entries(storage)) window.localStorage.setItem(key, value);
   if (before) before(window);
   const script = window.document.createElement('script');
@@ -343,7 +345,8 @@ console.log('\nasking from the dataset page records it; the suggestions go once 
   const user = ctx.api.__browser.getMessages().find((m) => m.role === 'user');
   assertEqual(user.dataset, 'nm000132', 'the message records the dataset on screen');
   const stored = JSON.parse(ctx.window.localStorage.getItem(HISTORY_KEY));
-  assertEqual(stored.messages.find((m) => m.role === 'user').dataset, 'nm000132', 'and so does the saved history');
+  const active = stored.conversations.find((c) => c.id === stored.activeId);
+  assertEqual(active.messages.find((m) => m.role === 'user').dataset, 'nm000132', 'and so does the saved history, in the active conversation');
   assertEqual(shown(ctx.q), null, 'mid-conversation on the same dataset: nothing offered');
   afterAsking = { [HISTORY_KEY]: ctx.window.localStorage.getItem(HISTORY_KEY) };
 }
@@ -371,8 +374,12 @@ console.log('\na different dataset mid-conversation: a compact row of two, gone 
   // The reader types their own question instead of clicking one.
   await send(ctx, 'Does xx099904 have HED tags?');
   assertEqual(shown(ctx.q), null, 'the reader sent from this page: the row is gone');
-  assertEqual(ctx.api.__browser.getMessages().filter((m) => m.role === 'user').map((m) => m.dataset), ['nm000132', 'xx099904'],
-    'each message records the page it was sent from');
+  // A new dataset starts a new chat on the reader's next message (E1.3), so the two
+  // questions are in two conversations, each recording the page it was sent from.
+  const userDatasets = (list) => list.filter((m) => m.role === 'user').map((m) => m.dataset);
+  assertEqual(userDatasets(ctx.api.__browser.getMessages()), ['xx099904'], 'the message records the page it was sent from');
+  assertEqual(ctx.api.__browser.listConversations().filter((c) => !c.active).map((c) => userDatasets(c.messages)), [['nm000132']],
+    'and the earlier question stays in the chat it was asked in');
 
   ctx.api.setDataset({ id: 'xx099903', zarr: false });
   assertEqual(shown(ctx.q), ['What is xx099903 about, and how was it recorded?', 'How do I download xx099903?'],

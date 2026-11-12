@@ -120,6 +120,36 @@ _RELATIVE_PATH_HARNESS_ALLOWLIST = {
         "for headless Chrome driven over the DevTools protocol; a dev harness "
         "page, never published as embed guidance"
     ),
+    "frontend/browser-harness/history-check.mjs": (
+        "the History sheet check's own page, served from its own loopback server "
+        "and loading the widget from that server's /osa-chat-widget.js route, "
+        "for headless Chrome driven over the DevTools protocol; a dev harness "
+        "page, never published as embed guidance"
+    ),
+    "frontend/browser-harness/center-stage-check.mjs": (
+        "the center-stage dialog check's own page, served from its own loopback "
+        "server and loading the widget from that server's /osa-chat-widget.js "
+        "route, for headless Chrome driven over the DevTools protocol; a dev "
+        "harness page, never published as embed guidance"
+    ),
+    "frontend/browser-harness/privacy-choices-check.mjs": (
+        "the Privacy choices check's own page, served from its own loopback "
+        "server and loading the widget from that server's /osa-chat-widget.js "
+        "route, for headless Chrome driven over the DevTools protocol; a dev "
+        "harness page, never published as embed guidance"
+    ),
+    "frontend/browser-harness/notebook-entry-check.mjs": (
+        "the notebook card and History menu check's own page, served from its own "
+        "loopback server and loading the widget from that server's "
+        "/osa-chat-widget.js route, for headless Chrome driven over the DevTools "
+        "protocol; a dev harness page, never published as embed guidance"
+    ),
+    "frontend/browser-harness/run-card-check.mjs": (
+        "the run card check's own page, served from its own loopback server "
+        "and loading the widget from that server's /osa-chat-widget.js route, "
+        "for headless Chrome driven over the DevTools protocol; a dev harness "
+        "page, never published as embed guidance"
+    ),
     "frontend/browser-harness/widget_e2e.py": (
         "the harness server's widget-e2e-sri.html route: widget-e2e.html with "
         "its relative ../osa-chat-widget.js tag given integrity and "

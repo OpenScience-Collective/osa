@@ -800,6 +800,23 @@ console.log('\nexplicitly saved files stay in the browser too, and takeFiles han
   rt.terminate();
 }
 
+console.log('\nthe heap a run reports stays beside the result: heapBytes reads it, ClientToolResult never carries it (E5.1)');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  const result = await rt.execute('# HEAP_MB=300\nprint(1)', { callId: 'call-heap' });
+  assert(!('heap_bytes' in result), 'the result a caller receives has no heap field');
+  assert(Object.keys(result).every((key) => CLIENT_TOOL_RESULT_FIELDS.includes(key)), 'only ClientToolResult fields');
+  assertEqual(rt.heapBytes('call-heap'), 300 * 1024 * 1024, 'the heap is read by call id, in bytes');
+  assertEqual(rt.heapBytes('call-heap'), 300 * 1024 * 1024, 'and can be read again');
+  await rt.execute('no heap here', { callId: 'call-no-heap' });
+  assertEqual(rt.heapBytes('call-no-heap'), null, 'a run that reported none has none');
+  assertEqual(rt.heapBytes('never-ran'), null, 'nor has a call that never ran');
+  for (let n = 0; n < 20; n += 1) await rt.execute(`# HEAP_MB=${n + 1}`, { callId: `call-many-${n}` });
+  assertEqual(rt.heapBytes('call-heap'), null, 'the oldest are forgotten past the last 16 runs');
+  assertEqual(rt.heapBytes('call-many-19'), 20 * 1024 * 1024, 'the newest are kept');
+  rt.terminate();
+}
+
 console.log('\nget_full_output fails in words the model can act on');
 {
   const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
