@@ -32,7 +32,16 @@
  * memory choices, the header's Continue in notebook) and at a phone's 390 x 844 (no rail,
  * the strip showing, nothing scrolling sideways, the header's button icon only).
  *
- * It stands up its own server, so it needs no backend and no network. Screenshots are
+ * And the notebook as a tab of the dialog (#738), on a capsule widget, at 1280 x 900 and
+ * 390 x 844 in the light and the dark scheme, against a stand-in notebook site on another
+ * origin: Continue in notebook opens a Notebook tab in the dialog (still modal, no
+ * modechange), the tabs appear only then, the Notebook tab's frame fills the dialog under
+ * its header, the real Tab key (inside the frame, out of it, and back) never leaves the
+ * dialog and always comes back to the tabs, the tabs take arrow keys, Move to corner and
+ * Escape keep the tab and the one frame (the same element, loaded once), and the tab
+ * switch's fade is a few tens of milliseconds and none under prefers-reduced-motion.
+ *
+ * It stands up its own servers, so it needs no backend and no network. Screenshots are
  * written when a directory is given, as the argument or as CENTER_CHECK_SCREENSHOTS
  * (CI sets it, and uploads them when the check fails).
  *
@@ -182,7 +191,7 @@ function planChat(variant) {
   });
 }
 
-function planPage(launcher, variant) {
+function planPage(launcher, variant, notebookUrl) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>center plan</title>
 <style>body{margin:0;font-family:system-ui,sans-serif;background:#fff;color:#0f172a}main{padding:24px 80px;min-height:2400px}</style></head>
 <body><main id="host-page"><button id="host-pill" type="button">AI Mode</button></main>
@@ -194,9 +203,50 @@ function planPage(launcher, variant) {
 <script src="/osa-chat-widget.js" data-no-auto-init></script>
 <script>
   OSAChatWidget.setDataset({ id: ${JSON.stringify(DATASET.id)}, title: ${JSON.stringify(DATASET.title)}, zarr: true });
-  OSAChatWidget.setConfig({ apiEndpoint: location.origin + '/api', communityId: ${JSON.stringify(PLAN_COMMUNITY)}, storageKey: ${JSON.stringify(PLAN_STORAGE_KEY)}, launcher: ${JSON.stringify(launcher)} });
+  OSAChatWidget.setConfig({ apiEndpoint: location.origin + '/api', communityId: ${JSON.stringify(PLAN_COMMUNITY)}, storageKey: ${JSON.stringify(PLAN_STORAGE_KEY)}, launcher: ${JSON.stringify(launcher)}${notebookUrl ? `, notebookUrl: ${JSON.stringify(notebookUrl)}` : ''} });
   OSAChatWidget.init();
 </script></body></html>`;
+}
+
+// The notebook site, on an origin of its own (another port), as the real one is: its page
+// speaks to the widget the way notebook/osa-bridge.js does (ready, a theme it applies, an
+// answer to every request) and has a few controls of its own, so the real Tab key has a
+// page to move through. `loads` counts how many times the browser asked for the page: a
+// frame that was moved in the DOM, or reloaded, asks again.
+const NOTEBOOK_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>notebook</title>
+<style>body{margin:0;font:14px system-ui;padding:16px;background:#fff;color:#0f172a}body.dark{background:#0b1220;color:#e5e7eb}
+button,input,a{display:block;margin:0 0 12px;font:inherit}input{width:60%}</style></head>
+<body><h2>Notebook stand-in</h2><button id="one" type="button">Run cell</button><input id="two" aria-label="A cell" value="print(1)"><a id="three" href="#x">A link</a>
+<script>
+  const say = (message) => parent.postMessage({ source: 'osa-notebook', ...message }, '*');
+  addEventListener('message', (event) => {
+    const data = event.data;
+    if (!data || data.target !== 'osa-notebook') return;
+    if (data.type === 'theme') {
+      document.body.classList.toggle('dark', data.scheme === 'dark');
+      say({ type: 'theme', scheme: data.scheme, applied: true });
+    } else if (data.requestId) {
+      say({ type: 'result', requestId: data.requestId, ok: true, path: 'nemar/stand-in.ipynb' });
+    }
+  });
+  say({ type: 'ready' });
+</script></body></html>`;
+
+function startNotebookSite() {
+  const site = { loads: 0, server: null };
+  site.server = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch(request) {
+      const { pathname } = new URL(request.url);
+      if (pathname === '/open.html') {
+        site.loads++;
+        return new Response(NOTEBOOK_PAGE, { headers: { 'content-type': 'text/html' } });
+      }
+      return new Response('not found', { status: 404 });
+    },
+  });
+  return site;
 }
 
 function startServer() {
@@ -214,7 +264,8 @@ function startServer() {
         const launcher = new URL(request.url).searchParams.get('launcher') === 'bubble' ? 'bubble' : 'capsule';
         const asked = new URL(request.url).searchParams.get('variant');
         const variant = asked === 'failed' || asked === 'stopped' ? asked : 'paused';
-        return new Response(planPage(launcher, variant), { headers: { 'content-type': 'text/html' } });
+        const notebook = new URL(request.url).searchParams.get('notebook');
+        return new Response(planPage(launcher, variant, notebook), { headers: { 'content-type': 'text/html' } });
       }
       if (pathname === `/api/${PLAN_COMMUNITY}`) {
         return Response.json({
@@ -846,6 +897,260 @@ async function checkRunStepFocus(cdp, base) {
   await cdp.send('Target.closeTarget', { targetId: page.targetId });
 }
 
+// ------------------------------------------------------------------ the notebook tab (#738)
+
+const ARROW_LEFT = { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 };
+const ARROW_RIGHT = { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 };
+
+const NOTEBOOK_GEOMETRY = `(() => {
+  const box = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  const win = document.querySelector('.osa-chat-window');
+  const header = document.querySelector('.osa-chat-header');
+  const tabs = document.querySelector('.osa-center-tabs');
+  const visible = (selector) => {
+    const el = document.querySelector(selector);
+    return !!el && getComputedStyle(el).visibility !== 'hidden' && el.getBoundingClientRect().width > 0;
+  };
+  return {
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    win: box(win),
+    header: box(header),
+    pill: box(document.querySelector('.osa-center-pill')),
+    tabs: tabs && !tabs.hidden ? box(tabs) : null,
+    tabButtons: [...document.querySelectorAll('.osa-center-tab')].map(box),
+    frame: box(document.querySelector('.osa-notebook-frame')),
+    dock: box(document.querySelector('.osa-center-dock-btn')),
+    close: box(document.querySelector('.osa-close-btn')),
+    shown: {
+      history: visible('.osa-history-btn'),
+      settings: visible('.osa-settings-btn-open'),
+      continue: visible('.osa-center-notebook-btn'),
+      dock: visible('.osa-center-dock-btn'),
+      close: visible('.osa-close-btn'),
+    },
+    sideways: document.documentElement.scrollWidth > window.innerWidth + 1 || win.scrollWidth > win.clientWidth + 1
+      || header.scrollWidth > header.clientWidth + 1 || (tabs ? tabs.scrollWidth > tabs.clientWidth + 1 : false),
+    selected: [...document.querySelectorAll('.osa-center-tab')].filter((el) => el.getAttribute('aria-selected') === 'true').map((el) => el.textContent.trim()),
+    tabClass: document.querySelector('.osa-chat-widget').classList.contains('osa-tab-notebook') ? 'notebook' : 'chat',
+  };
+})()`;
+
+// Where focus is, in terms of the dialog: a tab, the frame (focus inside it shows as the
+// frame element in this document), another control of the dialog, or somewhere else.
+const FOCUS_PLACE = `(() => {
+  const el = document.activeElement;
+  const win = document.querySelector('.osa-chat-window');
+  if (!el || el === document.body || el === document.documentElement) return { inside: false, place: 'body' };
+  if (!win.contains(el)) return { inside: false, place: 'page:' + (el.id || el.tagName) };
+  if (el.classList.contains('osa-notebook-frame')) return { inside: true, place: 'frame' };
+  if (el.classList.contains('osa-center-tab')) return { inside: true, place: 'tab:' + el.textContent.trim() };
+  if (el.classList.contains('osa-nb-guard')) return { inside: true, place: 'guard' };
+  for (const [selector, place] of [['.osa-center-dock-btn', 'dock'], ['.osa-close-btn', 'close'], ['.osa-notebook-banner *', 'banner'], ['.osa-nb-bar *', 'strip']]) {
+    if (el.matches(selector)) return { inside: true, place };
+  }
+  return { inside: true, place: (el.className || el.tagName).toString().split(' ').find((c) => c.startsWith('osa-')) || el.tagName };
+})()`;
+
+async function checkNotebookTab(cdp, base, screenshotDir, viewport, site) {
+  const { name, width, height } = viewport;
+  const label = `${name} notebook tab`;
+  console.log(`--- ${label}: ${width} x ${height}`);
+  const notebookBase = `http://127.0.0.1:${site.server.port}/`;
+  const page = await openPage(cdp, base, viewport, `/plan?launcher=capsule&notebook=${encodeURIComponent(notebookBase)}`);
+  const { sessionId } = page;
+  const call = (expression, options) => evaluate(cdp, sessionId, expression, options);
+  const press = (key) => pressKey(cdp, sessionId, key);
+  const loadsBefore = site.loads;
+  report(await call(WIDGET_READY), `${label}: the widget has its community config`);
+  await call(`document.getElementById('host-pill').focus()`);
+  await call(`OSAChatWidget.open({ mode: 'center' })`, { userGesture: true });
+  report(
+    await waitFor(cdp, sessionId, `document.querySelector('.osa-chat-window.open.osa-center') !== null && OSAChatWidget.__browser.getBrowserTools() !== null && document.querySelector('.osa-chat-messages .osa-run-card') !== null`, 'the dialog, the runtime and the chat'),
+    `${label}: the dialog opens on the stored conversation`
+  );
+  // From here on, what the page hears: the dialog opened above is not counted.
+  await call(`window.__modes = []; OSAChatWidget.on('modechange', (event) => window.__modes.push(event.mode)); 0`);
+
+  // A chat-only dialog keeps the header it had: no tabs.
+  report(await call(`getComputedStyle(document.querySelector('.osa-center-tabs')).display === 'none'`), `${label}: before the notebook is opened the header has no tabs`);
+  report(site.loads === loadsBefore, `${label}: and no notebook has been asked for`, site.loads - loadsBefore);
+
+  // Continue in notebook, in the header: the notebook opens as a tab of the dialog.
+  await call(`document.querySelector('.osa-center-notebook-btn').click()`, { userGesture: true });
+  report(await waitFor(cdp, sessionId, `document.querySelector('.osa-notebook-frame') !== null && document.querySelector('.osa-chat-widget').classList.contains('osa-tab-notebook')`, 'the notebook tab'), `${label}: Continue in notebook opens the notebook tab`);
+  report(
+    await waitFor(cdp, sessionId, `[...document.querySelectorAll('.osa-notebook-overlay')].every((o) => o.classList.contains('osa-overlay-hidden'))`, 'the notebook is ready'),
+    `${label}: and the notebook answers`
+  );
+  await call(`window.__frame = document.querySelector('.osa-notebook-frame'); 0`);
+  const stay = await call(`(() => {
+    const win = document.querySelector('.osa-chat-window');
+    return { center: win.classList.contains('osa-center'), role: win.getAttribute('role'), modal: win.getAttribute('aria-modal'),
+      inert: document.getElementById('host-page').inert === true, scrim: document.querySelector('.osa-center-scrim').classList.contains('open'), modes: window.__modes };
+  })()`);
+  report(stay.center && stay.role === 'dialog' && stay.modal === 'true' && stay.inert && stay.scrim, `${label}: the dialog stays modal, the page behind it inert`, stay);
+  report(stay.modes.length === 0, `${label}: and it did not dock (no modechange)`, stay.modes);
+  report(site.loads === loadsBefore + 1, `${label}: the notebook page was loaded once`, site.loads - loadsBefore);
+
+  const g = await call(NOTEBOOK_GEOMETRY);
+  report(g.tabs !== null && g.selected.length === 1 && g.selected[0] === 'Notebook', `${label}: the tabs are in the header, with Notebook selected`, [g.tabs, g.selected]);
+  report(g.tabs && Math.abs(g.tabs.height - 36) <= 0.5 && g.tabButtons.every((b) => b.height >= 30), `${label}: the tab pair is 36 px tall like the header's buttons, each tab at least 30`, [g.tabs, g.tabButtons]);
+  report(g.tabs && g.tabs.left >= g.win.left - 1 && g.tabs.right <= g.win.right + 1, `${label}: the tabs are inside the dialog`, [g.tabs, g.win]);
+  if (width > 1100) {
+    report(g.tabs && g.tabs.top < g.pill.bottom && g.tabs.bottom > g.pill.top, `${label}: on the laptop the tabs share the pill's row`, [g.tabs, g.pill]);
+  } else {
+    report(g.tabs && g.tabs.top >= g.pill.bottom - 1, `${label}: on a narrow window the tabs take a row of their own under the pill`, [g.tabs, g.pill]);
+    report(g.tabs && g.tabs.width >= g.win.width - 40, `${label}: and share it across the dialog`, [g.tabs, g.win]);
+  }
+  report(g.frame !== null && Math.abs(g.frame.left - g.win.left) <= 1 && Math.abs(g.frame.right - g.win.right) <= 1 && Math.abs(g.frame.bottom - g.win.bottom) <= 1,
+    `${label}: the notebook's frame fills the dialog's width and runs to its bottom edge`, [g.frame, g.win]);
+  report(g.frame !== null && g.frame.top >= g.header.bottom - 1 && g.frame.height >= g.win.height - g.header.height - 130,
+    `${label}: under the header, which it does not overlap`, [g.frame, g.header]);
+  report(!g.shown.history && !g.shown.settings && !g.shown.continue, `${label}: History, Settings and Continue in notebook are hidden on the Notebook tab`, g.shown);
+  report(g.shown.dock && g.shown.close && g.dock.height >= 36 && g.close.height >= 36, `${label}: Move to corner and Close stay, at least 36 px tall`, [g.shown, g.dock, g.close]);
+  report(!g.sideways, `${label}: nothing scrolls sideways`);
+  const light = await call(`getComputedStyle(document.querySelector('.osa-chat-window')).backgroundColor`);
+  report(light === 'rgb(255, 255, 255)', `${label}: the light run is on the light panel`, light);
+  for (const [selector, what] of [['.osa-center-tab[aria-selected="true"]', 'the selected tab'], ['.osa-center-tab[aria-selected="false"]', 'the other tab']]) {
+    const { ratio, why } = await call(CONTRAST_OF(selector));
+    report(ratio !== null && ratio >= 4.5, `${label}, light: ${what} reads at 4.5:1 or better`, ratio === null ? why : ratio);
+  }
+  await screenshot(cdp, sessionId, screenshotDir, `738-notebook-tab-${name}-light.png`);
+
+  // Chat, by its tab with a real arrow key: the same frame, not reloaded; the start of the thread is back.
+  await call(`document.querySelector('.osa-center-tab-notebook').focus()`);
+  await press(ARROW_LEFT);
+  report(await waitFor(cdp, sessionId, `document.querySelector('.osa-chat-widget').classList.contains('osa-tab-chat')`, 'the chat tab'), `${label}: the left arrow on the Notebook tab opens Chat`);
+  const chatTab = await call(`({
+    selected: document.querySelector('.osa-center-tab-chat').getAttribute('aria-selected'),
+    focus: document.activeElement === document.querySelector('.osa-center-tab-chat'),
+    same: document.querySelector('.osa-notebook-frame') === window.__frame,
+    messages: document.querySelectorAll('.osa-chat-messages .osa-message, .osa-chat-messages .osa-run-card').length,
+    thread: document.querySelector('.osa-chat-messages').getBoundingClientRect().height,
+    notebookOff: document.querySelector('.osa-view-notebook').hasAttribute('inert'),
+  })`);
+  report(chatTab.selected === 'true' && chatTab.focus, `${label}: the Chat tab is selected and has focus`, chatTab);
+  report(chatTab.same && chatTab.notebookOff && chatTab.thread > 100, `${label}: the chat shows, the notebook's view is out of play, and the same frame is kept`, chatTab);
+  report(site.loads === loadsBefore + 1, `${label}: switching to Chat did not reload the notebook`, site.loads - loadsBefore);
+  const gc = await call(NOTEBOOK_GEOMETRY);
+  report(gc.shown.history && gc.shown.settings && gc.tabs !== null && !gc.sideways, `${label}: on Chat the header's History and Settings are back, and nothing scrolls sideways`, gc.shown);
+  await screenshot(cdp, sessionId, screenshotDir, `738-chat-tab-after-notebook-${name}-light.png`);
+  await press(ARROW_RIGHT);
+  report(await waitFor(cdp, sessionId, `document.querySelector('.osa-chat-widget').classList.contains('osa-tab-notebook')`, 'the notebook tab'), `${label}: the right arrow opens Notebook again`);
+
+  // The real Tab key, from the selected tab: through the header, into the frame and its page,
+  // out of it and back to the tabs, without ever reaching the page behind.
+  const sequence = async (key, count) => {
+    const places = [];
+    for (let i = 0; i < count; i++) {
+      await press(key);
+      places.push(await call(FOCUS_PLACE));
+    }
+    return places;
+  };
+  await call(`document.querySelector('.osa-center-tab-notebook').focus()`);
+  const forward = await sequence(TAB, 24);
+  const out = forward.findIndex((p) => !p.inside);
+  report(out === -1, `${label}: 24 presses of Tab never leave the dialog`, out === -1 ? null : forward[out]);
+  const order = forward.map((p) => p.place).filter((place, i, all) => i === 0 || place !== all[i - 1]);
+  report(order.includes('frame'), `${label}: Tab goes into the notebook's frame`, order);
+  const afterFrame = order.slice(order.indexOf('frame') + 1);
+  report(afterFrame.length > 0 && afterFrame[0].startsWith('tab:'), `${label}: and out of it, onto the tab, not the browser's controls`, order);
+  report(afterFrame.includes('dock') && afterFrame.includes('close'), `${label}: from there Move to corner and Close are the next stops`, order);
+  const back = await sequence(SHIFT_TAB, 24);
+  const outBack = back.findIndex((p) => !p.inside);
+  report(outBack === -1, `${label}: 24 presses of Shift+Tab never leave it either`, outBack === -1 ? null : back[outBack]);
+  report(back.some((p) => p.place === 'frame'), `${label}: Shift+Tab reaches the frame too`, back.map((p) => p.place));
+  report(await call(`document.activeElement !== document.getElementById('host-pill') && document.activeElement !== document.getElementById('host-link')`), `${label}: and focus never reached the page's own controls`);
+
+  // Escape with focus on a control of the dialog's header docks it, with the notebook.
+  await call(`document.querySelector('.osa-center-dock-btn').focus()`);
+  await press(ESCAPE);
+  report(await waitFor(cdp, sessionId, `!document.querySelector('.osa-chat-window').classList.contains('osa-center')`, 'docks'), `${label}: Escape on the dialog's chrome docks it`);
+  const docked = await call(`(() => {
+    const win = document.querySelector('.osa-chat-window');
+    const frame = document.querySelector('.osa-notebook-frame');
+    const box = win.getBoundingClientRect();
+    const frameBox = frame.getBoundingClientRect();
+    return {
+      open: win.classList.contains('open'),
+      tab: document.querySelector('.osa-chat-widget').classList.contains('osa-tab-notebook') ? 'notebook' : 'chat',
+      sameFrame: frame === window.__frame && document.querySelectorAll('.osa-notebook-frame').length === 1,
+      frames: window.__frame.isConnected,
+      frameInWindow: frameBox.left >= box.left - 1 && frameBox.right <= box.right + 1 && frameBox.bottom <= box.bottom + 1 && frameBox.height > 150,
+      tabsHidden: document.querySelector('.osa-center-tabs').hidden,
+      inert: document.querySelectorAll('[inert]').length,
+      pageInert: document.getElementById('host-page').inert === true,
+      focusIn: win.contains(document.activeElement),
+      modes: window.__modes,
+    };
+  })()`);
+  report(docked.open && docked.tab === 'notebook', `${label}: still open, on the notebook tab, in the corner`, docked);
+  report(docked.sameFrame && docked.frames && docked.frameInWindow, `${label}: the same iframe element, still in the window`, docked);
+  report(site.loads === loadsBefore + 1, `${label}: docking did not reload the notebook (the page was loaded once)`, site.loads - loadsBefore);
+  report(docked.tabsHidden && !docked.pageInert && docked.focusIn, `${label}: the corner has no tabs, the page is live, and focus is in the window`, docked);
+  report(JSON.stringify(docked.modes) === JSON.stringify(['corner']), `${label}: the page heard one modechange, to the corner`, docked.modes);
+  await screenshot(cdp, sessionId, screenshotDir, `738-corner-after-docking-${name}.png`);
+
+  // Back to the middle: still the notebook, still the one frame.
+  await call(`OSAChatWidget.setMode('center')`);
+  report(await waitFor(cdp, sessionId, `document.querySelector('.osa-chat-window').classList.contains('osa-center')`, 'center again'), `${label}: setMode('center') raises the dialog`);
+  const raised = await call(`({
+    tab: document.querySelector('.osa-chat-widget').classList.contains('osa-tab-notebook') ? 'notebook' : 'chat',
+    same: document.querySelector('.osa-notebook-frame') === window.__frame,
+    tabs: !document.querySelector('.osa-center-tabs').hidden,
+    focus: document.activeElement === document.querySelector('.osa-center-tab-notebook'),
+  })`);
+  report(raised.tab === 'notebook' && raised.same && raised.tabs, `${label}: raised again on the notebook tab, with its tabs and the same frame`, raised);
+  report(raised.focus, `${label}: focus is on the selected tab`, raised);
+  report(site.loads === loadsBefore + 1, `${label}: and the notebook was still loaded once`, site.loads - loadsBefore);
+
+  // Motion: a few tens of milliseconds, and none under reduced motion.
+  const fade = (reduced) => call(`(() => {
+    const seconds = (el, property) => {
+      const style = getComputedStyle(el);
+      const names = style.transitionProperty.split(',').map((n) => n.trim());
+      const durations = style.transitionDuration.split(',').map((d) => parseFloat(d));
+      const at = names.indexOf(property);
+      return at >= 0 ? durations[at] : (names.includes('all') ? durations[names.indexOf('all')] : 0);
+    };
+    const on = document.querySelector('.osa-view-notebook');
+    const off = document.querySelector('.osa-view-chat');
+    return { on: seconds(on, 'opacity'), off: seconds(off, 'opacity'), history: seconds(document.querySelector('.osa-history-btn'), 'opacity'), tab: seconds(document.querySelector('.osa-center-tab'), 'background-color') };
+  })()`);
+  const motion = await fade();
+  report(motion.on > 0 && motion.on <= 0.1 && motion.off > 0 && motion.off <= 0.1, `${label}: the views' fade is a few tens of ms`, motion);
+  report(motion.history <= 0.1, `${label}: and so is the header buttons'`, motion);
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }, { name: 'prefers-reduced-motion', value: 'reduce' }] }, sessionId);
+  const still = await fade();
+  report(still.on === 0 && still.off === 0 && still.history === 0 && still.tab === 0, `${label}: under prefers-reduced-motion there is no transition at all`, still);
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] }, sessionId);
+
+  // The dark scheme: the same geometry, contrast and screenshots.
+  await call(`OSAChatWidget.setColorScheme('dark')`);
+  await Bun.sleep(400);
+  const dark = await call(NOTEBOOK_GEOMETRY);
+  const panel = await call(`getComputedStyle(document.querySelector('.osa-chat-window')).backgroundColor`);
+  report(panel === 'rgb(17, 24, 39)', `${label}, dark: the dialog is the dark panel's color`, panel);
+  report(dark.frame !== null && Math.abs(dark.frame.left - dark.win.left) <= 1 && Math.abs(dark.frame.right - dark.win.right) <= 1 && Math.abs(dark.frame.bottom - dark.win.bottom) <= 1 && dark.frame.top >= dark.header.bottom - 1,
+    `${label}, dark: the frame fills the dialog under the header`, [dark.frame, dark.win]);
+  report(dark.tabs !== null && !dark.sideways && dark.selected[0] === 'Notebook', `${label}, dark: the tabs fit and nothing scrolls sideways`, dark);
+  for (const [selector, what] of [['.osa-center-tab[aria-selected="true"]', 'the selected tab'], ['.osa-center-tab[aria-selected="false"]', 'the other tab']]) {
+    const { ratio, why } = await call(CONTRAST_OF(selector));
+    report(ratio !== null && ratio >= 4.5, `${label}, dark: ${what} reads at 4.5:1 or better`, ratio === null ? why : ratio);
+  }
+  await screenshot(cdp, sessionId, screenshotDir, `738-notebook-tab-${name}-dark.png`);
+  await call(`document.querySelector('.osa-center-tab-chat').click()`, { userGesture: true });
+  await Bun.sleep(300);
+  await screenshot(cdp, sessionId, screenshotDir, `738-chat-tab-after-notebook-${name}-dark.png`);
+  report(site.loads === loadsBefore + 1, `${label}: and across all of it the notebook page was loaded once`, site.loads - loadsBefore);
+  await cdp.send('Target.closeTarget', { targetId: page.targetId });
+}
+
 async function check(screenshotDir) {
   const chromePath = findChrome();
   if (!chromePath) {
@@ -858,6 +1163,7 @@ async function check(screenshotDir) {
   }
   if (screenshotDir) mkdirSync(screenshotDir, { recursive: true });
   const server = startServer();
+  const notebookSite = startNotebookSite();
   const base = `http://127.0.0.1:${server.port}`;
   const profileDir = mkdtempSync(join(tmpdir(), 'osa-center-check-'));
   let chrome, cdp;
@@ -867,24 +1173,32 @@ async function check(screenshotDir) {
     cdp = await connect(launched.wsUrl);
     const { product } = await cdp.send('Browser.getVersion');
     console.log(`Chrome: ${product}`);
-    for (const viewport of [
-      { name: 'laptop', width: 1280, height: 900 },
-      { name: 'phone', width: 390, height: 844 },
-    ]) {
-      await checkViewport(cdp, base, screenshotDir, viewport);
+    // CENTER_CHECK_ONLY=notebook runs the notebook tab's checks alone, for working on them.
+    const onlyNotebook = process.env.CENTER_CHECK_ONLY === 'notebook';
+    if (!onlyNotebook) {
+      for (const viewport of [
+        { name: 'laptop', width: 1280, height: 900 },
+        { name: 'phone', width: 390, height: 844 },
+      ]) {
+        await checkViewport(cdp, base, screenshotDir, viewport);
+      }
+      // The plan rail, on the capsule launcher NEMAR uses and on the bubble, at the laptop;
+      // and on the phone, where it is not drawn.
+      await checkPlanRail(cdp, base, screenshotDir, { name: 'laptop', width: 1280, height: 900 }, 'capsule');
+      await checkPlanRail(cdp, base, screenshotDir, { name: 'laptop', width: 1280, height: 900 }, 'bubble');
+      await checkPlanRail(cdp, base, screenshotDir, { name: 'phone', width: 390, height: 844 }, 'capsule');
+      await checkPlanRailState(cdp, base, screenshotDir, 'failed');
+      await checkPlanRailState(cdp, base, screenshotDir, 'stopped');
+      await checkRunStepFocus(cdp, base);
     }
-    // The plan rail, on the capsule launcher NEMAR uses and on the bubble, at the laptop;
-    // and on the phone, where it is not drawn.
-    await checkPlanRail(cdp, base, screenshotDir, { name: 'laptop', width: 1280, height: 900 }, 'capsule');
-    await checkPlanRail(cdp, base, screenshotDir, { name: 'laptop', width: 1280, height: 900 }, 'bubble');
-    await checkPlanRail(cdp, base, screenshotDir, { name: 'phone', width: 390, height: 844 }, 'capsule');
-    await checkPlanRailState(cdp, base, screenshotDir, 'failed');
-    await checkPlanRailState(cdp, base, screenshotDir, 'stopped');
-    await checkRunStepFocus(cdp, base);
+    // The notebook as a tab of the dialog (#738), on a capsule widget.
+    await checkNotebookTab(cdp, base, screenshotDir, { name: 'laptop', width: 1280, height: 900 }, notebookSite);
+    await checkNotebookTab(cdp, base, screenshotDir, { name: 'phone', width: 390, height: 844 }, notebookSite);
   } finally {
     try { cdp?.close?.(); } catch (error) { /* already gone */ }
     chrome?.kill();
     server.stop(true);
+    notebookSite.server.stop(true);
     if (existsSync(profileDir)) rmSync(profileDir, { recursive: true, force: true });
   }
 }
