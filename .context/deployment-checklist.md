@@ -225,6 +225,7 @@ Do them before the first deploy into the new account.
 2. **KV namespaces (code change)**: the `RATE_LIMITER_KV` namespace IDs in `workers/osa-worker/wrangler.toml` (production and `[env.dev]`) are account-scoped.
    Create both namespaces in the new account and update the two `id` values.
    The counters are short-lived rate-limit state, so nothing needs copying.
+   Done for the sccn account: `osa-RATE_LIMITER` (production) and `osa-dev-RATE_LIMITER` (`[env.dev]`).
 3. **Worker secrets**: `BACKEND_API_KEY` on `osa-worker` and `osa-worker-dev` cannot be read back from Cloudflare.
    Their source of truth is Infisical project `osc`, folder `/osa/edge` (`prod` and `dev`); push them with that folder's Secret Sync, or `wrangler secret put` from it.
 4. **Pages names**: set the repository variables `PAGES_DEMO_HOST`, `PAGES_NOTEBOOK_HOST` and `PAGES_DASH_HOST` to the new projects' `*.pages.dev` names (a taken name gets a suffix, e.g. `osa-dash-x7k.pages.dev`).

@@ -31,7 +31,7 @@ extensions:
 
 - `name`: the tool name the model calls, as a plain string.
   It must not collide with a name the server binds itself;
-  today that means `get_full_output`, the one reserved name (`RESERVED_CLIENT_TOOL_NAMES`, same file).
+  today that means `get_full_output` and `propose_plan`, the reserved names (`RESERVED_CLIENT_TOOL_NAMES`, same file).
 - `runtime`: which execution environment answers a call to this tool.
   Only `"python"` exists (`ClientToolRuntime = Literal["python"]`),
   naming the `runtime.python` section below.
@@ -302,11 +302,79 @@ Measured under Bun on Pyodide 0.29.5 and SciPy 1.14.1, with 2-second segments:
 | `firwin` (101 taps) + `filtfilt` on 33 × 170,750 | 0.49 s |
 | `butter` + `sosfiltfilt` on 33 × 170,750 | 0.04 s |
 
-So NEMAR's prompt calls `welch` one channel at a time on at most `2**28 // nperseg` samples,
-and filters the whole channels-by-samples array with `butter` and `sosfiltfilt`.
-`frontend/test-data-lane.js` runs both of the prompt's blocks as written,
+So NEMAR's prompt reads the recording in pieces of at most `2**28 // nperseg` samples,
+calls `welch` one channel at a time on each piece,
+and averages the pieces' estimates, weighted by their segment counts.
+It filters the whole channels-by-samples array with `butter` and `sosfiltfilt`.
+
+The pieces are cut so that their average is the estimate one call over the whole channel would return.
+With `noverlap = nperseg // 2` and `hop = nperseg - noverlap`,
+one call over `n` samples averages `(n - noverlap) // hop` segments, the `i`-th starting at sample `i * hop`.
+A piece of `m` segments therefore starts at sample `first * hop`,
+where `first` steps by `m`,
+and spans `(k - 1) * hop + nperseg` samples for the `k` segments it holds
+(`k` is `m`, except for the last piece, which holds what is left),
+so consecutive pieces overlap by `noverlap` samples.
+The recording's segment count, `total`, comes from the group's `n_samples`, never from one piece,
+and the recipe asserts that the pieces averaged `used == total` segments.
+Every segment lands in exactly one piece, so the segment counts add up to one call's,
+and `sum(k * piece_power) / sum(k)` is its mean of periodograms,
+with the same frequencies.
+Cutting pieces end to end instead would lose the segments that straddle each boundary,
+and weighting them by anything but segment count would not be a mean over segments.
+The read is the piece: each piece is one `read_window`, so a recording whose whole read would not fit the budget is read in several, with the sums carried from one to the next.
+
+The piece is also held to the reader's memory budget (E5.1, "Browser memory" in Settings):
+`min(2**28 // nperseg, budget_mb * 2**20 // 4 // (n_channels * 8 + 160))` samples.
+A piece is every channel's read (8 bytes a sample each) and `welch`'s working space for one channel.
+That space is about 90 bytes per sample, measured on Pyodide 0.29.5 (SciPy 1.14.1, numpy and SciPy loaded, warm) by the growth of the WebAssembly heap:
+45.6 MB for 536,870 samples at `nperseg = 500`, which is 89 bytes per sample, and 20.8 MB for 268,435 samples, 81 bytes per sample.
+The recipe allows 160, about 1.8 times the larger figure, for the allocator's slack.
+The quarter share is measured too (see "Measured once on a real recording" below):
+the heap after a run came to about three times the read plus about 100 MB for the interpreter.
+With one channel the runtime's limit is the smaller term above 336 Hz for every budget, and below it the budget is for the small ones
+(at 60 Hz the 256 MB budget gives 399,457 samples against the limit's 2,236,962);
+with many channels the budget binds at EEG rates too (33 channels at 250 Hz and 256 MB: 158,282 samples against the limit's 536,870).
+
+| call | result |
+|---|---|
+| 50 minutes at 250 Hz, 3 channels, one `welch` call per channel | refused (750,000 samples) |
+| the same, as `power-spectrum.md`'s pieces, at a 64 MB budget | 2,999 segments over the whole 3,000 s, each read within a quarter of the budget |
+
+`frontend/test-data-lane.js` runs the code blocks of `power-spectrum.md`, `band-power.md`, `erp-by-condition.md`,
+`band-power-topography.md` (its position table, label matching and scalp-map drawing, which `erp-topography.md` carries unchanged)
+and `time-frequency-by-condition.md` (its epoch and wavelet blocks)
+(NEMAR's procedure documents, `src/assistants/nemar/procedures/`) as written,
 with controls that the whole array and one over-long channel are refused,
 so a Pyodide that lifts the limit says so.
+For the spectrum it runs the block as written, with its one I/O call, `eegprep_lean.read_window`, answered from an array in memory,
+and asserts that the pieces' result equals one `welch` call per channel to `1e-9`
+(at 250, 128.5 and 1000 Hz, so with an even and an odd `nperseg`, with one piece and with a 1 MB budget that forces many),
+that it equals a by-hand estimate that shares no code with SciPy,
+that every piece starts at a multiple of `m * hop`, no read passes a quarter of the budget, and an electrooculography channel is left out by its label,
+and that a 50-minute signal at 250 Hz, which one call refuses, is covered whole:
+every one of its 2,999 segments counted on every channel, the last piece ending at the end of the recording, and a tone carried only by its last tenth found at its frequency.
+The scalp-map block is run on 30 positioned channels (a surface only inside the head, a plane through them returned to within 0.02, one figure) and on 3 (markers only, one figure),
+and the time-frequency block on a Gaussian burst of a known frequency, whose peak in the dB map must be at that frequency and at the burst's time.
+
+Measured on a real recording, 2026-11-10, by `frontend/browser-harness/spectrum-real-recording.mjs` (run it with `bun`; it needs the network, so CI does not),
+which takes the block out of NEMAR's `power-spectrum.md` and runs it on Pyodide 0.29.5 under Bun (not in a browser),
+in NEMAR's production runtime and prelude, with `https://zarr.nemar.org/` as the data host:
+`on002718` sub-002 `FaceRecognition`, group `eeg_250hz`, 74 channels × 747,750 samples (2,991 s), 422 MB as one read.
+One `welch` call over a channel is refused.
+The recipe counted 2,990 segments on every channel, covering 2,991 s of 2,991 s,
+and agreed with the by-hand estimate to under `1.1e-15` of each spectrum's peak (first three channels), at every budget.
+What the runtime's heap came to after the recipe, by budget:
+
+| budget | segments per piece | read per piece | heap after the recipe |
+|---|---|---|---|
+| 256 MB | 355 | 53 MB | 275 MB |
+| 512 MB | 712 | 105 MB | 452 MB |
+| 1 GB | 1,426 | 211 MB | 805 MB |
+
+The 256 MB heap is a little over its budget, because the interpreter's own 100 MB or so is part of the figure; the other two are under.
+The recipe's earlier shape, which read the whole 443 MB at once, left the heap at 1,155 MB.
+The budget is advice to the model and these figures are one recording on one runtime, so a reader's tab can still pass it, and the run card says when it does.
 
 ## The Pyodide pin
 
@@ -542,7 +610,7 @@ an assistant call queued behind a reader's run still in progress.
 The result becomes its own entry among the reply's other runs,
 so it survives a reload,
 and is labeled plainly as the reader's own: the assistant never sees it.
-How a run is drawn in the chat, its code behind a disclosure of its own with Copy and Download,
+How a run is drawn in the chat, as a run card with its code behind a Show code button,
 is in [`docs/community-widget.md`](community-widget.md), "A run in the chat".
 It is stored in the workspace the same way any other run is,
 marked `local` in the stored run record,

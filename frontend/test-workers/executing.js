@@ -50,6 +50,25 @@ self.onmessage = (event) => {
       return;
     }
 
+    // DENY:<package> is a run the runtime refuses before it starts: status `denied` and
+    // `denied_import: <package>` in stderr, as the real worker reports an import it does not
+    // have (osa-worker-core.js).
+    const denyMatch = code.match(/^DENY:([A-Za-z_][\w.]*)/);
+    if (denyMatch) {
+      self.postMessage({
+        type: 'result',
+        call_id: data.call_id,
+        status: 'denied',
+        stdout: '',
+        stderr: `denied_import: ${denyMatch[1]}`,
+        summary: '',
+        images: [],
+        artifacts: [],
+        elapsed_ms: 1,
+      });
+      return;
+    }
+
     const delayMatch = code.match(/^DELAY:(\d+)/);
     const delay = delayMatch ? Number(delayMatch[1]) : 0;
 
@@ -61,10 +80,22 @@ self.onmessage = (event) => {
     // ERR:<n> puts n characters in the full stderr and a traceback beside it, so
     // get_full_output's handling of those streams can be exercised.
     const errMatch = code.match(/^ERR:(\d+)/);
-    const fullStderr = errMatch ? 'e'.repeat(Number(errMatch[1])) : '';
-    const fullTraceback = errMatch ? 'Traceback (most recent call last):\n  File "<cell>", line 1\nValueError: boom' : '';
+    // FAIL:<Type>: <message> is a run that raised, as the runtime reports one: stderr
+    // reads "Type: message" and then "  line 1: <the first line of the code>" (osa-output.js
+    // _error_text), and the traceback names the same type.
+    const failMatch = code.match(/^FAIL:([A-Za-z_][\w.]*): ([^\n]*)/);
+    const failed = failMatch !== null;
+    const fullStderr = failed
+      ? `${failMatch[1]}: ${failMatch[2]}\n  line 1: ${code.split('\n')[0]}`
+      : (errMatch ? 'e'.repeat(Number(errMatch[1])) : '');
+    const fullTraceback = failed
+      ? `Traceback (most recent call last):\n  File "<cell>", line 1\n${failMatch[1]}: ${failMatch[2]}`
+      : (errMatch ? 'Traceback (most recent call last):\n  File "<cell>", line 1\nValueError: boom' : '');
+    // IMAGE:<base64> adds one image of those PNG bytes (a harness that needs a
+    // figure a browser can decode); a bare IMAGE adds the 8-byte PNG signature.
+    const imageMatch = code.match(/^IMAGE:([A-Za-z0-9+/]+=*)/);
     const images = code.startsWith('IMAGE')
-      ? [{ mime: 'image/png', data_base64: 'iVBORw0KGgo=', width: 1, height: 1 }]
+      ? [{ mime: 'image/png', data_base64: imageMatch ? imageMatch[1] : 'iVBORw0KGgo=', width: 1, height: 1 }]
       : [];
 
     // FILES:<n> saves n explicitly-named artifacts, the way a real run's
@@ -94,13 +125,20 @@ self.onmessage = (event) => {
       files.push({ path: 'artifacts/bad.bin', data_base64: 'not-valid-base64!!!' });
     }
 
+    // HEAP_MB=<n> anywhere in the code (a comment will do) reports a WebAssembly heap of n MB
+    // after the run, as the real worker does in `heap_bytes` (osa-worker-core.js); without
+    // it the run reports none. Beside the result, never in it.
+    const heapMatch = code.match(/HEAP_MB=(\d+)/);
+    const heapFields = heapMatch ? { heap_bytes: Number(heapMatch[1]) * 1024 * 1024 } : {};
+
     const reply = () => {
       self.postMessage({
         type: 'result',
         call_id: data.call_id,
-        status: 'ok',
-        stdout: fullStdout.slice(0, 64),
-        stderr: '',
+        ...heapFields,
+        status: failed ? 'error' : 'ok',
+        stdout: failed ? '' : fullStdout.slice(0, 64),
+        stderr: failed ? fullStderr : '',
         // Echoed so a test can prove THIS result belongs to THIS call.
         summary: code,
         images,

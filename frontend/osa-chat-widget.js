@@ -98,15 +98,31 @@
     // Per-page instructions for the assistant (set by widget embedder)
     // These are sent to the backend as part of page_context
     widgetInstructions: null,
+    // Page paths where the reader is searching, not viewing a dataset (E1.3): a page
+    // under one gives the conversation the search context. From the community config.
+    searchPaths: [],
+    // The center-stage dialog's start screen copy {capabilities: [{title, text}], note}
+    // and the docs page it and Settings link {title, url} (E6.1). From the community
+    // config; validated again where they are drawn (validCenterStart, validAnalysisDocs).
+    centerStart: null,
+    analysisDocs: null,
     showExperimentalBadge: true,
     repoUrl: 'https://osc.earth/osa/',
     repoName: 'Open Science Assistant',
     // Page context awareness - sends current page URL/title to help the assistant
-    // provide more contextually relevant answers
-    allowPageContext: true,  // Show the checkbox option
-    pageContextDefaultEnabled: true,  // Default state of checkbox
+    // provide more contextually relevant answers. The reader's choice is "Use this page
+    // for answers" in the Privacy choices dialog (#706).
+    allowPageContext: true,  // Show the choice in Privacy choices
+    pageContextDefaultEnabled: true,  // Default state of the choice
     pageContextStorageKey: 'osa-page-context-enabled',
-    pageContextLabel: 'Share page URL to help answer questions',
+    // The reader's other privacy choice: "Share usage data" (#706). Off, a request says
+    // `share_usage: false` and the server keeps its usage row without the conversation
+    // and the tools it ran.
+    shareUsageDefaultEnabled: true,
+    shareUsageStorageKey: 'osa-share-usage-enabled',
+    // The privacy page the dialog links to. From the community config; validated again
+    // where it is drawn (validPrivacyUrl), with DEFAULT_PRIVACY_URL as the fallback.
+    privacyUrl: null,
     // AI disclaimer shown above the footer
     disclaimerEnabled: true,
     disclaimerText: 'This is an AI assistant and may make mistakes.',
@@ -343,10 +359,41 @@
   let backendCommitSha = null; // Backend git commit SHA from health check
   let pageContextEnabled = true; // Runtime state for page context toggle
   let chatPopup = null; // Reference to pop-out window (prevents duplicates)
-  let userSettings = { apiKey: null, model: null, keyProvider: null }; // User settings (BYOK and model selection)
+  // The browser memory budgets Settings offers per step, in MB, and the one a reader who
+  // never chose gets. The server accepts exactly these (PageContext.memory_budget_mb), and
+  // frontend/osa-memory.js holds the same list for the runtime bundle; this copy is here
+  // because a saved setting is read before that bundle has loaded. test-widget-memory-budget.js
+  // holds the copies to each other.
+  const MEMORY_BUDGETS_MB = Object.freeze([256, 512, 1024, 2048]);
+  const DEFAULT_MEMORY_BUDGET_MB = 512;
+  // A budget as a Settings choice reads it: 256 MB, 1 GB (osa-memory.js sizeLabel).
+  function memorySizeLabel(mb) {
+    return mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024} GB` : `${mb} MB`;
+  }
+  // A stored budget: an offered size, else the default.
+  function normalizeMemoryBudget(value) {
+    return Number.isInteger(value) && MEMORY_BUDGETS_MB.includes(value) ? value : DEFAULT_MEMORY_BUDGET_MB;
+  }
+  // A reader with nothing saved: no key, the community's model, the default memory budget.
+  function defaultUserSettings() {
+    return { apiKey: null, model: null, keyProvider: null, memoryBudgetMb: DEFAULT_MEMORY_BUDGET_MB };
+  }
+  let userSettings = defaultUserSettings(); // User settings (BYOK, model selection, memory budget)
   let communityDefaultModel = null; // Community's default model from API
   let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
+  // When the server last confirmed it holds `sessionId` (a `session` or `done` event, in
+  // this page load), or null when it has not: then the next request carries the
+  // conversation so far, so a server that forgot the session can start it again (E1.6).
+  // Never stored: a reload cannot know whether the server still has the session.
+  let serverConfirmedAt = null;
+  // The active conversation's identity, {id, context, createdAt}, never its
+  // content: `messages` and `sessionId` above are its working copy (see the
+  // conversation store).
+  let activeConversation = null;
+  // Conversations to take out of storage with the next save (a discarded chat, a
+  // deleted one); kept until a save succeeds.
+  const droppedConversationIds = new Set();
   let communityConfigReady = null; // Promise for the community config fetch, once started
   // A first visit, with no remembered look: the launcher waits, hidden, for the
   // community config (#475). See revealLauncher.
@@ -365,7 +412,7 @@
   // when nothing was remembered.
   let displayDefaults = null;
   const DISPLAY_KEYS = ['title', 'initialMessage', 'placeholder', 'suggestedQuestions',
-    'datasetSuggestedQuestions', 'themeColor',
+    'datasetSuggestedQuestions', 'searchPaths', 'centerStart', 'analysisDocs', 'privacyUrl', 'themeColor',
     'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor', 'logo', 'launcher',
     'launcherLabel', 'colorScheme', ...LAUNCHER_GEOMETRY_KEYS.map(([, key]) => key)];
   // The header avatar as createWidget draws it, for a config that drops its logo.
@@ -377,6 +424,10 @@
   let browserToolsReady = null; // Promise resolving to the controller, or null
   let browserTools = null; // OSARuntime.ClientToolController
   let browserRuntime = null; // The OSARuntime.PyodideRuntime it drives
+  // The heap the runtime last reported, in MB. Kept here, not read back from the chat on
+  // screen: the runtime is shared by every chat on the page, so a new chat or a History
+  // conversation starts on the heap an earlier one left.
+  let lastReportedHeapMb = null;
   let runtimeApi = null; // The OSARuntime global itself, captured when it loaded
   let browserToolsSetup = null; // {tools, python} from the config, kept for a retry
   let browserToolsUnavailable = null; // {reason, detail} while code execution is off
@@ -424,11 +475,320 @@
   //   setup: the notebook's last setup status: null (none yet), 'running',
   //          'done', 'error' or 'none' (a starter with no setup cell)
   //   failure: why it failed, for the fallback's text: 'startup' or 'timeout'
+  // The notebook tabs and the import (#673, #676), all of it reset with the frame:
+  //   outbox:   messages waiting for the notebook to report ready
+  //   requests: requestId -> {type, resolve, timer} for a message awaiting its result
+  //   tabs:     the notebooks the notebook page last listed, {items, active}
+  //   import:   the banner's import, or null (see importNotebookToTab)
+  //   renaming: the path being renamed in the strip, or null; renameDraft its text
+  //   menuOpen: whether the strip's "+" menu is open
   const notebookEmbed = {
     frame: null, datasetId: null, state: 'idle', setup: null, failure: null,
-    loadTimer: null, readyTimer: null, sentScheme: null
+    loadTimer: null, readyTimer: null, sentScheme: null,
+    outbox: [], requests: new Map(), tabs: { items: [], active: null },
+    import: null, renaming: null, renameDraft: '', menuOpen: false
   };
-  const CHAT_HISTORY_VERSION = 2;
+  // --- Conversation store ---
+  // The saved chats (#654): one record per community and origin, under
+  // CONFIG.storageKey, {version: 3, activeId, conversations: [{id, context, title,
+  // sessionId, createdAt, updatedAt, messages}]}, the last MAX_CONVERSATIONS by
+  // updatedAt. `context` is null, {type: 'dataset', id} or {type: 'search'}: an
+  // object, because a bare string could not tell a dataset whose id is "search"
+  // from the search context.
+  //
+  // The format logic in this block is pure: parsed storage in, envelope out, with
+  // no DOM and no widget state. loadHistory and saveHistory further down do the
+  // IO (reading and writing storage, the quota retry, the copy of an unreadable
+  // record, the notices) and call into it. The widget is one classic script pinned
+  // by SRI, so the store cannot be a module of its own.
+
+  /** @typedef {{type: 'dataset', id: string} | {type: 'search'} | null} ConversationContext */
+  /**
+   * @typedef {object} Conversation
+   * @property {string} id
+   * @property {ConversationContext} context
+   * @property {string} title
+   * @property {string | null} sessionId
+   * @property {number} createdAt
+   * @property {number} updatedAt
+   * @property {object[]} messages
+   */
+  /**
+   * @typedef {object} Envelope
+   * @property {3} version
+   * @property {string | null} activeId
+   * @property {Conversation[]} conversations
+   */
+  /**
+   * What readConversationStore returns. `envelope` is null only when kind is
+   * 'unreadable'.
+   * @typedef {object} ReadResult
+   * @property {'v3' | 'legacy' | 'empty' | 'unreadable'} kind
+   * @property {'newer' | 'damaged'} [reason]
+   * @property {Envelope | null} envelope
+   * @property {boolean} needsSave
+   * @property {number} dropped
+   */
+  const CHAT_HISTORY_VERSION = 3;
+  const MAX_CONVERSATIONS = 30;
+  const CONVERSATION_TITLE_LIMIT = 60;
+  // Records below this version stored citation markers at the stream delta
+  // boundary; they get the one-time repair (migrateLegacyCitationMarkers).
+  const CITATION_REPAIR_BEFORE_VERSION = 2;
+
+  function newConversationId(cryptoSource = typeof crypto !== 'undefined' ? crypto : null) {
+    try {
+      if (cryptoSource && typeof cryptoSource.randomUUID === 'function') return cryptoSource.randomUUID();
+    } catch {
+      // Fall through: randomUUID needs a secure context in some browsers.
+    }
+    return `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function isValidConversationId(id) {
+    return typeof id === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(id);
+  }
+
+  // The first user message, whitespace collapsed, cut to CONVERSATION_TITLE_LIMIT
+  // characters; with none, the page's seeded opening reply (seed(), #730) stands in for
+  // it; '' for a conversation with neither.
+  function conversationTitle(list) {
+    const first = list.find((m) => m && m.role === 'user' && typeof m.content === 'string')
+      || list.find((m) => isSeededMessage(m) && typeof m.content === 'string');
+    if (!first) return '';
+    return Array.from(first.content.replace(/\s+/g, ' ').trim()).slice(0, CONVERSATION_TITLE_LIMIT).join('');
+  }
+
+  // A context as stored: null, {type: 'search'} or {type: 'dataset', id}; anything
+  // else is null.
+  function normalizeConversationContext(context) {
+    if (!context || typeof context !== 'object' || Array.isArray(context)) return null;
+    if (context.type === 'search') return { type: 'search' };
+    if (context.type === 'dataset' && isValidDatasetId(context.id)) return { type: 'dataset', id: context.id };
+    return null;
+  }
+
+  // The dataset the latest user message that names one was sent from, as a context.
+  function contextFromMessages(list) {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const message = list[index];
+      if (message && message.role === 'user' && isValidDatasetId(message.dataset)) {
+        return { type: 'dataset', id: message.dataset };
+      }
+    }
+    return null;
+  }
+
+  function validTimestamp(value, fallback) {
+    return Number.isFinite(value) && value >= 0 ? value : fallback;
+  }
+
+  function validSessionId(value) {
+    return typeof value === 'string' && value && value.length <= 200 ? value : null;
+  }
+
+  // One stored conversation, or null when it is unusable. `repaired` says
+  // whether messages were dropped, so the caller can write the clean copy back.
+  function normalizeStoredConversation(raw, now) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    if (!isValidConversationId(raw.id) || !Array.isArray(raw.messages)) return null;
+    const list = raw.messages.map(normalizePersistedMessage).filter(Boolean);
+    const title = typeof raw.title === 'string'
+      ? Array.from(raw.title).slice(0, CONVERSATION_TITLE_LIMIT).join('')
+      : conversationTitle(list);
+    return {
+      repaired: list.length !== raw.messages.length,
+      conversation: {
+        id: raw.id,
+        context: normalizeConversationContext(raw.context),
+        title,
+        sessionId: validSessionId(raw.sessionId),
+        createdAt: validTimestamp(raw.createdAt, now),
+        updatedAt: validTimestamp(raw.updatedAt, now),
+        messages: list,
+      },
+    };
+  }
+
+  // An assistant message the host page put at the head of the chat with seed() (#730):
+  // content the reader did not write but that is worth keeping, unlike the greeting.
+  function isSeededMessage(message) {
+    return !!message && message.role === 'assistant' && message.seeded === true;
+  }
+
+  // Whether a conversation holds anything worth a slot: a message the reader wrote, or
+  // a reply the page seeded. One that is only the greeting holds nothing.
+  function hasContent(conversation) {
+    return conversation.messages.some((m) => m && (m.role === 'user' || isSeededMessage(m)));
+  }
+
+  // The newest MAX_CONVERSATIONS by updatedAt, newest first, and never the
+  // active one: it stays even when it is older than all the others. Only
+  // conversations with a user message count toward the limit. The active one is
+  // kept either way; an empty one that is not active is dropped (its tab writes
+  // it again when the reader says something). So starting a chat never costs the
+  // oldest saved one its place.
+  function trimConversations(conversations, activeId, max = MAX_CONVERSATIONS) {
+    const byNewest = (a, b) => b.updatedAt - a.updatedAt;
+    const active = conversations.find((conversation) => conversation.id === activeId);
+    const others = conversations
+      .filter((conversation) => conversation !== active && hasContent(conversation))
+      .sort(byNewest);
+    const slots = active && hasContent(active) ? max - 1 : max;
+    const kept = others.slice(0, slots);
+    // The active one first, so that on a tie of timestamps it is the newest.
+    return (active ? [active, ...kept] : kept).sort(byNewest);
+  }
+
+  // The envelope without its oldest conversation other than the active one, or
+  // null when there is none to give up (the retry after a full storage).
+  function evictOldestInactive(envelope) {
+    let oldest = null;
+    for (const conversation of envelope.conversations) {
+      if (conversation.id === envelope.activeId) continue;
+      if (!oldest || conversation.updatedAt <= oldest.updatedAt) oldest = conversation;
+    }
+    if (!oldest) return null;
+    return { ...envelope, conversations: envelope.conversations.filter((conversation) => conversation !== oldest) };
+  }
+
+  // Parsed storage, as any widget version wrote it, to a v3 envelope.
+  //   kind 'v3'          the current format
+  //   kind 'legacy'      a v2 or v1 record ({version, messages, sessionId}) or the
+  //                      bare messages array, each now one conversation
+  //   kind 'empty'       nothing the widget recognizes
+  //   kind 'unreadable'  a record the widget cannot read; envelope is null.
+  //                      reason 'newer': written by a newer widget (version above
+  //                      3), never read as current and never overwritten.
+  //                      reason 'damaged': version 3 without a conversations list
+  // `needsSave` says the stored record is not yet what the widget would write.
+  // `dropped` counts messages and conversations that were invalid and left out.
+  function readConversationStore(parsed, now) {
+    const empty = { version: CHAT_HISTORY_VERSION, activeId: null, conversations: [] };
+    const isObject = parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+    if (isObject && Number.isInteger(parsed.version) && parsed.version > CHAT_HISTORY_VERSION) {
+      return { kind: 'unreadable', reason: 'newer', envelope: null, needsSave: false, dropped: 0 };
+    }
+    if (isObject && parsed.version === CHAT_HISTORY_VERSION && !Array.isArray(parsed.conversations)) {
+      return { kind: 'unreadable', reason: 'damaged', envelope: null, needsSave: false, dropped: 0 };
+    }
+
+    if (isObject && parsed.version === CHAT_HISTORY_VERSION) {
+      let dropped = 0;
+      const seen = new Set();
+      const conversations = [];
+      for (const raw of parsed.conversations) {
+        const result = normalizeStoredConversation(raw, now);
+        if (!result || seen.has(result.conversation.id)) {
+          dropped += 1;
+          continue;
+        }
+        if (result.repaired) dropped += 1;
+        seen.add(result.conversation.id);
+        conversations.push(result.conversation);
+      }
+      const kept = trimConversations(conversations, parsed.activeId);
+      const active = kept.find((conversation) => conversation.id === parsed.activeId) || kept[0] || null;
+      return {
+        kind: 'v3',
+        envelope: { version: CHAT_HISTORY_VERSION, activeId: active ? active.id : null, conversations: kept },
+        needsSave: dropped > 0 || kept.length !== conversations.length || (active ? active.id : null) !== parsed.activeId,
+        dropped,
+      };
+    }
+
+    let rawMessages = null;
+    let sessionId = null;
+    let version = 0;
+    if (isObject && Array.isArray(parsed.messages)) {
+      rawMessages = parsed.messages;
+      sessionId = validSessionId(parsed.sessionId);
+      version = Number.isInteger(parsed.version) ? parsed.version : 0;
+    } else if (Array.isArray(parsed)) {
+      rawMessages = parsed;
+    }
+    if (!rawMessages) return { kind: 'empty', envelope: empty, needsSave: false, dropped: 0 };
+
+    let list = rawMessages.map(normalizePersistedMessage).filter(Boolean);
+    if (version < CITATION_REPAIR_BEFORE_VERSION) {
+      list = list.map((message) => {
+        if (message.role !== 'assistant' || !message.citations.length) return message;
+        const content = migrateLegacyCitationMarkers(message.content, message.citations);
+        return content === message.content ? message : { ...message, content };
+      });
+    }
+    const dropped = rawMessages.length - list.length;
+    if (!list.length) return { kind: 'legacy', envelope: empty, needsSave: true, dropped };
+    const id = newConversationId();
+    return {
+      kind: 'legacy',
+      envelope: {
+        version: CHAT_HISTORY_VERSION,
+        activeId: id,
+        conversations: [{
+          id,
+          context: contextFromMessages(list),
+          title: conversationTitle(list),
+          sessionId,
+          createdAt: now,
+          updatedAt: now,
+          messages: list,
+        }],
+      },
+      needsSave: true,
+      dropped,
+    };
+  }
+
+  // A message list as compared to find out whether a save changed anything:
+  // without the votes, which are not a change to the conversation.
+  function withoutVotes(list) {
+    return list.map((message) => {
+      if (!message || (message.feedback === undefined && message.feedbackCommitted === undefined)) return message;
+      const { feedback, feedbackCommitted, ...rest } = message;
+      return rest;
+    });
+  }
+
+  // The envelope to write: what is stored now, with only the working copy's
+  // conversation replaced, so a second tab or the pop-out, which share this
+  // storage, never loses the others. `working` is {id, context, createdAt,
+  // sessionId, messages}; `dropIds` are conversations to remove (a discarded or
+  // deleted one). A stored record in a legacy shape is already what the working
+  // copy was read from, so it is not merged; a damaged one has nothing to merge
+  // (saveHistory keeps a copy of it first). Returns null when the stored record
+  // is from a newer widget and must not be overwritten.
+  function mergeActiveConversation(stored, working, now, dropIds = []) {
+    const existing = readConversationStore(stored, now);
+    if (existing.kind === 'unreadable' && existing.reason === 'newer') return null;
+    const previous = existing.kind === 'v3' ? existing.envelope.conversations : [];
+    const prior = previous.find((conversation) => conversation.id === working.id);
+    // A save that changes no message or session (a vote, a repair) must not make
+    // the conversation look newer than its last message. So updatedAt is the last
+    // time the messages or the session changed: a run edited in place counts, a
+    // thumbs-up or thumbs-down does not.
+    const unchanged = prior
+      && prior.sessionId === working.sessionId
+      && JSON.stringify(withoutVotes(prior.messages))
+        === JSON.stringify(withoutVotes(working.messages.map(normalizePersistedMessage).filter(Boolean)));
+    const dropped = new Set(dropIds);
+    const conversation = {
+      id: working.id,
+      context: working.context,
+      title: conversationTitle(working.messages),
+      sessionId: working.sessionId,
+      createdAt: working.createdAt,
+      updatedAt: unchanged ? prior.updatedAt : now,
+      messages: working.messages,
+    };
+    const others = previous.filter((entry) => entry.id !== working.id && !dropped.has(entry.id));
+    return {
+      version: CHAT_HISTORY_VERSION,
+      activeId: working.id,
+      conversations: trimConversations([conversation, ...others], working.id),
+    };
+  }
+
   let responseSequence = 0;
 
   function createResponseId() {
@@ -472,7 +832,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-Uyrn5XHg6Z+5c14REIxmRJiBevXpWxq9TegsgzCCnxg8l5JgiLo1bhUZVWbUel2x';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-DPWudLIV/KQb04Ao0aPcMlgSwVyROQswEmlaOo3LLL5YSW44XfY0UYx1kafbrEEJ';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -481,6 +841,11 @@
     close: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>',
     send: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>',
     reset: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+    history: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
+    search: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>',
+    more: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>',
+    historyClock: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>',
+    swap: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11l-3-3M20 17H9l3 3"/></svg>',
     brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>',
     copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
     check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
@@ -496,6 +861,11 @@
     hpc: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="17" width="18" height="4" rx="1"/><line x1="7" y1="5" x2="7.01" y2="5"/><line x1="7" y1="12" x2="7.01" y2="12"/><line x1="7" y1="19" x2="7.01" y2="19"/></svg>'
   };
 
+  // The AI Mode pill's two sparkles and the "Move to corner" arrow, which points to the
+  // bottom right, where the window goes (boards C2, C3; #730).
+  ICONS.sparkle = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z"/><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>';
+  ICONS.dock = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7l10 10"/><path d="M17 7v10H7"/></svg>';
+
   // CSS Styles
   const STYLES = `
     .osa-chat-widget {
@@ -510,6 +880,10 @@
          outrank the dark rule below, which has to replace it (a color chosen to read
          on white is often too dark to read on the dark panel). */
       --osa-accent: var(--osa-accent-on-light, var(--osa-primary));
+      /* The caution color (a run over its memory budget, a plan expected to): 4.9:1 on the
+         light panel, and lightened below for the dark one. The run card and the plan card
+         read it through their own tokens. */
+      --osa-warn: #b45309;
       --osa-bg: #ffffff;
       --osa-text: #1f2937;
       --osa-text-light: #6b7280;
@@ -517,6 +891,13 @@
       --osa-user-bg: #2563eb;
       --osa-user-text: #ffffff;
       --osa-assistant-bg: #f3f4f6;
+      /* The quiet teal tint of a notice the reader may act on (the context-switch
+         notice, the resume card): the boards' #f5fbfd, #b9e0eb and #0f3d4c. */
+      --osa-notice-bg: #f5fbfd;
+      --osa-notice-border: #b9e0eb;
+      --osa-notice-text: #0f3d4c;
+      /* An error line on the panel or on a notice (the notebook card, E4.3). */
+      --osa-danger-text: #b91c1c;
       --osa-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
       /* The launcher's geometry (#553). applyLauncherGeometry sets --osa-size-closed,
          --osa-size-open, --osa-closed-scale, --osa-edge-x and --osa-edge-y (and the
@@ -1262,14 +1643,355 @@
       white-space: nowrap;
     }
 
+    /* The notebooks strip and the import banner (#673, #676), above the notebook's
+       frame. Every color is a token, so the dark appearance needs no rules of its
+       own: the strip sits on the assistant's surface, the open tab on the panel's,
+       and the banner on the notice's. */
+    .osa-nb-bar {
+      position: relative;
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      flex: 0 0 auto;
+      padding: 6px 10px 0;
+      background: var(--osa-assistant-bg);
+      border-bottom: 1px solid var(--osa-border);
+    }
+
+    .osa-nb-bar[hidden],
+    .osa-nb-menu[hidden],
+    .osa-notebook-banner[hidden] {
+      display: none;
+    }
+
+    .osa-nb-strip {
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    .osa-nb-tab {
+      display: flex;
+      align-items: center;
+      flex: 0 0 auto;
+      border: 1px solid transparent;
+      border-bottom: 0;
+      border-radius: 6px 6px 0 0;
+    }
+
+    .osa-nb-tab-on {
+      background: var(--osa-bg);
+      border-color: var(--osa-border);
+    }
+
+    .osa-nb-tab-label {
+      font: inherit;
+      font-size: 12.5px;
+      max-width: 180px;
+      padding: 7px 10px;
+      border: 0;
+      border-radius: 6px 6px 0 0;
+      background: transparent;
+      color: var(--osa-text);
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .osa-nb-tab-label:hover {
+      color: var(--osa-text);
+    }
+
+    .osa-nb-tab-on .osa-nb-tab-label {
+      padding-right: 4px;
+      font-weight: 500;
+      color: var(--osa-text);
+    }
+
+    .osa-nb-action,
+    .osa-nb-add {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--osa-text-light);
+      cursor: pointer;
+    }
+
+    .osa-nb-action {
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+    }
+
+    .osa-nb-action:hover {
+      background: var(--osa-assistant-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-nb-add {
+      width: 30px;
+      height: 30px;
+      margin-bottom: 2px;
+      border: 1px dashed var(--osa-text-light);
+      border-radius: 6px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-nb-rename {
+      width: 160px;
+      margin: 3px 4px;
+      padding: 3px 8px;
+      font: inherit;
+      font-size: 12.5px;
+      border: 1px solid var(--osa-accent);
+      border-radius: 6px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-nb-menu {
+      position: absolute;
+      top: calc(100% + 4px);
+      right: 10px;
+      z-index: 5;
+      min-width: 200px;
+      max-width: calc(100% - 20px);
+      max-height: 240px;
+      overflow-y: auto;
+      padding: 6px;
+      border: 1px solid var(--osa-border);
+      border-radius: 10px;
+      background: var(--osa-bg);
+      box-shadow: var(--osa-shadow);
+    }
+
+    .osa-nb-menu-item {
+      display: block;
+      width: 100%;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--osa-text);
+      font: inherit;
+      font-size: 13px;
+      text-align: left;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .osa-nb-menu-item:hover,
+    .osa-nb-menu-item:focus-visible {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-nb-menu-heading {
+      padding: 8px 10px 2px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--osa-text-light);
+    }
+
+    .osa-nb-bar button:focus-visible,
+    .osa-nb-rename:focus-visible,
+    .osa-notebook-banner button:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    .osa-notebook-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 0 0 auto;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: var(--osa-notice-text);
+      background: var(--osa-notice-bg);
+      border-bottom: 1px solid var(--osa-notice-border);
+    }
+
+    .osa-notebook-banner-text {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .osa-notebook-banner button {
+      flex: 0 0 auto;
+      min-height: 30px;
+      padding: 4px 12px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--osa-notice-text);
+      text-decoration: underline;
+      cursor: pointer;
+    }
+
+    .osa-notebook-banner .osa-notebook-run-all {
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      text-decoration: none;
+    }
+
+    .osa-notebook-banner button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    /* The notebook card under the chat's last reply (E4.3): a bordered note in the
+       notice colors, with secondary-style buttons and no accent fill, so it asks
+       for nothing. Every control is 44 px tall. */
+    .osa-nb-entry {
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px;
+      color: var(--osa-notice-text);
+      background: var(--osa-notice-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 12px;
+    }
+
+    .osa-nb-entry p {
+      margin: 0;
+      font-size: 12.5px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .osa-nb-entry-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .osa-nb-entry button {
+      box-sizing: border-box;
+      min-width: 0;
+      min-height: 44px;
+      padding: 0 14px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--osa-text);
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .osa-nb-entry button:hover:not(:disabled) {
+      border-color: var(--osa-accent);
+    }
+
+    .osa-nb-entry button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    .osa-nb-entry button:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    .osa-nb-entry-menu {
+      display: flex;
+      flex-direction: column;
+      padding: 4px;
+      color: var(--osa-text);
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-border);
+      border-radius: 10px;
+    }
+
+    .osa-nb-entry-menu[hidden] {
+      display: none;
+    }
+
+    .osa-nb-entry-list {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .osa-nb-entry-menu button {
+      text-align: left;
+      border-color: transparent;
+    }
+
+    .osa-nb-entry-menu button:hover:not(:disabled),
+    .osa-nb-entry-menu button:focus-visible {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-nb-entry .osa-nb-entry-note {
+      padding: 2px 10px 6px;
+      font-size: 11.5px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-nb-entry .osa-nb-entry-error {
+      font-weight: 600;
+      color: var(--osa-danger-text);
+    }
+
+    /* The History row menu's notebook items (E4.3): the reason a disabled Continue
+       cannot be used is text under it, and the menu is as wide as that needs. */
+    .osa-history-menu {
+      max-width: min(260px, calc(100% - 16px));
+      overflow-y: auto;
+    }
+
+    .osa-history-menu .osa-history-menu-reason {
+      display: block;
+      padding: 0 12px 6px;
+      font-size: 11.5px;
+      line-height: 1.4;
+      color: var(--osa-text-light);
+    }
+
+    .osa-history-menu .osa-history-save-choices {
+      display: flex;
+      flex-direction: column;
+      padding-left: 12px;
+    }
+
+    .osa-history-menu .osa-history-save-choices[hidden] {
+      display: none;
+    }
+
+    .osa-history-menu button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
     /* The chat's own header buttons have nothing to do on the notebook tab.
        Hidden, not removed, so the header does not reflow as the tabs switch. The
        pop-out button stays: the pop-out opens on the notebook tab too (#470). */
+    .osa-capsule .osa-history-btn,
     .osa-capsule .osa-settings-btn-open,
     .osa-capsule .osa-reset-btn {
       transition: opacity 160ms ease, background 0.2s, visibility 0s;
     }
 
+    .osa-capsule.osa-tab-notebook .osa-history-btn,
     .osa-capsule.osa-tab-notebook .osa-settings-btn-open,
     .osa-capsule.osa-tab-notebook .osa-reset-btn {
       opacity: 0;
@@ -1354,10 +2076,37 @@
       animation: osa-spin 1s linear infinite;
     }
 
+    /* The launcher behind the center-stage dialog (#743). engageCenter makes it inert, so
+       it is also taken out of sight: a capsule or bubble drawn at the corner would look
+       pressable and do nothing. A short fade out, then visibility: hidden, which also
+       keeps it out of the accessibility tree. The capsule's circles set visibility
+       themselves while the panel is open, so they take their parent's here, and stay
+       still while it fades. releaseCenter takes the class off and the launcher is back at
+       once, as it was. One class more than the launcher's own rules, so it wins. */
+    .osa-chat-widget.osa-center-engaged > .osa-launcher-capsule,
+    .osa-chat-widget.osa-center-engaged > .osa-chat-button,
+    .osa-chat-widget.osa-center-engaged > .osa-chat-tooltip {
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 120ms ease, visibility 0s linear 120ms;
+    }
+
+    .osa-chat-widget.osa-center-engaged > .osa-launcher-capsule .osa-launcher-icon,
+    .osa-chat-widget.osa-center-engaged > .osa-launcher-capsule .osa-chat-button {
+      visibility: inherit;
+      transition: none;
+    }
+
     /* Reduced motion: every change is immediate except a short plain fade
        between the views, and nothing turns or slides. The launcher's closed and
        open sizes (#490, #553) are among them: it is one or the other, never between. */
     @media (prefers-reduced-motion: reduce) {
+      .osa-chat-widget.osa-center-engaged > .osa-launcher-capsule,
+      .osa-chat-widget.osa-center-engaged > .osa-chat-button,
+      .osa-chat-widget.osa-center-engaged > .osa-chat-tooltip {
+        transition: none !important;
+      }
+
       .osa-launcher-capsule::before,
       .osa-capsule-indicator,
       .osa-launcher-icon,
@@ -1366,7 +2115,8 @@
       .osa-chat-widget.osa-launcher-resizes > .osa-chat-button,
       .osa-capsule .osa-ttl,
       .osa-capsule .osa-ttl.osa-ttl-off,
-      .osa-strip-tab {
+      .osa-strip-tab,
+      .osa-center-suggestion {
         transition-duration: 1ms !important;
         transition-delay: 0ms !important;
       }
@@ -1393,9 +2143,45 @@
 
       /* A reply's status line (#538) holds still. Two classes, to outrank the pulse's
          own rule, which comes later in this sheet. */
-      .osa-activity-status .osa-activity-pulse {
+      .osa-activity-status .osa-activity-pulse,
+      .osa-run-card-retry .osa-activity-pulse {
         animation: none;
         opacity: 0.6;
+      }
+
+      /* The handover card's ring (E8.3) holds still, as a half ring. Three classes, to
+         outrank the ring's own two-class rule, which comes later in this sheet. */
+      .osa-handover .osa-handover-marker.osa-handover-live {
+        animation: none;
+      }
+
+      /* The center-stage dialog opens and docks with no motion (#730), and the scrim that
+         would fade out is simply gone. */
+      .osa-center-scrim.open,
+      .osa-center-scrim.closing,
+      .osa-chat-widget .osa-chat-window.osa-center.open,
+      .osa-chat-widget .osa-chat-window.open.osa-dock-in:not(.osa-center) {
+        animation: none !important;
+      }
+
+      .osa-center-scrim.closing {
+        display: none !important;
+      }
+
+      /* The dialog's tab switch (#738) has no motion at all, not even the capsule's plain
+         120ms fade: the view and the header buttons change at once. More classes than the
+         rules above, which are !important too. */
+      .osa-chat-window.osa-center .osa-view,
+      .osa-chat-window.osa-center .osa-view.osa-view-on,
+      .osa-chat-window.osa-center .osa-view.osa-view-off,
+      .osa-capsule .osa-chat-window.osa-center .osa-history-btn,
+      .osa-capsule .osa-chat-window.osa-center .osa-settings-btn-open,
+      .osa-capsule .osa-chat-window.osa-center .osa-center-notebook-btn,
+      .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-history-btn,
+      .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-settings-btn-open,
+      .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-notebook-btn,
+      .osa-center-tab {
+        transition: none !important;
       }
     }
 
@@ -1477,8 +2263,9 @@
     .osa-chat-title,
     .osa-notebook-heading {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
-      gap: 8px;
+      gap: 2px 8px;
       font-size: 15px;
       font-weight: 600;
       margin: 0;
@@ -1857,6 +2644,7 @@
       color: var(--osa-text-light);
       display: flex;
       align-items: center;
+      gap: 4px;
       transition: color 0.2s, background 0.2s;
       margin-left: auto;
     }
@@ -1873,6 +2661,47 @@
 
     .osa-message-copy-btn.copied {
       color: #22c55e;
+    }
+
+    /* "Copied" beside the check, on the copy buttons that are only an icon. */
+    .osa-copy-btn .osa-copied-text,
+    .osa-message-copy-btn .osa-copied-text {
+      font-size: 11px;
+      line-height: 1;
+    }
+
+    /* The word is body text on the bubble, so it takes the bubble's text color (the green
+       #22c55e is about 2.3:1 on white); the check beside it keeps the green. */
+    .osa-message-copy-btn .osa-copied-text {
+      color: var(--osa-text);
+    }
+
+    /* The line that names the keys when a copy is refused (the widget's status announcer
+       says it aloud; "Copied" is on the button). */
+    .osa-copy-status {
+      margin: 2px 0 4px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-copy-status:empty {
+      display: none;
+    }
+
+    /* An image reference in a reply: the alt text, with a pointer to the run's figure. */
+    .osa-image-reference {
+      font-style: italic;
+    }
+
+    .osa-image-hint {
+      color: var(--osa-text-light);
+    }
+
+    .osa-message-copy-fallback {
+      margin: 4px 0 8px;
+      max-height: 240px;
+      overflow: auto;
+      white-space: pre-wrap;
     }
 
     .osa-message-header {
@@ -1995,6 +2824,645 @@
 
     .osa-feedback-send:hover {
       background: var(--osa-primary-dark);
+    }
+
+    /* The empty state of a chat started on return (E1.2): a welcome and the card
+       that goes back to the chat the reader left. */
+    .osa-welcome-back {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .osa-welcome-back-text {
+      padding: 10px 14px;
+      border-radius: 12px;
+      border-bottom-left-radius: 4px;
+      background: var(--osa-assistant-bg);
+      color: var(--osa-text);
+    }
+
+    /* Ids drawn as code in the welcome, the context notice and the divider: set
+       outright, since a host theme's rule for a bare code element reaches them. */
+    .osa-welcome-back-text code,
+    .osa-context-notice code,
+    .osa-context-move code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12.5px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      white-space: normal;
+    }
+
+    .osa-resume-card {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 44px;
+      padding: 10px 12px;
+      text-align: left;
+      font: inherit;
+      font-size: 13px;
+      color: var(--osa-notice-text);
+      background: var(--osa-notice-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .osa-resume-card:hover {
+      border-color: var(--osa-accent);
+    }
+
+    .osa-resume-card:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-resume-card svg {
+      width: 16px;
+      height: 16px;
+      flex: none;
+      color: var(--osa-accent);
+    }
+
+    .osa-resume-card-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    /* The notice above the input when the page's context differs from the chat's
+       (E1.3): the next message starts a new chat, unless the reader continues. */
+    .osa-context-notice {
+      margin: 0 14px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px;
+      color: var(--osa-notice-text);
+      background: var(--osa-notice-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-bottom: 0;
+      border-radius: 12px 12px 0 0;
+    }
+
+    .osa-context-notice-body {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .osa-context-notice-body svg {
+      width: 18px;
+      height: 18px;
+      flex: none;
+      margin-top: 1px;
+      color: var(--osa-accent);
+    }
+
+    .osa-context-notice p {
+      margin: 0;
+      font-size: 12.5px;
+      line-height: 1.5;
+    }
+
+    .osa-context-continue {
+      align-self: flex-start;
+      min-height: 36px;
+      padding: 7px 10px;
+      font: inherit;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--osa-accent);
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .osa-context-continue:hover {
+      border-color: var(--osa-accent);
+    }
+
+    .osa-context-continue:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    /* The History sheet (E1.4, board A4): a bottom sheet over the chat, with a scrim
+       over everything but the header, so the History button that opened it still
+       closes it. Colors are the panel's own tokens, so the dark scheme and a
+       community's theme carry over. */
+    .osa-history-btn[aria-expanded="true"] {
+      opacity: 1;
+      background: var(--osa-bg);
+      color: var(--osa-accent);
+    }
+
+    .osa-history-btn[aria-disabled="true"],
+    .osa-history-btn[aria-disabled="true"]:hover {
+      cursor: not-allowed;
+      opacity: 0.4;
+      background: transparent;
+    }
+
+    .osa-history-scrim {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      display: none;
+      background: rgba(15, 23, 42, 0.28);
+      z-index: 40;
+    }
+
+    .osa-history-scrim.open {
+      display: block;
+    }
+
+    .osa-history-sheet {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      box-sizing: border-box;
+      height: 74%;
+      min-height: min(320px, 100%);
+      display: none;
+      flex-direction: column;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      border-radius: 16px 16px 0 0;
+      box-shadow: 0 -6px 24px rgba(15, 23, 42, 0.18);
+      z-index: 50;
+      outline: none;
+    }
+
+    .osa-history-sheet.open {
+      display: flex;
+    }
+
+    .osa-history-grip {
+      flex: none;
+      width: 40px;
+      height: 4px;
+      margin: 8px auto 0;
+      border-radius: 2px;
+      background: var(--osa-border);
+    }
+
+    .osa-history-head {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 16px 6px;
+    }
+
+    .osa-history-title-text {
+      flex: 1 1 auto;
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--osa-text);
+    }
+
+    .osa-history-new {
+      min-height: 44px;
+      padding: 0 14px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--osa-on-primary);
+      background: var(--osa-primary);
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .osa-history-new:hover:not(:disabled) {
+      background: var(--osa-primary-dark);
+    }
+
+    .osa-history-sheet button:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-history-sheet button:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
+    .osa-history-note {
+      flex: none;
+      padding: 0 16px 4px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--osa-text-light);
+    }
+
+    .osa-history-note:empty {
+      display: none;
+    }
+
+    .osa-history-list {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 0 10px;
+    }
+
+    .osa-history-day-label {
+      margin: 0;
+      padding: 10px 6px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--osa-text-light);
+    }
+
+    .osa-history-rows {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .osa-history-row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      border-radius: 10px;
+    }
+
+    .osa-history-row-active {
+      background: var(--osa-notice-bg);
+    }
+
+    .osa-history-open {
+      flex: 1 1 auto;
+      min-width: 0;
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      box-sizing: border-box;
+      padding: 8px 6px;
+      text-align: left;
+      font: inherit;
+      color: inherit;
+      background: transparent;
+      border: 0;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .osa-history-open:hover:not(:disabled) {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-history-thumb {
+      flex: none;
+      width: 56px;
+      height: 40px;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      color: var(--osa-text-light);
+      background: var(--osa-assistant-bg);
+      border: 1px solid var(--osa-border);
+      border-radius: 6px;
+    }
+
+    .osa-history-thumb svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .osa-history-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #ffffff;
+    }
+
+    .osa-history-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .osa-history-title {
+      display: block;
+      overflow: hidden;
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .osa-history-meta {
+      display: block;
+      font-size: 11.5px;
+      line-height: 1.4;
+      color: var(--osa-text-light);
+      overflow-wrap: anywhere;
+    }
+
+    .osa-history-meta code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11.5px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      white-space: normal;
+    }
+
+    .osa-history-more {
+      flex: none;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--osa-text-light);
+      background: transparent;
+      border: 0;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .osa-history-more:hover:not(:disabled) {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-history-more svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .osa-history-menu {
+      position: absolute;
+      right: 8px;
+      top: calc(100% - 6px);
+      z-index: 5;
+      min-width: 160px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      padding: 4px;
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-border);
+      border-radius: 10px;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+    }
+
+    .osa-history-menu[hidden] {
+      display: none;
+    }
+
+    .osa-history-menu button {
+      min-height: 44px;
+      padding: 0 12px;
+      text-align: left;
+      font: inherit;
+      font-size: 13px;
+      color: var(--osa-text);
+      background: transparent;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .osa-history-menu button:hover:not(:disabled) {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-history-menu .osa-history-menu-delete {
+      color: #b91c1c;
+    }
+
+    .osa-history-empty {
+      margin: 0;
+      padding: 28px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      text-align: center;
+      color: var(--osa-text-light);
+    }
+
+    .osa-history-clear-row {
+      flex: none;
+      padding: 6px 16px 0;
+    }
+
+    .osa-history-clear {
+      min-height: 44px;
+      padding: 0 14px;
+      font: inherit;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--osa-text-light);
+      background: transparent;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .osa-history-clear.osa-history-confirm {
+      color: #b91c1c;
+      border-color: #b91c1c;
+      background: #fef2f2;
+    }
+
+    .osa-history-footer {
+      flex: none;
+      margin-top: 6px;
+      padding: 10px 16px 14px;
+      font-size: 11.5px;
+      line-height: 1.5;
+      color: var(--osa-text-light);
+      border-top: 1px solid var(--osa-border);
+    }
+
+    /* The handover to the analysis model (E8.3, board A6): a card for the steps, the
+       divider where the session changes, the mode label in the header, and the tag a
+       quick reply carries. The card takes the notice colors, which are the board's. */
+    .osa-handover-group {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .osa-handover {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px 14px;
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 12px;
+      background: var(--osa-notice-bg);
+      color: var(--osa-notice-text);
+    }
+
+    .osa-handover-title {
+      font-size: 13.5px;
+      font-weight: 600;
+    }
+
+    .osa-handover-step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12.5px;
+      line-height: 1.4;
+    }
+
+    .osa-handover-marker {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 14px;
+      box-sizing: border-box;
+    }
+
+    .osa-handover-marker.osa-handover-done {
+      color: var(--osa-run-ok);
+    }
+
+    .osa-handover-marker.osa-handover-live {
+      border: 2px solid var(--osa-accent);
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: osa-spin 1s linear infinite;
+    }
+
+    .osa-handover-marker.osa-handover-stopped {
+      color: var(--osa-text-light);
+      font-weight: 600;
+    }
+
+    .osa-handover-told {
+      font-size: 12.5px;
+    }
+
+    .osa-handover-told summary {
+      cursor: pointer;
+      color: var(--osa-accent);
+      font-weight: 500;
+    }
+
+    .osa-handover-told p {
+      margin: 6px 0 0;
+      padding: 8px;
+      line-height: 1.5;
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 6px;
+      color: var(--osa-text);
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+
+    .osa-handover-divider {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11.5px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-handover-divider::before,
+    .osa-handover-divider::after {
+      content: '';
+      flex: 1 1 auto;
+      height: 1px;
+      background: var(--osa-border);
+    }
+
+    .osa-mode-label {
+      flex: none;
+      margin-left: 4px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      background: #ffffff;
+      color: #0b1a3a;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .osa-mode-label[hidden],
+    .osa-mode-note[hidden] {
+      display: none;
+    }
+
+    .osa-mode-note {
+      padding: 8px 16px;
+      border-top: 1px solid var(--osa-border);
+      font-size: 11.5px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-quick-tag {
+      padding: 1px 7px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0;
+      text-transform: none;
+      color: var(--osa-text-light);
+    }
+
+    /* What continuing a chat across a context change leaves in it: a divider, and
+       what the assistant is told. */
+    .osa-context-move {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin: 4px 0;
+    }
+
+    .osa-context-divider {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-context-divider::before,
+    .osa-context-divider::after {
+      content: '';
+      flex: 1 1 auto;
+      height: 1px;
+      background: var(--osa-border);
+    }
+
+    .osa-context-told {
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--osa-text-light);
+      border: 1px dashed var(--osa-border);
+      border-radius: 8px;
     }
 
     .osa-suggestions {
@@ -2194,9 +3662,9 @@
     .osa-activity-status {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       margin-top: 6px;
-      font-size: 12px;
+      font-size: 12.5px;
       color: var(--osa-text-light);
     }
 
@@ -2208,6 +3676,11 @@
       border-radius: 50%;
       background: var(--osa-text-light);
       animation: osa-activity-pulse 1.4s infinite ease-in-out;
+    }
+
+    /* Board A3's status line: the accent-colored dot, as the run card's retry line has it. */
+    .osa-activity-status .osa-activity-pulse {
+      background: var(--osa-accent);
     }
 
     /* Not osa-pulse: keyframes of one name replace each other, and that one is the header
@@ -2265,6 +3738,38 @@
     .osa-error-copy {
       margin-left: 4px;
       vertical-align: middle;
+    }
+
+    .osa-error-copy.copied {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      line-height: 1;
+    }
+
+    .osa-error-copy .osa-copied-text {
+      font-size: 12px;
+    }
+
+    /* Success, not the banner's failure red: a dark green on the light banner (about 4.9:1
+       on #fef2f2), a light green on the dark one. */
+    .osa-error-copy.copied {
+      color: #15803d;
+    }
+
+    .osa-chat-widget.osa-dark .osa-error-copy.copied {
+      color: #86efac;
+    }
+
+    .osa-error-reference .osa-copy-status {
+      display: inline;
+      margin: 0 0 0 4px;
+      font-size: inherit;
+      color: inherit;
+    }
+
+    .osa-error-reference .osa-copy-status:empty {
+      display: none;
     }
 
     .osa-error-dismiss {
@@ -2405,33 +3910,112 @@
       gap: 8px;
     }
 
-    .osa-combined-footer .osa-page-context-toggle {
-      display: flex;
+    /* Privacy choices (#706): the footer's button and the dialog it opens. The button is
+       text in the footer's own color beside nemar.org's opt-out symbol, which keeps its
+       own fixed colors (it is only recognized if it never changes), and it is at least
+       24px tall to hit. */
+    .osa-combined-footer .osa-privacy-btn {
+      display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
+      min-height: 24px;
+      margin: 0 0 0 -4px;
+      padding: 0 4px;
+      background: none;
+      border: 0;
+      border-radius: 4px;
+      font: inherit;
+      color: inherit;
+      cursor: pointer;
       flex-shrink: 0;
     }
 
-    .osa-combined-footer .osa-page-context-toggle::after {
-      content: '|';
-      color: var(--osa-text-light);
-      opacity: 0.5;
-      margin-left: 3px;
+    .osa-combined-footer .osa-privacy-btn:hover {
+      color: var(--osa-text);
+      text-decoration: underline;
     }
 
-    .osa-combined-footer input[type="checkbox"] {
-      width: 11px;
-      height: 11px;
+    .osa-combined-footer .osa-privacy-btn:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    .osa-privacy-icon {
+      display: block;
+      flex-shrink: 0;
+    }
+
+    .osa-privacy-body {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .osa-privacy-field {
+      margin: 0;
+    }
+
+    .osa-privacy-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 44px;
+    }
+
+    .osa-privacy-row input[type="checkbox"] {
+      flex-shrink: 0;
+      width: 24px;
+      height: 24px;
       margin: 0;
       cursor: pointer;
       accent-color: var(--osa-accent);
     }
 
-    .osa-combined-footer label {
+    .osa-privacy-row input[type="checkbox"]:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-privacy-row label {
+      display: flex;
+      align-items: center;
+      flex: 1;
+      min-height: 44px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--osa-text);
       cursor: pointer;
       user-select: none;
     }
 
+    .osa-privacy-field .osa-settings-hint {
+      margin: 0 0 0 36px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .osa-privacy-save-note:empty {
+      display: none;
+    }
+    .osa-privacy-links {
+      display: flex;
+    }
+
+    .osa-privacy-link {
+      display: inline-flex;
+      align-items: center;
+      min-height: 44px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--osa-accent);
+      text-decoration: underline;
+    }
+
+    .osa-privacy-link:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+      border-radius: 2px;
+    }
     .osa-combined-footer .osa-footer-powered {
       text-align: right;
       white-space: nowrap;
@@ -2629,6 +4213,94 @@
       background: var(--osa-primary-dark);
     }
 
+    /* Browser memory (E5.1): four choices in a row, each a 44 px target. The radio itself is
+       kept for the keyboard and screen readers and drawn as the choice's own border. */
+    .osa-memory-fieldset {
+      border: 0;
+      margin: 0;
+      padding: 0;
+      min-width: 0;
+    }
+
+    .osa-memory-fieldset legend.osa-settings-label {
+      padding: 0;
+    }
+
+    .osa-memory-choices {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .osa-memory-choice {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      box-sizing: border-box;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--osa-text);
+      cursor: pointer;
+      text-align: center;
+    }
+
+    .osa-memory-choice-on {
+      border: 1.5px solid var(--osa-accent);
+      background: var(--osa-notice-bg);
+      font-weight: 600;
+    }
+
+    .osa-memory-choice:focus-within {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-memory-radio {
+      position: absolute;
+      opacity: 0;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      cursor: pointer;
+    }
+
+    .osa-memory-last {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-memory-last[hidden] {
+      display: none;
+    }
+
+    .osa-memory-last-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .osa-memory-bar {
+      height: 6px;
+      border-radius: 3px;
+      background: var(--osa-border);
+      overflow: hidden;
+    }
+
+    .osa-memory-bar-fill {
+      height: 6px;
+      background: var(--osa-accent);
+    }
+
+    .osa-memory-bar-over .osa-memory-bar-fill {
+      background: var(--osa-warn);
+    }
+
     .osa-workspace-actions {
       display: flex;
       flex-wrap: wrap;
@@ -2680,24 +4352,266 @@
       border-radius: 0;
     }
 
-    /* Browser code execution: the permission gate and what ran. */
-    .osa-tool-panel {
+    /* Browser code execution: one card for the question whether to run, the run, and
+       what came of it (the Run card block in the script). Failure colors are tokens of
+       the card, redefined once for the dark panel below. */
+    .osa-run-card {
+      --osa-run-ok: #15803d;
+      --osa-run-danger: #b91c1c;
+      --osa-run-danger-bg: #fef2f2;
+      --osa-run-warn: var(--osa-warn);
+      --osa-run-warn-bg: #fffbeb;
+      position: relative;
       border: 1px solid var(--osa-border);
       border-radius: 12px;
       padding: 10px 12px;
+      margin: 0 0 8px 0;
       background: var(--osa-bg);
+      color: var(--osa-text);
       font-size: 13px;
       display: flex;
       flex-direction: column;
       gap: 8px;
+      min-width: 0;
     }
 
+    .osa-run-card [hidden] {
+      display: none !important;
+    }
+
+    .osa-run-card-failed {
+      border: 1.5px solid var(--osa-run-danger);
+    }
+
+    .osa-run-card-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .osa-run-card-icon {
+      display: inline-flex;
+      flex: none;
+      color: var(--osa-text-light);
+    }
+
+    .osa-run-card-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .osa-run-card-ok .osa-run-card-icon {
+      color: var(--osa-run-ok);
+    }
+
+    .osa-run-card-failed .osa-run-card-icon,
+    .osa-run-card-failed .osa-run-card-title {
+      color: var(--osa-run-danger);
+    }
+
+    .osa-run-card-title,
     .osa-tool-panel-title {
       font-weight: 600;
     }
 
+    .osa-run-card-description,
     .osa-tool-panel-description {
       color: var(--osa-text-light);
+    }
+
+    /* What went wrong, in words, with the failing line marked in the code around it. */
+    .osa-run-card-error {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .osa-run-card-error-text {
+      background: var(--osa-run-danger-bg);
+      color: var(--osa-run-danger);
+      border-radius: 8px;
+      padding: 6px 8px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 160px;
+      overflow: auto;
+    }
+
+    .osa-run-card-error-type {
+      font-weight: 700;
+    }
+
+    .osa-run-card-excerpt {
+      background: #1f2937;
+      color: #f9fafb;
+      border-radius: 8px;
+      padding: 6px 0;
+      font-size: 12px;
+      line-height: 1.6;
+      font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+      overflow: auto;
+    }
+
+    .osa-run-card-line {
+      display: flex;
+      gap: 8px;
+      padding: 0 10px;
+      white-space: pre;
+    }
+
+    .osa-run-card-line-marked {
+      background: #7f1d1d;
+    }
+
+    .osa-run-card-lineno {
+      flex: none;
+      min-width: 2ch;
+      text-align: right;
+      color: #9ca3af;
+    }
+
+    .osa-run-card-line-marked .osa-run-card-lineno {
+      color: #fecaca;
+    }
+
+    .osa-run-card-marker {
+      flex: none;
+      width: 1ch;
+      color: #fecaca;
+      font-weight: 700;
+    }
+
+    .osa-run-card-note {
+      color: var(--osa-text-light);
+      font-size: 12px;
+    }
+
+    .osa-run-card-retry {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--osa-text-light);
+      font-size: 12.5px;
+    }
+
+    .osa-run-card-retry .osa-activity-pulse {
+      background: var(--osa-accent);
+    }
+
+    /* The WebAssembly heap after the run, against the reader's memory budget (E5.1), and
+       the caution under it when the run passed the budget. A caution, not a failure: the
+       run finished. */
+    .osa-run-card-heap {
+      color: var(--osa-text-light);
+      font-size: 12px;
+    }
+
+    .osa-run-card-heap-over {
+      color: var(--osa-run-warn);
+      font-weight: 600;
+    }
+
+    .osa-run-card-memory-warning {
+      background: var(--osa-run-warn-bg);
+      color: var(--osa-run-warn);
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12.5px;
+      overflow-wrap: anywhere;
+    }
+
+    .osa-run-card-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* A run's buttons: 36px tall, and named in words. Declared against a host page's
+       own button styles the way the gate's are (font: revert). Show code is the one
+       that is prominent: accent-colored, bold, with a border of its own. */
+    .osa-run-card button.osa-run-card-button {
+      font: revert;
+      appearance: auto;
+      box-sizing: border-box;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 36px;
+      padding: 0 10px;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .osa-run-card button.osa-run-card-button:hover {
+      background: rgba(0,0,0,0.04);
+    }
+
+    .osa-run-card .osa-run-card-error-text:focus-visible,
+    .osa-run-card .osa-run-card-excerpt:focus-visible,
+    .osa-run-card .osa-run-card-error-fallback:focus-visible,
+    .osa-run-card button.osa-run-card-button:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-run-card button.osa-run-card-button.osa-run-card-code-toggle {
+      border: 1.5px solid var(--osa-accent);
+      color: var(--osa-accent);
+      font-weight: 600;
+      padding: 0 12px;
+    }
+
+    .osa-run-card button.osa-run-card-button svg {
+      width: 14px;
+      height: 14px;
+      flex: none;
+    }
+
+    .osa-run-card-toggle[aria-expanded="true"] .osa-run-card-chevron {
+      transform: rotate(180deg);
+    }
+
+    .osa-run-card button.osa-run-card-button.osa-run-card-copied {
+      color: var(--osa-run-ok);
+    }
+
+    .osa-run-card-panel {
+      min-width: 0;
+    }
+
+    .osa-run-card-panel .osa-execution-output {
+      margin: 0;
+    }
+
+    /* The fallback line when the page cannot copy ("press Ctrl+C") is plain text under
+       the buttons; "Copied" itself is said by the button, and only announced here. */
+    .osa-run-card .osa-code-status {
+      flex: 1 1 100%;
+      margin: 0;
+      text-align: left;
+    }
+
+    .osa-run-card .osa-code-status:empty {
+      display: none;
+    }
+
+    .osa-run-card .osa-code-status-quiet {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
 
     .osa-tool-code {
@@ -2790,43 +4704,6 @@
       transition: width 0.2s ease;
     }
 
-    .osa-execution {
-      margin: 0 0 8px 0;
-      font-size: 13px;
-    }
-
-    .osa-execution summary {
-      cursor: pointer;
-      color: var(--osa-text-light);
-    }
-
-    /* A run and its code (#491): the run's own disclosure (its output and
-       figures), then its code as a disclosure of its own, so the code opens
-       without the output and the output without the code. A rule down the left
-       ties the two together. Only a reply that ran code has one. */
-    .osa-execution-run {
-      margin: 0 0 8px 0;
-      padding-left: 8px;
-      border-left: 2px solid var(--osa-border);
-    }
-
-    .osa-execution-run .osa-execution {
-      margin: 0 0 4px 0;
-    }
-
-    .osa-execution-code {
-      font-size: 13px;
-    }
-
-    .osa-execution-code summary {
-      cursor: pointer;
-      color: var(--osa-text-light);
-    }
-
-    .osa-execution-code-lines {
-      font-size: 12px;
-    }
-
     /* The bar over a code block: a status line, then Copy and, for a run,
        Download. On the run's code and on the permission gate's. */
     .osa-code-toolbar {
@@ -2901,7 +4778,7 @@
       font-family: 'SF Mono', Monaco, 'Courier New', monospace;
     }
 
-    .osa-execution img {
+    .osa-run-card img {
       display: block;
       max-width: 100%;
       margin-top: 6px;
@@ -2922,8 +4799,523 @@
       margin-top: 6px;
     }
 
-    .osa-execution .osa-execution-figure img {
+    .osa-run-card .osa-execution-figure img {
       margin-top: 0;
+    }
+
+    /* The plan card, the step progress strip and the plan bar (the Plan card block in
+       the script). Colors come from the panel's own tokens, so the dark panel needs only
+       the few redefined below. */
+    .osa-plan-card,
+    .osa-plan-strip,
+    .osa-plan-bar {
+      --osa-plan-danger: #b91c1c;
+      --osa-plan-warn: var(--osa-warn);
+      --osa-plan-editing-bg: #fffbeb;
+    }
+
+    .osa-plan-card [hidden] {
+      display: none !important;
+    }
+
+    .osa-plan-card {
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 12px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 13px;
+      margin: 0 0 8px 0;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .osa-plan-findings {
+      padding: 10px 14px;
+      background: var(--osa-assistant-bg);
+      line-height: 1.5;
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+    }
+
+    .osa-plan-top {
+      padding: 10px 14px;
+      background: var(--osa-notice-bg);
+      border-bottom: 1px solid var(--osa-notice-border);
+    }
+
+    .osa-plan-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .osa-plan-card h4.osa-plan-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--osa-text);
+    }
+
+    .osa-plan-badge {
+      flex: none;
+      font-size: 11px;
+      color: var(--osa-notice-text);
+      border: 1px solid var(--osa-notice-border);
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: var(--osa-bg);
+    }
+
+    .osa-plan-meta {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+      overflow-wrap: anywhere;
+    }
+
+    /* The largest step is expected to pass the reader's memory budget (E5.1). */
+    .osa-plan-card .osa-plan-meta-warn {
+      color: var(--osa-plan-warn);
+      font-weight: 600;
+    }
+
+    .osa-plan-card .osa-plan-mode-line {
+      padding: 0 14px 10px;
+    }
+
+    .osa-plan-card ol.osa-plan-steps {
+      list-style: none;
+      margin: 0;
+      padding: 6px 0;
+    }
+
+    .osa-plan-step {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 8px 14px;
+      margin: 0;
+    }
+
+    .osa-plan-step-editing {
+      background: var(--osa-plan-editing-bg);
+    }
+
+    .osa-plan-num {
+      flex: none;
+      width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .osa-plan-step-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .osa-plan-step-title {
+      font-weight: 500;
+    }
+
+    .osa-plan-step-detail {
+      color: var(--osa-text-light);
+      font-size: 12.5px;
+    }
+
+    .osa-plan-step-actions {
+      flex: none;
+      display: flex;
+      gap: 2px;
+    }
+
+    .osa-plan-card button {
+      font: revert;
+      appearance: auto;
+      box-sizing: border-box;
+      cursor: pointer;
+    }
+
+    .osa-plan-card button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .osa-plan-card button:focus-visible,
+    .osa-plan-card input:focus-visible,
+    .osa-plan-card textarea:focus-visible,
+    .osa-plan-bar button:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-plan-card button.osa-plan-icon-btn {
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--osa-text-light);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .osa-plan-card button.osa-plan-icon-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .osa-plan-card button.osa-plan-icon-btn:hover:not(:disabled) {
+      color: var(--osa-accent);
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    .osa-plan-edit {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .osa-plan-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--osa-text-light);
+    }
+
+    .osa-plan-card input.osa-plan-input,
+    .osa-plan-card textarea.osa-plan-textarea {
+      font: inherit;
+      font-size: 14px;
+      line-height: 1.45;
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--osa-border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      resize: vertical;
+    }
+
+    .osa-plan-error {
+      color: var(--osa-plan-danger);
+      font-size: 12.5px;
+      padding: 0 14px;
+    }
+
+    .osa-plan-edit .osa-plan-error {
+      padding: 0;
+    }
+
+    .osa-plan-edit-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .osa-plan-card button.osa-plan-btn {
+      min-height: 36px;
+      padding: 0 12px;
+      border-radius: 6px;
+      border: 1px solid var(--osa-border);
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 12.5px;
+      font-weight: 500;
+    }
+
+    .osa-plan-card button.osa-plan-save,
+    .osa-plan-card button.osa-plan-send-feedback {
+      background: var(--osa-primary);
+      border-color: var(--osa-primary);
+      color: var(--osa-on-primary);
+    }
+
+    .osa-plan-card button.osa-plan-add {
+      display: block;
+      width: calc(100% - 28px);
+      margin: 0 14px 10px;
+      min-height: 36px;
+      background: transparent;
+      border: 1px dashed var(--osa-notice-border);
+      border-radius: 8px;
+      color: var(--osa-accent);
+      font-size: 12.5px;
+      font-weight: 500;
+    }
+
+    .osa-plan-card fieldset.osa-plan-modes {
+      margin: 0;
+      padding: 10px 14px;
+      min-width: 0;
+      border: 0;
+      border-top: 1px solid var(--osa-border);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .osa-plan-modes-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--osa-text-light);
+    }
+
+    .osa-plan-modes-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .osa-plan-mode {
+      flex: 1 1 140px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 40px;
+      box-sizing: border-box;
+      padding: 6px 10px;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      font-size: 12.5px;
+      cursor: pointer;
+    }
+
+    .osa-plan-mode-on {
+      border: 1.5px solid var(--osa-accent);
+      background: var(--osa-notice-bg);
+      padding: 5.5px 9.5px;
+    }
+
+    .osa-plan-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      padding: 10px 14px 4px;
+    }
+
+    .osa-plan-card button.osa-plan-approve {
+      flex: 1 1 auto;
+      min-height: 44px;
+      padding: 0 14px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .osa-plan-card button.osa-plan-ask {
+      flex: 1 1 auto;
+      min-height: 44px;
+      padding: 0 12px;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .osa-plan-feedback {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 14px 4px;
+    }
+
+    .osa-plan-note {
+      padding: 4px 14px 12px;
+      font-size: 11.5px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-plan-waiting {
+      font-size: 12.5px;
+      color: var(--osa-text-light);
+    }
+
+    /* A reply that is only a plan or a run has no text: no empty bubble under it. */
+    .osa-message-content:empty {
+      display: none;
+    }
+
+    .osa-plan-card.osa-plan-changes_requested,
+    .osa-plan-card.osa-plan-stopped,
+    .osa-plan-card.osa-plan-unanswered {
+      border-color: var(--osa-border);
+    }
+
+    /* The strip over the conversation: where the plan is, one segment a step. */
+    .osa-plan-strip {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      flex: none;
+      margin: -16px -16px 0;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      background: var(--osa-assistant-bg);
+      border-bottom: 1px solid var(--osa-border);
+      font-size: 12px;
+      color: var(--osa-text);
+    }
+
+    .osa-plan-strip-label {
+      font-weight: 600;
+    }
+
+    .osa-plan-strip-mode {
+      font-size: 11px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-plan-segments {
+      flex: 1 1 60px;
+      min-width: 60px;
+      display: grid;
+      gap: 4px;
+    }
+
+    .osa-plan-seg {
+      height: 6px;
+      border-radius: 3px;
+      background: var(--osa-border);
+    }
+
+    .osa-plan-seg-done {
+      background: var(--osa-accent);
+    }
+
+    .osa-plan-seg-current {
+      background: var(--osa-accent);
+      opacity: 0.45;
+    }
+
+    .osa-plan-seg-failed {
+      background: var(--osa-plan-danger);
+    }
+
+    .osa-plan-seg-stopped {
+      background: var(--osa-text-light);
+    }
+
+    /* The bar under it: what the plan is waiting for, and what the reader can do. */
+    .osa-plan-bar {
+      position: sticky;
+      bottom: 0;
+      z-index: 2;
+      flex: none;
+      margin: auto -16px -16px;
+      padding: 10px 14px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      background: var(--osa-assistant-bg);
+      border-top: 1px solid var(--osa-border);
+      font-size: 12px;
+    }
+
+    .osa-plan-bar-text {
+      flex: 1 1 140px;
+      color: var(--osa-text);
+    }
+
+    .osa-plan-bar-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .osa-plan-bar button.osa-plan-bar-btn {
+      font: revert;
+      appearance: auto;
+      box-sizing: border-box;
+      min-height: 44px;
+      padding: 0 12px;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .osa-plan-bar button.osa-plan-bar-run {
+      background: var(--osa-primary);
+      border-color: var(--osa-primary);
+      color: var(--osa-on-primary);
+      font-weight: 600;
+    }
+
+    .osa-plan-bar button[aria-disabled="true"] {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .osa-plan-bar button.osa-plan-bar-pause {
+      border-color: var(--osa-primary);
+    }
+
+    .osa-plan-bar button.osa-plan-bar-stop {
+      color: var(--osa-plan-danger);
+      border-color: var(--osa-plan-danger);
+    }
+
+    /* A step's head on its run card: the step, then how long it took. */
+    .osa-run-card-head .osa-run-card-title {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .osa-run-card-step-text {
+      font-weight: 400;
+    }
+
+    .osa-run-card-step-text strong {
+      font-weight: 600;
+    }
+
+    .osa-run-card-elapsed {
+      flex: none;
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-chat-widget.osa-dark .osa-plan-card,
+    .osa-chat-widget.osa-dark .osa-plan-strip,
+    .osa-chat-widget.osa-dark .osa-plan-bar {
+      --osa-plan-danger: #fca5a5;
+      --osa-plan-editing-bg: rgba(245, 158, 11, 0.12);
+    }
+
+    .osa-chat-widget.osa-dark .osa-plan-card button.osa-plan-icon-btn:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.08);
     }
 
     .osa-figure-actions {
@@ -2977,11 +5369,13 @@
       font-size: 12px;
     }
 
-    .osa-rerun-actions {
-      margin-top: 6px;
+    /* The one line a run shows where the workspace no longer has its figures. */
+    .osa-figure-note {
+      color: var(--osa-text-light);
+      font-size: 12px;
+      margin: 6px 0 0 0;
     }
 
-    .osa-rerun-actions button,
     .osa-rerun-buttons button {
       border: 1px solid var(--osa-border);
       background: var(--osa-bg);
@@ -3064,6 +5458,11 @@
       --osa-text-light: #9ca3af;
       --osa-border: #374151;
       --osa-assistant-bg: #1f2937;
+      --osa-notice-bg: #12303a;
+      --osa-notice-border: #2c5a69;
+      --osa-notice-text: #d3eef6;
+      --osa-danger-text: #fca5a5;
+      --osa-warn: #fbbf24;
       /* A shadow alone vanishes against a dark host page, so every raised surface
          (the panel, the launcher, the tooltips) also gets a hairline edge. */
       --osa-shadow: 0 0 0 1px #374151, 0 10px 25px rgba(0, 0, 0, 0.5);
@@ -3190,6 +5589,926 @@
 
     .osa-chat-widget.osa-dark .osa-execution-output {
       background: rgba(255, 255, 255, 0.06);
+    }
+
+    /* A run card on the dark panel: its failure colors lighten to read on it, the
+       failing-line excerpt is the darker code surface, and the hover is a light wash. */
+    .osa-chat-widget.osa-dark .osa-run-card {
+      --osa-run-ok: #4ade80;
+      --osa-run-danger: #fca5a5;
+      --osa-run-danger-bg: rgba(220, 38, 38, 0.15);
+      --osa-run-warn-bg: rgba(245, 158, 11, 0.15);
+    }
+
+    .osa-chat-widget.osa-dark .osa-run-card-excerpt {
+      background: #030712;
+      box-shadow: inset 0 0 0 1px var(--osa-border);
+    }
+
+    .osa-chat-widget.osa-dark .osa-run-card button.osa-run-card-button:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    /* The History sheet on the dark panel: a heavier scrim, and the delete reds
+       lightened to read on it. */
+    .osa-chat-widget.osa-dark .osa-history-btn[aria-expanded="true"] {
+      color: var(--osa-on-primary);
+      background: rgba(255, 255, 255, 0.28);
+    }
+
+    .osa-chat-widget.osa-dark .osa-history-scrim {
+      background: rgba(0, 0, 0, 0.55);
+    }
+
+    .osa-chat-widget.osa-dark .osa-history-sheet {
+      box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--osa-border);
+    }
+
+    .osa-chat-widget.osa-dark .osa-history-menu .osa-history-menu-delete {
+      color: #fca5a5;
+    }
+
+    .osa-chat-widget.osa-dark .osa-history-clear.osa-history-confirm {
+      color: #fca5a5;
+      border-color: #fca5a5;
+      background: rgba(220, 38, 38, 0.15);
+    }
+
+    /* The center-stage dialog (E6.1, boards C2 and C3): the same window, docked to the
+       middle of the page under a scrim. Colors are the panel's own tokens, so the dark
+       scheme and a community's theme carry over; the two rgba values are the History
+       scrim's, light and dark. The window's size and place are !important because
+       three other rules own them (the corner's offsets, the capsule's, and the inline
+       size a drag of the resize grip leaves). */
+    .osa-center-scrim {
+      display: none;
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 10003;
+      background: rgba(15, 23, 42, 0.55);
+    }
+
+    .osa-center-scrim.open {
+      display: block;
+    }
+
+    /* The dialog's motion (#730): keyframes on the opened state, 120 ms, because the
+       window's rules below force transition: none and the scrim goes from display: none to
+       block, which no transition crosses. The state changes at once (inert, focus, scroll
+       lock, events); only these effects follow, and nothing waits for one to end. The
+       reduced-motion block turns every one of them off. */
+    .osa-center-scrim.open {
+      animation: osa-center-scrim-in 120ms ease-out;
+    }
+
+    .osa-chat-widget .osa-chat-window.osa-center.open {
+      animation: osa-center-in 120ms ease-out;
+    }
+
+    /* Docked: the corner window fades in, and the scrim, which is already gone as far as
+       the page is concerned, fades out under a class a timer removes (CENTER_FADE_CLEANUP_MS). */
+    .osa-chat-widget .osa-chat-window.open.osa-dock-in:not(.osa-center) {
+      animation: osa-dock-in 120ms ease-out;
+    }
+
+    .osa-center-scrim.closing {
+      display: block;
+      pointer-events: none;
+      animation: osa-center-scrim-out 120ms ease-in forwards;
+    }
+
+    @keyframes osa-center-in {
+      from { opacity: 0; transform: scale(0.98); }
+      to { opacity: 1; transform: none; }
+    }
+
+    /* The same frames as osa-center-in under its own name: a dock swaps the center-open
+       rule for this one in a single style recalc, and a browser keeps the finished
+       animation when the name is unchanged instead of starting a new one. */
+    @keyframes osa-dock-in {
+      from { opacity: 0; transform: scale(0.98); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @keyframes osa-center-scrim-in {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    @keyframes osa-center-scrim-out {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+
+    .osa-chat-widget.osa-dark .osa-center-scrim {
+      background: rgba(0, 0, 0, 0.55);
+    }
+
+    .osa-chat-window:focus {
+      outline: none;
+    }
+
+    /* What only the dialog shows. */
+    .osa-center-pill,
+    .osa-center-context,
+    .osa-center-dock-btn,
+    .osa-center-label,
+    .osa-center-start {
+      display: none;
+    }
+
+    .osa-chat-widget .osa-chat-window.osa-center {
+      position: fixed !important;
+      top: 36px !important;
+      right: 80px !important;
+      bottom: 36px !important;
+      left: 80px !important;
+      width: auto !important;
+      height: auto !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      max-width: none !important;
+      max-height: none !important;
+      z-index: 10004 !important;
+      transition: none !important;
+    }
+
+    .osa-chat-window.osa-center .osa-resize-handle,
+    .osa-chat-window.osa-center .osa-popout-btn,
+    .osa-chat-window.osa-center .osa-reset-btn,
+    .osa-chat-window.osa-center .osa-chat-avatar,
+    .osa-chat-window.osa-center .osa-chat-title-area {
+      display: none !important;
+    }
+
+    .osa-chat-window.osa-center .osa-chat-header {
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      border-bottom: 1px solid var(--osa-border);
+      padding: 14px 20px;
+    }
+
+    .osa-chat-window.osa-center .osa-center-pill {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      gap: 6px;
+      height: 32px;
+      padding: 0 12px;
+      border-radius: 999px;
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1;
+    }
+
+    .osa-center-pill svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .osa-chat-window.osa-center .osa-center-context {
+      display: block;
+      flex: 1 1 0;
+      min-width: 0;
+      font-size: 13px;
+      color: var(--osa-text-light);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .osa-center-context code {
+      font-family: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+      color: var(--osa-text);
+    }
+
+    .osa-chat-window.osa-center .osa-header-actions {
+      align-items: center;
+      gap: 8px;
+    }
+
+    .osa-chat-window.osa-center .osa-header-btn {
+      flex: none;
+      min-width: 36px;
+      min-height: 36px;
+      color: var(--osa-text);
+      opacity: 1;
+      white-space: nowrap;
+    }
+
+    .osa-chat-window.osa-center .osa-header-btn:hover {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-chat-window.osa-center .osa-center-dock-btn {
+      display: flex;
+    }
+
+    .osa-chat-window.osa-center .osa-history-btn,
+    .osa-chat-window.osa-center .osa-center-dock-btn {
+      gap: 6px;
+      padding: 0 14px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      background: var(--osa-bg);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .osa-chat-window.osa-center .osa-center-label {
+      display: inline;
+    }
+
+    .osa-chat-widget.osa-dark .osa-chat-window.osa-center .osa-history-btn[aria-expanded="true"] {
+      color: var(--osa-accent);
+      background: var(--osa-assistant-bg);
+    }
+
+    /* The thread is one centered column (760px); a narrower window gives it the
+       panel's own 16px edges. */
+    .osa-chat-window.osa-center .osa-chat-messages,
+    .osa-chat-window.osa-center .osa-suggestions,
+    .osa-chat-window.osa-center .osa-chat-input,
+    .osa-chat-window.osa-center .osa-ai-disclaimer,
+    .osa-chat-window.osa-center .osa-combined-footer {
+      padding-left: max(16px, calc((100% - 760px) / 2));
+      padding-right: max(16px, calc((100% - 760px) / 2));
+    }
+
+    .osa-chat-window.osa-center .osa-chat-input input {
+      min-height: 44px;
+      padding: 0 16px;
+      font-size: 15px;
+    }
+
+    .osa-chat-window.osa-center .osa-send-btn {
+      width: 44px;
+      height: 44px;
+    }
+
+    .osa-chat-window.osa-center .osa-suggestion {
+      min-height: 44px;
+    }
+
+    .osa-chat-window.osa-center .osa-history-sheet {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    /* The start screen (board C2) stands in for the thread, the suggestions and the
+       input while the conversation is empty; the input it holds writes through to the
+       chat's own, so docking keeps what was typed. */
+    .osa-chat-window.osa-center .osa-center-start:not([hidden]) {
+      display: flex;
+      flex: 1 1 auto;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-chat-window.osa-center-empty .osa-combined-footer {
+      padding-left: 20px;
+      padding-right: 20px;
+    }
+
+    .osa-chat-window.osa-center-empty .osa-chat-messages,
+    .osa-chat-window.osa-center-empty .osa-suggestions,
+    .osa-chat-window.osa-center-empty .osa-chat-input {
+      display: none !important;
+    }
+
+    /* The community's disclaimer and its Send feedback link stay under the start screen.
+       A note of its own (center_start.note) takes the disclaimer's place there, so the
+       link stays and the two are not said twice. */
+    .osa-chat-window.osa-center-empty.osa-center-has-note .osa-ai-disclaimer .osa-disclaimer-text {
+      display: none;
+    }
+
+    .osa-chat-window.osa-center-empty.osa-center-has-note .osa-ai-disclaimer {
+      justify-content: flex-end;
+    }
+
+    .osa-center-start-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      box-sizing: border-box;
+      padding: 24px 40px;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+
+    /* Spacers, not margins, so a tall screen centers and a short one scrolls from the top. */
+    .osa-center-start-body::before,
+    .osa-center-start-body::after {
+      content: "";
+      flex: 1 1 0;
+      min-height: 0;
+    }
+
+    .osa-center-start .osa-center-start-body > * {
+      flex: none;
+      box-sizing: border-box;
+      width: 100%;
+      max-width: 760px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .osa-center-heading {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 600;
+      line-height: 1.25;
+      letter-spacing: -0.4px;
+      text-align: center;
+      color: var(--osa-text);
+    }
+
+    .osa-center-form {
+      position: relative;
+      margin: 0;
+    }
+
+    .osa-center-input {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 60px;
+      padding: 0 70px 0 24px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 17px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.1);
+    }
+
+    .osa-center-input:focus,
+    .osa-center-input:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-center-send {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 44px;
+      height: 44px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .osa-center-send svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .osa-center-pills {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .osa-center-pills:empty {
+      display: none;
+    }
+
+    .osa-center-suggestion {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      min-height: 44px;
+      padding: 0 16px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1.3;
+      text-align: left;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .osa-center-suggestion:hover {
+      background: var(--osa-assistant-bg);
+    }
+
+    .osa-center-send:focus-visible,
+    .osa-center-suggestion:focus-visible,
+    .osa-center-docs-link:focus-visible,
+    .osa-chat-window.osa-center .osa-header-btn:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-center-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .osa-center-cards:empty {
+      display: none;
+    }
+
+    .osa-center-card {
+      border: 1px solid var(--osa-border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      background: var(--osa-assistant-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-center-card-title {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .osa-center-card-text {
+      margin-top: 4px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .osa-center-footer {
+      flex: none;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      border-top: 1px solid var(--osa-border);
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-center-footer[hidden] {
+      display: none;
+    }
+
+    .osa-center-note {
+      flex: 1 1 auto;
+    }
+
+    .osa-center-docs-link,
+    .osa-docs-link {
+      color: var(--osa-accent);
+      text-decoration: underline;
+    }
+
+    /* A phone (600px and under): the dialog is the whole screen, and the header's
+       buttons keep their icons only. */
+    @media (max-width: 600px) {
+      .osa-chat-widget .osa-chat-window.osa-center {
+        top: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        left: 0 !important;
+        border-radius: 0;
+      }
+
+      .osa-chat-window.osa-center .osa-chat-header {
+        padding: 10px 12px;
+        gap: 8px;
+      }
+
+      .osa-chat-window.osa-center .osa-header-actions {
+        gap: 4px;
+      }
+
+      .osa-chat-window.osa-center .osa-center-label {
+        display: none;
+      }
+
+      .osa-chat-window.osa-center .osa-history-btn,
+      .osa-chat-window.osa-center .osa-center-dock-btn {
+        padding: 0;
+      }
+
+      .osa-center-start-body {
+        padding: 16px;
+      }
+
+      .osa-center-heading {
+        font-size: 22px;
+      }
+
+      .osa-center-footer {
+        padding: 10px 16px;
+      }
+    }
+
+    /* Continue in notebook, in the dialog's header (E6.1): the History and Move to corner
+       buttons' look, with the label dropped at 600px and under like theirs. Shown by
+       syncCenterNotebook, never outside the dialog. */
+    .osa-chat-window .osa-center-notebook-btn {
+      display: none;
+    }
+
+    .osa-chat-window.osa-center .osa-center-notebook-btn:not([hidden]) {
+      display: flex;
+      gap: 6px;
+      padding: 0 14px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      background: var(--osa-bg);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .osa-chat-window.osa-center .osa-center-notebook-btn:disabled {
+      opacity: 0.6;
+      cursor: progress;
+    }
+
+    @media (max-width: 600px) {
+      .osa-chat-window.osa-center .osa-center-notebook-btn:not([hidden]) {
+        padding: 0;
+      }
+    }
+
+    /* The dialog's Chat and Notebook tabs (#738, #743): in the header from the start while
+       the page's dataset has a notebook (syncCenterTabs), a pair of pills in the History
+       and Move to corner buttons' look, 36px tall like them: one border round both, the
+       open tab filled with the assistant surface and bold. No second filled pill, so the
+       AI Mode pill stays the one strong mark in the header. Every color is a token. */
+    .osa-chat-window .osa-center-tabs {
+      display: none;
+    }
+
+    .osa-chat-window.osa-center .osa-center-tabs:not([hidden]) {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      gap: 2px;
+      box-sizing: border-box;
+      height: 36px;
+      padding: 1px;
+      border: 1px solid var(--osa-border);
+      border-radius: 999px;
+      background: var(--osa-bg);
+    }
+
+    .osa-center-tab {
+      display: inline-flex;
+      flex: 1 1 auto;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      box-sizing: border-box;
+      height: 32px;
+      margin: 0;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--osa-text);
+      white-space: nowrap;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1;
+      cursor: pointer;
+      transition: background 60ms linear, color 60ms linear;
+    }
+
+    .osa-center-tab svg {
+      width: 14px;
+      height: 14px;
+      flex: none;
+    }
+
+    /* A lighter fill than the open tab's, so an unselected tab under the pointer does not
+       read as the selected one; the label stays in the text color on either. */
+    .osa-center-tab:not([aria-selected="true"]):hover {
+      background: color-mix(in srgb, var(--osa-assistant-bg) 50%, transparent);
+    }
+
+    /* The open tab: filled, bold and with its icon in the accent. The label stays in the
+       text color, since the accent on the assistant surface falls just under 4.5:1. */
+    .osa-center-tab[aria-selected="true"] {
+      background: var(--osa-assistant-bg);
+      font-weight: 600;
+      cursor: default;
+    }
+
+    .osa-center-tab[aria-selected="true"] svg {
+      color: var(--osa-accent);
+    }
+
+    /* A reply that came while the reader was on the Notebook tab: a small dot on the Chat
+       tab, in the accent as the open tab's icon, until the chat is opened. */
+    .osa-center-tab-cue {
+      display: none;
+      flex: none;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--osa-accent);
+    }
+
+    .osa-center-tab.osa-tab-unread .osa-center-tab-cue {
+      display: block;
+    }
+
+    .osa-center-tab:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    /* The header on the notebook tab: History, Settings and Continue in notebook are the
+       chat's. Hidden, not removed, as in the corner, so Move to corner and Close do not
+       move as the tabs switch; hidden controls are out of the Tab order too. The fade is
+       the capsule's, shortened to a few tens of milliseconds. */
+    .osa-capsule .osa-chat-window.osa-center .osa-history-btn,
+    .osa-capsule .osa-chat-window.osa-center .osa-settings-btn-open,
+    .osa-capsule .osa-chat-window.osa-center .osa-center-notebook-btn {
+      transition: opacity 60ms linear, background 0.2s, visibility 0s;
+    }
+
+    .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-history-btn,
+    .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-settings-btn-open,
+    .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-notebook-btn {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 60ms linear, background 0.2s, visibility 0s linear 60ms;
+    }
+
+    /* The two views in the dialog fade over each other in 60ms, with no scale: the
+       capsule's fade-through (out in 110ms, in over 210ms) is longer than a dialog's
+       tab switch needs. The notebook's frame is under one of them and is never moved. */
+    .osa-chat-window.osa-center .osa-view,
+    .osa-chat-window.osa-center .osa-view.osa-view-off {
+      transform: none;
+      transition: opacity 60ms linear, visibility 0s linear 60ms;
+    }
+
+    .osa-chat-window.osa-center .osa-view.osa-view-on {
+      transition: opacity 60ms linear, visibility 0s;
+    }
+
+    /* After the notebook's frame, in its view: a stop that takes the focus Tab carries
+       out of the frame (guardNotebookFrame). Painted nothing and clicked by nothing, but
+       still focusable, so no display:none, visibility:hidden or inert of its own. */
+    .osa-nb-guard {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+      outline: none;
+    }
+
+    /* The header's buttons never shrink or wrap (the dataset line is what gives way, with
+       an ellipsis), so they must fit the dialog on their own. Measured in Chrome with
+       Continue in notebook showing: pill, History, Continue in notebook, Move to corner,
+       Settings and Close with their labels need about 700px, and the dialog is the
+       viewport less 160px, so below 900px (a dialog of 740px, with room to spare) they
+       keep their icons only, as they do on a phone. */
+    @media (max-width: 900px) {
+      .osa-chat-window.osa-center .osa-center-label {
+        display: none;
+      }
+
+      .osa-chat-window.osa-center .osa-history-btn,
+      .osa-chat-window.osa-center .osa-center-dock-btn,
+      .osa-chat-window.osa-center .osa-center-notebook-btn:not([hidden]) {
+        padding: 0;
+      }
+    }
+
+    /* The dialog's header with its tabs: the tabs share the pill's row while the row has
+       room for them (the labelled buttons, the pill and the tab pair need about 890px, a
+       dialog of a viewport of 1050px), and take a row of their own, shared between
+       them, from 1100px down. */
+    @media (max-width: 1100px) {
+      .osa-chat-window.osa-center.osa-center-tabbed .osa-chat-header {
+        flex-wrap: wrap;
+      }
+
+      .osa-chat-window.osa-center.osa-center-tabbed .osa-center-tabs:not([hidden]) {
+        order: 10;
+        flex: 1 0 100%;
+      }
+    }
+
+    /* The plan rail (E6.1, board C3): 280px beside the thread, in the panel's own tokens.
+       Wider than 900px only: below that the strip and the bar in the thread carry the
+       same state, and the rail is not drawn. The container of the thread becomes a grid
+       while it has a rail (the window, or in the capsule the chat view inside it): the
+       header on top, the rail in the left column down the thread's rows, the thread and
+       its input in the right, the disclaimer and the footer across both. */
+    .osa-plan-rail {
+      display: none;
+      --osa-rail-ok: #15803d;
+      --osa-rail-danger: var(--osa-danger-text);
+    }
+
+    .osa-chat-widget.osa-dark .osa-plan-rail {
+      --osa-rail-ok: #4ade80;
+    }
+
+    .osa-plan-rail-heading {
+      margin: 0 0 6px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--osa-text);
+    }
+
+    .osa-plan-rail-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .osa-plan-rail-row {
+      margin: 0;
+      padding: 0;
+    }
+
+    .osa-plan-rail-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 36px;
+      margin: 0;
+      padding: 8px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--osa-text);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 400;
+      line-height: 1.4;
+      text-align: left;
+    }
+
+    button.osa-plan-rail-step {
+      cursor: pointer;
+    }
+
+    button.osa-plan-rail-step:hover {
+      background: var(--osa-bg);
+    }
+
+    .osa-plan-rail-current .osa-plan-rail-step {
+      background: var(--osa-bg);
+      border-color: var(--osa-notice-border);
+      font-weight: 500;
+    }
+
+    .osa-plan-rail-icon {
+      display: inline-flex;
+      flex: none;
+      width: 18px;
+      height: 18px;
+      margin-top: 1px;
+    }
+
+    .osa-plan-rail-icon svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .osa-plan-rail-done .osa-plan-rail-icon {
+      color: var(--osa-rail-ok);
+    }
+
+    .osa-plan-rail-failed .osa-plan-rail-icon,
+    .osa-plan-rail-failed .osa-plan-rail-title {
+      color: var(--osa-rail-danger);
+    }
+
+    .osa-plan-rail-stopped .osa-plan-rail-icon {
+      color: var(--osa-text);
+    }
+
+    .osa-plan-rail-dot {
+      width: 18px;
+      height: 18px;
+      box-sizing: border-box;
+      border-radius: 999px;
+      border: 2px solid var(--osa-text-light);
+    }
+
+    .osa-plan-rail-dot-current {
+      border-color: var(--osa-accent);
+    }
+
+    .osa-plan-rail-foot {
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid var(--osa-border);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12.5px;
+      color: var(--osa-text);
+    }
+
+    .osa-plan-rail-memory {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0 4px;
+    }
+
+    .osa-plan-rail-change {
+      min-height: 36px;
+      margin: 0;
+      padding: 0 6px;
+      border: 0;
+      background: transparent;
+      color: var(--osa-text);
+      font: inherit;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+
+    .osa-plan-rail-step:focus-visible,
+    .osa-plan-rail-change:focus-visible,
+    .osa-run-card[tabindex="-1"]:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 2px;
+    }
+
+    .osa-run-card[data-plan-step] {
+      scroll-margin-top: 8px;
+    }
+
+    @media (min-width: 901px) {
+      .osa-chat-widget:not(.osa-capsule) .osa-chat-window.osa-center.osa-center-has-rail.open,
+      .osa-chat-widget.osa-capsule .osa-chat-window.osa-center.osa-center-has-rail .osa-view-chat {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr) repeat(9, auto);
+      }
+
+      .osa-center-has-rail .osa-chat-header {
+        grid-column: 1 / -1;
+        grid-row: 1;
+      }
+
+      .osa-center-has-rail .osa-plan-rail {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        grid-column: 1;
+        grid-row: 2 / 10;
+        box-sizing: border-box;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 18px;
+        background: var(--osa-assistant-bg);
+        border-right: 1px solid var(--osa-border);
+        color: var(--osa-text);
+      }
+
+      .osa-center-has-rail .osa-chat-messages { grid-column: 2; grid-row: 2; }
+      .osa-center-has-rail .osa-suggestions { grid-column: 2; grid-row: 3; }
+      .osa-center-has-rail .osa-turnstile-container { grid-column: 2; grid-row: 4; }
+      .osa-center-has-rail .osa-error { grid-column: 2; grid-row: 5; }
+      .osa-center-has-rail .osa-warning { grid-column: 2; grid-row: 6; }
+      .osa-center-has-rail .osa-mode-note { grid-column: 2; grid-row: 7; }
+      .osa-center-has-rail .osa-context-notice-slot { grid-column: 2; grid-row: 8; }
+      .osa-center-has-rail .osa-chat-input { grid-column: 2; grid-row: 9; }
+      .osa-center-has-rail .osa-ai-disclaimer { grid-column: 1 / -1; grid-row: 10; }
+      .osa-center-has-rail .osa-combined-footer { grid-column: 1 / -1; grid-row: 11; }
+
+      /* The rail says where the plan is, so the strip over the thread would say it twice. */
+      .osa-center-has-rail .osa-plan-strip {
+        display: none;
+      }
     }
   `;
 
@@ -3412,6 +6731,9 @@
     }
 
     renderTabStrip(container);
+    syncCenterTabs(container);
+    // The notebook card under the chat's last reply says what the notebook can do now (E4.3).
+    refreshNotebookEntry(container);
   }
 
   // Python is starting, or the notebook still loading: the cue a notebook circle or
@@ -3489,10 +6811,28 @@
   // follow, and the indicator slides (or, in a pop-out, the tab strip follows).
   // Opening the notebook tab creates its frame the first time. A bubble widget has
   // no tabs, so this is a no-op there.
+  //
+  // The center-stage dialog (E6.1) is the same window, so it has the same two views
+  // and the notebook's frame stays where it is: switching tabs, and docking, never
+  // move or reload it (#738). The dialog's header has its Chat and Notebook tabs from the
+  // start while a notebook is available (syncCenterTabs, #743); with none it is chat only.
   function setTab(container, tab) {
     if (!container.classList.contains('osa-capsule')) return;
     if (tab === 'notebook' && !isNotebookAvailable()) tab = 'chat';
     activeTab = tab;
+    if (tab === 'notebook') {
+      closeHistory(container, { restoreFocus: false });
+      // In the dialog nothing laid over the chat stays over the notebook: the Tab trap is
+      // scoped to the topmost overlay, which would keep the reader out of the notebook.
+      // In the corner and the pop-out a panel is the reader's (an API key being typed, a
+      // comment being written), and a host import or a notebook button does not take it.
+      if (hostMode === 'center') {
+        closeSettings(container);
+        closeFeedback(container);
+        closePrivacy(container, { restoreFocus: false });
+      }
+    }
+    if (tab === 'chat') clearUnreadReply(container);
     container.classList.toggle('osa-tab-notebook', tab === 'notebook');
     container.classList.toggle('osa-tab-chat', tab === 'chat');
     for (const [name, on] of [['chat', tab === 'chat'], ['notebook', tab === 'notebook']]) {
@@ -3512,6 +6852,9 @@
     renderNotebookStatus(container);
     renderLauncherIcons(container);
     positionIndicator(container);
+    // The dialog's start screen belongs to the chat's view.
+    syncCenterStart(container);
+    rescueCenterFocus(container);
   }
 
   // setTab without its motion: the views, titles and header buttons take their
@@ -3598,7 +6941,10 @@
       }
     });
     notebookEmbed.readyTimer = setTimeout(() => failNotebook(container, frame, 'timeout'), NOTEBOOK_TOTAL_MS);
-    view.insertBefore(frame, view.firstChild);
+    // Under the notebooks strip and the import banner, which are the view's first two children.
+    const banner = view.querySelector('.osa-notebook-banner');
+    if (banner) banner.after(frame);
+    else view.insertBefore(frame, view.firstChild);
     frame.src = notebookUrlFor(datasetId);
     renderNotebookStatus(container);
   }
@@ -3613,6 +6959,7 @@
     notebookEmbed.setup = null;
     notebookEmbed.failure = null;
     notebookEmbed.sentScheme = null;
+    resetNotebookTabs('The notebook was replaced before it answered.');
   }
 
   function failNotebook(container, frame, failure) {
@@ -3621,6 +6968,7 @@
     clearTimeout(notebookEmbed.readyTimer);
     notebookEmbed.state = 'failed';
     notebookEmbed.failure = failure;
+    failNotebookRequests('The notebook did not open here.');
     console.warn(`[OSA] The notebook for ${notebookEmbed.datasetId} did not ${failure === 'startup' ? 'start' : 'load in time'}; offering it in a tab of its own.`);
     renderNotebookStatus(container);
     renderLauncherIcons(container);
@@ -3659,6 +7007,13 @@
       notebookEmbed.state = 'ready';
       notebookEmbed.failure = null;
       postNotebookTheme(true);
+      flushNotebookOutbox();
+    } else if (data.type === 'result') {
+      settleNotebookRequest(data);
+      return;
+    } else if (data.type === 'notebooks') {
+      applyNotebookList(container, data);
+      return;
     } else if (data.type === 'setup' && ['running', 'done', 'error', 'none'].includes(data.status)) {
       notebookEmbed.setup = data.status;
     } else if (data.type === 'error' && data.phase === 'startup') {
@@ -3677,6 +7032,536 @@
     }
     renderNotebookStatus(container);
     renderLauncherIcons(container);
+  }
+
+  // --- Notebook tabs ---
+  // The Notebook surface's strip of named notebooks (#676) and the import of a
+  // chat's notebook into one of them (#673), both over the notebook page's
+  // bridge (notebook/osa-bridge.js, docs/adr/0017-notebook-import-and-tabs.md).
+  // The widget cannot write the notebook's storage itself, since the frame is
+  // another origin, so everything here is a request to the page and its answer:
+  //   to the page:   {target: 'osa-notebook', type, requestId, ...}
+  //                  import-notebook, run-all, undo-import, new-notebook,
+  //                  open-notebook, rename-notebook, close-notebook
+  //   from the page: {source: 'osa-notebook', type: 'result', requestId, ok, path?, error?}
+  //                  {source: 'osa-notebook', type: 'notebooks', items, active}
+  // The strip is drawn from the last `notebooks` message and from nothing else,
+  // so it shows what the page has, including a notebook the reader opened there.
+  // A request is posted once, to the notebook's own origin, and only after the
+  // notebook has reported ready; until then it waits in the outbox.
+
+  const NOTEBOOK_ICONS = {
+    plus: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>',
+    pencil: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path></svg>',
+    close: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>'
+  };
+  const NOTEBOOK_KINDS = ['playground', 'chat', 'blank'];
+  // Longest wait for the notebook's answer to one request. An import waits for
+  // the starter's setup first (the page bounds that wait at 150 s), then opens
+  // the notebook (30 s), so this is longer than the two together.
+  let NOTEBOOK_REQUEST_MS = 240000;
+  // Run all waits for the setup too, then runs the cells one at a time, and a
+  // cell can take as long as the reader's analysis does. The ordinary wait
+  // would settle it as unanswered while the cells still ran, and the real
+  // outcome would then be dropped. This one only catches a page that went away
+  // without its frame being replaced (which settles the request on its own).
+  let NOTEBOOK_RUN_ALL_MS = 1800000;
+  const notebookRequestMs = (type) => (type === 'run-all' ? NOTEBOOK_RUN_ALL_MS : NOTEBOOK_REQUEST_MS);
+  let notebookRequestCounter = 0;
+
+  // The frame was replaced or failed: nothing posted to it will be answered.
+  function failNotebookRequests(reason) {
+    const waiting = [...notebookEmbed.requests.keys()];
+    notebookEmbed.outbox = [];
+    for (const requestId of waiting) finishNotebookRequest(requestId, { ok: false, error: reason });
+  }
+
+  // Settles one request: its callback first (the banner and the strip update
+  // in the same turn as the message that answered it), then its promise.
+  function finishNotebookRequest(requestId, result) {
+    const request = notebookEmbed.requests.get(requestId);
+    if (!request) return;
+    notebookEmbed.requests.delete(requestId);
+    clearTimeout(request.timer);
+    if (request.onResult) request.onResult(result);
+    request.resolve(result);
+  }
+
+  // The tabs and import go with the frame they belong to.
+  function resetNotebookTabs(reason) {
+    failNotebookRequests(reason);
+    notebookEmbed.tabs = { items: [], active: null };
+    notebookEmbed.import = null;
+    notebookEmbed.renaming = null;
+    notebookEmbed.renameDraft = '';
+    notebookEmbed.menuOpen = false;
+    const container = document.querySelector('.osa-chat-widget');
+    if (container) {
+      renderNotebookTabs(container);
+      renderNotebookBanner(container);
+    }
+  }
+
+  function postNotebookMessage(message) {
+    const frame = notebookEmbed.frame;
+    if (!frame || !frame.contentWindow) return false;
+    try {
+      frame.contentWindow.postMessage(message, notebookOrigin());
+      return true;
+    } catch (e) {
+      console.warn('[OSA] Could not send a message to the notebook:', e);
+      return false;
+    }
+  }
+
+  // Posts once the notebook has reported ready, and queues until then.
+  function flushNotebookOutbox() {
+    const waiting = notebookEmbed.outbox;
+    notebookEmbed.outbox = [];
+    for (const message of waiting) {
+      if (postNotebookMessage(message)) continue;
+      finishNotebookRequest(message.requestId, { ok: false, error: 'The message could not be sent to the notebook.' });
+    }
+  }
+
+  // Sends one request and resolves with the notebook's answer, {ok, path?, error?};
+  // `onResult`, if given, runs with it first, in the turn the answer arrives.
+  function sendNotebookRequest(type, fields, onResult) {
+    return new Promise((resolve) => {
+      notebookRequestCounter += 1;
+      const requestId = `osa-${notebookRequestCounter}-${Math.random().toString(36).slice(2, 8)}`;
+      const timer = setTimeout(() => {
+        notebookEmbed.outbox = notebookEmbed.outbox.filter((message) => message.requestId !== requestId);
+        finishNotebookRequest(requestId, { ok: false, error: 'The notebook did not answer.' });
+      }, notebookRequestMs(type));
+      notebookEmbed.requests.set(requestId, { type, resolve, timer, onResult });
+      const message = { target: 'osa-notebook', type, requestId, ...fields };
+      notebookEmbed.outbox.push(message);
+      if (notebookEmbed.state === 'ready') flushNotebookOutbox();
+    });
+  }
+
+  // The notebook's answer to a request; one for a request this widget did not
+  // make, or already settled, is not acted on.
+  function settleNotebookRequest(data) {
+    if (typeof data.requestId !== 'string') return;
+    finishNotebookRequest(data.requestId, {
+      ok: data.ok === true,
+      path: typeof data.path === 'string' ? data.path : undefined,
+      error: typeof data.error === 'string' ? data.error : undefined
+    });
+  }
+
+  // The list of notebooks the page reported. Anything malformed is dropped, so
+  // the strip never shows a tab the page did not list.
+  function applyNotebookList(container, data) {
+    if (!Array.isArray(data.items)) {
+      console.warn('[OSA] Ignoring a list of notebooks that is not a list:', data);
+      return;
+    }
+    const items = [];
+    for (const item of data.items) {
+      if (!item || typeof item.path !== 'string' || typeof item.title !== 'string' ||
+          !NOTEBOOK_KINDS.includes(item.kind) || typeof item.open !== 'boolean') continue;
+      items.push({
+        path: item.path, title: item.title, kind: item.kind, open: item.open,
+        undoable: item.undoable === true
+      });
+    }
+    const active = typeof data.active === 'string' && items.some((item) => item.path === data.active) ? data.active : null;
+    notebookEmbed.tabs = { items, active };
+    const current = notebookEmbed.import;
+    if (current && current.path) {
+      const item = items.find((candidate) => candidate.path === current.path);
+      current.undoable = !!item && item.undoable;
+    }
+    if (notebookEmbed.renaming && !items.some((item) => item.path === notebookEmbed.renaming)) {
+      notebookEmbed.renaming = null;
+    }
+    renderNotebookTabs(container);
+    renderNotebookBanner(container);
+  }
+
+  function pluralize(count, one, other) {
+    return `${count} ${count === 1 ? one : other}`;
+  }
+
+  // Hands a chat's notebook to the notebook page, which writes it as
+  // `<community>/<dataset> · <title>.ipynb`, opens it as a tab, and offers Run all
+  // and Undo here. The caller (the "Continue in notebook" card, E4.3) passes what
+  // buildConversationNotebook returned: {datasetId, title, notebook, stats}.
+  // Opens the notebook tab, and the panel, and waits for the notebook to be ready;
+  // resolves with the page's answer {ok, path?, error?}. Never throws.
+  function importNotebookToTab(input) {
+    return startNotebookImport(input).pending;
+  }
+
+  // importNotebookToTab, with the banner's record it made ({record, pending}):
+  // `record` is null when the import was refused before it began. For a caller
+  // that must know its own record (the card), not read it back from the shared
+  // state, where a refusal leaves another import's.
+  function startNotebookImport(input) {
+    const refuse = (reason) => {
+      console.warn(`[OSA] importNotebookToTab: ${reason}`);
+      return { record: null, pending: Promise.resolve({ ok: false, error: reason }) };
+    };
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container || !container.classList.contains('osa-capsule')) return refuse('this widget has no notebook tab');
+    if (!input || typeof input !== 'object') return refuse('nothing to import');
+    const { datasetId, title, notebook, stats } = input;
+    if (typeof datasetId !== 'string' || datasetId === '') return refuse('no dataset id');
+    if (typeof title !== 'string') return refuse('no title');
+    if (!notebook || typeof notebook !== 'object' || Array.isArray(notebook)) return refuse('no notebook');
+    if (!isNotebookAvailable() || currentDataset.id !== datasetId) {
+      return refuse(`the notebook on screen is not the one for ${datasetId}`);
+    }
+    setTab(container, 'notebook');
+    if (!isOpen) toggleChat(container);
+    if (notebookEmbed.state === 'failed' || !notebookEmbed.frame) return refuse('the notebook did not open here');
+    const steps = Number.isFinite(stats && stats.steps) ? stats.steps : 0;
+    const leftOut = Array.isArray(stats && stats.leftOut) ? stats.leftOut.length : 0;
+    const record = { state: 'importing', title, steps, leftOut, path: null, undoable: false, error: null };
+    notebookEmbed.import = record;
+    renderNotebookBanner(container);
+    const pending = sendNotebookRequest('import-notebook', { datasetId, title, notebook }, (result) => {
+      if (notebookEmbed.import !== record || record.state !== 'importing') return;
+      // An answer that is not ok but names a path means the file was saved and
+      // only showing it failed: the notebook is there, so Run all and Undo are
+      // offered, with what went wrong beside them.
+      if (result.ok || result.path) {
+        record.state = 'imported';
+        record.path = result.path || null;
+        record.undoable = true;
+        if (!result.ok) record.notice = result.error || 'It was saved, but not opened.';
+      } else {
+        record.state = 'error';
+        record.error = result.error || 'The notebook could not be imported.';
+      }
+      renderNotebookBanner(container);
+    });
+    return { record, pending };
+  }
+
+  // Run all and Undo: the banner's two buttons.
+  function runImportedNotebook(container) {
+    const record = notebookEmbed.import;
+    if (!record || !['imported', 'ran', 'failed'].includes(record.state) || !record.path) return;
+    record.state = 'running';
+    record.notice = null;
+    renderNotebookBanner(container);
+    sendNotebookRequest('run-all', { path: record.path }, (result) => {
+      // Only the run that started this state may end it.
+      if (notebookEmbed.import !== record || record.state !== 'running') return;
+      record.state = result.ok ? 'ran' : 'failed';
+      record.error = result.ok ? null : (result.error || 'The cells did not all run.');
+      renderNotebookBanner(container);
+    });
+  }
+
+  function undoImportedNotebook(container) {
+    const record = notebookEmbed.import;
+    if (!record || !record.path || !record.undoable || record.state === 'running') return;
+    const before = record.state;
+    record.state = 'undoing';
+    renderNotebookBanner(container);
+    sendNotebookRequest('undo-import', { path: record.path }, (result) => {
+      if (notebookEmbed.import !== record || record.state !== 'undoing') return;
+      if (result.ok) {
+        record.state = 'undone';
+        record.undoable = false;
+      } else {
+        // Most often: the reader edited it, so it was kept.
+        record.state = before;
+        record.undoable = false;
+        record.notice = result.error || 'It could not be undone.';
+      }
+      renderNotebookBanner(container);
+    });
+  }
+
+  // The banner under the strip, for the notebook the import made.
+  function renderNotebookBanner(container) {
+    const banner = container.querySelector('.osa-notebook-banner');
+    if (!banner) return;
+    const record = notebookEmbed.import;
+    const showing = !!record && (record.state === 'importing' || !record.path ||
+      notebookEmbed.tabs.active === null || notebookEmbed.tabs.active === record.path);
+    banner.hidden = !showing;
+    banner.textContent = '';
+    if (!showing) return;
+    const steps = pluralize(record.steps, 'step', 'steps');
+    const left = record.leftOut > 0
+      ? ` ${record.leftOut} ${record.leftOut === 1 ? 'run was' : 'runs were'} left out.`
+      : '';
+    const text = {
+      importing: `Importing ${steps} from your chat…`,
+      imported: `Imported ${steps} from your chat.${left} Python is starting; run all cells when it is ready.`,
+      running: 'Running the cells one at a time…',
+      ran: `All cells ran.${left}`,
+      undoing: 'Removing the imported notebook…',
+      undone: 'The imported notebook was removed.',
+      failed: record.error,
+      error: record.error
+    }[record.state] || '';
+    const message = document.createElement('span');
+    message.className = 'osa-notebook-banner-text';
+    message.textContent = record.notice ? `${text} ${record.notice}` : text;
+    banner.appendChild(message);
+    const addButton = (label, className, onClick, disabled = false) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = className;
+      button.textContent = label;
+      button.disabled = disabled;
+      button.addEventListener('click', onClick);
+      banner.appendChild(button);
+    };
+    const live = ['imported', 'running', 'ran', 'failed'].includes(record.state);
+    if (live) {
+      addButton('Run all', 'osa-notebook-run-all', () => runImportedNotebook(container), record.state === 'running');
+    }
+    // Not while the cells run: removing the file under a run would fail it.
+    if (live && record.undoable && record.state !== 'running') {
+      addButton('Undo', 'osa-notebook-undo', () => undoImportedNotebook(container));
+    }
+    if (['ran', 'failed', 'undone', 'error'].includes(record.state)) {
+      addButton('Dismiss', 'osa-notebook-dismiss', () => {
+        if (notebookEmbed.import === record) notebookEmbed.import = null;
+        renderNotebookBanner(container);
+      });
+    }
+  }
+
+  // The strip: the open notebooks as tabs, then the "+" button and its menu.
+  // Rebuilt from notebookEmbed.tabs each time; a rename in progress keeps its
+  // text and its focus across the rebuild.
+  function renderNotebookTabs(container) {
+    const bar = container.querySelector('.osa-nb-bar');
+    if (!bar) return;
+    const strip = bar.querySelector('.osa-nb-strip');
+    const menu = bar.querySelector('.osa-nb-menu');
+    const add = bar.querySelector('.osa-nb-add');
+    const open = notebookEmbed.tabs.items.filter((item) => item.open);
+    const closed = notebookEmbed.tabs.items.filter((item) => !item.open);
+    bar.hidden = notebookEmbed.tabs.items.length === 0;
+    const editing = strip.querySelector('.osa-nb-rename');
+    if (editing) notebookEmbed.renameDraft = editing.value;
+    const hadFocus = !!editing && document.activeElement === editing;
+    if (editing) editing.dataset.rebuilding = '1';
+    // What has focus in the strip, so it can be given back to the same control
+    // once the strip is rebuilt: a tab by its path, Rename or Close by the
+    // notebook they belong to.
+    const focused = document.activeElement && strip.contains(document.activeElement) ? document.activeElement : null;
+    const focusedGroup = focused ? focused.closest('.osa-nb-tab') : null;
+    const focusedPath = focusedGroup ? (focusedGroup.querySelector('.osa-nb-tab-label') || {}).dataset?.path : undefined;
+    const focusedAction = focused && focused.classList.contains('osa-nb-action')
+      ? (focused.classList.contains('osa-nb-rename-btn') ? 'osa-nb-rename-btn' : 'osa-nb-close-btn')
+      : null;
+    strip.textContent = '';
+    open.forEach((item) => {
+      const selected = item.path === notebookEmbed.tabs.active;
+      const group = document.createElement('div');
+      group.className = `osa-nb-tab${selected ? ' osa-nb-tab-on' : ''}`;
+      if (notebookEmbed.renaming === item.path) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'osa-nb-rename';
+        input.value = notebookEmbed.renameDraft || item.title;
+        input.setAttribute('aria-label', 'Notebook name');
+        input.maxLength = 64;
+        let finished = false;
+        const finish = (commit) => {
+          if (finished) return;
+          finished = true;
+          notebookEmbed.renaming = null;
+          const title = input.value.trim();
+          notebookEmbed.renameDraft = '';
+          if (commit && title !== '' && title !== item.title) {
+            sendNotebookRequest('rename-notebook', { path: item.path, title }, (result) => {
+              if (!result.ok) console.warn(`[OSA] The notebook was not renamed: ${result.error}`);
+              else if (notebookEmbed.import && notebookEmbed.import.path === item.path && result.path) {
+                notebookEmbed.import.path = result.path;
+              }
+            });
+          }
+          renderNotebookTabs(container);
+        };
+        input.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            finish(true);
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            finish(false);
+          }
+        });
+        // Not while the strip is rebuilt around it: removing a focused input blurs it.
+        input.addEventListener('blur', () => {
+          if (!input.dataset.rebuilding) finish(true);
+        });
+        group.appendChild(input);
+        strip.appendChild(group);
+        if (hadFocus) input.focus();
+        return;
+      }
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'osa-nb-tab-label';
+      if (selected) tab.setAttribute('aria-current', 'true');
+      tab.title = item.title;
+      tab.textContent = item.title;
+      tab.dataset.path = item.path;
+      tab.addEventListener('click', () => {
+        if (!selected) sendNotebookRequest('open-notebook', { path: item.path });
+      });
+      tab.addEventListener('keydown', (event) => {
+        const tabs = [...strip.querySelectorAll('.osa-nb-tab-label')];
+        const at = tabs.indexOf(tab);
+        const target = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: tabs.length - 1 }[event.key];
+        if (target === undefined || tabs.length === 0) return;
+        event.preventDefault();
+        const next = tabs[(target + tabs.length) % tabs.length];
+        next.focus();
+      });
+      group.appendChild(tab);
+      if (selected && item.kind !== 'playground') {
+        const rename = document.createElement('button');
+        rename.type = 'button';
+        rename.className = 'osa-nb-action osa-nb-rename-btn';
+        rename.setAttribute('aria-label', `Rename ${item.title}`);
+        rename.innerHTML = NOTEBOOK_ICONS.pencil;
+        rename.addEventListener('click', () => {
+          notebookEmbed.renaming = item.path;
+          notebookEmbed.renameDraft = item.title;
+          renderNotebookTabs(container);
+          const input = container.querySelector('.osa-nb-rename');
+          if (input) {
+            input.focus();
+            input.select();
+          }
+        });
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'osa-nb-action osa-nb-close-btn';
+        close.setAttribute('aria-label', `Close ${item.title}`);
+        close.innerHTML = NOTEBOOK_ICONS.close;
+        close.addEventListener('click', () => {
+          sendNotebookRequest('close-notebook', { path: item.path });
+        });
+        group.append(rename, close);
+      }
+      strip.appendChild(group);
+    });
+
+    // Focus goes back where it was. A control that is gone (its notebook was
+    // closed or renamed, or its Rename and Close went with the selection) hands
+    // it to the tab of the same notebook, or else to the notebook now on screen.
+    if (focused && !strip.contains(document.activeElement)) {
+      const labels = [...strip.querySelectorAll('.osa-nb-tab-label')];
+      const byPath = labels.find((label) => label.dataset.path === focusedPath);
+      const action = focusedAction && byPath ? byPath.closest('.osa-nb-tab').querySelector(`.${focusedAction}`) : null;
+      const next = action || byPath || labels.find((label) => label.hasAttribute('aria-current')) || labels[0];
+      if (next) {
+        next.focus();
+      }
+    }
+
+    add.setAttribute('aria-expanded', notebookEmbed.menuOpen ? 'true' : 'false');
+    menu.hidden = !notebookEmbed.menuOpen;
+    // The same goes for the menu: a list that arrives while an entry has focus
+    // gives focus to the entry at that place in the rebuilt menu.
+    const focusedEntry = [...menu.querySelectorAll('.osa-nb-menu-item')].indexOf(document.activeElement);
+    menu.textContent = '';
+    const entry = (label, onClick) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'osa-nb-menu-item';
+      button.setAttribute('role', 'menuitem');
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        closeNotebookMenu(container, true);
+        onClick();
+      });
+      menu.appendChild(button);
+    };
+    entry('Blank notebook', () => { sendNotebookRequest('new-notebook', {}); });
+    if (closed.length > 0) {
+      const heading = document.createElement('div');
+      heading.className = 'osa-nb-menu-heading';
+      heading.setAttribute('role', 'presentation');
+      heading.textContent = 'Reopen';
+      menu.appendChild(heading);
+      for (const item of closed) {
+        entry(item.title, () => { sendNotebookRequest('open-notebook', { path: item.path }); });
+      }
+    }
+    if (focusedEntry >= 0 && notebookEmbed.menuOpen) {
+      const entries = menu.querySelectorAll('.osa-nb-menu-item');
+      entries[Math.min(focusedEntry, entries.length - 1)].focus();
+    }
+  }
+
+  function closeNotebookMenu(container, restoreFocus = false) {
+    if (!notebookEmbed.menuOpen) return;
+    notebookEmbed.menuOpen = false;
+    renderNotebookTabs(container);
+    if (restoreFocus) container.querySelector('.osa-nb-add')?.focus();
+  }
+
+  // The strip's "+" button and its menu: opens on click, closes on Escape, on a
+  // click anywhere else in the widget, and when an entry is chosen.
+  function wireNotebookTabs(view) {
+    const add = view.querySelector('.osa-nb-add');
+    const menu = view.querySelector('.osa-nb-menu');
+    add.addEventListener('click', () => {
+      const container = view.closest('.osa-chat-widget');
+      if (!container) return;
+      notebookEmbed.menuOpen = !notebookEmbed.menuOpen;
+      renderNotebookTabs(container);
+      if (notebookEmbed.menuOpen) menu.querySelector('.osa-nb-menu-item')?.focus();
+    });
+    view.addEventListener('keydown', (event) => {
+      const container = view.closest('.osa-chat-widget');
+      if (!container || !notebookEmbed.menuOpen) return;
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        closeNotebookMenu(container, true);
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const items = [...menu.querySelectorAll('.osa-nb-menu-item')];
+        const at = items.indexOf(document.activeElement);
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        if (items.length > 0) {
+          event.preventDefault();
+          items[(at + step + items.length) % items.length].focus();
+        }
+      }
+    });
+    view.addEventListener('click', (event) => {
+      const container = view.closest('.osa-chat-widget');
+      if (container && notebookEmbed.menuOpen && !event.target.closest('.osa-nb-add, .osa-nb-menu')) {
+        closeNotebookMenu(container);
+      }
+    });
+    // Focus moving to something else in the widget closes the menu (Tab away).
+    // A target of null is no evidence: some browsers do not focus a button on
+    // click, so that case is left to the click handler above.
+    view.addEventListener('focusout', (event) => {
+      const container = view.closest('.osa-chat-widget');
+      const to = event.relatedTarget;
+      if (container && notebookEmbed.menuOpen && to && !to.closest('.osa-nb-add, .osa-nb-menu')) {
+        closeNotebookMenu(container);
+      }
+    });
+    // A click in the cross-origin frame is no event the widget can see, but it
+    // moves focus there and so blurs this window.
+    window.addEventListener('blur', () => {
+      const container = view.closest('.osa-chat-widget');
+      // An entry that has focus when the window loses it would be removed with
+      // the menu; focus goes to the "+" button instead. A click into the frame
+      // leaves focus on the frame, which this must not take back.
+      if (container && notebookEmbed.menuOpen) closeNotebookMenu(container, menu.contains(document.activeElement));
+    });
   }
 
   // The notebook tab's header line and its loading and fallback overlays.
@@ -3716,6 +7601,12 @@
     view.className = 'osa-view osa-view-notebook osa-view-off';
     view.setAttribute('inert', '');
     view.innerHTML = `
+      <div class="osa-nb-bar" hidden>
+        <div class="osa-nb-strip" role="group" aria-label="Notebooks"></div>
+        <button type="button" class="osa-nb-add" aria-label="New notebook" aria-haspopup="menu" aria-expanded="false">${NOTEBOOK_ICONS.plus}</button>
+        <div class="osa-nb-menu" role="menu" aria-label="New notebook" hidden></div>
+      </div>
+      <div class="osa-notebook-banner" role="status" hidden></div>
       <div class="osa-notebook-overlay osa-notebook-loading osa-overlay-hidden" role="status">
         <div class="osa-notebook-overlay-title">Opening the notebook</div>
         <div class="osa-notebook-bar-track"><div class="osa-notebook-bar"></div></div>
@@ -3728,13 +7619,19 @@
           <button type="button" class="osa-notebook-retry">Try again</button>
           <a class="osa-notebook-open-tab" target="_blank" rel="noopener">Open in a new tab</a>
         </div>
-      </div>`;
+      </div>
+      <span class="osa-nb-guard" data-osa-guard tabindex="-1"></span>`;
+    wireNotebookTabs(view);
+    guardNotebookFrame(view);
     view.querySelector('.osa-notebook-retry').addEventListener('click', () => {
       const container = view.closest('.osa-chat-widget');
       if (!container) return;
       discardNotebookFrame();
       ensureNotebookFrame(container);
       renderLauncherIcons(container);
+      // The fallback, and Try again with it, is gone: in the dialog focus goes to the
+      // selected tab rather than to the inert page.
+      if (hostMode === 'center') focusActiveView(container);
     });
     return view;
   }
@@ -3892,6 +7789,8 @@
       views.remove();
     }
     container.classList.remove('osa-capsule', 'osa-tab-chat', 'osa-tab-notebook');
+    // The dialog's tab row goes back to its markup too: hidden, Chat selected, no panels.
+    syncCenterTabs(container);
   }
 
   // Apply a setDataset(value) call: validates, stores the result (even before the
@@ -3899,6 +7798,7 @@
   // re-renders if the capsule is already there. A different dataset, or one without
   // a Zarr copy any more, takes the notebook tab back to chat; its frame is replaced
   // the next time the tab opens (#470).
+  const DATASET_TITLE_MAX = 200;
   function applySetDataset(value) {
     if (value === null) {
       currentDataset = null;
@@ -3906,6 +7806,16 @@
       if (!isValidDatasetId(value.id)) {
         console.warn('[OSA] setDataset: invalid dataset id, ignoring:', value.id);
         return;
+      }
+      // The dataset's title (E6.1) only completes the center-stage header's line, so a
+      // bad one is dropped alone, as a bad subject or task is.
+      let title;
+      if (value.title !== undefined) {
+        if (typeof value.title === 'string' && value.title.trim() && value.title.trim().length <= DATASET_TITLE_MAX) {
+          title = value.title.trim();
+        } else {
+          console.warn(`[OSA] setDataset: invalid title (a string of 1 to ${DATASET_TITLE_MAX} characters), dropping it:`, value.title);
+        }
       }
       let zarr;
       if (value.zarr === true || value.zarr === false || value.zarr === undefined) {
@@ -3926,7 +7836,7 @@
           console.warn(`[OSA] setDataset: invalid ${fact} label, dropping it:`, value[fact]);
         }
       }
-      currentDataset = { id: value.id, zarr, subject: facts.subject, task: facts.task };
+      currentDataset = { id: value.id, title, zarr, subject: facts.subject, task: facts.task };
     } else {
       console.warn('[OSA] setDataset: invalid value, ignoring:', value);
       return;
@@ -3946,7 +7856,9 @@
     renderNotebookStatus(container);
     renderLauncherIcons(container);
     if (container.querySelector('.osa-suggestions')) renderSuggestions(container);
+    renderCenterStart(container);
     forwardDatasetToPopout();
+    evaluateContextSwitch();
   }
 
   // An open pop-out has no host page of its own to call setDataset, so it is told
@@ -3976,29 +7888,16 @@
     }
   }
 
-  // Copy text to clipboard
-  async function copyToClipboard(text, button) {
-    try {
-      await navigator.clipboard.writeText(text);
-      // Show success feedback
-      const originalHtml = button.innerHTML;
-      button.innerHTML = ICONS.check;
-      button.classList.add('copied');
-      setTimeout(() => {
-        button.innerHTML = originalHtml;
-        button.classList.remove('copied');
-      }, 2000);
-    } catch (e) {
-      console.error('Failed to copy:', e);
-    }
-  }
-
-  // Put text on the clipboard for the Copy button of a run's code (#491): the
-  // Clipboard API first, then, where the page may not use it (an insecure page, a
-  // frame without clipboard-write, a browser that refuses), the older copy
-  // command on a hidden textarea. Resolves true or false; never throws and never
-  // opens a dialog. copyToClipboard above, the chat's own code blocks' and
-  // messages', is left exactly as it was.
+  // BEGIN copy-text. The one way the widget copies text (#491, #665): reply code
+  // blocks, the whole-reply copy, the run card, the run gate and the error reference
+  // all go through copyCodeFromButton. It is a block of its own, between these markers,
+  // so a test can read it out of the shipped source; it uses ICONS, the document and
+  // the navigator, and nothing else of the widget.
+  //
+  // Put text on the clipboard: the Clipboard API first, then, where the page may not
+  // use it (an insecure page, a frame without clipboard-write, a browser that
+  // refuses), the older copy command on a hidden textarea. Resolves true or false;
+  // never throws and never opens a dialog.
   async function writeClipboard(text) {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       try {
@@ -4047,38 +7946,157 @@
   // How long "Copied" shows on a code block's bar.
   const CODE_COPIED_MS = 2000;
 
-  // A code block's Copy (#491): the exact code, never the highlighted page text,
-  // onto the clipboard, and "Copied" beside the button for a moment. Where the
-  // browser allows neither way to copy, the code is opened and selected in place
-  // and the bar names the keys that copy it, since nothing the page can do will.
-  async function copyCodeFromButton(button, code) {
+  // Where a refused "Copy error" selects: a block holding exactly the text the button
+  // promised (the type, the message and the failing line), since the error as drawn
+  // splits those across two places. Built only when the copy is refused (copyCodeFromButton
+  // calls for it then), and kept until the card redraws.
+  function errorFallbackFor(card, text) {
+    let pre = card.querySelector('.osa-run-card-error-fallback');
+    if (!pre) {
+      pre = document.createElement('pre');
+      pre.className = 'osa-execution-output osa-run-card-error-fallback';
+      pre.tabIndex = 0;
+      pre.setAttribute('role', 'group');
+      pre.setAttribute('aria-label', 'The error, to copy');
+      const actions = card.querySelector('.osa-run-card-actions');
+      if (actions) actions.insertAdjacentElement('afterend', pre);
+      else card.appendChild(pre);
+    }
+    pre.textContent = text;
+    return pre;
+  }
+
+  // A reply message's source, to select when the copy is refused: the reply the
+  // button promised ("Copy as markdown"), not the page text as drawn. Built only then,
+  // and kept until the message redraws.
+  function replyFallbackFor(messageEl, text) {
+    let pre = messageEl.querySelector('.osa-message-copy-fallback');
+    if (!pre) {
+      pre = document.createElement('pre');
+      pre.className = 'osa-execution-output osa-message-copy-fallback';
+      pre.tabIndex = 0;
+      pre.setAttribute('role', 'group');
+      pre.setAttribute('aria-label', 'The reply as markdown, to copy');
+      const content = messageEl.querySelector('.osa-message-content');
+      if (content) content.insertAdjacentElement('afterend', pre);
+      else messageEl.appendChild(pre);
+    }
+    pre.textContent = text;
+    return pre;
+  }
+
+  // Where a refused copy says so when the button is not in a run card's code block
+  // (which has a status line of its own): a plain line made when first needed, next to
+  // what was selected: right after the reply's code block for that block's button, after
+  // the message header for the whole reply, inside the error reference for its button.
+  // It is not a live region (a redraw would make the conversation say it again): the
+  // widget's one status announcer says it.
+  function copyNoteFor(home, button) {
+    const pre = button.closest('pre');
+    if (pre && home.contains(pre)) {
+      const next = pre.nextElementSibling;
+      if (next && next.classList.contains('osa-copy-status')) return next;
+      const note = document.createElement('div');
+      note.className = 'osa-copy-status';
+      pre.insertAdjacentElement('afterend', note);
+      return note;
+    }
+    let note = Array.from(home.children).find((child) => child.classList.contains('osa-copy-status'));
+    if (!note) {
+      note = document.createElement(home.classList.contains('osa-error-reference') ? 'span' : 'div');
+      note.className = 'osa-copy-status';
+      const header = home.querySelector('.osa-message-header');
+      if (header) header.insertAdjacentElement('afterend', note);
+      else home.appendChild(note);
+    }
+    return note;
+  }
+
+  // The "Copied" timer of each button, so a second copy inside the wait restarts it
+  // instead of being cut short by the first one's.
+  const copiedTimers = new WeakMap();
+
+  // Copy (#491, #665): the exact text, never the highlighted page text, onto the
+  // clipboard, and "Copied" said twice: on the button, and to a screen reader. A run
+  // card's buttons are worded ("Copy code", "Copy error": data-copy-label) and say
+  // "Copied" in place of their words, and the icon buttons of the gate and of a failed
+  // run's code swap to a check; in a code block both say it in the block's status line
+  // (a live region). Any other icon button (a reply's code block, the whole reply, the
+  // error reference) swaps to a check with "Copied" beside it, and the widget's status
+  // announcer says it. Where the browser allows neither way to copy, the text is
+  // selected in place and a line names the keys that copy it, since nothing the page
+  // can do will: for a run's code, the code is opened first; `selectable` is what to
+  // select instead (an element, or a function that makes one, called only when the copy
+  // is refused).
+  async function copyCodeFromButton(button, code, selectable = null) {
     const block = button.closest('.osa-code-block');
-    const status = block && block.querySelector('.osa-code-status');
+    const blockStatus = block && block.querySelector('.osa-code-status');
+    const widgetEl = button.closest('.osa-chat-widget');
+    const announcer = widgetEl && widgetEl.querySelector('.osa-status-announcer');
+    const home = button.closest('.osa-message, .osa-error-reference');
+    const label = button.getAttribute('data-copy-label');
+    const say = (text) => {
+      const live = blockStatus || announcer;
+      if (!live) return;
+      if (live.textContent !== text) {
+        live.textContent = text;
+        return;
+      }
+      // The same words again (a second copy inside the wait): a live region only speaks a
+      // change, so clear it and set it on the next turn.
+      live.textContent = '';
+      setTimeout(() => { live.textContent = text; }, 0);
+    };
+    const unsay = (text) => {
+      const live = blockStatus || announcer;
+      if (live && live.textContent === text) live.textContent = '';
+    };
+    // A new copy takes away every refusal line this message (or reference) is showing.
+    if (!blockStatus && home) home.querySelectorAll('.osa-copy-status').forEach((note) => { note.textContent = ''; });
     if (await writeClipboard(code)) {
       button.classList.add('copied');
-      button.innerHTML = ICONS.check;
-      if (status) status.textContent = 'Copied';
-      setTimeout(() => {
-        button.classList.remove('copied');
-        button.innerHTML = ICONS.copy;
-        if (status && status.textContent === 'Copied') status.textContent = '';
-      }, CODE_COPIED_MS);
+      if (label) {
+        button.classList.add('osa-run-card-copied');
+        button.textContent = 'Copied';
+      } else {
+        button.innerHTML = ICONS.check + (block ? '' : '<span class="osa-copied-text">Copied</span>');
+      }
+      say('Copied');
+      clearTimeout(copiedTimers.get(button));
+      copiedTimers.set(button, setTimeout(() => {
+        copiedTimers.delete(button);
+        button.classList.remove('copied', 'osa-run-card-copied');
+        if (label) button.textContent = label;
+        else button.innerHTML = ICONS.copy;
+        unsay('Copied');
+      }, CODE_COPIED_MS));
       return true;
     }
-    if (block && block.tagName === 'DETAILS') block.open = true;
-    const codeElement = block && block.querySelector('pre code');
+    const toggle = block && block.querySelector('.osa-run-card-code-toggle');
+    if (!selectable && toggle && toggle.getAttribute('aria-expanded') !== 'true') toggle.click();
+    const enclosingPre = button.closest('pre');
+    const codeElement = (typeof selectable === 'function' ? selectable() : selectable) ||
+      (block && block.querySelector('pre code')) ||
+      (enclosingPre && enclosingPre.querySelector('code'));
+    let selected = false;
     if (codeElement && typeof window.getSelection === 'function') {
       const selection = window.getSelection();
       const range = document.createRange();
       range.selectNodeContents(codeElement);
       selection.removeAllRanges();
       selection.addRange(range);
+      selected = true;
     }
-    if (status) {
-      status.textContent = `This page cannot copy for you: the code is selected, so press ${isApplePlatform() ? 'Cmd' : 'Ctrl'}+C`;
-    }
+    const keys = `${isApplePlatform() ? 'Cmd' : 'Ctrl'}+C`;
+    const prompt = selected
+      ? `This page cannot copy for you: the ${selectable || !block ? 'text' : 'code'} is selected, so press ${keys}`
+      : `This page cannot copy for you: select the ${selectable || !block ? 'text' : 'code'} yourself, then press ${keys}`;
+    if (blockStatus) blockStatus.classList.remove('osa-code-status-quiet');
+    else if (home) copyNoteFor(home, button).textContent = prompt;
+    say(prompt);
     return false;
   }
+  // END copy-text
 
   // Hand the reader a file built in the page (#491), as the workspace export
   // does: a Blob's address on a link with `download`, clicked, and the address
@@ -4104,13 +8122,23 @@
     return 'osa-code-' + (++codeBlockId);
   }
 
-  // Render inline markdown (code, bold, italic, links, plain URLs, citation markers)
+  // Render inline markdown (code, bold, italic, links, image references, plain URLs,
+  // citation markers)
   // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
   // When provided, a bare "[1]" (not followed by "(", so it never collides
   // with a real markdown link) whose number is a known marker renders as a
   // superscript link to its source; any other "[n]" is left as plain text.
-  function renderInlineMarkdown(text, citationsByMarker) {
+  // options.figureAbove (#666): true when the reply's message has a run figure, so an
+  // image reference can point to it ("figure above"); otherwise it shows its alt text only.
+  function renderInlineMarkdown(text, citationsByMarker, options) {
     if (!text) return '';
+    const figureAbove = Boolean(options && options.figureAbove);
+
+    // An image reference, "![alt](address)": the address may hold one level of balanced
+    // parentheses ("y_(1).png"). A link whose text holds image references is the linked
+    // badge "[![alt](img)](link)"; its text may hold plain characters and those references.
+    const IMAGE_REFERENCE = /!\[([^\]]*)\]\(((?:[^()]|\([^()]*\))+)\)/;
+    const LINK_WITH_IMAGES = /\[((?:[^\[\]]|!\[[^\]]*\]\((?:[^()]|\([^()]*\))+\))+)\]\(([^)]+)\)/;
 
     // Code spans are lifted out before anything else is matched, so what is inside
     // one is never read as markup and an italic, bold or link match that starts
@@ -4125,7 +8153,7 @@
     const spanOpen = String.fromCharCode(0xE000);
     const spanClose = String.fromCharCode(0xE001);
     const placeholder = new RegExp(spanOpen + '(\\d+)' + spanClose, 'g');
-    let remaining = String(text)
+    const lifted = String(text)
       .split(spanOpen).join(String.fromCharCode(0xFFFD))
       .split(spanClose).join(String.fromCharCode(0xFFFD))
       .replace(/`([^`]+)`/g, (match, code) => {
@@ -4135,88 +8163,143 @@
     const withRawCode = (raw) => raw.replace(placeholder, (match, index) => '`' + codeSpans[index] + '`');
     const escapeRun = (raw) => escapeHtml(raw).replace(placeholder, (match, index) => '<code>' + escapeHtml(codeSpans[index]) + '</code>');
 
-    let result = '';
+    // One run of text, rendered. Bold and italic render their content through this
+    // again (#666), so a link, a code span or an image reference inside them renders
+    // too; the code spans are the ones lifted above, and every href goes through
+    // isSafeUrl wherever it is written.
+    // An image reference: a span, escaped, never an img and never the address. The pointer to
+    // the run's figure is added only where `withHint` (not inside a link, where it would
+    // read as part of the link).
+    const imageReference = (rawAlt, withHint) => {
+      const alt = escapeRun(rawAlt.trim());
+      const hint = withHint && figureAbove
+        ? '<span class="osa-image-hint">' + (alt ? ' (see the figure above)' : '(see the figure above)') + '</span>'
+        : '';
+      return alt || hint ? '<span class="osa-image-reference">' + alt + hint + '</span>' : '';
+    };
 
-    while (remaining.length > 0) {
-      const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
-      const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
-      const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
-      const urlMatch = remaining.match(/(?<!\]\()(https?:\/\/[^\s\)]+)/);
-      let citationMatch = null;
-      if (citationsByMarker) {
-        // Scan every bracketed number, not just the first: prose of its own
-        // like "see item [42]" must not hide a real marker later in the same
-        // run. Matching only the first would leave that marker unlinked, and
-        // if nothing else matched either, the rest of the run would be
-        // emitted as plain text and the loop would exit.
-        for (const candidate of remaining.matchAll(/\[(\d+)\](?!\()/g)) {
-          if (citationsByMarker[candidate[1]]) {
-            citationMatch = candidate;
-            break;
+    // A link's text, which may hold image references (a badge that is a link):
+    // "[![badge](https://img/b.svg)](https://link)". Each reference becomes its alt text;
+    // the rest is escaped as it always was.
+    const renderLinkText = (linkText) => {
+      let html = '';
+      let last = 0;
+      for (const image of linkText.matchAll(new RegExp(IMAGE_REFERENCE.source, 'g'))) {
+        html += escapeRun(linkText.substring(last, image.index)) + imageReference(image[1], false);
+        last = image.index + image[0].length;
+      }
+      return html + escapeRun(linkText.substring(last));
+    };
+
+    const renderRun = (run) => {
+      let remaining = run;
+      let result = '';
+
+      while (remaining.length > 0) {
+        const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
+        const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
+        const imageMatch = remaining.match(IMAGE_REFERENCE);
+        const linkMatch = remaining.match(LINK_WITH_IMAGES);
+        const urlMatch = remaining.match(/(?<!\]\()(https?:\/\/[^\s\)]+)/);
+        let citationMatch = null;
+        if (citationsByMarker) {
+          // Scan every bracketed number, not just the first: prose of its own
+          // like "see item [42]" must not hide a real marker later in the same
+          // run. Matching only the first would leave that marker unlinked, and
+          // if nothing else matched either, the rest of the run would be
+          // emitted as plain text and the loop would exit.
+          for (const candidate of remaining.matchAll(/\[(\d+)\](?!\()/g)) {
+            if (citationsByMarker[candidate[1]]) {
+              citationMatch = candidate;
+              break;
+            }
           }
         }
-      }
 
-      const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
-      const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
-      const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
-      const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
-      const citationIndex = citationMatch ? citationMatch.index : -1;
+        const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
+        const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
+        const imageIndex = imageMatch ? remaining.indexOf(imageMatch[0]) : -1;
+        const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
+        const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
+        const citationIndex = citationMatch ? citationMatch.index : -1;
 
-      const indices = [boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
-      if (indices.length === 0) {
-        result += escapeRun(remaining);
-        break;
-      }
-      const minIndex = Math.min(...indices);
-
-      if (minIndex === boldIndex && boldMatch) {
-        if (boldIndex > 0) result += escapeRun(remaining.substring(0, boldIndex));
-        result += '<strong>' + escapeRun(boldMatch[1]) + '</strong>';
-        remaining = remaining.substring(boldIndex + boldMatch[0].length);
-      } else if (minIndex === italicIndex && italicMatch) {
-        if (italicIndex > 0) result += escapeRun(remaining.substring(0, italicIndex));
-        result += '<em>' + escapeRun(italicMatch[1]) + '</em>';
-        remaining = remaining.substring(italicIndex + italicMatch[0].length);
-      } else if (minIndex === linkIndex && linkMatch) {
-        if (linkIndex > 0) result += escapeRun(remaining.substring(0, linkIndex));
-        // Validate URL to prevent javascript: XSS
-        const linkUrl = withRawCode(linkMatch[2]);
-        if (isSafeUrl(linkUrl)) {
-          result += '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeRun(linkMatch[1]) + '</a>';
-        } else {
-          result += escapeRun(linkMatch[1]); // Just show text, no link
+        const indices = [boldIndex, italicIndex, imageIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
+        if (indices.length === 0) {
+          result += escapeRun(remaining);
+          break;
         }
-        remaining = remaining.substring(linkIndex + linkMatch[0].length);
-      } else if (minIndex === urlIndex && urlMatch) {
-        if (urlIndex > 0) result += escapeRun(remaining.substring(0, urlIndex));
-        // Plain URLs are already validated by regex to start with https?://
-        const plainUrl = withRawCode(urlMatch[0]);
-        result += '<a href="' + escapeHtml(plainUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(plainUrl) + '</a>';
-        remaining = remaining.substring(urlIndex + urlMatch[0].length);
-      } else if (minIndex === citationIndex && citationMatch) {
-        if (citationIndex > 0) result += escapeRun(remaining.substring(0, citationIndex));
-        const citation = citationsByMarker[citationMatch[1]];
-        const label = escapeHtml(citationMatch[1]);
-        if (isSafeUrl(citation.source)) {
-          // Every attribute value here is escaped inline rather than via a
-          // pre-escaped local, so the "attribute values go through escapeHtml"
-          // check in tests/test_frontend/test_widget_drift.py can stay literal.
-          result += '<sup class="osa-citation"><a href="' + escapeHtml(citation.source) +
-            '" target="_blank" rel="noopener noreferrer" title="' +
-            escapeHtml(citation.cited_text || citation.title || '') + '">[' + label + ']</a></sup>';
-        } else {
-          result += '<sup class="osa-citation">[' + label + ']</sup>';
-        }
-        remaining = remaining.substring(citationIndex + citationMatch[0].length);
-      }
-    }
+        const minIndex = Math.min(...indices);
 
-    return result;
+        if (minIndex === boldIndex && boldMatch) {
+          if (boldIndex > 0) result += escapeRun(remaining.substring(0, boldIndex));
+          result += '<strong>' + renderRun(boldMatch[1]) + '</strong>';
+          remaining = remaining.substring(boldIndex + boldMatch[0].length);
+        } else if (minIndex === italicIndex && italicMatch) {
+          if (italicIndex > 0) result += escapeRun(remaining.substring(0, italicIndex));
+          result += '<em>' + renderRun(italicMatch[1]) + '</em>';
+          remaining = remaining.substring(italicIndex + italicMatch[0].length);
+        } else if (minIndex === imageIndex && imageMatch) {
+          if (imageIndex > 0) result += escapeRun(remaining.substring(0, imageIndex));
+          // The widget never loads an image a reply names: a model-written address is
+          // somebody else's server. The alt text stands in, with a pointer to the run's own
+          // figure when the message has one.
+          result += imageReference(imageMatch[1], true);
+          remaining = remaining.substring(imageIndex + imageMatch[0].length);
+        } else if (minIndex === linkIndex && linkMatch && linkIndex > 0 && remaining[linkIndex - 1] === '!') {
+          // An image reference IMAGE_REFERENCE could not parse (an address nested deeper than
+          // one level of parentheses): still never a link and never a "!". Drop the "!", show
+          // the alt text, and skip the whole address by balancing its parentheses.
+          result += escapeRun(remaining.substring(0, linkIndex - 1));
+          result += imageReference(linkMatch[1], true);
+          let end = linkIndex + linkMatch[0].length;
+          let depth = 1;
+          for (let i = linkIndex + linkMatch[1].length + 3; i < remaining.length; i++) {
+            if (remaining[i] === '(') depth++;
+            else if (remaining[i] === ')' && --depth === 0) { end = i + 1; break; }
+          }
+          remaining = remaining.substring(end);
+        } else if (minIndex === linkIndex && linkMatch) {
+          if (linkIndex > 0) result += escapeRun(remaining.substring(0, linkIndex));
+          // Validate URL to prevent javascript: XSS
+          const linkUrl = withRawCode(linkMatch[2]);
+          if (isSafeUrl(linkUrl)) {
+            result += '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer">' + renderLinkText(linkMatch[1]) + '</a>';
+          } else {
+            result += renderLinkText(linkMatch[1]); // Just show text, no link
+          }
+          remaining = remaining.substring(linkIndex + linkMatch[0].length);
+        } else if (minIndex === urlIndex && urlMatch) {
+          if (urlIndex > 0) result += escapeRun(remaining.substring(0, urlIndex));
+          // Plain URLs are already validated by regex to start with https?://
+          const plainUrl = withRawCode(urlMatch[0]);
+          result += '<a href="' + escapeHtml(plainUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(plainUrl) + '</a>';
+          remaining = remaining.substring(urlIndex + urlMatch[0].length);
+        } else if (minIndex === citationIndex && citationMatch) {
+          if (citationIndex > 0) result += escapeRun(remaining.substring(0, citationIndex));
+          const citation = citationsByMarker[citationMatch[1]];
+          const label = escapeHtml(citationMatch[1]);
+          if (isSafeUrl(citation.source)) {
+            // Every attribute value here is escaped inline rather than via a
+            // pre-escaped local, so the "attribute values go through escapeHtml"
+            // check in tests/test_frontend/test_widget_drift.py can stay literal.
+            result += '<sup class="osa-citation"><a href="' + escapeHtml(citation.source) +
+              '" target="_blank" rel="noopener noreferrer" title="' +
+              escapeHtml(citation.cited_text || citation.title || '') + '">[' + label + ']</a></sup>';
+          } else {
+            result += '<sup class="osa-citation">[' + label + ']</sup>';
+          }
+          remaining = remaining.substring(citationIndex + citationMatch[0].length);
+        }
+      }
+
+      return result;
+    };
+
+    return renderRun(lifted);
   }
 
   // Full markdown to HTML converter
-  function markdownToHtml(text, citationsByMarker) {
+  function markdownToHtml(text, citationsByMarker, options) {
     if (!text) return '';
 
     const lines = text.split('\n');
@@ -4246,7 +8329,7 @@
           const tag = idx === 0 ? 'th' : 'td';
           tableHtml += '<tr>';
           cells.forEach(cell => {
-            tableHtml += '<' + tag + '>' + renderInlineMarkdown(cell.trim(), citationsByMarker) + '</' + tag + '>';
+            tableHtml += '<' + tag + '>' + renderInlineMarkdown(cell.trim(), citationsByMarker, options) + '</' + tag + '>';
           });
           tableHtml += '</tr>';
         });
@@ -4265,7 +8348,7 @@
         if (inCodeBlock) {
           const codeContent = codeBlockContent.join('\n');
           const blockId = getCodeBlockId();
-          result += '<pre data-code-id="' + blockId + '"><button class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
+          result += '<pre data-code-id="' + blockId + '"><button type="button" class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code" aria-label="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
           codeBlockContent = [];
           inCodeBlock = false;
         } else {
@@ -4304,7 +8387,7 @@
       if (headerMatch) {
         flushList();
         const level = headerMatch[1].length;
-        result += '<h' + level + '>' + renderInlineMarkdown(headerMatch[2], citationsByMarker) + '</h' + level + '>';
+        result += '<h' + level + '>' + renderInlineMarkdown(headerMatch[2], citationsByMarker, options) + '</h' + level + '>';
         continue;
       }
 
@@ -4315,7 +8398,7 @@
       if (bulletMatch) {
         if (currentListType !== 'ul') flushList();
         currentListType = 'ul';
-        currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1], citationsByMarker) + '</li>');
+        currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1], citationsByMarker, options) + '</li>');
         continue;
       }
 
@@ -4324,14 +8407,14 @@
       if (numberedMatch) {
         if (currentListType !== 'ol') flushList();
         currentListType = 'ol';
-        currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1], citationsByMarker) + '</li>');
+        currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1], citationsByMarker, options) + '</li>');
         continue;
       }
 
       flushList();
 
       if (line.trim()) {
-        result += '<p>' + renderInlineMarkdown(line, citationsByMarker) + '</p>';
+        result += '<p>' + renderInlineMarkdown(line, citationsByMarker, options) + '</p>';
       }
     }
 
@@ -4341,7 +8424,7 @@
     if (inCodeBlock && codeBlockContent.length > 0) {
       const codeContent = codeBlockContent.join('\n');
       const blockId = getCodeBlockId();
-      result += '<pre data-code-id="' + blockId + '"><button class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
+      result += '<pre data-code-id="' + blockId + '"><button type="button" class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code" aria-label="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
     }
 
     // Nothing rendered (a reply that is only an opening fence): the text still goes into
@@ -4365,16 +8448,23 @@
   function normalizePersistedMessage(msg) {
     if (!isValidMessage(msg)) return null;
     if (msg.role !== 'assistant') {
-      const { dataset, ...rest } = msg;
+      // `seeded` is the mark of an assistant message only.
+      const { dataset, seeded, ...rest } = msg;
       return isValidDatasetId(dataset) ? { ...rest, dataset } : rest;
     }
     // The cut-off mark is kept only as the boolean the widget writes, and the server's
     // words for it only as a bounded string.
-    const { cutOff, cutOffMessage, usage, ...rest } = msg;
+    const { cutOff, cutOffMessage, usage, handover, mode, _handoverOpen, plan, seeded, ...rest } = msg;
+    const storedPlan = normalizePersistedPlan(plan);
     const cleanedUsage = cleanUsage(usage);
+    const cleanedHandover = normalizeHandover(handover);
+    const cleanedMode = normalizeReplyMode(mode);
     return {
       ...rest,
+      ...(seeded === true ? { seeded: true } : {}),
       ...(cleanedUsage ? { usage: cleanedUsage } : {}),
+      ...(cleanedHandover ? { handover: cleanedHandover } : {}),
+      ...(cleanedMode ? { mode: cleanedMode } : {}),
       ...(cutOff === true ? { cutOff: true } : {}),
       ...(cutOff === true && typeof cutOffMessage === 'string' && cutOffMessage
         ? { cutOffMessage: cutOffMessage.slice(0, CUT_OFF_MESSAGE_LIMIT) }
@@ -4387,31 +8477,60 @@
           && typeof citation.source === 'string')
         : [],
       executions: normalizePersistedExecutions(msg.executions),
+      ...(storedPlan ? { plan: storedPlan } : {}),
     };
   }
 
   // A reply's browser runs, as stored: the fields executionRecord writes, as
-  // strings, bounded, and never images (see executionRecord).
+  // strings, bounded, and never images (see executionRecord). How many figures the
+  // run drew is kept, as `figureCount` (only when there were some), so a restored
+  // chat knows to read them back from the workspace (hydrateFigures).
   function normalizePersistedExecutions(executions) {
     if (!Array.isArray(executions)) return [];
     return executions
       .filter((run) => run && typeof run === 'object' && !Array.isArray(run))
       .slice(0, MAX_BROWSER_RUNS_PER_REPLY)
-      .map((run) => ({
-        callId: clipField(run.callId, 'callId'),
-        tool: clipField(run.tool, 'tool'),
-        description: clipField(run.description, 'description'),
-        code: clipField(run.code, 'code'),
-        status: clipField(run.status, 'status'),
-        stdout: clipField(run.stdout, 'stdout'),
-        stderr: clipField(run.stderr, 'stderr'),
-        images: [],
-        // Whether the READER ran this themselves (runLocal), not the
-        // assistant: always a real boolean, never left undefined, so a run
-        // read back from storage renders identically to one just produced.
-        local: run.local === true,
-        workspaceNote: clipField(run.workspaceNote, 'workspaceNote'),
-      }));
+      .map((run) => {
+        const figureCount = normalizeFigureCount(run.figureCount);
+        const heapMb = normalizeHeapMb(run.heapMb);
+        return {
+          callId: clipField(run.callId, 'callId'),
+          tool: clipField(run.tool, 'tool'),
+          description: clipField(run.description, 'description'),
+          code: clipField(run.code, 'code'),
+          status: clipField(run.status, 'status'),
+          stdout: clipField(run.stdout, 'stdout'),
+          stderr: clipField(run.stderr, 'stderr'),
+          traceback: clipField(run.traceback, 'traceback'),
+          images: [],
+          ...(figureCount > 0 ? { figureCount } : {}),
+          // Whether the READER ran this themselves (runLocal), not the
+          // assistant: always a real boolean, never left undefined, so a run
+          // read back from storage renders identically to one just produced.
+          local: run.local === true,
+          workspaceNote: clipField(run.workspaceNote, 'workspaceNote'),
+          ...(heapMb ? { heapMb, budgetMb: normalizeMemoryBudget(run.budgetMb) } : {}),
+          ...(heapMb && normalizeHeapMb(run.heapBeforeMb) ? { heapBeforeMb: normalizeHeapMb(run.heapBeforeMb) } : {}),
+          ...normalizePlanRunFields(run),
+        };
+      });
+  }
+
+  // The most figures a run keeps: the server's own cap on a result's images
+  // (MAX_IMAGES in osa-output.js, which the widget cannot import).
+  const MAX_FIGURES_PER_RUN = 3;
+
+  // A stored heap size in MB (E5.1): a whole number from 1 to MAX_HEAP_MB, else null. The
+  // limit is osa-memory.js's MAX_HEAP_MB, which a restored chat needs before the bundle
+  // has loaded; test-widget-memory-budget.js holds the two to each other.
+  const MAX_HEAP_MB = 4096;
+  function normalizeHeapMb(value) {
+    return Number.isInteger(value) && value >= 1 ? Math.min(value, MAX_HEAP_MB) : null;
+  }
+
+  // A stored figure count: a whole number from 0 to MAX_FIGURES_PER_RUN, else 0.
+  function normalizeFigureCount(value) {
+    return Number.isInteger(value) && value > 0 ? Math.min(value, MAX_FIGURES_PER_RUN) : 0;
   }
 
   // Older widget versions persisted citation markers at the stream delta
@@ -4515,57 +8634,107 @@
     return cleaned;
   }
 
-  // Load chat history from localStorage
+  // Load chat history from localStorage: the active conversation becomes the
+  // working copy (`messages`, `sessionId`). Returns whether the stored record
+  // should be written back now (a migration or a repair).
   function loadHistory() {
     let historyLoadFailed = false;
     let historyNeedsSave = false;
+    // Whatever the outcome, no active conversation means an empty working copy.
+    messages = [];
+    sessionId = null;
+    serverConfirmedAt = null;
+    activeConversation = null;
     try {
-      const saved = localStorage.getItem(CONFIG.storageKey);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        // Validate structure to prevent injection attacks
-        let rawMessages;
-        let historyVersion = 0;
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.messages)) {
-          // Stored format: { version, messages, sessionId }
-          rawMessages = parsed.messages;
-          sessionId = parsed.sessionId || null;
-          historyVersion = Number.isInteger(parsed.version) ? parsed.version : 0;
-        } else if (Array.isArray(parsed)) {
-          // Legacy format: just messages array (backward compatible)
-          rawMessages = parsed;
-          sessionId = null;
+      const { read: result } = readStoredHistoryRecord();
+      if (result.kind === 'unreadable') {
+        historyLoadFailed = true;
+        if (result.reason === 'newer') {
+          // Written by a newer widget: leave it exactly as it is.
+          queuePendingNotice('Saved chat history was written by a newer version of this widget, so it was left untouched and this chat will not be saved.');
+        } else {
+          queuePendingNotice(unreadableHistoryNotice());
         }
-        if (rawMessages) {
-          messages = rawMessages.map(normalizePersistedMessage).filter(Boolean);
-          if (messages.length !== rawMessages.length || historyVersion < CHAT_HISTORY_VERSION) {
-            historyNeedsSave = true;
-          }
-          if (historyVersion < CHAT_HISTORY_VERSION) {
-            messages = messages.map((message) => {
-              if (message.role !== 'assistant' || !message.citations.length) return message;
-              const content = migrateLegacyCitationMarkers(message.content, message.citations);
-              if (content === message.content) return message;
-              historyNeedsSave = true;
-              return { ...message, content };
-            });
-          }
-          if (messages.length !== rawMessages.length) {
-            console.warn('Some chat messages were invalid and filtered out');
-          }
+      } else {
+        historyNeedsSave = result.needsSave;
+        const active = result.envelope.conversations.find((c) => c.id === result.envelope.activeId);
+        if (active) {
+          messages = active.messages;
+          sessionId = active.sessionId;
+          activeConversation = { id: active.id, context: active.context, createdAt: active.createdAt };
         }
+        if (result.dropped > 0) console.warn('Some chat messages were invalid and filtered out');
       }
     } catch (e) {
       console.error('Failed to load chat history:', e);
       historyLoadFailed = true;
+      // Storage that cannot be read at all; an unreadable record is reported above.
       queuePendingNotice('Saved chat history is corrupted and could not be loaded.');
     }
     if (messages.length === 0) {
       messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     }
+    if (!activeConversation) beginConversation(null);
     // A read/parse failure must never trigger a write: preserving the
     // existing storage value is safer than replacing it with the greeting.
     return !historyLoadFailed && historyNeedsSave;
+  }
+
+  // The identity of a new, empty working copy.
+  function beginConversation(context) {
+    activeConversation = {
+      id: newConversationId(),
+      context: normalizeConversationContext(context),
+      createdAt: Date.now(),
+    };
+  }
+
+  // Where a copy of a record the widget could not read is kept before the first
+  // save replaces it.
+  function unreadableHistoryKey() {
+    return `${CONFIG.storageKey}-unreadable`;
+  }
+
+  function unreadableHistoryNotice() {
+    return 'Saved chat history is corrupted and could not be loaded. '
+      + `It is left as it is until your next message is saved, then replaced; a copy is kept in browser storage under "${unreadableHistoryKey()}" when there is room.`;
+  }
+
+  // The stored record: {raw, record, read}. `raw` is the stored string (null when
+  // there is none), `record` its parsed JSON, and `read` what readConversationStore
+  // makes of it, the one place that decides what is unreadable. A string that is not
+  // JSON reads as unreadable, reason 'damaged', with a null `record`. A storage that
+  // cannot be read at all throws.
+  function readStoredHistoryRecord() {
+    const raw = localStorage.getItem(CONFIG.storageKey);
+    if (!raw) return { raw: null, record: null, read: readConversationStore(null, Date.now()) };
+    let record;
+    try {
+      record = JSON.parse(raw);
+    } catch {
+      return {
+        raw,
+        record: null,
+        read: { kind: 'unreadable', reason: 'damaged', envelope: null, needsSave: false, dropped: 0 },
+      };
+    }
+    return { raw, record, read: readConversationStore(record, Date.now()) };
+  }
+
+  function isStorageFullError(error) {
+    return !!error && (error.name === 'QuotaExceededError' || error.code === 22 || error.code === 1014);
+  }
+
+  // A notice about what a save cost, for a save the reader did not ask to see: with
+  // the panel open it stays until dismissed; otherwise it is queued for the next
+  // time the panel opens, so it is not timed out unseen.
+  function showStorageNotice(message) {
+    const container = isOpen ? document.querySelector('.osa-chat-widget') : null;
+    if (container) {
+      showError(container, message, { persist: true });
+    } else {
+      queuePendingNotice(message);
+    }
   }
 
   // Save chat history to localStorage
@@ -4583,24 +8752,83 @@
       // a reply's earlier runs (`_usageSoFar`, `_usageRuns`) only means something while the
       // reply is unfinished, so it is dropped too.
       const persistable = messages.map((m) => {
-        const { _feedbackCommitting, _feedbackJustOpened, _responseId, _usageSoFar, _usageRuns, feedbackDraft, ...rest } = m;
+        const { _feedbackCommitting, _feedbackJustOpened, _responseId, _usageSoFar, _usageRuns, _handoverOpen, feedbackDraft, ...rest } = m;
         if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
+        // The plan card's open editor and unsent note are in-page state too.
+        if (rest.plan) {
+          const { _ui, ...plan } = rest.plan;
+          rest.plan = plan;
+        }
         // Figures are shown for the life of the page and not stored. An open
         // "Edit and run" editor, its draft and its live echo, and an opened
-        // code block (#491), are the same kind of transient, in-page-only state
+        // code or output panel (#491), are the same kind of transient, in-page-only state
         // as the feedback flags above: a reload always starts back at the plain
         // recorded view.
         if (Array.isArray(rest.executions)) {
           rest.executions = rest.executions.map((run) => {
-            const { _editing, _draft, _runningLocal, _localResult, _codeOpen, ...keep } = run;
-            return { ...keep, images: [] };
+            const {
+              _editing, _draft, _runningLocal, _localResult, _codeOpen, _panelsOpen,
+              _figuresLoading, _figuresMissing, _figuresUnavailable, figureCount: previousCount, ...keep
+            } = run;
+            // What was drawn is remembered as a count, and the figures themselves are
+            // read back from the workspace (hydrateFigures): with no image in memory
+            // (not read back yet, or not found) the count already stored stands.
+            const shown = Array.isArray(run.images) ? run.images.length : 0;
+            const figureCount = shown > 0 ? normalizeFigureCount(shown) : normalizeFigureCount(previousCount);
+            return { ...keep, images: [], ...(figureCount > 0 ? { figureCount } : {}) };
           });
         }
         return rest;
       });
-      const data = JSON.stringify({ version: CHAT_HISTORY_VERSION, messages: persistable, sessionId });
-      localStorage.setItem(CONFIG.storageKey, data);
+      if (!activeConversation) beginConversation(null);
+      const stored = readStoredHistoryRecord();
+      // The first save over a damaged record keeps a copy of it first. The copy is
+      // best effort: a full storage cannot hold it, and refusing to replace a
+      // record the widget cannot use would stop every save, so then the reader is
+      // told it was not kept and the record is replaced. Any other failure stops
+      // the save, so nothing is overwritten unseen.
+      if (stored.read.kind === 'unreadable' && stored.read.reason === 'damaged') {
+        try {
+          localStorage.setItem(unreadableHistoryKey(), stored.raw);
+        } catch (copyError) {
+          if (!isStorageFullError(copyError)) throw copyError;
+          showStorageNotice('Browser storage was full, so the unreadable saved chat history could not be kept aside before it was replaced.');
+        }
+      }
+      let envelope = mergeActiveConversation(stored.record, {
+        id: activeConversation.id,
+        context: activeConversation.context,
+        createdAt: activeConversation.createdAt,
+        sessionId,
+        messages: persistable,
+      }, Date.now(), [...droppedConversationIds]);
+      if (!envelope) {
+        const newer = new Error('Saved chat history was written by a newer version of this widget');
+        newer.name = 'HistoryVersionError';
+        throw newer;
+      }
+      // A full storage gives up the oldest other conversation and tries again,
+      // until the active one is all there is.
+      let evicted = 0;
+      for (;;) {
+        try {
+          localStorage.setItem(CONFIG.storageKey, JSON.stringify(envelope));
+          break;
+        } catch (writeError) {
+          const smaller = isStorageFullError(writeError) ? evictOldestInactive(envelope) : null;
+          if (!smaller) throw writeError;
+          envelope = smaller;
+          evicted += 1;
+        }
+      }
+      droppedConversationIds.clear();
       saveErrorShown = false;
+      if (evicted > 0) {
+        // The chat is saved, but the reader should know what it cost.
+        showStorageNotice(evicted === 1
+          ? 'Browser storage was full, so the oldest saved conversation was removed to keep this one.'
+          : `Browser storage was full, so the ${evicted} oldest saved conversations were removed to keep this one.`);
+      }
     } catch (e) {
       console.error('[OSA] localStorage save failed:', {
         errorName: e.name,
@@ -4614,7 +8842,9 @@
       const isQuotaError = e.name === 'QuotaExceededError';
       const isSecurityError = e.name === 'SecurityError';
 
-      if (isQuotaError) {
+      if (e.name === 'HistoryVersionError') {
+        errorMsg = 'Saved chat history is from a newer widget version, so this chat is not being saved.';
+      } else if (isQuotaError) {
         errorMsg = 'Storage full - conversation NOT saved. Clear browser data or export chat.';
       } else if (isSecurityError) {
         errorMsg = 'Browser privacy settings prevent saving. Enable local storage.';
@@ -4634,14 +8864,1866 @@
     }
   }
 
-  // Get page context (URL, title, and widget instructions) for contextual answers
-  function getPageContext() {
+  // The saved conversations as the store has them now (a second tab or the pop-out
+  // may have added or dropped some), newest first; [] when there is no usable
+  // record.
+  function readStoredConversations() {
+    try {
+      const result = readStoredHistoryRecord().read;
+      return result.kind === 'v3' ? result.envelope.conversations : [];
+    } catch (e) {
+      console.error('[OSA] Failed to read saved conversations:', e);
+      return [];
+    }
+  }
+
+  // Whether the save went through; saveHistory has already shown the reason on
+  // screen when it did not.
+  function saveHistoryQuietly(what) {
+    try {
+      saveHistory();
+      return true;
+    } catch (saveError) {
+      console.error(`[OSA] Failed to save history on ${what}:`, saveError);
+      return false;
+    }
+  }
+
+  // Commit an open thumbs-down comment on the conversation about to leave the
+  // screen, as resetChat does, so a swap never silently drops the vote.
+  function flushFeedbackBeforeSwap() {
+    const container = document.querySelector('.osa-chat-widget');
+    if (container) flushPendingResponseFeedback(container);
+  }
+
+  // Take the active conversation out of the way before another becomes active:
+  // kept, as it stands, when the reader said something in it or the page seeded it,
+  // and gone when it is only the greeting.
+  function retireActiveConversation() {
+    if (!activeConversation) return;
+    flushFeedbackBeforeSwap();
+    if (hasContent({ messages })) {
+      saveHistoryQuietly('leaving a conversation');
+    } else {
+      droppedConversationIds.add(activeConversation.id);
+    }
+  }
+
+  function greetingMessages() {
+    return [{ role: 'assistant', content: CONFIG.initialMessage }];
+  }
+
+  // Whether the chat is the empty one: only the greeting. A reply the page seeded
+  // (seed(), #730) is the chat's one message and still a chat with something in it.
+  function chatIsEmpty() {
+    return messages.length <= 1 && !messages.some(isSeededMessage);
+  }
+
+  // The conversations the widget can offer, newest first: {id, context, title,
+  // sessionId, createdAt, updatedAt, messages, active}. This is the whole store
+  // API the History panel (E1.4) and the context switch (E1.3) build on, along
+  // with startConversation, activateConversation and deleteConversation: none of
+  // them draws anything, and the caller re-renders after them.
+  function listConversations() {
+    const stored = readStoredConversations();
+    const list = stored.slice();
+    if (activeConversation && !list.some((c) => c.id === activeConversation.id)) {
+      list.push({
+        id: activeConversation.id,
+        context: activeConversation.context,
+        title: conversationTitle(messages),
+        sessionId,
+        createdAt: activeConversation.createdAt,
+        updatedAt: Date.now(),
+        messages: messages.slice(),
+      });
+    }
+    return list
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((c) => ({ ...c, active: !!activeConversation && c.id === activeConversation.id }));
+  }
+
+  // Start a new, empty conversation in the given context (null, {type:'dataset',
+  // id} or {type:'search'}) and make it the active one; the previous one stays
+  // unless it was empty. Returns the new id, or null while a reply is on its way.
+  function startConversation({ context = null } = {}) {
+    if (isLoading) return null;
+    retireActiveConversation();
+    messages = greetingMessages();
+    sessionId = null;
+    serverConfirmedAt = null;
+    beginConversation(context);
+    saveHistoryQuietly('starting a conversation');
+    return activeConversation.id;
+  }
+
+  // Make a saved conversation the active one, its messages and session the
+  // working copy. False when there is no such conversation or a reply is on its
+  // way.
+  function activateConversation(id) {
+    if (isLoading || !isValidConversationId(id)) return false;
+    if (activeConversation && activeConversation.id === id) return true;
+    const target = readStoredConversations().find((c) => c.id === id);
+    if (!target) return false;
+    retireActiveConversation();
+    messages = target.messages.length ? target.messages : greetingMessages();
+    sessionId = target.sessionId;
+    // A conversation opened from History or the resume card is the one most likely to
+    // have outlived its server session: the next request carries it (E1.6).
+    serverConfirmedAt = null;
+    activeConversation = { id: target.id, context: target.context, createdAt: target.createdAt };
+    droppedConversationIds.delete(target.id);
+    saveHistoryQuietly('opening a conversation');
+    hydrateFigures();
+    return true;
+  }
+
+  // Delete a saved conversation. Deleting the active one starts an empty one in
+  // its place, as resetChat does. False when there is no such conversation, or the
+  // active one is mid-reply.
+  function deleteConversation(id) {
+    if (!isValidConversationId(id)) return false;
+    if (activeConversation && activeConversation.id === id) {
+      if (isLoading) return false;
+      flushFeedbackBeforeSwap();
+      droppedConversationIds.add(id);
+      messages = greetingMessages();
+      sessionId = null;
+      serverConfirmedAt = null;
+      beginConversation(null);
+    } else if (readStoredConversations().some((c) => c.id === id)) {
+      droppedConversationIds.add(id);
+    } else {
+      return false;
+    }
+    saveHistoryQuietly('deleting a conversation');
+    return true;
+  }
+
+  // Delete every saved conversation, this browser's whole history, and start an
+  // empty one in place of the active chat. False while a reply is on its way.
+  function clearAllConversations() {
+    if (isLoading) return false;
+    flushFeedbackBeforeSwap();
+    for (const saved of readStoredConversations()) droppedConversationIds.add(saved.id);
+    if (activeConversation) droppedConversationIds.add(activeConversation.id);
+    messages = greetingMessages();
+    sessionId = null;
+    serverConfirmedAt = null;
+    beginConversation(null);
+    welcomeBack = null;
+    pendingSwitch = null;
+    contextMove = null;
+    saveHistoryQuietly('clearing the history');
+    return true;
+  }
+
+  // --- Notebook entry points (E4.3) ---
+  // The ways out of a chat's code (#675, board B1): a quiet card under the last
+  // reply once a run has succeeded, two items in the History row menu, and
+  // "Download code" as .ipynb or .py. The notebook and the script come from the
+  // runtime bundle's buildConversationNotebook (E4.1), so a community with no
+  // runtime has none of this; the import goes through importNotebookToTab (E4.2),
+  // which refuses unless the notebook on screen is the chat's dataset's.
+  // Nothing here puts conversation text in markup: the card is built with
+  // createElement and textContent, and the History items hold only fixed text and
+  // escaped ids.
+
+  const NOTEBOOK_ENTRY_FORMATS = [
+    { id: 'ipynb', label: 'Notebook (.ipynb)' },
+    { id: 'py', label: 'Python script with cells (.py)' }
+  ];
+  const NOTEBOOK_ENTRY_NOTE = 'Opens as cells in VS Code, Spyder and Jupytext.';
+  const NOTEBOOK_ENTRY_MENU_ID = 'osa-nb-entry-menu';
+  const NOTEBOOK_ENTRY_NOTE_ID = 'osa-nb-entry-note';
+
+  // The card's memory, per conversation id, for the life of the page: imports
+  // under way, imports that finished (with the step count they held and the
+  // banner's record of them), the last failure, and which conversation's
+  // "Download code" menu is open. Not persisted: after a reload the card offers
+  // Continue again.
+  const notebookEntry = {
+    importing: new Set(),
+    imported: new Map(),
+    errors: new Map(),
+    menuFor: null
+  };
+
+  // Pure: a conversation's stored runs in message order, without the reading of
+  // output back (get_full_output), which is not analysis.
+  function conversationRuns(conversation) {
+    const runs = [];
+    for (const message of conversation && Array.isArray(conversation.messages) ? conversation.messages : []) {
+      if (!message || !Array.isArray(message.executions)) continue;
+      for (const run of message.executions) {
+        if (run && typeof run === 'object' && run.tool !== FULL_OUTPUT_TOOL) runs.push(run);
+      }
+    }
+    return runs;
+  }
+
+  // Pure: whether any of those runs succeeded and has code, which is what the
+  // builder counts as a step. This must track planCells in osa-notebook-builder.js
+  // (status 'ok' and non-blank code): a drift shows an item the builder then
+  // refuses, which is said as an error, not a wrong notebook.
+  function hasSuccessfulRun(conversation) {
+    return conversationRuns(conversation).some((run) => run.status === 'ok' && typeof run.code === 'string' && run.code.trim() !== '');
+  }
+
+  // Pure: the dataset a conversation was about, or null.
+  function conversationDatasetId(conversation) {
+    const context = conversation && conversation.context;
+    return context && context.type === 'dataset' && isValidDatasetId(context.id) ? context.id : null;
+  }
+
+  // Pure: `on002718-chat.ipynb`, named from the dataset.
+  function codeFileName(datasetId, format) {
+    return `${datasetId}-chat.${format}`;
+  }
+
+  // The active conversation in the shape the builder reads.
+  function activeConversationRecord() {
+    if (!activeConversation) return null;
+    return {
+      id: activeConversation.id,
+      context: activeConversation.context,
+      createdAt: activeConversation.createdAt,
+      title: conversationTitle(messages),
+      messages
+    };
+  }
+
+  // The notebook and the script for a conversation, from the real builder:
+  // {datasetId, title, notebook, script, stats}, or {error} with something to
+  // say. Never throws, so a builder that fails cannot break a render.
+  function buildConversationCode(conversation) {
+    const datasetId = conversationDatasetId(conversation);
+    if (!datasetId) return { error: 'This chat is not about a dataset, so there is no notebook to build from it.' };
+    if (!runtimeApi || typeof runtimeApi.buildConversationNotebook !== 'function') {
+      return { error: 'The notebook builder is not available here.' };
+    }
+    try {
+      const built = runtimeApi.buildConversationNotebook({
+        datasetId,
+        title: conversation.title || '',
+        createdAt: conversation.createdAt,
+        communityName: CONFIG.title,
+        executions: conversationRuns(conversation)
+      });
+      const steps = built && built.stats && built.stats.steps;
+      if (!built || !built.notebook || typeof built.script !== 'string' || !(steps > 0)) {
+        return { error: 'No run in this chat succeeded, so there is no code to take out.' };
+      }
+      return {
+        datasetId,
+        title: conversation.title || `Notebook for ${datasetId}`,
+        notebook: built.notebook,
+        script: built.script,
+        stats: built.stats
+      };
+    } catch (err) {
+      console.warn('[OSA] Could not build the notebook for a chat:', err);
+      return { error: `The notebook could not be built: ${(err && err.message) || err}` };
+    }
+  }
+
+  // The card's build, kept for the last conversation it drew: the card is redrawn
+  // on every message render and every launcher refresh, and the builder parses
+  // every run. The key holds everything the builder reads, so a run added, a
+  // status changed or a title edited builds again; a failure is kept too, so it is
+  // logged once, not on every redraw. Clicks build fresh, not from here.
+  let cardBuild = { key: null, builder: null, built: null };
+
+  function cachedConversationCode(conversation) {
+    const key = JSON.stringify([
+      conversation.id, conversation.title, conversation.createdAt, conversation.context,
+      conversationRuns(conversation).map((run) => [
+        run.status, run.code, run.description, run.stepTitle, run.local === true, run.status === 'error' ? run.stderr : null
+      ])
+    ]);
+    // The builder too: a bundle loaded late, or replaced, is a different builder.
+    const builder = runtimeApi && runtimeApi.buildConversationNotebook;
+    if (cardBuild.key !== key || cardBuild.builder !== builder) {
+      cardBuild = { key, builder, built: buildConversationCode(conversation) };
+    }
+    return cardBuild.built;
+  }
+
+  // Whether the chat's notebook can be continued in the notebook on screen:
+  // `offered` is false for a widget with no notebook tab (nothing to continue
+  // in), and `reason` says why not when it is offered but cannot be done now.
+  function notebookContinueState(datasetId) {
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container || !container.classList.contains('osa-capsule')) return { offered: false, reason: '' };
+    if (!currentDataset || currentDataset.id !== datasetId) {
+      return { offered: true, reason: `Open the ${datasetId} page to continue this chat in a notebook.` };
+    }
+    if (!isNotebookAvailable()) return { offered: true, reason: `The ${datasetId} notebook is not available yet.` };
+    return { offered: true, reason: '' };
+  }
+
+  // Hand the file to the reader, built from the builder's own output.
+  function saveConversationCode(built, format) {
+    const blob = format === 'py'
+      ? new Blob([built.script], { type: 'text/x-python' })
+      : new Blob([`${JSON.stringify(built.notebook, null, 1)}\n`], { type: 'application/x-ipynb+json' });
+    saveFile(blob, codeFileName(built.datasetId, format));
+  }
+
+  // Continue in notebook, for a conversation the caller already built: marks it
+  // importing, imports, and records the outcome for the card. Resolves with the
+  // import's answer; never throws.
+  // `refocus` is true when the reader started it from the card's Continue button
+  // (which is disabled while it waits, so focus leaves it): a failure puts focus
+  // back on the card, on Continue to try again.
+  async function runNotebookImport(conversationId, built, { refocus = false } = {}) {
+    if (notebookEntry.importing.has(conversationId)) return { ok: false, error: 'This chat is already being sent to the notebook.' };
+    const container = document.querySelector('.osa-chat-widget');
+    notebookEntry.importing.add(conversationId);
+    notebookEntry.errors.delete(conversationId);
+    if (container) refreshNotebookEntry(container);
+    let started;
+    try {
+      started = startNotebookImport({
+        datasetId: built.datasetId,
+        title: built.title,
+        notebook: built.notebook,
+        stats: built.stats
+      });
+    } catch (err) {
+      started = { record: null, pending: Promise.resolve({ ok: false, error: (err && err.message) || String(err) }) };
+    }
+    let result;
+    try {
+      result = await started.pending;
+    } catch (err) {
+      result = { ok: false, error: (err && err.message) || String(err) };
+    }
+    notebookEntry.importing.delete(conversationId);
+    const succeeded = !!result && (result.ok || !!result.path);
+    if (succeeded) {
+      // A later import (another chat's) took the banner's record: this one's was
+      // never finished by the page, so what is known of it is the answer's path.
+      const superseded = !started.record || notebookEmbed.import !== started.record;
+      const record = superseded ? { state: 'imported', path: result.path || null } : started.record;
+      notebookEntry.imported.set(conversationId, { datasetId: built.datasetId, steps: built.stats.steps, record });
+    } else {
+      notebookEntry.errors.set(conversationId, {
+        steps: built.stats.steps,
+        text: (result && result.error) || 'The notebook could not be imported.'
+      });
+    }
+    const live = document.querySelector('.osa-chat-widget');
+    if (live) {
+      // Focus is put back only if it is nowhere (the page body, or the card).
+      const active = document.activeElement;
+      const free = !active || active === document.body || live.querySelector('.osa-nb-entry')?.contains(active);
+      if (!succeeded && refocus && free) refreshNotebookEntry(live, { focus: '[data-focus="continue"]', fallbackFocus: '[data-focus="download"]' });
+      else refreshNotebookEntry(live);
+    }
+    return result || { ok: false };
+  }
+
+  // Whether an import is still in the notebook: not undone, and for the dataset on screen.
+  function notebookImportStillThere(imported) {
+    return !!currentDataset && imported.datasetId === currentDataset.id &&
+      !(imported.record && imported.record.state === 'undone');
+  }
+
+  // "Open notebook": the notebook tab, on the notebook the import made.
+  function openImportedNotebook(container, conversationId) {
+    const imported = notebookEntry.imported.get(conversationId);
+    if (!imported) return;
+    setTab(container, 'notebook');
+    if (!isOpen) toggleChat(container);
+    const path = imported.record && imported.record.path;
+    if (path && notebookEmbed.tabs.active !== path) sendNotebookRequest('open-notebook', { path });
+  }
+
+  // The card for the reply at msgIndex, or null: only under the last assistant
+  // reply, once it is whole, when a run succeeded and the builder found a step.
+  function notebookEntryCard(msgIndex) {
+    // Once it is whole: not while a reply that has shown text still has runs to come.
+    if (!runtimeApi || isLoading || currentReply !== null || !activeConversation || msgIndex === revealingIndex) return null;
+    // Scan back from the end and stop at the first assistant reply: O(1) for the
+    // usual transcript, and no array built per rendered message.
+    let lastAssistant = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i] && messages[i].role === 'assistant') { lastAssistant = i; break; }
+    }
+    if (msgIndex !== lastAssistant) return null;
+    const conversation = activeConversationRecord();
+    if (!hasSuccessfulRun(conversation)) return null;
+    const built = cachedConversationCode(conversation);
+    if (built.error) return null;
+    const id = conversation.id;
+    const steps = built.stats.steps;
+    const state = notebookContinueState(built.datasetId);
+    const canContinue = state.offered && !state.reason;
+    const imported = notebookEntry.imported.get(id);
+    const opened = canContinue && !!imported && imported.steps === steps && notebookImportStillThere(imported);
+    const importing = notebookEntry.importing.has(id);
+    const failure = notebookEntry.errors.get(id);
+    const error = failure && failure.steps === steps ? failure.text : '';
+    const menuOpen = notebookEntry.menuFor === id;
+    const container = document.querySelector('.osa-chat-widget');
+
+    const make = (tag, className, text) => {
+      const node = document.createElement(tag);
+      node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+    const button = (className, focus, label, onClick) => {
+      const node = make('button', className, label);
+      node.type = 'button';
+      node.dataset.focus = focus;
+      node.addEventListener('click', onClick);
+      return node;
+    };
+    // The current conversation's code, for a click: built again, since a run may
+    // have been added since the card was drawn.
+    const freshCode = () => {
+      const current = activeConversationRecord();
+      return current && current.id === id ? buildConversationCode(current) : { error: 'This chat is no longer open.' };
+    };
+    const card = make('div', 'osa-nb-entry');
+    card.setAttribute('role', 'group');
+    card.setAttribute('aria-label', 'Keep going in a notebook');
+    card.dataset.entryIndex = String(msgIndex);
+    card.dataset.key = JSON.stringify([msgIndex, id, steps, canContinue, opened, importing, error, menuOpen]);
+    const count = pluralize(steps, 'step', 'steps');
+    const code = steps === 1 ? 'its' : 'their';
+    card.appendChild(make('p', 'osa-nb-entry-text', canContinue
+      ? `${count} ran in this chat. Keep going in a notebook with all of ${code} code.`
+      : `${count} ran in this chat. Download all of ${code} code to keep going in a notebook.`));
+
+    const actions = make('div', 'osa-nb-entry-actions');
+    if (canContinue && opened) {
+      actions.appendChild(button('osa-nb-entry-open', 'open', 'Open notebook', () => openImportedNotebook(container, id)));
+    } else if (canContinue) {
+      const go = button('osa-nb-entry-continue', 'continue', 'Continue in notebook', () => {
+        const refocus = document.activeElement === go;
+        const fresh = freshCode();
+        if (fresh.error) {
+          notebookEntry.errors.set(id, { steps, text: fresh.error });
+          refreshNotebookEntry(container);
+          return;
+        }
+        runNotebookImport(id, fresh, { refocus });
+      });
+      go.disabled = importing;
+      if (importing) go.setAttribute('aria-busy', 'true');
+      actions.appendChild(go);
+    }
+    const download = button('osa-nb-entry-download', 'download', 'Download code', () => {
+      notebookEntry.menuFor = notebookEntry.menuFor === id ? null : id;
+      refreshNotebookEntry(container, { focus: notebookEntry.menuFor === id ? '[data-focus="ipynb"]' : '[data-focus="download"]' });
+    });
+    download.setAttribute('aria-haspopup', 'menu');
+    download.setAttribute('aria-controls', NOTEBOOK_ENTRY_MENU_ID);
+    download.setAttribute('aria-expanded', menuOpen ? 'true' : 'false');
+    actions.appendChild(download);
+    card.appendChild(actions);
+
+    // The panel the button opens holds the menu, which is only its two items (a
+    // menu may hold nothing else), and the note beside it, which describes it.
+    const panel = make('div', 'osa-nb-entry-menu');
+    panel.id = NOTEBOOK_ENTRY_MENU_ID;
+    panel.hidden = !menuOpen;
+    const menu = make('div', 'osa-nb-entry-list');
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'Download code');
+    menu.setAttribute('aria-describedby', NOTEBOOK_ENTRY_NOTE_ID);
+    for (const format of NOTEBOOK_ENTRY_FORMATS) {
+      const item = button('osa-nb-entry-item', format.id, format.label, () => {
+        notebookEntry.menuFor = null;
+        const fresh = freshCode();
+        try {
+          if (fresh.error) throw new Error(fresh.error);
+          saveConversationCode(fresh, format.id);
+          notebookEntry.errors.delete(id);
+        } catch (err) {
+          console.error('[OSA] Could not build the code download:', err);
+          notebookEntry.errors.set(id, { steps, text: `Could not download the code: ${(err && err.message) || err}` });
+        }
+        refreshNotebookEntry(container, { focus: '[data-focus="download"]' });
+      });
+      item.setAttribute('role', 'menuitem');
+      menu.appendChild(item);
+    }
+    panel.appendChild(menu);
+    const note = make('p', 'osa-nb-entry-note', NOTEBOOK_ENTRY_NOTE);
+    note.id = NOTEBOOK_ENTRY_NOTE_ID;
+    panel.appendChild(note);
+    card.appendChild(panel);
+
+    if (importing) {
+      const status = make('p', 'osa-nb-entry-status', 'Sending the code to the notebook…');
+      status.setAttribute('role', 'status');
+      card.appendChild(status);
+    }
+    if (error) {
+      const alert = make('p', 'osa-nb-entry-error', error);
+      alert.setAttribute('role', 'alert');
+      card.appendChild(alert);
+    }
+
+    card.addEventListener('keydown', (event) => {
+      if (notebookEntry.menuFor !== id) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        notebookEntry.menuFor = null;
+        refreshNotebookEntry(container, { focus: '[data-focus="download"]' });
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        const items = [...menu.querySelectorAll('.osa-nb-entry-item')];
+        if (items.length === 0) return;
+        event.preventDefault();
+        const at = items.indexOf(document.activeElement);
+        let to;
+        if (event.key === 'Home') to = 0;
+        else if (event.key === 'End') to = items.length - 1;
+        // From outside the items (the button that opened them), Down goes to the
+        // first and Up to the last.
+        else if (at === -1) to = event.key === 'ArrowDown' ? 0 : items.length - 1;
+        else to = (at + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+        items[to].focus();
+      }
+    });
+    // Tabbing away closes the menu. A null target is no evidence (some browsers
+    // do not focus a button on click), so that case is left alone.
+    card.addEventListener('focusout', (event) => {
+      const to = event.relatedTarget;
+      if (notebookEntry.menuFor === id && to && !card.contains(to)) {
+        notebookEntry.menuFor = null;
+        refreshNotebookEntry(container);
+      }
+    });
+    return card;
+  }
+
+  // Redraw the card in place when what it says has changed (a dataset arriving,
+  // a tab switch, an import ending), keeping focus on the same control. A no-op
+  // when there is no card on screen, or its state is the same.
+  function refreshNotebookEntry(container, { focus = null, fallbackFocus = null } = {}) {
+    // The center header's Continue button follows the same state as the card (E6.1).
+    syncCenterNotebook(container);
+    const slot = container.querySelector('.osa-nb-entry');
+    if (!slot) return;
+    let next = null;
+    try {
+      next = notebookEntryCard(Number(slot.dataset.entryIndex));
+    } catch (err) {
+      console.error('[OSA] Could not draw the notebook card:', err);
+    }
+    if (!next) {
+      slot.remove();
+      return;
+    }
+    if (next.dataset.key === slot.dataset.key && !focus) return;
+    const active = document.activeElement;
+    const kept = !focus && slot.contains(active) && active.dataset ? active.dataset.focus : null;
+    slot.replaceWith(next);
+    const target = focus
+      ? (next.querySelector(focus) || (fallbackFocus && next.querySelector(fallbackFocus)))
+      : (kept ? [...next.querySelectorAll('[data-focus]')].find((node) => node.dataset.focus === kept) : null);
+    if (target && !target.disabled) target.focus();
+  }
+
+  // What the History row's menu offers for a conversation, or null: nothing for a
+  // community with no runtime, a chat with no dataset, or one with no successful run.
+  function historyCodeEntry(conversation) {
+    if (!runtimeApi) return null;
+    const datasetId = conversationDatasetId(conversation);
+    if (!datasetId || !hasSuccessfulRun(conversation)) return null;
+    const state = notebookContinueState(datasetId);
+    return { datasetId, offerContinue: state.offered, reason: state.reason };
+  }
+
+  // The two items, as markup: fixed text and an escaped id only. Continue is
+  // disabled with its reason shown, not only in a tooltip.
+  function historyCodeItemsHtml(id, code, off) {
+    const reasonId = `osa-history-reason-${id}`;
+    const choices = NOTEBOOK_ENTRY_FORMATS.map((format) =>
+      `<button type="button" class="osa-history-menu-save" data-id="${escapeHtml(id)}" data-format="${escapeHtml(format.id)}"${off}>${escapeHtml(format.label)}</button>`).join('');
+    const continueItem = !code.offerContinue ? '' : `
+          <button type="button" class="osa-history-menu-continue" data-id="${escapeHtml(id)}"${code.reason ? ` disabled aria-describedby="${escapeHtml(reasonId)}"` : off}>Continue in notebook</button>${code.reason ? `
+          <span class="osa-history-menu-reason" id="${escapeHtml(reasonId)}">${escapeHtml(code.reason)}</span>` : ''}`;
+    return `${continueItem}
+          <button type="button" class="osa-history-menu-download" data-id="${escapeHtml(id)}" aria-expanded="false" aria-controls="osa-history-save-${escapeHtml(id)}"${off}>Download code</button>
+          <div class="osa-history-save-choices" id="osa-history-save-${escapeHtml(id)}" role="group" aria-label="Download code" hidden>${choices}<span class="osa-history-menu-reason">${escapeHtml(NOTEBOOK_ENTRY_NOTE)}</span></div>`;
+  }
+
+  // History: Continue in notebook for any saved chat, the active one or not. The
+  // sheet closes first, since the import takes the panel to the notebook tab.
+  async function continueHistoryConversation(container, id) {
+    if (isLoading) return;
+    const conversation = listConversations().find((candidate) => candidate.id === id);
+    const built = conversation ? buildConversationCode(conversation) : { error: 'That chat could not be found. It may have been deleted in another tab.' };
+    if (!built.error) {
+      const state = notebookContinueState(built.datasetId);
+      if (!state.offered || state.reason) built.error = state.reason || 'The notebook is not available here.';
+    }
+    if (built.error) {
+      historyNote = built.error;
+      renderHistorySheet(container);
+      return;
+    }
+    closeHistory(container, { restoreFocus: false });
+    const result = await runNotebookImport(id, built);
+    // A refusal that left the reader on the chat has nowhere else to say so.
+    if (!result.ok && !result.path && activeTab !== 'notebook') {
+      showError(container, `Could not continue in the notebook: ${result.error || 'it did not open here'}`);
+      // The sheet closed without returning focus, and the menu item that had it is
+      // gone: put it on the History button, where the reader opened this from.
+      (container.querySelector('.osa-history-btn') || container.querySelector('.osa-chat-input input'))?.focus();
+    }
+  }
+
+  // History: Download code, for any saved chat.
+  function saveHistoryConversationCode(container, id, format) {
+    const conversation = listConversations().find((candidate) => candidate.id === id);
+    const built = conversation ? buildConversationCode(conversation) : { error: 'That chat could not be found. It may have been deleted in another tab.' };
+    try {
+      if (built.error) throw new Error(built.error);
+      saveConversationCode(built, format);
+      historyNote = '';
+    } catch (err) {
+      console.error('[OSA] Could not build the code download:', err);
+      historyNote = `Could not download the code: ${(err && err.message) || err}`;
+    }
+    renderHistorySheet(container);
+    historySheet(container).focus();
+  }
+
+  // --- History panel ---
+  // The sheet over the chat that lists every saved conversation by day, with its
+  // dataset, how many steps ran and figures were drawn, and a thumbnail of its first
+  // figure (board A4, E1.4, #657). It draws nothing of the store itself: it asks
+  // listConversations, and acts through activateConversation, deleteConversation,
+  // startConversation and clearAllConversations, each of which says no mid-reply.
+
+  // The tool whose runs are not steps: reading output back, not analysis.
+  const FULL_OUTPUT_TOOL = 'get_full_output';
+
+  // How many figures a run drew: those kept (figureCount) or, for a run just made
+  // that has not been saved yet, the ones in memory.
+  function runFigureCount(run) {
+    const inMemory = Array.isArray(run.images) ? Math.min(run.images.length, MAX_FIGURES_PER_RUN) : 0;
+    return Math.max(normalizeFigureCount(run.figureCount), inMemory);
+  }
+
+  // Pure: what a row of the panel says about a saved conversation. A step is a run
+  // the assistant made, not one the reader made from "Edit and run" or the reading
+  // of an output.
+  function conversationSummary(conversation) {
+    let steps = 0;
+    let figures = 0;
+    for (const message of Array.isArray(conversation.messages) ? conversation.messages : []) {
+      if (!message || !Array.isArray(message.executions)) continue;
+      for (const run of message.executions) {
+        if (!run || typeof run !== 'object') continue;
+        if (run.local !== true && run.tool !== FULL_OUTPUT_TOOL) steps += 1;
+        figures += runFigureCount(run);
+      }
+    }
+    return {
+      id: conversation.id,
+      title: typeof conversation.title === 'string' ? conversation.title : '',
+      context: conversation.context || null,
+      steps,
+      figures,
+      updatedAt: conversation.updatedAt,
+    };
+  }
+
+  // The call id of the first run in a conversation that drew a figure, whose first
+  // figure is the row's thumbnail; null when none did.
+  function firstFigureCallId(conversation) {
+    for (const message of Array.isArray(conversation.messages) ? conversation.messages : []) {
+      if (!message || !Array.isArray(message.executions)) continue;
+      for (const run of message.executions) {
+        if (run && typeof run.callId === 'string' && run.callId !== '' && runFigureCount(run) > 0) return run.callId;
+      }
+    }
+    return null;
+  }
+
+  // Pure: summaries, newest first, in the days the panel lists them under: Today,
+  // Yesterday, and Earlier (whose rows say their date). A day with none is left out.
+  function groupByDay(list, now = Date.now()) {
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+    const startOfYesterday = new Date(startOfToday);
+    startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+    const groups = [
+      { key: 'today', label: 'Today', items: [] },
+      { key: 'yesterday', label: 'Yesterday', items: [] },
+      { key: 'earlier', label: 'Earlier', items: [] },
+    ];
+    for (const item of list) {
+      if (item.updatedAt >= startOfToday.getTime()) groups[0].items.push(item);
+      else if (item.updatedAt >= startOfYesterday.getTime()) groups[1].items.push(item);
+      else groups[2].items.push(item);
+    }
+    return groups.filter((group) => group.items.length > 0);
+  }
+
+  // A row's time: the clock for today and yesterday, the date for the rest.
+  function historyWhen(updatedAt, groupKey, now) {
+    try {
+      const date = new Date(updatedAt);
+      if (groupKey !== 'earlier') return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const sameYear = date.getFullYear() === new Date(now).getFullYear();
+      return date.toLocaleDateString([], sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function plural(count, word) {
+    return `${count} ${word}${count === 1 ? '' : 's'}`;
+  }
+
+  // Whether the panel is open, what it last had to say (a failed action), whether
+  // "Clear all" is one click from clearing, the thumbnails made for it (call id to an
+  // object URL, or null for a figure that could not be read; revoked on close), and
+  // what draws them as rows scroll into view.
+  let historyOpen = false;
+  let historyNote = '';
+  let historyClearConfirming = false;
+  const historyThumbs = new Map();
+  let historyThumbObserver = null;
+  // Rows waiting for a read, whether one is queued, the rows awaiting a read already
+  // under way (by call id), and which opening of the sheet reads belong to.
+  let historyThumbQueue = [];
+  let historyThumbFlushQueued = false;
+  const historyThumbWaiting = new Map();
+  let historyThumbGeneration = 0;
+  // Watches the header's height while the sheet is open, to keep the scrim below it.
+  let historyHeaderObserver = null;
+  // The elements the sheet made inert while it is open, to give back on close.
+  let historyInerted = [];
+
+  // What Delete and Clear all history remove is the chats: the runs, code and figures
+  // they made stay in the workspace (IndexedDB) until the workspace is deleted in Settings.
+  const HISTORY_FOOTER = `Saved in this browser only, the last ${MAX_CONVERSATIONS} chats. Figures and code stay in this browser's workspace until you delete it in Settings.`;
+  const HISTORY_CLEAR_NOTE = 'This removes the chats only. Their figures and code stay in this browser\'s workspace until you delete it in Settings.';
+  const HISTORY_BUSY_NOTE = 'History is not available while a reply is loading.';
+
+  function historySheet(container) {
+    return container.querySelector('.osa-history-sheet');
+  }
+
+  // The panel's own children that are not the chat behind the sheet: its header, the
+  // pop-out's tab strip, the grip, the overlays and the sheet itself.
+  function historyBackdropNodes(container) {
+    const chatWindow = container.querySelector('.osa-chat-window');
+    if (!chatWindow) return [];
+    const keep = ['osa-chat-header', 'osa-tab-strip', 'osa-resize-handle', 'osa-settings-overlay', 'osa-history-sheet', 'osa-history-scrim'];
+    return [...chatWindow.children].filter((node) => !keep.some((name) => node.classList.contains(name)));
+  }
+
+  function historyThumbHtml(callId) {
+    return `<span class="osa-history-thumb" aria-hidden="true"${callId ? ` data-call-id="${escapeHtml(callId)}"` : ''}>${ICONS.search}</span>`;
+  }
+
+  function historyRowHtml(summary, extra, groupKey, now, locked) {
+    const dataset = summary.context && summary.context.type === 'dataset'
+      ? `<code>${escapeHtml(summary.context.id)}</code>`
+      : (summary.context && summary.context.type === 'search' ? '<span>Dataset search</span>' : '');
+    const facts = [];
+    if (summary.steps > 0) facts.push(plural(summary.steps, 'step'));
+    if (summary.figures > 0) facts.push(plural(summary.figures, 'figure'));
+    const when = historyWhen(summary.updatedAt, groupKey, now);
+    if (when) facts.push(when);
+    const factsText = facts.join(' · ');
+    const title = summary.title || 'Untitled chat';
+    const off = locked ? ' disabled' : '';
+    return `
+      <li class="osa-history-row${extra.active ? ' osa-history-row-active' : ''}" data-id="${escapeHtml(summary.id)}">
+        <button type="button" class="osa-history-open" data-id="${escapeHtml(summary.id)}"${extra.active ? ' aria-current="true"' : ''}${off}>
+          ${historyThumbHtml(extra.thumbCallId)}
+          <span class="osa-history-text">
+            <span class="osa-history-title">${escapeHtml(title)}</span>
+            <span class="osa-history-meta">${dataset}<span class="osa-history-facts">${dataset && factsText ? ' &middot; ' : ''}${escapeHtml(factsText)}</span></span>
+          </span>
+        </button>
+        <button type="button" class="osa-history-more" data-id="${escapeHtml(summary.id)}" aria-label="More actions for ${escapeHtml(title)}" aria-expanded="false" aria-controls="osa-history-menu-${escapeHtml(summary.id)}"${off}>${ICONS.more}</button>
+        <div class="osa-history-menu" id="osa-history-menu-${escapeHtml(summary.id)}" role="group" aria-label="Actions for ${escapeHtml(title)}" hidden>
+          <button type="button" class="osa-history-menu-open" data-id="${escapeHtml(summary.id)}"${off}>Open</button>${extra.code ? historyCodeItemsHtml(summary.id, extra.code, off) : ''}
+          <button type="button" class="osa-history-menu-delete" data-id="${escapeHtml(summary.id)}"${off}>Delete</button>
+        </div>
+      </li>`;
+  }
+
+  // Draw the sheet's list, buttons and note from the store as it is now.
+  function renderHistorySheet(container) {
+    const sheet = historySheet(container);
+    if (!sheet) return;
+    const locked = isLoading;
+    const now = Date.now();
+    const saved = listConversations().filter(hasContent);
+    const extras = new Map(saved.map((c) => [c.id, { active: c.active, thumbCallId: firstFigureCallId(c), code: historyCodeEntry(c) }]));
+    const groups = groupByDay(saved.map(conversationSummary), now);
+    const list = sheet.querySelector('.osa-history-list');
+    list.innerHTML = groups.length === 0
+      ? '<p class="osa-history-empty">No saved chats yet. Your conversations appear here, in this browser.</p>'
+      : groups.map((group) => `
+        <section class="osa-history-day" aria-label="${escapeHtml(group.label)}">
+          <h3 class="osa-history-day-label">${escapeHtml(group.label)}</h3>
+          <ul class="osa-history-rows">${group.items.map((summary) => historyRowHtml(summary, extras.get(summary.id), group.key, now, locked)).join('')}</ul>
+        </section>`).join('');
+    const note = locked ? HISTORY_BUSY_NOTE : (historyClearConfirming ? HISTORY_CLEAR_NOTE : historyNote);
+    sheet.querySelector('.osa-history-note').textContent = note;
+    const newBtn = sheet.querySelector('.osa-history-new');
+    const clearBtn = sheet.querySelector('.osa-history-clear');
+    newBtn.disabled = locked;
+    clearBtn.disabled = locked || saved.length === 0;
+    clearBtn.textContent = historyClearConfirming ? 'Confirm: delete all chats' : 'Clear all history';
+    clearBtn.classList.toggle('osa-history-confirm', historyClearConfirming);
+    observeHistoryThumbs(sheet);
+  }
+
+  // The thumbnail of each row's first figure, read only for the rows that scroll into
+  // view (a panel of 30 chats must not read 30 figures from IndexedDB at once). With
+  // no IntersectionObserver the first rows are read.
+  function observeHistoryThumbs(sheet) {
+    if (historyThumbObserver) historyThumbObserver.disconnect();
+    historyThumbObserver = null;
+    const thumbs = [...sheet.querySelectorAll('.osa-history-thumb[data-call-id]')];
+    if (thumbs.length === 0) return;
+    if (typeof window.IntersectionObserver === 'function') {
+      const observer = new window.IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          observer.unobserve(entry.target);
+          loadHistoryThumb(entry.target);
+        }
+      }, { root: sheet.querySelector('.osa-history-list') });
+      historyThumbObserver = observer;
+      thumbs.forEach((thumb) => observer.observe(thumb));
+    } else {
+      thumbs.slice(0, 12).forEach(loadHistoryThumb);
+    }
+  }
+
+  // Rows that came into view are read together: each call to figuresForCalls scans
+  // every run record of the community, so the thumbnails asked for in one turn of the
+  // event loop (the rows an observer reports at once) cost one scan, and figure 1 of
+  // each run only is read.
+  function loadHistoryThumb(thumb) {
+    if (!thumb.getAttribute('data-call-id')) return;
+    historyThumbQueue.push(thumb);
+    if (historyThumbFlushQueued) return;
+    historyThumbFlushQueued = true;
+    Promise.resolve().then(readHistoryThumbs);
+  }
+
+  function showHistoryThumb(thumb, url) {
+    // The sheet may have been redrawn or closed while the figure was read.
+    if (!url || !thumb.isConnected || !historyOpen) return;
+    thumb.innerHTML = `<img alt="" src="${escapeHtml(url)}">`;
+  }
+
+  async function readHistoryThumbs() {
+    historyThumbFlushQueued = false;
+    const queued = historyThumbQueue;
+    historyThumbQueue = [];
+    const toRead = [];
+    for (const thumb of queued) {
+      const callId = thumb.getAttribute('data-call-id');
+      if (historyThumbs.has(callId)) {
+        showHistoryThumb(thumb, historyThumbs.get(callId));
+      } else if (historyThumbWaiting.has(callId)) {
+        historyThumbWaiting.get(callId).push(thumb);
+      } else {
+        historyThumbWaiting.set(callId, [thumb]);
+        toRead.push(callId);
+      }
+    }
+    if (toRead.length === 0) return;
+    const generation = historyThumbGeneration;
+    let found = new Map();
+    try {
+      const store = await workspaceStoreWhenReady();
+      if (store) found = await store.figuresForCalls(toRead, { limit: 1 });
+    } catch (err) {
+      console.warn('[OSA] Could not read a history thumbnail:', err && err.message);
+    }
+    // Closed while it was read (and perhaps opened again, which started its own reads):
+    // nothing made here is wanted, so no object URL is made for it.
+    if (generation !== historyThumbGeneration) return;
+    for (const callId of toRead) {
+      const waiting = historyThumbWaiting.get(callId) || [];
+      historyThumbWaiting.delete(callId);
+      const first = (found.get(callId) || [])[0];
+      const url = first ? URL.createObjectURL(new Blob([first], { type: 'image/png' })) : null;
+      historyThumbs.set(callId, url);
+      waiting.forEach((thumb) => showHistoryThumb(thumb, url));
+    }
+  }
+
+  function releaseHistoryThumbs() {
+    if (historyThumbObserver) historyThumbObserver.disconnect();
+    historyThumbObserver = null;
+    historyThumbGeneration += 1;
+    historyThumbQueue = [];
+    historyThumbWaiting.clear();
+    for (const url of historyThumbs.values()) {
+      if (url) URL.revokeObjectURL(url);
+    }
+    historyThumbs.clear();
+  }
+
+  function syncHistoryButton(container) {
+    const button = container.querySelector('.osa-history-btn');
+    if (!button) return;
+    button.setAttribute('aria-expanded', historyOpen ? 'true' : 'false');
+    // A reply on its way holds the store still (see the store API), so there is
+    // nothing the panel could do; an open panel stays closable. aria-disabled, not
+    // disabled: the button stays focusable, and its description says why it does
+    // nothing (a title is neither read on touch nor on focus).
+    const busy = isLoading && !historyOpen;
+    if (busy) button.setAttribute('aria-disabled', 'true');
+    else button.removeAttribute('aria-disabled');
+    button.title = busy ? HISTORY_BUSY_NOTE : 'History';
+    const why = container.querySelector('#osa-history-busy');
+    if (why) why.textContent = busy ? HISTORY_BUSY_NOTE : '';
+  }
+
+  // Keep the panel true to a reply starting or ending: called with every redraw of
+  // the conversation, since both move through one.
+  let historyLockDrawn = false;
+  function syncHistoryAvailability(container) {
+    syncHistoryButton(container);
+    if (historyOpen && historyLockDrawn !== isLoading) {
+      historyLockDrawn = isLoading;
+      renderHistorySheet(container);
+    }
+  }
+
+  // The scrim covers everything below the header, which stays live so the button that
+  // opened the sheet can close it. The header's height is not fixed (its title wraps),
+  // so the scrim follows it for as long as the sheet is open.
+  function syncHistoryScrim(container) {
+    const header = container.querySelector('.osa-chat-header');
+    const scrim = container.querySelector('.osa-history-scrim');
+    if (!scrim) return;
+    scrim.style.top = header && header.offsetHeight > 0 ? `${header.offsetHeight}px` : '0px';
+  }
+
+  function watchHistoryHeader(container) {
+    unwatchHistoryHeader();
+    const header = container.querySelector('.osa-chat-header');
+    if (!header || typeof window.ResizeObserver !== 'function') return;
+    historyHeaderObserver = new window.ResizeObserver(() => syncHistoryScrim(container));
+    historyHeaderObserver.observe(header);
+  }
+
+  function unwatchHistoryHeader() {
+    if (historyHeaderObserver) historyHeaderObserver.disconnect();
+    historyHeaderObserver = null;
+  }
+
+  function openHistory(container) {
+    if (historyOpen || isLoading || activeTab === 'notebook') return;
+    const sheet = historySheet(container);
+    if (!sheet) return;
+    closeSettings(container);
+    flushPendingResponseFeedback(container);
+    historyOpen = true;
+    historyNote = '';
+    historyClearConfirming = false;
+    historyLockDrawn = isLoading;
+    renderHistorySheet(container);
+    const scrim = container.querySelector('.osa-history-scrim');
+    syncHistoryScrim(container);
+    watchHistoryHeader(container);
+    scrim.classList.add('open');
+    sheet.classList.add('open');
+    historyInerted = historyBackdropNodes(container).filter((node) => !node.hasAttribute('inert'));
+    historyInerted.forEach((node) => node.setAttribute('inert', ''));
+    syncHistoryButton(container);
+    sheet.focus();
+  }
+
+  function closeHistory(container, { restoreFocus = true } = {}) {
+    if (!historyOpen) return;
+    historyOpen = false;
+    historyClearConfirming = false;
+    historyNote = '';
+    releaseHistoryThumbs();
+    unwatchHistoryHeader();
+    const sheet = historySheet(container);
+    if (sheet) sheet.classList.remove('open');
+    const scrim = container.querySelector('.osa-history-scrim');
+    if (scrim) scrim.classList.remove('open');
+    historyInerted.forEach((node) => node.removeAttribute('inert'));
+    historyInerted = [];
+    syncHistoryButton(container);
+    if (restoreFocus) container.querySelector('.osa-history-btn')?.focus();
+  }
+
+  function toggleHistory(container) {
+    if (historyOpen) closeHistory(container);
+    else openHistory(container);
+  }
+
+  // What the chat shows after the active conversation changed under it: the same
+  // redraw the resume card makes.
+  function redrawChat(container) {
+    renderMessages(container);
+    renderSuggestions(container);
+    const resetBtn = container.querySelector('.osa-reset-btn');
+    if (resetBtn) resetBtn.disabled = chatIsEmpty();
+    evaluateContextSwitch();
+  }
+
+  // A row's menu is drawn under its row, inside the scrolling list, and with the
+  // notebook items it can be taller than the list (and a list clips what runs past
+  // it): cap it at the list's height, where it scrolls on its own, and scroll the
+  // list so the menu is in view.
+  function revealHistoryMenu(menu) {
+    if (!menu) return;
+    const list = menu.closest('.osa-history-list');
+    if (list && list.clientHeight > 0) menu.style.maxHeight = `${Math.max(120, list.clientHeight - 8)}px`;
+    if (typeof menu.scrollIntoView === 'function') menu.scrollIntoView({ block: 'nearest' });
+  }
+
+  function closeHistoryMenus(sheet) {
+    sheet.querySelectorAll('.osa-history-menu').forEach((menu) => { menu.hidden = true; });
+    sheet.querySelectorAll('.osa-history-more[aria-expanded="true"]').forEach((button) => button.setAttribute('aria-expanded', 'false'));
+    // Fold the Download code choices and drop the cap revealHistoryMenu set, so a
+    // reopened menu starts as it did the first time.
+    sheet.querySelectorAll('.osa-history-save-choices').forEach((choices) => { choices.hidden = true; });
+    sheet.querySelectorAll('.osa-history-menu-download[aria-expanded="true"]').forEach((button) => button.setAttribute('aria-expanded', 'false'));
+    sheet.querySelectorAll('.osa-history-menu').forEach((menu) => { menu.style.maxHeight = ''; });
+  }
+
+  function openHistoryConversation(container, id) {
+    if (isLoading) return;
+    if (!activateConversation(id)) {
+      historyNote = 'That chat could not be opened. It may have been deleted in another tab.';
+      renderHistorySheet(container);
+      return;
+    }
+    closeHistory(container, { restoreFocus: false });
+    redrawChat(container);
+    container.querySelector('.osa-chat-input input')?.focus();
+  }
+
+  function deleteHistoryConversation(container, id) {
+    if (isLoading) return;
+    historyClearConfirming = false;
+    historyNote = deleteConversation(id) ? '' : 'That chat could not be deleted.';
+    // Deleting the active chat leaves an empty one in its place.
+    redrawChat(container);
+    renderHistorySheet(container);
+    historySheet(container).focus();
+  }
+
+  function startHistoryConversation(container) {
+    if (isLoading) return;
+    if (startConversation({ context: pageContext() }) === null) return;
+    closeHistory(container, { restoreFocus: false });
+    redrawChat(container);
+    container.querySelector('.osa-chat-input input')?.focus();
+  }
+
+  // Two clicks, as the workspace's Delete: a stray click leaves it one click from
+  // clearing, and closing the panel or any other action puts it back.
+  function clearHistoryClick(container) {
+    if (isLoading) return;
+    if (!historyClearConfirming) {
+      historyClearConfirming = true;
+      renderHistorySheet(container);
+      return;
+    }
+    historyClearConfirming = false;
+    clearAllConversations();
+    historyNote = '';
+    redrawChat(container);
+    renderHistorySheet(container);
+    historySheet(container).focus();
+  }
+
+  function bindHistoryPanel(container) {
+    const sheet = historySheet(container);
+    if (!sheet) return;
+    const button = container.querySelector('.osa-history-btn');
+    button?.addEventListener('click', () => toggleHistory(container));
+    container.querySelector('.osa-history-scrim')?.addEventListener('click', () => closeHistory(container));
+    sheet.querySelector('.osa-history-new').addEventListener('click', () => startHistoryConversation(container));
+    sheet.querySelector('.osa-history-clear').addEventListener('click', () => clearHistoryClick(container));
+    sheet.addEventListener('click', (event) => {
+      const target = event.target && typeof event.target.closest === 'function' ? event.target : null;
+      if (!target) return;
+      const control = (selector) => target.closest(selector);
+      let hit;
+      if ((hit = control('.osa-history-open')) || (hit = control('.osa-history-menu-open'))) {
+        openHistoryConversation(container, hit.getAttribute('data-id'));
+      } else if ((hit = control('.osa-history-menu-delete'))) {
+        deleteHistoryConversation(container, hit.getAttribute('data-id'));
+      } else if ((hit = control('.osa-history-menu-continue'))) {
+        continueHistoryConversation(container, hit.getAttribute('data-id'));
+      } else if ((hit = control('.osa-history-menu-download'))) {
+        const choices = hit.parentElement.querySelector('.osa-history-save-choices');
+        const opening = choices.hidden;
+        choices.hidden = !opening;
+        hit.setAttribute('aria-expanded', opening ? 'true' : 'false');
+        if (opening) {
+          choices.querySelector('button')?.focus();
+          revealHistoryMenu(hit.closest('.osa-history-menu'));
+        }
+      } else if ((hit = control('.osa-history-menu-save'))) {
+        saveHistoryConversationCode(container, hit.getAttribute('data-id'), hit.getAttribute('data-format'));
+      } else if ((hit = control('.osa-history-more'))) {
+        const menu = hit.parentElement.querySelector('.osa-history-menu');
+        const opening = menu.hidden;
+        closeHistoryMenus(sheet);
+        if (opening) {
+          menu.hidden = false;
+          hit.setAttribute('aria-expanded', 'true');
+          menu.querySelector('button')?.focus();
+          revealHistoryMenu(menu);
+        }
+      } else if (!control('.osa-history-menu')) {
+        closeHistoryMenus(sheet);
+      }
+      if (!control('.osa-history-clear') && historyClearConfirming) {
+        historyClearConfirming = false;
+        renderHistorySheet(container);
+      }
+    });
+    container.addEventListener('keydown', (event) => {
+      if (!historyOpen) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        const openMenu = [...sheet.querySelectorAll('.osa-history-menu')].find((menu) => !menu.hidden);
+        if (openMenu) {
+          const more = openMenu.parentElement.querySelector('.osa-history-more');
+          closeHistoryMenus(sheet);
+          more?.focus();
+        } else {
+          closeHistory(container);
+        }
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      // Focus stays in the sheet while it is open: the chat behind is inert.
+      const focusable = [...sheet.querySelectorAll('button:not([disabled])')].filter((el) => !el.closest('[hidden]'));
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = container.ownerDocument.activeElement;
+      if (event.shiftKey && (active === first || active === sheet)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+  }
+
+  // The markup of the sheet, drawn once with the widget; renderHistorySheet fills it.
+  function historySheetHtml() {
+    return `
+        <div class="osa-history-scrim" aria-hidden="true"></div>
+        <section class="osa-history-sheet" id="osa-history-sheet" role="dialog" aria-modal="true" aria-label="History" tabindex="-1">
+          <div class="osa-history-grip" aria-hidden="true"></div>
+          <div class="osa-history-head">
+            <h2 class="osa-history-title-text">History</h2>
+            <button type="button" class="osa-history-new">+ New chat</button>
+          </div>
+          <div class="osa-history-note" role="status" aria-live="polite"></div>
+          <div class="osa-history-list"></div>
+          <div class="osa-history-clear-row">
+            <button type="button" class="osa-history-clear">Clear all history</button>
+          </div>
+          <div class="osa-history-footer">${escapeHtml(HISTORY_FOOTER)}</div>
+        </section>`;
+  }
+
+  // --- Fresh chat on return ---
+  // A reader who comes back to the page, in a new browser session or after the
+  // server has forgotten the chat, starts a new conversation; the one they left stays
+  // in the store, and the empty state offers it back (E1.2, #655).
+
+  // How long the server keeps a session after its last request: SESSION_TTL_HOURS in
+  // src/api/routers/community.py, kept equal by tests/test_frontend/test_widget_drift.py.
+  const SESSION_TTL_HOURS = 24;
+  const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
+
+  // The pop-out is told its configuration by the page that opened it, and has a
+  // sessionStorage of its own, so it never decides on its own to start over: it
+  // shows the chat its opener shows.
+  function isPopoutWindow() {
+    return !!window.__OSA_CHAT_CONFIG__;
+  }
+
+  // Whether this browser session has loaded the widget before; the first load of a
+  // session sets the marker. A sessionStorage that cannot be used (blocked, or full)
+  // reads as "yes", so a reader whose browser forgets nothing is not reset on every load.
+  function takeSessionMarker() {
+    try {
+      const key = `${CONFIG.storageKey}-session`;
+      if (window.sessionStorage.getItem(key) !== null) return true;
+      window.sessionStorage.setItem(key, '1');
+      return false;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  // Pure: whether a conversation the reader returned to should give way to a new one.
+  // An empty conversation never does (one the page seeded is not empty, #730);
+  // otherwise a new browser session does, and so does a conversation idle for longer
+  // than the server keeps its session.
+  function isFreshReturn({ hasContent, sessionMarkerPresent, updatedAt, now }) {
+    if (!hasContent) return false;
+    return !sessionMarkerPresent || now - updatedAt > SESSION_TTL_MS;
+  }
+
+  // --- Reseed a conversation the server forgot (E1.6) ---
+  // The server keeps a session for SESSION_TTL_HOURS after its last request, and loses
+  // it on a restart or when it is the least recently used. The widget cannot tell, so
+  // until the server has confirmed the session in this page load, a request carries the
+  // conversation so far (`prior_turns`, with the tier as `mode`); the server uses it only
+  // when it just made the session, and ignores it for one it holds. The server builds
+  // the framing and the fence from this untrusted text; the widget only bounds it.
+  //
+  // BEGIN reseed. Pure, and evaluated on its own by frontend/test-widget-reseed.js:
+  // nothing between here and END may use the rest of the widget.
+  const RESEED_MAX_TURNS = 12;
+  const RESEED_TURN_MAX_CHARS = 2000;
+  // What the server keeps of a transcript (its SUMMARY_INPUT_MAX_CHARS). Whole oldest
+  // turns are left out to stay within it, so nothing is sent that it would cut, and
+  // each turn is counted with the speaker label and separator the server adds to it.
+  const RESEED_TOTAL_CHARS = 12000;
+  const RESEED_TURN_OVERHEAD = 14;
+
+  // `text` cut from the middle to at most `limit` characters, an ellipsis where the
+  // cut is, so the start (what was asked) and the end (what was concluded) both stay.
+  // Never cuts a surrogate pair in two.
+  function clipTurnMiddle(text, limit = RESEED_TURN_MAX_CHARS) {
+    if (text.length <= limit) return text;
+    const keep = limit - 1;
+    let head = text.slice(0, Math.ceil(keep / 2));
+    let tail = text.slice(text.length - Math.floor(keep / 2));
+    if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
+    if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1);
+    return `${head}\u2026${tail}`;
+  }
+
+  // The turns to carry: the user's and the assistant's text, nothing else (a reply's
+  // code runs, tool results and figures are other fields of the message, never read
+  // here), each bounded, and the newest RESEED_MAX_TURNS that fit RESEED_TOTAL_CHARS. The assistant's greeting,
+  // which comes before the reader has said anything, is not a turn; a reply the host
+  // page seeded (seed(), #730) is, since the reader has seen it and may ask about it.
+  function selectReseedTurns(list) {
+    const turns = [];
+    let started = false;
+    for (const message of Array.isArray(list) ? list : []) {
+      if (!message || (message.role !== 'user' && message.role !== 'assistant')) continue;
+      if (typeof message.content !== 'string') continue;
+      if (message.role === 'user') started = true;
+      if (!started && !(message.role === 'assistant' && message.seeded === true)) continue;
+      // A bubble that is only an error (`failed`) is not a reply the server could build on.
+      if (message.failed) continue;
+      const text = message.content.trim();
+      if (text) turns.push({ role: message.role, text: clipTurnMiddle(text) });
+    }
+    const newest = turns.slice(-RESEED_MAX_TURNS);
+    let total = newest.reduce((sum, turn) => sum + turn.text.length + RESEED_TURN_OVERHEAD, 0);
+    while (newest.length > 1 && total > RESEED_TOTAL_CHARS) {
+      total -= newest.shift().text.length + RESEED_TURN_OVERHEAD;
+    }
+    return newest;
+  }
+
+  // The tier the conversation was last on: the newest assistant message that says one.
+  function lastReplyMode(list) {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const message = list[index];
+      if (message && message.role === 'assistant' && !message.failed && (message.mode === 'quick' || message.mode === 'analysis')) {
+        return message.mode;
+      }
+    }
+    return null;
+  }
+
+  // What to add to a chat request: {prior_turns, mode?} or null. `list` is the
+  // conversation before the message being sent. Nothing is added while the server has
+  // confirmed the session within `ttlMs` (it holds it), nor when there is no assistant
+  // reply to carry (an empty chat, or a first message that never got an answer).
+  function reseedFields({ list, confirmedAt, now, ttlMs }) {
+    if (confirmedAt !== null && now - confirmedAt <= ttlMs) return null;
+    const turns = selectReseedTurns(list);
+    if (!turns.some((turn) => turn.role === 'assistant')) return null;
+    const fields = { prior_turns: turns };
+    const mode = lastReplyMode(list);
+    if (mode) fields.mode = mode;
+    return fields;
+  }
+  // END reseed
+
+  // --- Notice a conversation the server forgot while the page stays open (#698) ---
+  // Once the server has confirmed the session, a request stops carrying the turns, so a
+  // server that restarts or evicts the session would start an empty one without a word.
+  // A request that carries no turns for a session it names therefore says it expects the
+  // server to hold it (`expect_session`); the server then refuses with a 409 whose `code`
+  // is `session_unknown`, and the widget sends the request once more with the turns.
+  //
+  // BEGIN session-lost. Pure, and evaluated on its own by frontend/test-widget-session-lost.js:
+  // nothing between here and END may use the rest of the widget.
+  const SESSION_UNKNOWN_CODE = 'session_unknown';
+
+  // What to add to a chat request that names a session: {expect_session: true} when the
+  // request carries no turns (`reseed` is what reseedFields returned for it), else null.
+  function expectSessionFields({ sessionId, reseed }) {
+    if (typeof sessionId !== 'string' || !sessionId || reseed) return null;
+    return { expect_session: true };
+  }
+
+  // Whether a response is the server saying it holds no session for the request.
+  function isSessionUnknown(status, body) {
+    return status === 409 && !!body && typeof body === 'object' && body.code === SESSION_UNKNOWN_CODE;
+  }
+  // END session-lost
+
+  // The conversation just left, while the empty state offers it back: {conversationId
+  // (the new one), previousId, previousTitle}. Not stored: a reload shows nothing.
+  let welcomeBack = null;
+
+  // Called by init() once the history is loaded. The new conversation takes the page's
+  // context (see pageContext).
+  function startFreshChatOnReturn() {
+    if (isPopoutWindow()) return;
+    const sessionMarkerPresent = takeSessionMarker();
+    if (!activeConversation) return;
+    const stored = listConversations().find((c) => c.active);
+    const updatedAt = stored ? stored.updatedAt : Date.now();
+    if (!isFreshReturn({ hasContent: hasContent({ messages }), sessionMarkerPresent, updatedAt, now: Date.now() })) return;
+    const previous = { id: activeConversation.id, title: conversationTitle(messages) };
+    const id = startConversation({ context: pageContext() });
+    if (id) welcomeBack = { conversationId: id, previousId: previous.id, previousTitle: previous.title };
+  }
+
+  // Whether the empty state is showing: the new conversation is still empty, and the
+  // one it replaced is still saved.
+  function welcomeBackShown() {
+    if (!welcomeBack || !activeConversation || activeConversation.id !== welcomeBack.conversationId) return false;
+    if (hasContent({ messages })) return false;
+    return readStoredConversations().some((c) => c.id === welcomeBack.previousId);
+  }
+
+  // The welcome and the resume card, drawn after the greeting.
+  function appendWelcomeBack(container, messagesEl) {
+    if (!welcomeBackShown()) return;
+    const context = activeConversation.context;
+    const about = context && context.type === 'dataset'
+      ? ` about <code>${escapeHtml(context.id)}</code>`
+      : '';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'osa-welcome-back';
+    wrapper.innerHTML = `
+      <div class="osa-welcome-back-text">Welcome back. This is a new chat${about}.</div>
+      <button type="button" class="osa-resume-card">
+        ${ICONS.history}
+        <span class="osa-resume-card-text">Pick up where you left off: <strong>${escapeHtml(welcomeBack.previousTitle || 'your last chat')}</strong></span>
+      </button>`;
+    wrapper.querySelector('.osa-resume-card').addEventListener('click', () => {
+      const previousId = welcomeBack && welcomeBack.previousId;
+      if (!previousId || !activateConversation(previousId)) return;
+      welcomeBack = null;
+      renderMessages(container);
+      renderSuggestions(container);
+      const resetBtn = container.querySelector('.osa-reset-btn');
+      if (resetBtn) resetBtn.disabled = chatIsEmpty();
+      evaluateContextSwitch();
+      // The card the reader pressed is gone with the welcome: focus goes to the input.
+      container.querySelector('.osa-chat-input input')?.focus();
+    });
+    messagesEl.appendChild(wrapper);
+  }
+
+  // --- Handover (E8.3) ---
+  // A community that routes between a quick and an analysis model answers most turns on
+  // the quick one. A turn that asks for code or a plot moves the chat to the analysis
+  // model on a NEW server session, and the stream says so with `handover` events
+  // (src/api/handover.py): `summarizing`, then `summarized` (what the quick model wrote
+  // down for the analysis model), then `started` (the new session and its model). The
+  // analysis run follows through the ordinary path. This block draws what the reader
+  // sees of that (board A6): a card for the steps, a divider where the session changes,
+  // and a label for the mode a reply ran in.
+  //
+  // The handover is kept on the assistant message that the analysis run answers
+  // (`msg.handover`), and the mode on every reply that reports one (`msg.mode`, from
+  // `done.mode`), so a reload, or a chat opened from History, draws the same card,
+  // divider and label from stored data. The summary is model output: it is only ever
+  // set as text, never as markup.
+
+  const HANDOVER_STAGES = ['summarizing', 'summarized', 'started'];
+  // The summary is at most 150 words (SUMMARY_MAX_WORDS in src/agents/model_routing.py);
+  // this bounds what is kept whatever a stream or a stored record says.
+  const HANDOVER_SUMMARY_LIMIT = 2000;
+  const HANDOVER_COUNT_LIMIT = 100000;
+  const REPLY_MODES = ['quick', 'analysis'];
+  const MODE_LABELS = { quick: 'Quick', analysis: 'Analysis' };
+  const MODE_NOTE = 'Quick answers use a smaller, faster model. Running code and plots use the analysis model.';
+  const HANDOVER_CHECK_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>';
+
+  // The mode a reply reports, or null for anything else.
+  function normalizeReplyMode(value) {
+    return typeof value === 'string' && REPLY_MODES.includes(value) ? value : null;
+  }
+
+  function handoverCount(value) {
+    return Number.isInteger(value) && value >= 0 ? Math.min(value, HANDOVER_COUNT_LIMIT) : null;
+  }
+
+  // A handover as the widget keeps it, from a stream event's fields or a stored record:
+  // {stage, messages, words, summary, degraded, model}. Each field is checked and
+  // bounded; a field that is not valid is left out, and a record without a known stage
+  // is nothing (null).
+  function normalizeHandover(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    if (!HANDOVER_STAGES.includes(raw.stage)) return null;
+    const handover = { stage: raw.stage };
+    const messageCount = handoverCount(raw.messages);
+    if (messageCount !== null) handover.messages = messageCount;
+    const wordCount = handoverCount(raw.words);
+    if (wordCount !== null) handover.words = wordCount;
+    if (typeof raw.summary === 'string' && raw.summary) {
+      handover.summary = raw.summary.slice(0, HANDOVER_SUMMARY_LIMIT);
+    }
+    if (raw.degraded === true) handover.degraded = true;
+    if (isValidModelId(raw.model)) handover.model = raw.model;
+    return handover;
+  }
+
+  // The handover a stream event moves a reply's to, or null when the event is not one
+  // this widget knows (an unknown stage), which changes nothing. Fields it does not
+  // know are not read.
+  function nextHandover(current, event) {
+    if (!event || !HANDOVER_STAGES.includes(event.stage)) return null;
+    if (event.stage === 'summarizing') return normalizeHandover({ stage: 'summarizing' });
+    const kept = current || {};
+    if (event.stage === 'summarized') {
+      return normalizeHandover({
+        stage: 'summarized',
+        messages: event.messages,
+        words: event.words,
+        summary: event.summary,
+        degraded: event.degraded,
+      });
+    }
+    return normalizeHandover({ ...kept, stage: 'started', model: event.model });
+  }
+
+  // The stream's `handover` event: record it on the reply it belongs to and draw it.
+  function noticeHandover(container, message, event) {
+    if (!message) return;
+    const before = message.handover;
+    const next = nextHandover(before, event);
+    if (!next) return;
+    message.handover = next;
+    renderMessages(container);
+    // Said once to a screen reader, after the redraw (which empties the announcer when
+    // there is no status of its own to say). `summarized` and `started` arrive back to
+    // back and the one polite region would drop the first, so `started` says both.
+    const announcer = container.querySelector('.osa-status-announcer');
+    let spoken = handoverSpoken(next);
+    if (next.stage === 'started' && before && before.stage === 'summarized') {
+      spoken = `${handoverSpoken(before)}. ${spoken}`;
+    }
+    if (announcer && spoken) announcer.textContent = spoken;
+  }
+
+  function handoverSpoken(handover) {
+    if (handover.stage === 'summarizing') return 'Summarizing our conversation';
+    if (handover.stage === 'started') return 'Handing it to the analysis model with your question';
+    return handover.degraded ? 'The summary could not be written' : 'Summarized our conversation';
+  }
+
+  function plural(count, noun) {
+    return `${count} ${noun}${count === 1 ? '' : 's'}`;
+  }
+
+  // The first line of the card once the summary step is over.
+  function summarizedText(handover) {
+    if (handover.degraded) {
+      return 'The summary could not be written, so the analysis model is told your own words.';
+    }
+    if (handover.messages === undefined || handover.words === undefined) {
+      return 'Summarized our conversation';
+    }
+    return `Summarized our conversation (${plural(handover.messages, 'message')}, ${plural(handover.words, 'word')})`;
+  }
+
+  // One step of the card: a marker (a turning ring while it is under way, a check once
+  // done, a dash for a step that did not finish) and its words.
+  function handoverStep(kind, text) {
+    const row = document.createElement('div');
+    row.className = 'osa-handover-step';
+    const marker = document.createElement('span');
+    marker.className = `osa-handover-marker osa-handover-${kind}`;
+    marker.setAttribute('aria-hidden', 'true');
+    if (kind === 'done') marker.innerHTML = HANDOVER_CHECK_ICON;
+    else if (kind === 'stopped') marker.textContent = '–';
+    row.appendChild(marker);
+    const words = document.createElement('span');
+    words.textContent = text;
+    row.appendChild(words);
+    return row;
+  }
+
+  // The card, and under it the divider where the analysis session begins, for a reply
+  // that has a handover: one element, drawn before the reply.
+  function handoverElement(msg, msgIndex, handover) {
+    // Under way while this reply is the one being written; a stored card is over.
+    const live = isLoading && msgIndex === messages.length - 1;
+    const group = document.createElement('div');
+    group.className = 'osa-handover-group';
+
+    // A group, not a region: a long chat holds one card per handover, and each would be
+    // a landmark.
+    const card = document.createElement('div');
+    card.className = 'osa-handover';
+    card.setAttribute('role', 'group');
+    card.setAttribute('aria-label', 'Handing over to the analysis model');
+    const title = document.createElement('div');
+    title.className = 'osa-handover-title';
+    title.textContent = 'Starting an analysis session';
+    card.appendChild(title);
+
+    if (handover.stage === 'summarizing') {
+      card.appendChild(live
+        ? handoverStep('live', 'Summarizing our conversation…')
+        : handoverStep('stopped', 'Did not finish summarizing our conversation'));
+    } else {
+      card.appendChild(handoverStep('done', summarizedText(handover)));
+    }
+    if (handover.stage === 'started') {
+      const waiting = live && !hasVisibleText(msg.content);
+      card.appendChild(handoverStep(waiting ? 'live' : 'done', 'Handing it to the analysis model with your question'));
+    }
+    if (handover.summary) {
+      const details = document.createElement('details');
+      details.className = 'osa-handover-told';
+      details.open = msg._handoverOpen === true;
+      const summary = document.createElement('summary');
+      summary.textContent = 'What the analysis model is told';
+      const told = document.createElement('p');
+      told.textContent = handover.summary;
+      details.appendChild(summary);
+      details.appendChild(told);
+      // Kept on the reply, so a redraw (a streamed chunk) does not close what the reader opened.
+      details.addEventListener('toggle', () => { msg._handoverOpen = details.open; });
+      card.appendChild(details);
+    }
+    group.appendChild(card);
+
+    if (handover.stage === 'started') {
+      const divider = document.createElement('div');
+      divider.className = 'osa-handover-divider';
+      divider.setAttribute('role', 'separator');
+      const text = handover.model
+        ? `Analysis session · ${getModelLabel(handover.model)}`
+        : 'Analysis session';
+      divider.setAttribute('aria-label', text);
+      const label = document.createElement('span');
+      label.textContent = text;
+      divider.appendChild(label);
+      group.appendChild(divider);
+    }
+    return group;
+  }
+
+  // What renderMessages draws for a reply on account of a handover or a mode: an
+  // element to put before the reply (the card and divider, or null), and the tag a
+  // quick reply carries beside its label ('' for any other). The one hook the render
+  // loop calls.
+  function handoverParts(msg, msgIndex) {
+    if (msg.role !== 'assistant') return { before: null, tag: '' };
+    const handover = normalizeHandover(msg.handover);
+    return {
+      before: handover ? handoverElement(msg, msgIndex, handover) : null,
+      tag: msg.mode === 'quick' ? '<span class="osa-quick-tag">Quick answers</span>' : '',
+    };
+  }
+
+  // The mode the conversation is in now: the last reply that reported one, or null (a
+  // community whose stream sends no mode, or a chat with no reply yet).
+  function currentReplyMode() {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const mode = messages[index] && messages[index].role === 'assistant'
+        ? normalizeReplyMode(messages[index].mode)
+        : null;
+      if (mode) return mode;
+    }
+    return null;
+  }
+
+  // The header's mode label and the footnote under the conversation, shown only while a
+  // mode is known. Called after every redraw of the messages, so a new chat clears them
+  // and a chat opened from History brings them back.
+  function syncModeChrome(container) {
+    const mode = currentReplyMode();
+    const label = container.querySelector('.osa-mode-label');
+    if (label) {
+      label.hidden = !mode;
+      label.textContent = mode ? MODE_LABELS[mode] : '';
+      if (mode) label.setAttribute('aria-label', `Mode: ${MODE_LABELS[mode]}`);
+      else label.removeAttribute('aria-label');
+    }
+    const note = container.querySelector('.osa-mode-note');
+    if (note) note.hidden = !mode;
+  }
+
+  // --- Context switch ---
+  // A conversation has a context: the dataset the page names (setDataset), or the
+  // dataset search (a page under CONFIG.searchPaths), or none (E1.3, #656).
+
+  // Pure: the context a page gives a conversation, or null when it gives none and the
+  // conversation keeps the one it has. A dataset wins over a search path; a search path
+  // matches the pathname itself and anything below it at a path-segment boundary
+  // (/discover matches /discover/x, not /discovery); "/" matches the home page only.
+  function contextForPage(dataset, pathname, searchPaths) {
+    if (dataset && isValidDatasetId(dataset.id)) return { type: 'dataset', id: dataset.id };
+    const path = typeof pathname === 'string' ? pathname : '';
+    for (const raw of Array.isArray(searchPaths) ? searchPaths : []) {
+      if (typeof raw !== 'string' || !raw.startsWith('/')) continue;
+      const base = raw.replace(/\/+$/, '');
+      // "/" is the home page alone: as a prefix it would be every page.
+      if (base === '') {
+        if (/^\/+$/.test(path)) return { type: 'search' };
+        continue;
+      }
+      if (path === base || path.startsWith(`${base}/`)) return { type: 'search' };
+    }
+    return null;
+  }
+
+  // The context of the page on screen now.
+  function pageContext() {
+    return contextForPage(currentDataset, window.location.pathname, CONFIG.searchPaths);
+  }
+
+  // A context as the notice and the continue button name it: a dataset by its id, the
+  // search page as "search".
+  function contextName(context) {
+    return context && context.type === 'dataset' ? context.id : 'search';
+  }
+
+  // The same, as a place in a sentence.
+  function contextPlace(context) {
+    return context && context.type === 'dataset' ? context.id : 'the dataset search';
+  }
+
+  // Pure: whether two contexts are the same one (null is a context: none).
+  function sameContext(a, b) {
+    if (!a || !b) return !a && !b;
+    return a.type === b.type && (a.type !== 'dataset' || a.id === b.id);
+  }
+
+  // The notice is on screen while the page's context differs from a chat that holds
+  // the reader's questions or a reply the page seeded: {conversationId, from, to}. Not stored.
+  let pendingSwitch = null;
+  // What choosing "Continue" left in a chat: {conversationId, from, to, atIndex, told}.
+  // `atIndex` is where the divider goes (the message count when it was chosen); `told`
+  // is set once the server has answered a request that carried the move, so a send
+  // that failed keeps it for the next. Not stored: the divider is for this page view.
+  let contextMove = null;
+
+  function pendingSwitchShown() {
+    return pendingSwitch && activeConversation && pendingSwitch.conversationId === activeConversation.id
+      ? pendingSwitch
+      : null;
+  }
+
+  // The move chosen in the active chat that no answered request has carried yet.
+  function untoldMove() {
+    if (!contextMove || contextMove.told || !activeConversation) return null;
+    return contextMove.conversationId === activeConversation.id ? contextMove : null;
+  }
+
+  // The move the request being built carries, or null. The server is told where the
+  // reader is from the dataset the request names (none: the search page), so a move is
+  // carried only while the page is still where the reader moved to; a page that has
+  // since become neither would have the server told something false.
+  function carriedMove() {
+    const move = untoldMove();
+    if (!move) return null;
+    const page = pageContext();
+    return page && sameContext(move.to, page) ? move : null;
+  }
+
+  // The move the next request tells the server about, as {type, id?}, or null.
+  function pendingMovedFrom() {
+    const move = carriedMove();
+    return move ? normalizeConversationContext(move.from) : null;
+  }
+
+  // Decide what the page's context means for the active conversation, and draw or
+  // remove the notice. Called when the widget loads, when the page names another
+  // dataset, when the community config arrives (a search path may be new), and before
+  // a send (a single-page site moves without telling the widget). A page that gives no
+  // context keeps the conversation's. With nothing in the chat (no question from the
+  // reader, no reply the page seeded), or a chat that has no context yet, the new context
+  // is adopted silently: there is nothing earlier it could be confused with. A chat the
+  // page seeded does ask, so a seeded summary of one dataset is never carried silently
+  // under another page's context. A pop-out never asks: it shows its
+  // opener's chat.
+  function evaluateContextSwitch() {
+    if (isPopoutWindow() || !activeConversation) return;
+    const page = pageContext();
+    let adopted = false;
+    if (!page || sameContext(page, activeConversation.context)) {
+      pendingSwitch = null;
+    } else if (!hasContent({ messages }) || !activeConversation.context) {
+      activeConversation.context = page;
+      pendingSwitch = null;
+      adopted = true;
+    } else {
+      pendingSwitch = { conversationId: activeConversation.id, from: activeConversation.context, to: page };
+    }
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container) return;
+    if (adopted && welcomeBackShown()) renderMessages(container);
+    renderContextNotice(container);
+  }
+
+  let pageMovesWatched = false;
+
+  // A site that moves without calling setDataset (the back and forward buttons of a
+  // single-page site) is noticed when the browser reports it, so the notice appears
+  // before the next send. A pushState navigation reports nothing: it is found at the
+  // send, or when the host calls setDataset. Only the path matters, so a hash change
+  // is not watched.
+  function watchPageMoves() {
+    if (pageMovesWatched) return;
+    pageMovesWatched = true;
+    window.addEventListener('popstate', () => evaluateContextSwitch());
+  }
+
+  // The notice above the input (board A1), or none. It goes into a live region that is
+  // always in the page (an announcement is made when content is added to a region
+  // already there, not when the region arrives with its content). Rebuilt only when what
+  // it says changes, so a streamed reply's redraws leave a focused button alone.
+  function renderContextNotice(container) {
+    const live = pendingSwitchShown();
+    const key = live ? JSON.stringify([live.from, live.to]) : '';
+    const existing = container.querySelector('.osa-context-notice');
+    if (existing && existing.getAttribute('data-key') === key) return;
+    if (existing) existing.remove();
+    if (!live) return;
+    const slot = container.querySelector('.osa-context-notice-slot');
+    if (!slot) return;
+    const where = live.to.type === 'dataset'
+      ? `You're on a new dataset, <code>${escapeHtml(live.to.id)}</code>.`
+      : "You're on the dataset search.";
+    const old = escapeHtml(contextName(live.from));
+    const notice = document.createElement('div');
+    notice.className = 'osa-context-notice';
+    notice.setAttribute('data-key', key);
+    notice.innerHTML = `
+      <div class="osa-context-notice-body">
+        ${ICONS.swap}
+        <p>${where} <strong>Your next message starts a new chat;</strong> the ${old} chat is saved.</p>
+      </div>
+      <button type="button" class="osa-context-continue">Continue the ${old} chat instead</button>`;
+    notice.querySelector('.osa-context-continue').addEventListener('click', () => continueInContext(container));
+    slot.appendChild(notice);
+  }
+
+  // "Continue the <old> chat instead": the chat takes the page's context, shows the
+  // divider, and the next request tells the server the reader moved.
+  function continueInContext(container) {
+    const live = pendingSwitchShown();
+    if (!live) return;
+    // A second move before the first was told is one move, from where the chat started;
+    // a move back to where it started is no move at all.
+    const earlier = untoldMove();
+    const from = earlier ? earlier.from : live.from;
+    activeConversation.context = normalizeConversationContext(live.to);
+    contextMove = sameContext(from, live.to)
+      ? null
+      : {
+        conversationId: activeConversation.id,
+        from,
+        to: live.to,
+        atIndex: messages.length,
+        told: false,
+      };
+    pendingSwitch = null;
+    saveHistoryQuietly('continuing in a new context');
+    renderMessages(container);
+    renderContextNotice(container);
+    container.querySelector('.osa-chat-input input')?.focus();
+  }
+
+  // The divider and the note on what the assistant is told, drawn in the messages at
+  // the point the reader continued, or null when this is not that point.
+  function contextMoveElementAt(index) {
+    const move = contextMove;
+    if (!move || !activeConversation || move.conversationId !== activeConversation.id) return null;
+    if (move.atIndex !== index) return null;
+    const from = escapeHtml(contextPlace(move.from));
+    const to = escapeHtml(contextPlace(move.to));
+    const toCode = move.to.type === 'dataset' ? `<code>${to}</code>` : to;
+    const element = document.createElement('div');
+    element.className = 'osa-context-move';
+    element.innerHTML = `
+      <div class="osa-context-divider"><span>Moved to ${toCode} &middot; continuing this chat</span></div>
+      <div class="osa-context-told">The assistant is told: <em>the reader moved from ${from} to ${to}; compare or continue as they ask.</em></div>`;
+    return element;
+  }
+
+  // Before a message is sent: a page context that differs from the chat's, with the
+  // reader's questions in it, starts a new chat in the page's context, unless the
+  // reader chose to continue (which already made the contexts the same).
+  function prepareContextForSend() {
+    evaluateContextSwitch();
+    const live = pendingSwitchShown();
+    if (!live) return;
+    pendingSwitch = null;
+    contextMove = null;
+    startConversation({ context: live.to });
+  }
+
+  // The server has answered a request that carried `move` (see carriedMove); an answer
+  // to a request built before the move was chosen does not use it up.
+  function markContextMoveTold(move) {
+    if (move) move.told = true;
+  }
+
+  // Get page context (URL, title, widget instructions, the dataset and a move) for contextual
+  // answers. `withBudget` adds the reader's memory budget, for a request that declares the
+  // client tools (see withMemoryBudget for the one that is sent before they are known).
+  function getPageContext(withBudget = false) {
     // Widget instructions are always sent if configured, even if page context is off
     const hasWidgetInstructions = typeof CONFIG.widgetInstructions === 'string'
       && CONFIG.widgetInstructions.trim() !== '';
+    syncPrivacyChoices();
     const hasPageContext = CONFIG.allowPageContext && pageContextEnabled;
+    // The dataset on screen and a move the reader chose are about the chat itself, so,
+    // like the widget instructions, they are sent whether or not the reader shares the
+    // page's URL.
+    const datasetId = currentDataset ? currentDataset.id : null;
+    const movedFrom = pendingMovedFrom();
+    // The reader's memory budget goes with a request that declares the client tools
+    // (`withBudget`) on a page that can run code in the browser (the controller exists),
+    // and with none of a page that cannot: there is nothing to size there. Like the
+    // dataset, it is about the chat, so it is sent whether or not the reader shares the
+    // page's URL.
+    const memoryBudget = withBudget && browserTools ? normalizeMemoryBudget(userSettings.memoryBudgetMb) : null;
 
-    if (!hasPageContext && !hasWidgetInstructions) {
+    if (!hasPageContext && !hasWidgetInstructions && !datasetId && !movedFrom && !memoryBudget) {
       return null;
     }
 
@@ -4653,7 +10735,18 @@
     if (hasWidgetInstructions) {
       context.widget_instructions = CONFIG.widgetInstructions;
     }
+    if (datasetId) context.dataset_id = datasetId;
+    if (movedFrom) context.moved_from = movedFrom;
+    if (memoryBudget) context.memory_budget_mb = memoryBudget;
     return context;
+  }
+
+  // `context` (getPageContext's, or null) with the reader's memory budget added. For the
+  // first request, whose page context is captured when the question is sent, before the
+  // wait for the runtime: only the budget is decided after it, and only for a request that
+  // declares tools to run code with (one sent with streaming off declares none).
+  function withMemoryBudget(context) {
+    return { ...(context || {}), memory_budget_mb: normalizeMemoryBudget(userSettings.memoryBudgetMb) };
   }
 
   // Load page context preference from localStorage
@@ -4662,24 +10755,20 @@
       pageContextEnabled = false;
       return;
     }
-    try {
-      const saved = localStorage.getItem(CONFIG.pageContextStorageKey);
-      if (saved !== null) {
-        pageContextEnabled = saved === 'true';
-      } else {
-        pageContextEnabled = CONFIG.pageContextDefaultEnabled;
-      }
-    } catch (e) {
-      pageContextEnabled = CONFIG.pageContextDefaultEnabled;
-    }
+    pageContextEnabled = CONFIG.pageContextDefaultEnabled;
+    syncPrivacyChoices();
   }
 
-  // Save page context preference to localStorage
+  // Save page context preference to localStorage; false when the browser would not keep it.
   function savePageContextPreference() {
     try {
       localStorage.setItem(CONFIG.pageContextStorageKey, pageContextEnabled.toString());
+      unsavedChoices.delete(CONFIG.pageContextStorageKey);
+      return true;
     } catch (e) {
       console.warn('Could not save page context preference:', e);
+      unsavedChoices.add(CONFIG.pageContextStorageKey);
+      return false;
     }
   }
 
@@ -4689,7 +10778,7 @@
     try {
       const saved = localStorage.getItem(storageKey);
       if (!saved) {
-        userSettings = { apiKey: null, model: null, keyProvider: null };
+        userSettings = defaultUserSettings();
         return;
       }
 
@@ -4699,7 +10788,7 @@
       } catch (jsonErr) {
         console.error('[OSA] Saved settings contain invalid JSON:', jsonErr.message);
         queuePendingNotice('Saved settings are corrupted. Using defaults.');
-        userSettings = { apiKey: null, model: null, keyProvider: null };
+        userSettings = defaultUserSettings();
         // Clear corrupted data
         try { localStorage.removeItem(storageKey); } catch {}
         return;
@@ -4710,7 +10799,7 @@
       if (!parsed || typeof parsed !== 'object') {
         console.error('[OSA] Saved settings are not an object, ignoring');
         queuePendingNotice('Saved settings are corrupted. Using defaults.');
-        userSettings = { apiKey: null, model: null, keyProvider: null };
+        userSettings = defaultUserSettings();
         try { localStorage.removeItem(storageKey); } catch {}
         return;
       }
@@ -4749,13 +10838,17 @@
       userSettings = {
         apiKey: parsed.apiKey || null,
         model: parsed.model || null,
-        keyProvider: inferKeyProvider(parsed.apiKey || '')
+        keyProvider: inferKeyProvider(parsed.apiKey || ''),
+        // Settings saved before the budget existed have none, which is the default and
+        // no cause for a notice. One that is there but not an offered size reads as the
+        // default too: the server refuses any other, so it must not be sent.
+        memoryBudgetMb: normalizeMemoryBudget(parsed.memoryBudgetMb)
       };
     } catch (e) {
       // localStorage access error
       console.error('[OSA] Cannot access localStorage for settings:', e.message);
       queuePendingNotice('Cannot access browser storage. Settings will not persist.');
-      userSettings = { apiKey: null, model: null, keyProvider: null };
+      userSettings = defaultUserSettings();
     }
   }
 
@@ -4839,6 +10932,25 @@
     }
     if (w.dataset_suggested_questions != null && !_userSetKeys.has('datasetSuggestedQuestions')) {
       CONFIG.datasetSuggestedQuestions = w.dataset_suggested_questions;
+      changed = true;
+    }
+    if (w.search_paths != null && !_userSetKeys.has('searchPaths')) {
+      // Paths only: anything else the server sent is not a place the reader can be.
+      CONFIG.searchPaths = Array.isArray(w.search_paths)
+        ? w.search_paths.filter((path) => typeof path === 'string' && path.startsWith('/'))
+        : [];
+      changed = true;
+    }
+    if (w.center_start != null && !_userSetKeys.has('centerStart')) {
+      CONFIG.centerStart = w.center_start;
+      changed = true;
+    }
+    if (w.analysis_docs != null && !_userSetKeys.has('analysisDocs')) {
+      CONFIG.analysisDocs = w.analysis_docs;
+      changed = true;
+    }
+    if (w.privacy_url != null && !_userSetKeys.has('privacyUrl')) {
+      CONFIG.privacyUrl = w.privacy_url;
       changed = true;
     }
     if (w.theme_color != null && !_userSetKeys.has('themeColor')) {
@@ -5031,6 +11143,8 @@
           applyWidgetConfig();
         }
         rememberWidget(data.widget, requested);
+        // A search path the config names may make this page the search page.
+        evaluateContextSwitch();
       } else if (data) {
         console.warn('[OSA] API response missing widget config; using local defaults');
       }
@@ -5079,10 +11193,71 @@
     status: 32,
     stdout: 4000,
     stderr: 4000,
+    // The full Python traceback of a failed run, which the browser keeps for
+    // get_full_output (recordedTraceback). Most of it is the runtime's own frames,
+    // so it is cut like the other output, from the middle.
+    traceback: 4000,
     // A save-failure note (see withWorkspaceNote, osa-controller.js), shown
     // regardless of the run's own status, unlike stderr below.
     workspaceNote: 2000,
   });
+
+  // The streams of a run that are kept from the middle when they are too long:
+  // the worker's own cut (osa-output.js _clip) does the same, for the same reason,
+  // and an error is written at the END of stderr, which a cut from the end loses.
+  const OUTPUT_FIELDS = Object.freeze(['stdout', 'stderr', 'traceback']);
+
+  // The marker the worker's _clip and the widget's own clipOutput leave where text
+  // was cut: "... N characters omitted ...", on a line of its own (its line breaks are
+  // part of the marker, not of the output).
+  const OMITTED_MARKER = /\n?\.\.\. (\d+) characters omitted \.\.\.\n?/g;
+
+  // How many characters of the output are not in `text`, from the markers in it.
+  function omittedCharacters(text) {
+    let total = 0;
+    for (const match of String(text || '').matchAll(OMITTED_MARKER)) total += Number(match[1]);
+    return total;
+  }
+
+  function omittedMarker(count) {
+    return `\n... ${count} characters omitted ...\n`;
+  }
+
+  // `text` held to `limit` characters, keeping both ends (60% and 40%, as the
+  // worker does) and a marker that says how much was dropped. The count is of the
+  // original output, so a worker marker that falls in the dropped middle adds its
+  // own count to ours instead of vanishing, and a marker is never kept in half.
+  function clipOutput(text, limit) {
+    if (text.length <= limit) return text;
+    const markers = Array.from(text.matchAll(OMITTED_MARKER), (match) => ({
+      start: match.index,
+      end: match.index + match[0].length,
+      count: Number(match[1]),
+    }));
+    let markerLength = omittedMarker(text.length).length;
+    let headEnd = 0;
+    let tailStart = text.length;
+    let dropped = text.length;
+    // The marker's own length depends on the digits of the count, which depend on
+    // how much room it leaves: the digits only ever grow, so this settles.
+    for (let pass = 0; pass < 4; pass++) {
+      const room = limit - markerLength;
+      headEnd = Math.floor(room * 0.6);
+      tailStart = text.length - (room - headEnd);
+      for (const marker of markers) {
+        if (marker.start < headEnd && headEnd < marker.end) headEnd = marker.start;
+        if (marker.start < tailStart && tailStart < marker.end) tailStart = marker.end;
+      }
+      dropped = tailStart - headEnd;
+      for (const marker of markers) {
+        if (marker.start >= headEnd && marker.end <= tailStart) dropped += marker.count - (marker.end - marker.start);
+      }
+      const next = omittedMarker(dropped).length;
+      if (next === markerLength) break;
+      markerLength = next;
+    }
+    return (text.slice(0, headEnd) + omittedMarker(dropped) + text.slice(tailStart)).slice(0, limit);
+  }
 
   // The heading of a run's record, by result status.
   const EXECUTION_LABELS = Object.freeze({
@@ -5190,6 +11365,10 @@
           workspace: workspaceStore,
         });
         runtimeApi = api;
+        // The notebook card (E4.3) needs the builder, and a restored chat holds
+        // plans the progress strip could not read before this, so a chat
+        // already on screen is drawn again now that both are available.
+        renderIfMounted();
       } catch (err) {
         browserRuntime = null;
         browserTools = null;
@@ -5239,6 +11418,103 @@
   // panel's view of "what is saved" is never a beat behind the controller's.
   function getWorkspaceStore() {
     return workspaceStore;
+  }
+
+  // --- Saved figures in restored chats (E1.5, #658) ---
+  // A chat's own storage never holds figures (saveHistory drops them), but every
+  // figure a run drew was saved in the workspace's IndexedDB, which any window of
+  // this origin can read, the pop-out included. A restored or opened chat keeps
+  // each run's `figureCount`; hydrateFigures reads those figures back into memory.
+
+  function bytesToBase64(bytes) {
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
+  // The workspace once the runtime that carries it has loaded, or null when this
+  // page has none. Waits for the community config, which says whether the runtime
+  // is wanted at all.
+  async function workspaceStoreWhenReady() {
+    if (communityConfigReady) await communityConfigReady;
+    const ready = browserToolsReady ? await browserToolsReady : null;
+    return ready ? getWorkspaceStore() : null;
+  }
+
+  // The runs of the chat on screen that drew figures which are not in memory, and
+  // are not being read right now.
+  function runsAwaitingFigures() {
+    const runs = [];
+    for (const message of messages) {
+      if (!message || !Array.isArray(message.executions)) continue;
+      for (const run of message.executions) {
+        if (!run || typeof run.callId !== 'string' || run.callId === '' || run._figuresLoading === true) continue;
+        const inMemory = Array.isArray(run.images) && run.images.length > 0;
+        if (normalizeFigureCount(run.figureCount) > 0 && !inMemory) runs.push(run);
+      }
+    }
+    return runs;
+  }
+
+  // Read the figures of the chat's runs back from the workspace once the runtime
+  // (which carries the workspace's code) is ready, put them on the runs as the
+  // images a run just produced would be, and redraw. Memory only: saveHistory
+  // still stores no image. Two outcomes are told apart. When the workspace was
+  // reached and answered, a figure it lacks (deleted, never saved) is counted on the
+  // run (_figuresMissing), which shows a one-line note instead. When it could not be
+  // reached or read (no runtime, no IndexedDB, a deadline), or cannot say which run a
+  // call id is (the reader's own person-run-N), nothing is known about the figures:
+  // the run is marked _figuresUnavailable, keeps its count, and is read again the next
+  // time this is called. Safe to call at any time and as often as asked: a run being
+  // read is not read twice, and one with nothing to read is left alone.
+  async function hydrateFigures() {
+    const runs = runsAwaitingFigures();
+    if (runs.length === 0) return;
+    for (const run of runs) run._figuresLoading = true;
+    // null until the workspace has answered.
+    let figures = null;
+    // Never draws inside the call that asked: a caller that has just changed the chat
+    // draws it itself.
+    await null;
+    try {
+      const store = await workspaceStoreWhenReady();
+      if (store) figures = await store.figuresForCalls(runs.map((run) => run.callId));
+    } catch (err) {
+      console.warn('[OSA] Could not read the saved figures:', err && err.message);
+    }
+    for (const run of runs) {
+      delete run._figuresLoading;
+      if (!figures || (figures.ambiguous instanceof Set && figures.ambiguous.has(run.callId))) {
+        run._figuresUnavailable = true;
+        delete run._figuresMissing;
+        continue;
+      }
+      delete run._figuresUnavailable;
+      const wanted = normalizeFigureCount(run.figureCount);
+      run.images = (figures.get(run.callId) || []).slice(0, wanted)
+        .map((bytes) => ({ mime: 'image/png', data_base64: bytesToBase64(bytes) }));
+      if (run.images.length < wanted) run._figuresMissing = wanted - run.images.length;
+      else delete run._figuresMissing;
+    }
+    const container = document.querySelector('.osa-chat-widget');
+    if (container && messages.some((m) => m && Array.isArray(m.executions) && m.executions.some((run) => runs.includes(run)))) {
+      renderMessages(container, { follow: false });
+    }
+  }
+
+  // The line a run shows in place of figures it has no image for: gone from the
+  // workspace, or not readable this time.
+  function missingFiguresHtml(run) {
+    if (run._figuresUnavailable === true) {
+      return '<div class="osa-figure-note">Figures from this run could not be loaded.</div>';
+    }
+    const count = Number.isInteger(run._figuresMissing) ? run._figuresMissing : 0;
+    if (count <= 0) return '';
+    const what = count === 1 ? 'A figure from this run is' : `${count} figures from this run are`;
+    return `<div class="osa-figure-note">${what} no longer saved in this browser.</div>`;
   }
 
   function formatWorkspaceBytes(n) {
@@ -5350,7 +11626,16 @@
   // config and the runtime, so a question typed the moment the page opens is
   // not sent without them; after that it resolves at once.
   function declaredClientTools() {
-    return declaredClientToolsWithin(communityConfigReady, () => browserToolsReady, 3000);
+    return declaredClientToolsWithin(communityConfigReady, () => browserToolsReady, 3000).then(withPlanTool);
+  }
+
+  // `propose_plan` rides along with the tools the controller declares, and only once the
+  // runtime that carries the plan logic has loaded: that is what can answer one. A page
+  // that declared it without could park a plan nobody could decide.
+  function withPlanTool(declared) {
+    if (!Array.isArray(declared) || declared.length === 0) return declared;
+    if (!runtimeApi || !runtimeApi.plan || declared.includes(PROPOSE_PLAN_TOOL)) return declared;
+    return [...declared, PROPOSE_PLAN_TOOL];
   }
 
   // ONE deadline covers both waits, deliberately: it bounds how long a first
@@ -5462,6 +11747,12 @@
   // The gate the controller calls. Resolves with the person's decision, and
   // always resolves: see renderIfMounted.
   function askToRunCode(prompt) {
+    // An approved plan is consent to its own steps (E2.3): a run that is the next step,
+    // or the next attempt of one that failed, is not asked about. Any other run is, and
+    // so is every run once the plan is stopped, or changes were asked for.
+    if (runtimeApi.plan && runtimeApi.plan.nextRunOf(messages)) {
+      return Promise.resolve(runtimeApi.GATE_DECISION.RUN);
+    }
     return new Promise((resolve) => {
       toolActivity = askingActivity(prompt, (decision, alwaysRun) => {
         try {
@@ -5481,13 +11772,26 @@
   }
 
   function clipField(value, field) {
-    return typeof value === 'string' ? value.slice(0, EXECUTION_FIELD_LIMITS[field]) : '';
+    if (typeof value !== 'string') return '';
+    return OUTPUT_FIELDS.includes(field)
+      ? clipOutput(value, EXECUTION_FIELD_LIMITS[field])
+      : value.slice(0, EXECUTION_FIELD_LIMITS[field]);
+  }
+
+  // The full Python traceback the browser kept for this call (get_full_output's
+  // "traceback" stream), or ''. It is kept in this tab only, and only for the runs
+  // the runtime remembers, so a run it no longer holds simply has none.
+  function recordedTraceback(callId) {
+    const store = browserRuntime && browserRuntime.outputs;
+    if (!store || typeof store.get !== 'function' || typeof callId !== 'string' || !callId) return '';
+    const entry = store.get(callId);
+    return entry && typeof entry.traceback === 'string' ? entry.traceback : '';
   }
 
   // What the reader is shown of a run, kept on the reply. The images are shown
   // now and never stored: three figures can be megabytes, and browser storage
   // for a whole conversation is a few.
-  function executionRecord(request, result) {
+  function executionRecord(request, result, traceback = '') {
     const prompt = requestPrompt(request);
     return {
       callId: clipField(request && request.call_id, 'callId'),
@@ -5497,12 +11801,36 @@
       status: clipField(result && result.status, 'status'),
       stdout: clipField(result && result.stdout, 'stdout'),
       stderr: clipField(result && result.stderr, 'stderr'),
+      traceback: clipField(traceback, 'traceback'),
       images: result && Array.isArray(result.images) ? result.images : [],
       local: false,
       // Non-enumerable on `result` (osa-controller.js's withWorkspaceNote),
       // so a plain property read is the only way to see it; it never rode
       // along in what was sent to the server.
       workspaceNote: clipField(result && result.workspaceFailureNote, 'workspaceNote'),
+      ...heapFields(request && request.call_id),
+    };
+  }
+
+  // The heap after the run `callId` and the budget it ran under, as the run's record keeps
+  // them (E5.1); nothing when the runtime reported no heap (a run refused before it
+  // started, a timeout) or has not loaded. Read from the runtime beside the result, which
+  // does not carry it (see PyodideRuntime#heapBytes).
+  function heapFields(callId) {
+    if (!browserRuntime || typeof browserRuntime.heapBytes !== 'function'
+      || !runtimeApi || !runtimeApi.memory || typeof callId !== 'string' || !callId) return {};
+    const heapMb = runtimeApi.memory.heapMbFromBytes(browserRuntime.heapBytes(callId));
+    if (!heapMb) return {};
+    // The heap the runtime reported before this run, whichever chat that run was in, so the
+    // card can tell the run that took the heap past the budget from the ones that only report
+    // what it left (heapReport). A restarted runtime reports a smaller figure than this one,
+    // which heapReport reads as a run that grew it.
+    const heapBeforeMb = lastReportedHeapMb;
+    lastReportedHeapMb = heapMb;
+    return {
+      heapMb,
+      budgetMb: normalizeMemoryBudget(userSettings.memoryBudgetMb),
+      ...(heapBeforeMb ? { heapBeforeMb } : {}),
     };
   }
 
@@ -5510,7 +11838,7 @@
   // (ClientToolController#runLocal) rather than one the assistant asked for:
   // no request came from the server, so this is built from the edited code
   // and description directly instead of requestPrompt().
-  function localExecutionRecord(tool, description, code, result) {
+  function localExecutionRecord(tool, description, code, result, traceback = '') {
     return {
       callId: clipField(result && result.call_id, 'callId'),
       tool: clipField(tool, 'tool'),
@@ -5519,11 +11847,13 @@
       status: clipField(result && result.status, 'status'),
       stdout: clipField(result && result.stdout, 'stdout'),
       stderr: clipField(result && result.stderr, 'stderr'),
+      traceback: clipField(traceback, 'traceback'),
       images: result && Array.isArray(result.images) ? result.images : [],
       local: true,
       // The reader's own run never reaches the server at all, so this note
       // is the ONLY place a save failure on it is ever visible to anyone.
       workspaceNote: clipField(result && result.workspaceFailureNote, 'workspaceNote'),
+      ...heapFields(result && result.call_id),
     };
   }
 
@@ -5578,7 +11908,7 @@
       showError(container, `Could not run this code: ${outcome.reason}`);
       return;
     }
-    const record = localExecutionRecord(run.tool, run.description || '', code, outcome.result);
+    const record = localExecutionRecord(run.tool, run.description || '', code, outcome.result, recordedTraceback(outcome.result && outcome.result.call_id));
     message.executions = message.executions.concat(record);
     run._localResult = {
       callId: record.callId,
@@ -5618,7 +11948,14 @@
         'Send your message again and the assistant will answer without it.'
       );
     }
+    // A plan is answered by the reader, not the runtime (see the Plan card block).
+    if (request.tool === PROPOSE_PLAN_TOOL && runtimeApi.plan) {
+      return answerPlanRequest(container, request, messageIndex);
+    }
     const runsCode = request.tool !== runtimeApi.FULL_OUTPUT_TOOL_NAME;
+    // The step of the approved plan this run is, read before the gate asks about it.
+    const planned = runsCode && runtimeApi.plan ? runtimeApi.plan.nextRunOf(messages) : null;
+    if (planned && currentReply) currentReply.forPlan = true;
     let result;
     try {
       if (runsCode) toolActivity = runningActivity(requestPrompt(request));
@@ -5631,7 +11968,10 @@
     }
     const message = messages[messageIndex];
     if (message && runsCode) {
-      message.executions = (message.executions || []).concat(executionRecord(request, result));
+      const record = executionRecord(request, result, recordedTraceback(request.call_id));
+      message.executions = (message.executions || []).concat(
+        planned ? { ...record, ...plannedRunFields(planned, result) } : record
+      );
     }
     // The result goes back to the model next, which reads it before anything else
     // happens: said until the continuing stream shows what comes of it (#538). The run
@@ -5661,7 +12001,25 @@
     let current = outcome;
     while (current && current.toolRequest) {
       const { toolRequest, messageIndex } = current;
-      runs += 1;
+      // Stop plan: this request is left unanswered on purpose, like the one past the cap
+      // below, and the next message abandons it. The reply ends here without an error.
+      if (currentReply && currentReply.stopped) {
+        if (typeof steps.stopped === 'function') steps.stopped(messageIndex);
+        return;
+      }
+      // Pause: the step that was running has finished and been answered; the next one is
+      // left unanswered, like Stop plan's, and the next message ("Run step N") abandons
+      // it. The plan stays approved, so it waits as a paused plan does.
+      if (planPauseDue(toolRequest)) {
+        const current = runtimeApi.plan.currentPlan(messages);
+        const next = runtimeApi.plan.nextRunOf(messages);
+        if (current && next) current.plan.held = next.step;
+        if (typeof steps.stopped === 'function') steps.stopped(messageIndex);
+        return;
+      }
+      // A plan is the reader's to answer and runs no code, so it is not a run (the
+      // server does not count it against the cap either).
+      if (toolRequest.tool !== PROPOSE_PLAN_TOOL) runs += 1;
       let resumed;
       try {
         if (runs > MAX_BROWSER_RUNS_PER_REPLY) {
@@ -5672,6 +12030,10 @@
         const result = await steps.answer(toolRequest, messageIndex);
         resumed = await steps.resume(toolRequest, result);
       } catch (error) {
+        // A decision the server never recorded (the post failed, or the parked call had
+        // expired) must not leave the plan approved on the page: that would run code
+        // without asking, for a plan the model knows nothing of.
+        if (toolRequest.tool === PROPOSE_PLAN_TOOL) revokePlanDecision(messageIndex, toolRequest.call_id);
         noteStoppedReply(messageIndex, error);
         throw error;
       }
@@ -5696,6 +12058,37 @@
       }
     }
     return headers;
+  }
+
+  // What the reader sees when the server forgot the conversation and sending it again
+  // did not work. The next send carries the turns, so only this message has to be sent again.
+  const SESSION_LOST_MESSAGE = 'Earlier messages in this chat were not kept by the server. Your message was not sent; send it again.';
+  // How long to wait for the Turnstile widget to hand out a token after a reset.
+  // Settable only by a test (window.__OSA_TEST__).
+  let turnstileRefreshWaitMs = 10000;
+
+  // Whether a chat response is the server's refusal of a session it does not hold. The body
+  // is read from a copy, so a response that is anything else goes on to be read as usual.
+  async function refusedAsSessionUnknown(response) {
+    if (response.status !== 409) return false;
+    try {
+      return isSessionUnknown(response.status, await response.clone().json());
+    } catch {
+      return false;
+    }
+  }
+
+  // A fresh Turnstile token, or null when none arrived in time. A token is verified once, so
+  // a request that was refused before it reached the model has used the one it carried.
+  async function freshTurnstileToken() {
+    turnstileToken = null;
+    if (turnstileWidgetId === null || !window.turnstile) return null;
+    window.turnstile.reset(turnstileWidgetId);
+    const until = Date.now() + turnstileRefreshWaitMs;
+    while (!turnstileToken && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return turnstileToken;
   }
 
   // Turn a failed response into an Error carrying the most useful message.
@@ -5745,9 +12138,11 @@
     const body = {
       session_id: request.session_id || sessionId,
       result,
-      client_tools: browserTools ? browserTools.declared : [],
+      client_tools: browserTools ? withPlanTool(browserTools.declared) : [],
+      ...usageRequestFields(),
     };
-    const pageContext = getPageContext();
+    const carried = carriedMove();
+    const pageContext = getPageContext(true);
     if (pageContext) body.page_context = pageContext;
     const model = modelOverride || userSettings.model;
     if (model) body.model = model;
@@ -5781,6 +12176,7 @@
           idle.stop();
         }
       }
+      markContextMoveTold(carried);
       const contentType = response.headers.get('content-type') || '';
       if (!contentType.includes('text/event-stream')) {
         idle.stop();
@@ -5795,56 +12191,6 @@
   // escaped plainly before that. Either way every character is escaped.
   function highlightOrEscape(code) {
     return runtimeApi ? runtimeApi.highlightPython(code) : escapeHtml(code);
-  }
-
-  // The panel shown while a tool_request is answered, as HTML.
-  function toolPanelHtml(activity) {
-    if (!activity) return '';
-    const prompt = activity.prompt || {};
-    const description = prompt.description
-      ? `<div class="osa-tool-panel-description">${escapeHtml(prompt.description)}</div>`
-      : '';
-    if (activity.phase === 'asking') {
-      return `
-        <div class="osa-tool-panel" role="group" aria-label="Run code in your browser?">
-          <div class="osa-tool-panel-title">Run this Python in your browser?</div>
-          ${description}
-          <div class="osa-code-block">
-            ${codeToolbarHtml()}
-            <pre class="osa-tool-code"><code>${highlightOrEscape(prompt.code || '')}</code></pre>
-          </div>
-          <div class="osa-tool-actions">
-            <button type="button" class="osa-tool-run">Run</button>
-            <button type="button" class="osa-tool-deny">Don't run</button>
-            <label class="osa-tool-autorun"><input type="checkbox" class="osa-tool-autorun-input"> Run without asking until I reload</label>
-          </div>
-        </div>`;
-    }
-    const progress = activity.progress;
-    const status = progress ? progress.text : 'Running Python in your browser...';
-    // A determinate bar only once the boot reports a step within a known
-    // total; before that (or once the boot is done and code is actually
-    // running) the label stands alone rather than showing a bar frozen at
-    // whatever step last reported.
-    const hasBar = Boolean(progress) && progress.step !== null && progress.steps !== null;
-    const percent = hasBar ? Math.round((progress.step / progress.steps) * 100) : 0;
-    const bar = hasBar
-      ? `<div class="osa-tool-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${progress.steps}" ` +
-        `aria-valuenow="${progress.step}" aria-label="${escapeHtml(status)}">` +
-        `<div class="osa-tool-progress-fill" style="width: ${percent}%"></div></div>`
-      : '';
-    return `
-      <div class="osa-tool-panel" role="status">
-        <div class="osa-tool-panel-title">Running Python</div>
-        ${description}
-        <div class="osa-tool-actions">
-          <div class="osa-tool-progress-row">
-            <span class="osa-tool-status">${escapeHtml(status)}</span>
-            ${bar}
-          </div>
-          <button type="button" class="osa-tool-stop">Stop</button>
-        </div>
-      </div>`;
   }
 
   // Only a PNG whose data is plain base64 reaches an <img src>: the data is
@@ -5894,22 +12240,7 @@
     const workspaceNote = run.workspaceNote
       ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
       : '';
-    // Figures are numbered among the ones shown, from 1, as the workspace
-    // numbers a run's figure-K.png; data-image-index is the figure's place in
-    // the record, which the click reads the bytes from.
-    let figureNumber = 0;
-    const images = (Array.isArray(run.images) ? run.images : [])
-      .map((image, imageIndex) => {
-        if (!isShowableImage(image)) return '';
-        figureNumber += 1;
-        const img = `<img alt="Figure ${figureNumber} produced by the code" src="data:image/png;base64,${image.data_base64}">`;
-        if (!located) return img;
-        const filename = figureFileName(located.msgIndex, located.runIndex, figureNumber);
-        return `<div class="osa-execution-figure">${img}<div class="osa-figure-actions">` +
-          `<button type="button" class="osa-figure-download" data-msg-index="${escapeHtml(String(located.msgIndex))}" data-run-index="${escapeHtml(String(located.runIndex))}" data-image-index="${escapeHtml(String(imageIndex))}" ` +
-          `aria-label="Download figure ${figureNumber} as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}<span>Download</span></button></div></div>`;
-      })
-      .join('');
+    const images = runFiguresHtml(run, located);
     return `${stdout}${stderr}${workspaceNote}${images}`;
   }
 
@@ -5978,17 +12309,24 @@
       </div>`;
   }
 
-  // The bar over a code block (#491): a status line for "Copied", Copy, and,
-  // given a file name, Download. `where` names the run the buttons act on, so a
-  // click reads the code from the run's record rather than from the page; the
-  // permission gate's bar has neither, and its Copy reads the gate's own prompt.
-  function codeToolbarHtml({ where = '', filename = '' } = {}) {
+  // The bar over a code block (#491): a status line for "Copied", Copy and, given a
+  // file name, Download. `where` names the run the buttons act on, so a click reads
+  // the code from the run's record rather than from the page; the permission gate's
+  // bar has neither, and its Copy reads the gate's own prompt. A run card has its own
+  // status line and, until the run failed, its own Copy button, so it asks for neither.
+  function codeToolbarHtml({ where = '', filename = '', copy = true, status = true } = {}) {
     const download = filename
       ? `<button type="button" class="osa-code-action osa-code-download"${where} aria-label="Download the code as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}</button>`
       : '';
+    const copyButton = copy
+      ? `<button type="button" class="osa-code-action osa-code-copy"${where} aria-label="Copy the code" title="Copy the code">${ICONS.copy}</button>`
+      : '';
+    const statusLine = status
+      ? '<span class="osa-code-status" role="status" aria-live="polite"></span>'
+      : '';
     return `<div class="osa-code-toolbar">
-        <span class="osa-code-status" role="status" aria-live="polite"></span>
-        <button type="button" class="osa-code-action osa-code-copy"${where} aria-label="Copy the code" title="Copy the code">${ICONS.copy}</button>${download}
+        ${statusLine}
+        ${copyButton}${download}
       </div>`;
   }
 
@@ -6021,79 +12359,1285 @@
     return `${prefix}-run-${ordinal}`;
   }
 
-  // A run's code as a disclosure of its own (#491), closed unless the reader
-  // opened it (run._codeOpen, which a re-render keeps and storage does not), with
-  // Copy and Download over it once the reply it belongs to is known.
-  function runCodeHtml(run, msgIndex, runIndex) {
-    const lines = codeLineCount(run.code);
-    const located = typeof msgIndex === 'number';
-    const where = located ? ` data-msg-index="${msgIndex}" data-run-index="${runIndex}"` : '';
-    const toolbar = located ? codeToolbarHtml({ where, filename: `${runFileStem(msgIndex, runIndex)}.py` }) : '';
-    return `
-        <details class="osa-execution-code osa-code-block"${where}${run._codeOpen === true ? ' open' : ''}>
-          <summary>Code <span class="osa-execution-code-lines">· ${lines} ${lines === 1 ? 'line' : 'lines'}</span></summary>
-          ${toolbar}
-          <pre class="osa-tool-code"><code>${highlightOrEscape(run.code)}</code></pre>
-        </details>`;
+  // --- Run card ---
+  //
+  // One card for everything a browser run is: the question whether to run it
+  // (asking), the run itself (running) and what came of it (done, in any status).
+  // The builders here take state and return HTML: they read no page state, so a
+  // card restored from storage renders the same before the runtime bundle has
+  // loaded as after, and a test can render any card from a plain object. Only the
+  // two adapters at the end (toolPanelHtml, executionsHtml) read the widget's own
+  // state, to hand the builders what they need.
+  //
+  // This script is one classic file pinned by SRI, so the card cannot be a module
+  // of its own; this block is that module, kept in one piece.
+  //
+  // Every interpolated value is escaped: the description and the code are the
+  // model's, the output is whatever the code printed, and a stored record is
+  // whatever storage holds.
+
+  // A run that went wrong, as opposed to one the reader declined or stopped.
+  const RUN_FAILED_STATUSES = Object.freeze(['error', 'timeout', 'oom']);
+
+  function runIcon(paths) {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
+      `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
   }
 
-  // What ran for a reply, as HTML: one entry per run, its output and figures
-  // behind one disclosure and its code behind another (#491). Every field is
-  // escaped: the description and the code are the model's, the output is
-  // whatever the code printed, and a stored record is whatever storage holds.
+  const RUN_ICONS = Object.freeze({
+    ok: runIcon('<polyline points="20 6 9 17 4 12"></polyline>'),
+    failed: runIcon('<circle cx="12" cy="12" r="9"></circle><line x1="12" y1="7" x2="12" y2="13"></line><line x1="12" y1="16.5" x2="12" y2="17"></line>'),
+    stopped: runIcon('<circle cx="12" cy="12" r="9"></circle><line x1="9" y1="12" x2="15" y2="12"></line>'),
+    asking: runIcon('<polyline points="8 7 3 12 8 17"></polyline><polyline points="16 7 21 12 16 17"></polyline>'),
+    running: runIcon('<circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline>'),
+    warning: runIcon('<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12" y2="17.5"></line>'),
+    code: runIcon('<polyline points="8 7 3 12 8 17"></polyline><polyline points="16 7 21 12 16 17"></polyline>'),
+    chevron: runIcon('<polyline points="6 9 12 15 18 9"></polyline>').replace('<svg ', '<svg class="osa-run-card-chevron" '),
+  });
+
+  function runFailed(run) {
+    return RUN_FAILED_STATUSES.includes(run.status);
+  }
+
+  // "Ran Python", "Python raised an error" and the rest (EXECUTION_LABELS); a
+  // status nobody named, which includes the names Object.prototype has, reads
+  // "Python". The reader's own runs say so.
+  function runTitle(run) {
+    const label = Object.prototype.hasOwnProperty.call(EXECUTION_LABELS, run.status)
+      ? EXECUTION_LABELS[run.status]
+      : 'Python';
+    return `${run.local === true ? 'Your run: ' : ''}${label}`;
+  }
+
+  function lineCountLabel(count) {
+    return `${count} ${count === 1 ? 'line' : 'lines'}`;
+  }
+
+  function textLineCount(text) {
+    return text === '' ? 0 : codeLineCount(text);
+  }
+
+  // The name of an exception, as osa-output.js _error_text writes it before the
+  // colon: dotted, ending in Error, Exception, Exit, Interrupt or Iteration.
+  const EXCEPTION_NAME = /^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Iteration)$/;
+  // Any capitalized name, for the line directly above an offending-line marker.
+  const ANY_TYPE_LINE = /^([A-Za-z_][\w.]*)(?::[ \t]?(.*))?$/;
+  // "  line 4: erp[name] = ..." (the offending line, which _error_text adds when
+  // the exception came from a line of the run's own code).
+  const MAX_SHOWN_LINE_NUMBER = 1000000;
+  const ERROR_LINE_MARK = /^ {2}line (\d+)(?:: (.*))?$/;
+
+  // The type the exception itself has, read from the full traceback the browser kept:
+  // the first unindented line after the last indented one (a frame's "File" line or its
+  // source), which is where Python starts writing the exception. stderr alone cannot say
+  // this, since a message of several lines may hold a line that reads like "Name: text".
+  // '' when there is no traceback or it ends some other way.
+  function tracebackTypeName(traceback) {
+    const lines = String(traceback || '').replace(/\s+$/, '').split('\n');
+    let lastIndented = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^[ \t]/.test(lines[i])) {
+        lastIndented = i;
+        break;
+      }
+    }
+    const first = lines[lastIndented + 1];
+    const match = first === undefined ? null : ANY_TYPE_LINE.exec(first);
+    return match ? match[1] : '';
+  }
+
+  // What a failed run's stderr says went wrong. The runtime writes "Type: message",
+  // then "  line N: code" when it knows the line (osa-output.js _error_text), after
+  // whatever the code itself wrote to stderr. A run it stopped (timeout, out of
+  // memory) has one "[runtime] ..." sentence instead.
   //
-  // msgIndex names the reply these runs belong to, so the edit/run/cancel
-  // controls and the code's Copy and Download know which record to act on;
-  // omitted, none of them render (canRunLocalCode() still gates "Edit and run"
-  // first).
+  // Returns {type, message, line, lineCode, before, text}: `before` is what stderr
+  // held ahead of the error, `text` the error as written (what "Copy error" copies).
+  // A stderr that does not parse comes back whole as the message, so nothing a
+  // failed run printed is ever hidden for want of a pattern.
+  function runErrorInfo(run) {
+    const stderr = String(run.stderr || '').replace(/\s+$/, '');
+    if (stderr === '') return null;
+    if (run.status !== 'error') {
+      return { type: '', message: stderr.replace(/^\[runtime\] /, ''), line: 0, lineCode: '', before: '', text: stderr };
+    }
+    const lines = stderr.split('\n');
+    let anchor = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (ERROR_LINE_MARK.test(lines[i])) {
+        anchor = i;
+        break;
+      }
+    }
+    const from = anchor >= 0 ? anchor - 1 : lines.length - 1;
+    let typeAt = -1;
+    let typeName = '';
+    let rest = '';
+    // The exception's own type, when the traceback names it, wins over a line of its
+    // message that looks like one: the nearest line above the marker with that name.
+    // The traceback writes a library's exception with its module ("json.decoder.JSONDecodeError"),
+    // stderr without ("JSONDecodeError"), so names are compared by their last segment.
+    const lastSegment = (name) => name.split('.').pop();
+    const known = lastSegment(tracebackTypeName(run.traceback));
+    const findType = (matches) => {
+      for (let i = from; i >= 0; i--) {
+        const match = ANY_TYPE_LINE.exec(lines[i]);
+        if (match && matches(match[1])) {
+          typeAt = i;
+          [, typeName, rest = ''] = match;
+          return;
+        }
+      }
+    };
+    if (known !== '') findType((name) => lastSegment(name) === known);
+    // A traceback that disagrees with stderr never does worse than having none.
+    if (typeAt < 0) findType((name) => EXCEPTION_NAME.test(name));
+    if (typeAt < 0 && anchor > 0) {
+      // A name that does not end like an exception's, directly above the marker.
+      const match = ANY_TYPE_LINE.exec(lines[anchor - 1]);
+      if (match && /^[A-Z]/.test(match[1].split('.').pop())) {
+        typeAt = anchor - 1;
+        [, typeName, rest = ''] = match;
+      }
+    }
+    if (typeAt < 0) {
+      return { type: '', message: stderr, line: 0, lineCode: '', before: '', text: stderr };
+    }
+    const markMatch = anchor >= 0 ? ERROR_LINE_MARK.exec(lines[anchor]) : null;
+    const messageLines = [rest, ...lines.slice(typeAt + 1, anchor >= 0 ? anchor : typeAt + 1)];
+    return {
+      type: typeName,
+      // "(<cell>, line 1)" is a SyntaxError's own suffix; the line is said below it.
+      message: messageLines.join('\n').trim().replace(/ \(<cell>, line \d+\)$/, ''),
+      // A line number no code has (a run's code is bounded far below this) is not drawn.
+      line: markMatch && Number(markMatch[1]) <= MAX_SHOWN_LINE_NUMBER ? Number(markMatch[1]) : 0,
+      lineCode: markMatch && markMatch[2] ? markMatch[2] : '',
+      before: lines.slice(0, typeAt).join('\n').trim(),
+      text: lines.slice(typeAt, anchor >= 0 ? anchor + 1 : typeAt + 1).join('\n'),
+    };
+  }
+
+  // How many warnings stderr holds: each line that says "Warning:" (Python writes
+  // "<cell>:2: UserWarning: ..." for each one).
+  function warningCount(stderr) {
+    return String(stderr || '').split('\n').filter((line) => line.includes('Warning:')).length;
+  }
+
+  // The code around the failing line, with that line marked: a glyph and a hidden
+  // label as well as the color, so it reads without one. Taken from the run's code;
+  // the line the runtime quoted stands in when the code does not reach that far.
+  function runExcerptHtml(run, error) {
+    const source = String(run.code || '').split('\n');
+    const rows = [];
+    if (error.line <= source.length) {
+      for (let n = Math.max(1, error.line - 1); n <= Math.min(source.length, error.line + 1); n++) {
+        rows.push([n, source[n - 1]]);
+      }
+    } else {
+      rows.push([error.line, error.lineCode]);
+    }
+    const lines = rows.map(([number, text]) => {
+      const marked = number === error.line;
+      return `<div class="osa-run-card-line${marked ? ' osa-run-card-line-marked' : ''}">` +
+        `<span class="osa-run-card-marker" aria-hidden="true">${marked ? '&gt;' : ''}</span>` +
+        `<span class="osa-run-card-lineno">${escapeHtml(String(number))}</span>` +
+        `<span class="osa-run-card-linetext">${marked ? '<span class="osa-sr-only">Failing line: </span>' : ''}${escapeHtml(text)}</span></div>`;
+    }).join('');
+    return `<div class="osa-run-card-excerpt" tabindex="0" role="group" aria-label="${escapeHtml(`Code around line ${error.line}`)}">${lines}</div>`;
+  }
+
+  // The failure in words, then the failing line in its place.
+  function runErrorHtml(run, error) {
+    const type = error.type ? `<span class="osa-run-card-error-type">${escapeHtml(error.type)}</span>` : '';
+    const text = `${type}${error.type && error.message ? ': ' : ''}${escapeHtml(error.message)}`;
+    if (text === '') return '';
+    return `<div class="osa-run-card-error"><div class="osa-run-card-error-text" tabindex="0" role="group" aria-label="Error message">${text}</div>` +
+      `${error.line ? runExcerptHtml(run, error) : ''}</div>`;
+  }
+
+  // Whether a reply's runs drew a figure the card shows, so a reply's image reference can
+  // point to "the figure above" (#666).
+  function messageHasFigure(msg) {
+    return Array.isArray(msg && msg.executions) && msg.executions.some((run) =>
+      run && Array.isArray(run.images) && run.images.some((image) => isShowableImage(image)));
+  }
+
+  // The figures a run drew, each with its Download once the reply it belongs to is
+  // known (`located`, {msgIndex, runIndex}). Numbered among the ones shown, from 1,
+  // as the workspace numbers a run's figure-K.png; data-image-index is the figure's
+  // place in the record, which the click reads the bytes from.
+  function runFiguresHtml(run, located = null) {
+    let figureNumber = 0;
+    return (Array.isArray(run.images) ? run.images : [])
+      .map((image, imageIndex) => {
+        if (!isShowableImage(image)) return '';
+        figureNumber += 1;
+        const img = `<img alt="Figure ${figureNumber} produced by the code" src="data:image/png;base64,${image.data_base64}">`;
+        if (!located) return img;
+        const filename = figureFileName(located.msgIndex, located.runIndex, figureNumber);
+        return `<div class="osa-execution-figure">${img}<div class="osa-figure-actions">` +
+          `<button type="button" class="osa-figure-download" data-msg-index="${escapeHtml(String(located.msgIndex))}" data-run-index="${escapeHtml(String(located.runIndex))}" data-image-index="${escapeHtml(String(imageIndex))}" ` +
+          `aria-label="Download figure ${figureNumber} as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}<span>Download</span></button></div></div>`;
+      })
+      .join('') + missingFiguresHtml(run);
+  }
+
+  // A button that shows and hides a panel of the card: aria-expanded says which,
+  // aria-controls names the panel, and the click handler (see the run listeners in
+  // renderMessages) flips both in place and remembers the choice on the record.
+  // `openLabel`, when given, is what the button says while its panel is open.
+  // The label swap (Show code, Hide code) is a deliberate choice for a reader who can see
+  // it, and aria-expanded carries the state for one who cannot; the accessible name is the
+  // visible text (WCAG 2.5.3, label in name), so it is not held apart in an aria-label.
+  function runToggleHtml({ panel, id, where, label, openLabel = '', open, className = '', icon = '' }) {
+    const labels = openLabel
+      ? ` data-label-closed="${escapeHtml(label)}" data-label-open="${escapeHtml(openLabel)}"`
+      : '';
+    return `<button type="button" class="osa-run-card-button osa-run-card-toggle ${className}"${where} data-panel="${escapeHtml(panel)}" ` +
+      `aria-expanded="${escapeHtml(String(open === true))}" aria-controls="${escapeHtml(id)}"${labels}>` +
+      `${icon}<span class="osa-run-card-label">${escapeHtml(open && openLabel ? openLabel : label)}</span>${RUN_ICONS.chevron}</button>`;
+  }
+
+  function runPanelHtml({ id, open, className = '', inner }) {
+    return `<div class="osa-run-card-panel ${className}" id="${escapeHtml(id)}"${open ? '' : ' hidden'}>${inner}</div>`;
+  }
+
+  // A finished run. `state`: {run, located, retry, editable, editorHtml}.
+  //   run       a stored record (executionRecord's shape; transient _flags may ride on it)
+  //   located   {msgIndex, runIndex} of the reply it belongs to, or null, in which case
+  //             no button that acts on the record is drawn
+  //   retry     {used, of} while the reply is waiting on the assistant after this
+  //             failed run (it may run again, or answer in prose), else null
+  //   editable  whether "Edit and run" is offered
+  //   editorHtml the inline editor, when the reader has it open
+  function runDoneCardHtml({ run, located = null, retry = null, editable = false, editorHtml = '' }) {
+    const failed = runFailed(run);
+    // A planned step the runtime refused (`denied`) failed as a step, so it reads as one
+    // and names the refusal ("denied_import: scipy"), though it is not a raised error.
+    const stepFailed = planStepFailed(run);
+    const error = failed || stepFailed ? runErrorInfo(run) : null;
+    const msgIndex = located ? located.msgIndex : '';
+    const runIndex = located ? located.runIndex : '';
+    const where = located ? ` data-msg-index="${msgIndex}" data-run-index="${runIndex}"` : '';
+    const idBase = located ? `osa-run-${msgIndex}-${runIndex}` : 'osa-run';
+    const open = run._panelsOpen && typeof run._panelsOpen === 'object' ? run._panelsOpen : {};
+    const outcome = run.status === 'ok' ? 'ok' : (failed || stepFailed ? 'failed' : 'stopped');
+
+    const output = [run.stdout, error ? error.before : ''].filter(Boolean).join('\n');
+    const outputLines = textLineCount(output);
+    const warnings = run.status === 'ok' ? warningCount(run.stderr) : 0;
+    const cut = omittedCharacters(run.stdout) + omittedCharacters(run.stderr);
+    const codeLines = run.code ? codeLineCount(run.code) : 0;
+    const codeId = `${idBase}-code`;
+    const outputId = `${idBase}-output`;
+    const tracebackId = `${idBase}-traceback`;
+    const warningsId = `${idBase}-warnings`;
+    const codeOpen = run._codeOpen === true;
+    // The reader's own run is the thing they came to see, so its output opens; the
+    // assistant's, which the reply usually sums up, waits to be asked for.
+    const outputOpen = open.output === undefined ? run.local === true : open.output === true;
+
+    const buttons = [];
+    if (run.code) {
+      buttons.push(runToggleHtml({
+        panel: 'code',
+        id: codeId,
+        where,
+        label: `${failed ? 'All code' : 'Show code'} · ${lineCountLabel(codeLines)}`,
+        openLabel: `Hide code · ${lineCountLabel(codeLines)}`,
+        open: codeOpen,
+        className: 'osa-run-card-code-toggle',
+        icon: RUN_ICONS.code,
+      }));
+      if (!failed && located) {
+        buttons.push(`<button type="button" class="osa-run-card-button osa-code-copy"${where} data-copy-label="Copy code">Copy code</button>`);
+      }
+    }
+    if (failed && error && located) {
+      if (run.traceback) {
+        buttons.push(runToggleHtml({ panel: 'traceback', id: tracebackId, where, label: 'Full traceback', open: open.traceback === true }));
+      }
+      buttons.push(`<button type="button" class="osa-run-card-button osa-run-card-copy-error"${where} data-copy-label="Copy error">Copy error</button>`);
+    }
+    if (output) {
+      buttons.push(runToggleHtml({ panel: 'output', id: outputId, where, label: `Output · ${lineCountLabel(outputLines)}`, open: outputOpen }));
+    }
+    if (warnings > 0) {
+      buttons.push(runToggleHtml({
+        panel: 'warnings',
+        id: warningsId,
+        where,
+        label: `${warnings} ${warnings === 1 ? 'warning' : 'warnings'}`,
+        open: open.warnings === true,
+        className: 'osa-run-card-warnings-toggle',
+        icon: RUN_ICONS.warning,
+      }));
+    }
+    if (editable && located && !run._editing) {
+      buttons.push(`<button type="button" class="osa-run-card-button osa-rerun-open"${where}>Edit and run</button>`);
+    }
+
+    const panels = [];
+    if (run.code) {
+      const toolbar = located
+        ? codeToolbarHtml({ where, filename: `${runFileStem(msgIndex, runIndex)}.py`, copy: failed, status: false })
+        : '';
+      panels.push(runPanelHtml({
+        id: codeId,
+        open: codeOpen,
+        className: 'osa-code-panel',
+        inner: `${toolbar}<pre class="osa-tool-code"><code>${highlightOrEscape(run.code)}</code></pre>`,
+      }));
+    }
+    if (output) {
+      panels.push(runPanelHtml({ id: outputId, open: outputOpen, inner: `<pre class="osa-execution-output">${escapeHtml(output)}</pre>` }));
+    }
+    if (failed && run.traceback && located) {
+      panels.push(runPanelHtml({ id: tracebackId, open: open.traceback === true, inner: `<pre class="osa-execution-output osa-run-card-traceback">${escapeHtml(run.traceback)}</pre>` }));
+    }
+    if (warnings > 0) {
+      panels.push(runPanelHtml({ id: warningsId, open: open.warnings === true, inner: `<pre class="osa-execution-output">${escapeHtml(run.stderr)}</pre>` }));
+    }
+
+    // A failed step has attempts, not a budget of runs: the line says which one is next.
+    const retryText = retry && retry.step
+      ? `Fixing step ${retry.step} and running it again... attempt ${retry.attempt} of ${retry.of}`
+      : (retry ? `The assistant is looking at this error and may run the code again (${retry.used} of ${retry.of} runs used)` : '');
+    const retryLine = retry
+      ? `<div class="osa-run-card-retry"><span class="osa-activity-pulse" aria-hidden="true"></span>` +
+        `<span>${escapeHtml(retryText)}</span></div>`
+      : '';
+    // Shown regardless of status, unlike stderr: a save failure matters most on a
+    // run whose Python succeeded, and for the reader's own runs this is the only
+    // place it is ever visible to anyone, since that call never reaches the server
+    // for the model to mention it from.
+    const workspaceNote = run.workspaceNote
+      ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
+      : '';
+    // The runtime's memory after the run against the budget it ran under (E5.1), and, when it
+    // passed, which step took it there. The runs after that one only report what it left, in
+    // the plain style: the amber box is for the run that grew the heap. Needs the runtime
+    // bundle's logic, so a restored chat gets it when the bundle has loaded (which draws the
+    // chat again).
+    const heap = runtimeApi && runtimeApi.memory ? runtimeApi.memory.heapReport(run.heapMb, run.budgetMb, run.heapBeforeMb) : null;
+    const heapLine = heap
+      ? `<div class="osa-run-card-heap${heap.grew ? ' osa-run-card-heap-over' : ''}">${escapeHtml(heap.text)}</div>`
+      : '';
+    const heapNoteText = heap && heap.exceeded
+      ? escapeHtml(runtimeApi.memory.overBudgetWarning(heap, { step: run.step, title: run.stepTitle }))
+      : '';
+    const heapWarning = !heapNoteText ? ''
+      : (heap.grew
+        ? `<div class="osa-run-card-memory-warning">${heapNoteText}</div>`
+        : `<div class="osa-run-card-note osa-run-card-heap-held">${heapNoteText}</div>`);
+    const noMessage = run.status === 'error' && !error
+      ? '<div class="osa-run-card-note osa-run-card-no-message">No error message was recorded.</div>'
+      : '';
+    const cutNote = cut > 0
+      ? `<div class="osa-run-card-note osa-run-card-cut">Output was cut: ${escapeHtml(String(cut))} characters not shown.</div>`
+      : '';
+    const localNote = run.local === true
+      ? '<div class="osa-execution-local-note">This run is yours. The assistant has not seen it.</div>'
+      : '';
+    const status = buttons.length
+      ? '<span class="osa-code-status osa-code-status-quiet" role="status" aria-live="polite"></span>'
+      : '';
+
+    return `
+        <div class="osa-run-card osa-run-card-done osa-run-card-${outcome} osa-execution-run osa-code-block" data-status="${escapeHtml(run.status)}"${isPlannedRun(run) ? ` data-plan-step="${escapeHtml(String(run.step))}"` : ''}>
+          <div class="osa-run-card-head">
+            <span class="osa-run-card-icon" aria-hidden="true">${RUN_ICONS[outcome]}</span>
+            <div class="osa-run-card-title">${runHeadingHtml(run, error)}</div>
+            ${runElapsedHtml(run)}
+          </div>
+          ${run.description ? `<div class="osa-run-card-description">${escapeHtml(run.description)}</div>` : ''}
+          ${localNote}
+          ${error ? runErrorHtml(run, error) : noMessage}
+          ${runFiguresHtml(run, located)}
+          ${heapLine}
+          ${heapWarning}
+          ${workspaceNote}
+          ${cutNote}
+          ${retryLine}
+          ${buttons.length ? `<div class="osa-run-card-actions">${buttons.join('')}${status}</div>` : ''}
+          ${panels.join('')}
+          ${editorHtml}
+        </div>`;
+  }
+
+  // The question whether to run the code the assistant wrote, with the code in
+  // view: Run, Don't run, and "until I reload".
+  function runAskingCardHtml({ description, code }) {
+    const described = description
+      ? `<div class="osa-run-card-description osa-tool-panel-description">${escapeHtml(description)}</div>`
+      : '';
+    return `
+      <div class="osa-run-card osa-run-card-asking osa-tool-panel" role="group" aria-label="Run code in your browser?">
+        <div class="osa-run-card-head">
+          <span class="osa-run-card-icon" aria-hidden="true">${RUN_ICONS.asking}</span>
+          <div class="osa-run-card-title osa-tool-panel-title">Run this Python in your browser?</div>
+        </div>
+        ${described}
+        <div class="osa-code-block">
+          ${codeToolbarHtml()}
+          <pre class="osa-tool-code"><code>${highlightOrEscape(code || '')}</code></pre>
+        </div>
+        <div class="osa-tool-actions">
+          <button type="button" class="osa-tool-run">Run</button>
+          <button type="button" class="osa-tool-deny">Don't run</button>
+          <label class="osa-tool-autorun"><input type="checkbox" class="osa-tool-autorun-input"> Run without asking until I reload</label>
+        </div>
+      </div>`;
+  }
+
+  // The code running: what the runtime is doing (booting reports steps, then the
+  // label stands alone while the code itself runs) and Stop.
+  function runRunningCardHtml({ description, progress }) {
+    const described = description
+      ? `<div class="osa-run-card-description osa-tool-panel-description">${escapeHtml(description)}</div>`
+      : '';
+    const status = progress ? progress.text : 'Running Python in your browser...';
+    // A determinate bar only once the boot reports a step within a known total;
+    // before that (or once the boot is done and code is actually running) the label
+    // stands alone rather than showing a bar frozen at whatever step last reported.
+    const hasBar = Boolean(progress) && progress.step !== null && progress.steps !== null;
+    const percent = hasBar ? Math.round((progress.step / progress.steps) * 100) : 0;
+    const bar = hasBar
+      ? `<div class="osa-tool-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${progress.steps}" ` +
+        `aria-valuenow="${progress.step}" aria-label="${escapeHtml(status)}">` +
+        `<div class="osa-tool-progress-fill" style="width: ${percent}%"></div></div>`
+      : '';
+    return `
+      <div class="osa-run-card osa-run-card-running osa-tool-panel" role="status">
+        <div class="osa-run-card-head">
+          <span class="osa-run-card-icon" aria-hidden="true">${RUN_ICONS.running}</span>
+          <div class="osa-run-card-title osa-tool-panel-title">Running Python</div>
+        </div>
+        ${described}
+        <div class="osa-tool-actions">
+          <div class="osa-tool-progress-row">
+            <span class="osa-tool-status">${escapeHtml(status)}</span>
+            ${bar}
+          </div>
+          <button type="button" class="osa-tool-stop">Stop</button>
+        </div>
+      </div>`;
+  }
+
+  // The card for `state.phase`: 'asking', 'running' or 'done'.
+  function runCardHtml(state) {
+    if (state.phase === 'asking') return runAskingCardHtml(state);
+    if (state.phase === 'done') return runDoneCardHtml(state);
+    return runRunningCardHtml(state);
+  }
+
+  // The card shown while a tool_request is answered, as HTML.
+  function toolPanelHtml(activity) {
+    if (!activity) return '';
+    // The plan card, in the reply above, is what is being waited on.
+    if (activity.phase === 'plan') return '<div class="osa-plan-waiting" role="status">Waiting for your decision on the plan.</div>';
+    const prompt = activity.prompt || {};
+    return runCardHtml({
+      phase: activity.phase === 'asking' ? 'asking' : 'running',
+      description: prompt.description,
+      code: prompt.code,
+      progress: activity.progress,
+    });
+  }
+
+  // What ran for a reply, as HTML: one card per run, in order. msgIndex names the
+  // reply the runs belong to, so a card's buttons know which record to act on;
+  // omitted, none of them render. `pending` is whether the reply is still waiting
+  // on the assistant, which is when a failed last run says it will be run again.
   //
-  // A run whose OWN editor is open and has a live result (run._localResult)
-  // is shown inline under that editor rather than as its own separate
-  // block, even though it is already a real entry in `executions` (kept
-  // there so it survives a reload once the editor closes): the two would
-  // otherwise show the exact same run twice in one render.
-  function executionsHtml(executions, msgIndex) {
+  // A run whose OWN editor is open and has a live result (run._localResult) is shown
+  // inline under that editor rather than as its own separate card, even though it
+  // is already a real entry in `executions` (kept there so it survives a reload
+  // once the editor closes): the two would otherwise show the same run twice.
+  function executionsHtml(executions, msgIndex, { pending = false } = {}) {
     if (!Array.isArray(executions) || executions.length === 0) return '';
     const mirrored = new Set(
       executions
         .filter((run) => run && run._editing === true && run._localResult && typeof run._localResult.callId === 'string')
         .map((run) => run._localResult.callId)
     );
+    const located = typeof msgIndex === 'number';
     const canEdit = canRunLocalCode();
+    const assistantRuns = executions.filter((run) => run && run.local !== true).length;
     return executions.map((run, runIndex) => {
       if (mirrored.has(run.callId)) return '';
-      const isLocal = run.local === true;
-      const label = Object.prototype.hasOwnProperty.call(EXECUTION_LABELS, run.status)
-        ? EXECUTION_LABELS[run.status]
-        : 'Python';
-      const title = `${isLocal ? 'Your run: ' : ''}${label}${run.description ? `: ${run.description}` : ''}`;
-      const code = run.code ? runCodeHtml(run, msgIndex, runIndex) : '';
-      const localNote = isLocal
-        ? '<div class="osa-execution-local-note">This run is yours. The assistant has not seen it.</div>'
-        : '';
-      const output = runOutputHtml(run, typeof msgIndex === 'number' ? { msgIndex, runIndex } : null);
-      const hasImages = Array.isArray(run.images) && run.images.some(isShowableImage);
-      const editing = run._editing === true;
-      let rerun = '';
-      if (canEdit && typeof msgIndex === 'number') {
-        rerun = editing
-          ? rerunEditorHtml(run, msgIndex, runIndex)
-          : `<div class="osa-rerun-actions">
-              <button type="button" class="osa-rerun-open" data-msg-index="${msgIndex}" data-run-index="${runIndex}">Edit and run</button>
-            </div>`;
-      }
-      // Figures, a local run, or an open editor all open by default: each is
-      // the point of looking at that particular run. The code is a disclosure
-      // of its own, after the run's (#491), so it opens without the output.
-      return `
-        <div class="osa-execution-run">
-          <details class="osa-execution"${(isLocal || editing || hasImages) ? ' open' : ''}>
-            <summary>${escapeHtml(title)}</summary>
-            ${localNote}${output}${rerun}
-          </details>${code}
-        </div>`;
+      const last = runIndex === executions.length - 1;
+      const stepRetry = planRetryOf(run);
+      const retry = pending && last && (runFailed(run) || planStepFailed(run)) && run.local !== true && assistantRuns < MAX_BROWSER_RUNS_PER_REPLY
+        ? (stepRetry === undefined ? { used: assistantRuns, of: MAX_BROWSER_RUNS_PER_REPLY } : stepRetry)
+        : null;
+      return runCardHtml({
+        phase: 'done',
+        run,
+        located: located ? { msgIndex, runIndex } : null,
+        retry,
+        editable: canEdit,
+        editorHtml: located && canEdit && run._editing === true ? rerunEditorHtml(run, msgIndex, runIndex) : '',
+      });
     }).join('');
   }
+  // --- End run card ---
+
+  // --- Plan card (E2.3, E2.4) ---
+  //
+  // The server's `propose_plan` call (src/tools/client_tools.py) ends a run on a
+  // tool_request like a code call does, but it asks the reader, not the runtime: the
+  // plan card is the question and `/chat/resume` carries the answer, a PlanDecision
+  // (src/api/tool_results.py). After an approval each `execute_code` run of the reply
+  // belongs to a step of the plan, which is what the step headers, the progress strip,
+  // the bar under the conversation (Run step N, Change step N, Stop plan) and the
+  // permission gate read. The rules (which step a run is, what the strip says) are
+  // frontend/osa-plan.js, in the runtime bundle as OSARuntime.plan, since this script
+  // cannot import it; what is here is state, markup and handlers. Without the bundle
+  // the widget does not declare `propose_plan`, and a restored plan still draws.
+  //
+  // The plan lives on the reply that proposed it (`message.plan`), the runs on the
+  // replies that ran them, so everything on screen is read back from the conversation
+  // and a reload shows the same. A paused plan continues in a LATER reply ("Continue
+  // with step 2."), so the newest plan in the conversation is the current one.
+  //
+  // Everything the model wrote (findings, titles, details) and everything the reader
+  // typed is escaped on its way into the markup.
+
+  const PROPOSE_PLAN_TOOL = 'propose_plan';
+  // The server's bounds (MAX_PLAN_* in src/tools/client_tools.py), as osa-plan.js
+  // PLAN_LIMITS holds them for the runtime; the stored copy is bounded here because a
+  // restored chat is read before the runtime bundle has loaded. test-widget-plan-card.js
+  // holds the two to each other.
+  const PLAN_STORAGE_LIMITS = Object.freeze({
+    steps: 8, title: 120, detail: 600, findings: 2000, feedback: 1000, peakMb: 8192, attempts: 2,
+  });
+  const PLAN_STATUS_LABELS = Object.freeze({
+    draft: 'Draft',
+    approved: 'Approved',
+    changes_requested: 'Changes requested',
+    stopped: 'Stopped',
+    unanswered: 'Not answered',
+  });
+  const PLAN_MODE_LABELS = Object.freeze({ pause: 'Pauses after each step', run_all: 'Runs all steps' });
+  // A run longer than a day is a clock that is wrong, not a run.
+  const PLAN_MAX_ELAPSED_MS = 86400000;
+
+  // The decision being waited for: {callId, messageIndex, resolve}, or null.
+  let planWait = null;
+  // The reply being sent, for Stop plan and Pause to reach: {stopped, pausing}. Set by
+  // sendMessage. `pausing` is the reader's Pause on a run-all plan: the next step's
+  // request is left parked (see continueBrowserReply). It is not stored: a reply that
+  // has ended has either paused or finished, and the plan's own state says which.
+  let currentReply = null;
+  // Set by the bar's Run step N just before it sends: {plan, held}, read once by sendMessage.
+  let pendingPlanSend = null;
+  // The selector of the control that should have focus once the card has been redrawn.
+  let planFocusAfterRender = null;
+
+  // The first `limit` code points, as osa-plan.js clip does: the server counts code points.
+  function planText(value, limit) {
+    if (typeof value !== 'string') return '';
+    return value.length <= limit ? value : Array.from(value).slice(0, limit).join('');
+  }
+
+  function planOneLine(value) {
+    return typeof value === 'string' ? value.split(/\s+/).filter(Boolean).join(' ') : '';
+  }
+
+  function planCount(value, max) {
+    return Number.isInteger(value) && value > 0 ? Math.min(value, max) : 0;
+  }
+
+  // A reply's plan as stored: bounded, with a status the card knows. A draft was never
+  // answered and nothing waits for it now, so it comes back as such. Null when it is not
+  // a plan. Transient state (`_ui`) is never read back.
+  function normalizePersistedPlan(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !Array.isArray(raw.steps) || raw.steps.length === 0) {
+      return null;
+    }
+    const steps = raw.steps.slice(0, PLAN_STORAGE_LIMITS.steps).map((step) => {
+      const entry = step && typeof step === 'object' ? step : {};
+      return {
+        title: planText(planOneLine(planText(entry.title, PLAN_STORAGE_LIMITS.title * 4)), PLAN_STORAGE_LIMITS.title),
+        detail: planText(entry.detail, PLAN_STORAGE_LIMITS.detail),
+      };
+    });
+    if (steps.some((step) => step.title === '')) return null;
+    const status = Object.prototype.hasOwnProperty.call(PLAN_STATUS_LABELS, raw.status) ? raw.status : 'unanswered';
+    const feedback = planText(raw.feedback, PLAN_STORAGE_LIMITS.feedback);
+    return {
+      callId: planText(raw.callId, EXECUTION_FIELD_LIMITS.callId),
+      findings: planText(raw.findings, PLAN_STORAGE_LIMITS.findings),
+      estPeakMb: planCount(raw.estPeakMb, PLAN_STORAGE_LIMITS.peakMb),
+      steps,
+      runMode: raw.runMode === 'run_all' ? 'run_all' : 'pause',
+      status: status === 'draft' ? 'unanswered' : status,
+      ...(feedback ? { feedback } : {}),
+      // The step the reader's Pause held, until Run step says so to the model.
+      ...(planCount(raw.held, PLAN_STORAGE_LIMITS.steps) ? { held: planCount(raw.held, PLAN_STORAGE_LIMITS.steps) } : {}),
+    };
+  }
+
+  // The step fields of a stored run: which step of the plan it was, which attempt, what
+  // the step was called and how long it took. Only a run attributed to a step has them.
+  function normalizePlanRunFields(run) {
+    if (!Number.isInteger(run.step) || run.step < 1 || run.step > PLAN_STORAGE_LIMITS.steps) return {};
+    return {
+      step: run.step,
+      attempt: planCount(run.attempt, 99) || 1,
+      stepTitle: planText(planOneLine(planText(run.stepTitle, PLAN_STORAGE_LIMITS.title * 4)), PLAN_STORAGE_LIMITS.title),
+      elapsedMs: Number.isFinite(run.elapsedMs) ? Math.max(0, Math.min(Math.round(run.elapsedMs), PLAN_MAX_ELAPSED_MS)) : 0,
+    };
+  }
+
+  // The step fields of a run the plan covers (see OSARuntime.plan.nextRun).
+  function plannedRunFields(planned, result) {
+    return normalizePlanRunFields({
+      step: planned.step,
+      attempt: planned.attempt,
+      stepTitle: planned.title,
+      elapsedMs: result && result.elapsed_ms,
+    });
+  }
+
+  // The stream handler's one hook: a `propose_plan` request puts its draft on the reply,
+  // so the card is on screen as soon as the run that asked has ended.
+  function notePlanProposal(message, event) {
+    if (!message || !event || event.tool !== PROPOSE_PLAN_TOOL || !runtimeApi || !runtimeApi.plan) return;
+    const plan = runtimeApi.plan.normalizeProposal(event.args, event.call_id);
+    if (plan) {
+      message.plan = plan;
+      // A pause was asked of the plan that was running; this is another plan.
+      if (currentReply) {
+        currentReply.pausing = false;
+        currentReply.forPlan = true;
+      }
+    }
+  }
+
+  // Answer a `propose_plan` request: the card is the question, and this resolves with
+  // the PlanDecision once the reader has decided. Left parked, with the input off, until
+  // they do; Ask for changes is how they send it back. Rejects when the request holds no
+  // plan the card can show, which ends the reply like any other request it cannot answer.
+  function answerPlanRequest(container, request, messageIndex) {
+    const message = messages[messageIndex];
+    if (!message || !message.plan || message.plan.callId !== request.call_id) {
+      const proposal = runtimeApi.plan.normalizeProposal(request.args, request.call_id);
+      if (!message || !proposal) {
+        return Promise.reject(new Error('the assistant proposed a plan that could not be shown'));
+      }
+      message.plan = proposal;
+    }
+    return new Promise((resolve) => {
+      planWait = { callId: request.call_id, messageIndex, resolve };
+      toolActivity = { phase: 'plan' };
+      isThinking = false;
+      renderMessages(container);
+    }).then((decision) => {
+      // Said until the continuing stream shows what comes of it, as after a run (#538).
+      activity = { kind: 'analyze', label: ACTIVITY_ANALYZING, messageIndex };
+      beginWait();
+      renderMessages(container);
+      return decision;
+    });
+  }
+
+  // A decision that did not reach the server is undone: the plan reads Not answered, is
+  // read-only, and covers no run (OSARuntime.plan.nextRun needs it approved).
+  function revokePlanDecision(messageIndex, callId) {
+    const message = messages[messageIndex];
+    const plan = message && message.plan;
+    if (!plan || plan.callId !== callId) return;
+    if (plan.status === 'approved' || plan.status === 'changes_requested' || plan.status === 'draft') {
+      plan.status = 'unanswered';
+    }
+    delete plan._ui;
+    if (planWait && planWait.callId === callId) planWait = null;
+  }
+
+  // The card's transient state: which step is being edited (and its unsaved text), the
+  // "Ask for changes" note, an error to show. Never stored (saveHistory drops it).
+  function planUi(plan) {
+    if (!plan._ui) plan._ui = { editing: -1, draft: null, asking: false, feedback: '', error: '' };
+    return plan._ui;
+  }
+
+  const PLAN_ICONS = Object.freeze({
+    edit: runIcon('<path d="M4 20h4L19 9l-4-4L4 16z"></path>'),
+    remove: runIcon('<line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line>'),
+  });
+
+  function planStepsLabel(count) {
+    return `${count} ${count === 1 ? 'step' : 'steps'}`;
+  }
+
+  function planStepHtml(plan, ui, index, id) {
+    const step = plan.steps[index];
+    const number = index + 1;
+    if (ui && ui.editing === index && ui.draft) {
+      return `<li class="osa-plan-step osa-plan-step-editing">
+          <span class="osa-plan-num" aria-hidden="true">${number}</span>
+          <div class="osa-plan-edit">
+            <label class="osa-plan-label" for="${escapeHtml(id)}-title">Step ${number} title</label>
+            <input class="osa-plan-input" id="${escapeHtml(id)}-title" type="text" data-plan-field="title"
+              maxlength="${escapeHtml(String(PLAN_STORAGE_LIMITS.title))}" value="${escapeHtml(ui.draft.title)}">
+            <label class="osa-plan-label" for="${escapeHtml(id)}-detail">Step ${number} detail</label>
+            <textarea class="osa-plan-textarea" id="${escapeHtml(id)}-detail" rows="3" data-plan-field="detail"
+              maxlength="${escapeHtml(String(PLAN_STORAGE_LIMITS.detail))}">${escapeHtml(ui.draft.detail)}</textarea>
+            ${ui.error ? `<div class="osa-plan-error" role="alert">${escapeHtml(ui.error)}</div>` : ''}
+            <div class="osa-plan-edit-actions">
+              <button type="button" class="osa-plan-btn osa-plan-save" data-plan-action="save">Save</button>
+              <button type="button" class="osa-plan-btn osa-plan-cancel" data-plan-action="cancel">Cancel</button>
+            </div>
+          </div>
+        </li>`;
+    }
+    const editing = Boolean(ui) && ui.editing >= 0;
+    const controls = ui
+      ? `<div class="osa-plan-step-actions">
+            <button type="button" class="osa-plan-icon-btn osa-plan-edit-btn" data-plan-action="edit" data-step="${escapeHtml(String(index))}"
+              aria-label="Edit step ${number}"${editing ? ' disabled' : ''}>${PLAN_ICONS.edit}</button>
+            <button type="button" class="osa-plan-icon-btn osa-plan-remove-btn" data-plan-action="remove" data-step="${escapeHtml(String(index))}"
+              aria-label="Remove step ${number}"${editing || plan.steps.length <= 1 ? ' disabled' : ''}>${PLAN_ICONS.remove}</button>
+          </div>`
+      : '';
+    return `<li class="osa-plan-step">
+        <span class="osa-plan-num" aria-hidden="true">${number}</span>
+        <div class="osa-plan-step-text">
+          <span class="osa-plan-step-title">${escapeHtml(step.title)}</span>
+          ${step.detail ? `<span class="osa-plan-step-detail">${escapeHtml(step.detail)}</span>` : ''}
+        </div>
+        ${controls}
+      </li>`;
+  }
+
+  // The plan on a reply, as a card: editable while the reader is being asked, read-only
+  // after (and in a restored chat). '' for a reply with no plan.
+  function planCardHtml(msg, msgIndex) {
+    const plan = msg && msg.role === 'assistant' ? msg.plan : null;
+    if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) return '';
+    const live = plan.status === 'draft' && planWait !== null && planWait.messageIndex === msgIndex;
+    const status = plan.status === 'draft' && !live ? 'unanswered' : plan.status;
+    const ui = live ? planUi(plan) : null;
+    const id = `osa-plan-${msgIndex}`;
+    const findings = plan.findings
+      ? `<div class="osa-plan-findings"><strong>What I found.</strong> ${escapeHtml(plan.findings)}</div>`
+      : '';
+    // Beside it, while the reader can still act on it (edit the steps, or raise the budget),
+    // the warning that the estimate passes their memory budget.
+    const overBudget = live && plan.estPeakMb > 0 && runtimeApi && runtimeApi.memory
+      ? runtimeApi.memory.planBudgetWarning(plan.estPeakMb, userSettings.memoryBudgetMb)
+      : '';
+    const peak = plan.estPeakMb > 0
+      ? `<div class="osa-plan-meta">Largest step needs about ${escapeHtml(String(plan.estPeakMb))} MB</div>`
+        + (overBudget ? `<div class="osa-plan-meta osa-plan-meta-warn">${escapeHtml(overBudget)}</div>` : '')
+      : '';
+    const steps = plan.steps.map((_, index) => planStepHtml(plan, ui, index, id)).join('');
+    let tail;
+    if (ui) {
+      const editing = ui.editing >= 0;
+      const mode = plan.runMode === 'run_all' ? 'run_all' : 'pause';
+      const radio = (value, label) => `<label class="osa-plan-mode${mode === value ? ' osa-plan-mode-on' : ''}">
+              <input type="radio" name="${escapeHtml(id)}-mode" value="${escapeHtml(value)}" data-plan-field="mode"${mode === value ? ' checked' : ''}> ${label}
+            </label>`;
+      const asking = ui.asking
+        ? `<div class="osa-plan-feedback">
+            <label class="osa-plan-label" for="${escapeHtml(id)}-feedback">What should change? (optional)</label>
+            <textarea class="osa-plan-textarea" id="${escapeHtml(id)}-feedback" rows="3" data-plan-field="feedback"
+              maxlength="${escapeHtml(String(PLAN_STORAGE_LIMITS.feedback))}">${escapeHtml(ui.feedback)}</textarea>
+            <div class="osa-plan-edit-actions">
+              <button type="button" class="osa-plan-btn osa-plan-send-feedback" data-plan-action="send-feedback">Send to the assistant</button>
+              <button type="button" class="osa-plan-btn osa-plan-cancel" data-plan-action="cancel-feedback">Back</button>
+            </div>
+          </div>`
+        : '';
+      tail = `
+        ${plan.steps.length < PLAN_STORAGE_LIMITS.steps
+          ? `<button type="button" class="osa-plan-add" data-plan-action="add"${editing ? ' disabled' : ''}>+ Add a step</button>`
+          : ''}
+        <fieldset class="osa-plan-modes">
+          <legend class="osa-sr-only">When a step finishes</legend>
+          <div class="osa-plan-modes-title" aria-hidden="true">When a step finishes</div>
+          <div class="osa-plan-modes-row">
+            ${radio('pause', 'Pause so I can look')}
+            ${radio('run_all', 'Run all steps')}
+          </div>
+        </fieldset>
+        ${!editing && ui.error ? `<div class="osa-plan-error" role="alert">${escapeHtml(ui.error)}</div>` : ''}
+        <div class="osa-plan-actions">
+          <button type="button" class="osa-plan-approve" data-plan-action="approve"${editing ? ' disabled' : ''}>Approve and run step 1</button>
+          <button type="button" class="osa-plan-ask" data-plan-action="ask" aria-expanded="${escapeHtml(ui.asking ? 'true' : 'false')}"${editing ? ' disabled' : ''}>Ask for changes</button>
+        </div>
+        ${editing ? '<div class="osa-plan-note">Save or cancel the step you are editing first.</div>' : ''}
+        ${asking}
+        <div class="osa-plan-note">Approving lets these steps run their code in your browser. You can stop any step.</div>`;
+    } else {
+      const feedback = status === 'changes_requested' && plan.feedback
+        ? `<div class="osa-plan-meta osa-plan-mode-line">Your note: ${escapeHtml(plan.feedback)}</div>`
+        : '';
+      tail = `<div class="osa-plan-meta osa-plan-mode-line">${escapeHtml(PLAN_MODE_LABELS[plan.runMode === 'run_all' ? 'run_all' : 'pause'])}</div>${feedback}`;
+    }
+    return `<section class="osa-plan-card osa-plan-${escapeHtml(status)}${live ? ' osa-plan-live' : ''}" aria-label="Proposed plan" data-msg-index="${msgIndex}">
+        ${findings}
+        <div class="osa-plan-top">
+          <div class="osa-plan-head">
+            <h4 class="osa-plan-title" tabindex="-1">Proposed plan · ${planStepsLabel(plan.steps.length)}</h4>
+            <span class="osa-plan-badge">${escapeHtml(PLAN_STATUS_LABELS[status])}</span>
+          </div>
+          ${peak}
+        </div>
+        <ol class="osa-plan-steps">${steps}</ol>
+        ${tail}
+      </section>`;
+  }
+
+  // The decision the card's buttons make. `kind` is 'approved' or 'changes_requested'.
+  // The answer is built by OSARuntime.plan.buildDecision, which refuses what the server
+  // would (a step with no title); a refusal is shown on the card and nothing is sent.
+  function decidePlan(container, msgIndex, kind) {
+    const wait = planWait;
+    const plan = messages[msgIndex] && messages[msgIndex].plan;
+    if (!wait || wait.messageIndex !== msgIndex || !plan || !plan._ui) return;
+    const ui = plan._ui;
+    let decision;
+    try {
+      decision = runtimeApi.plan.buildDecision(plan, kind, kind === 'approved' ? '' : ui.feedback);
+    } catch (err) {
+      ui.error = (err && err.message) || 'The plan could not be sent.';
+      renderMessages(container, { follow: false });
+      return;
+    }
+    plan.steps = decision.steps;
+    plan.runMode = decision.run_mode;
+    plan.status = kind === 'approved' ? 'approved' : 'changes_requested';
+    if (decision.feedback) plan.feedback = decision.feedback;
+    delete plan._ui;
+    planWait = null;
+    toolActivity = null;
+    // The controls that had focus are gone with the redraw; the card's heading is where
+    // the reader's attention was.
+    planFocusAfterRender = `[data-msg-index="${msgIndex}"] .osa-plan-title`;
+    wait.resolve(decision);
+    // Drawn now, so the pending focus is used by this render and cannot outlive it.
+    renderMessages(container, { follow: false });
+  }
+
+  // What a click on one of the live card's controls does. `step` is the 0-based step it
+  // names, for the ones that name one.
+  function planAction(container, msgIndex, action, step) {
+    const plan = messages[msgIndex] && messages[msgIndex].plan;
+    if (!plan || !plan._ui || !runtimeApi || !runtimeApi.plan) return;
+    const ui = plan._ui;
+    const api = runtimeApi.plan;
+    const focus = (selector) => { planFocusAfterRender = `[data-msg-index="${msgIndex}"] ${selector}`; };
+    const redraw = () => renderMessages(container, { follow: false });
+    if (action === 'edit' && ui.editing < 0 && plan.steps[step]) {
+      ui.editing = step;
+      ui.draft = { ...plan.steps[step], isNew: false };
+      ui.error = '';
+      focus('.osa-plan-input');
+      redraw();
+    } else if (action === 'add' && ui.editing < 0 && api.canAddStep(plan.steps)) {
+      plan.steps = api.addStep(plan.steps);
+      ui.editing = plan.steps.length - 1;
+      ui.draft = { title: '', detail: '', isNew: true };
+      ui.error = '';
+      focus('.osa-plan-input');
+      redraw();
+    } else if (action === 'remove' && ui.editing < 0 && api.canRemoveStep(plan.steps)) {
+      plan.steps = api.removeStep(plan.steps, step);
+      ui.error = '';
+      focus(plan.steps.length < PLAN_STORAGE_LIMITS.steps ? '.osa-plan-add' : '.osa-plan-edit-btn');
+      redraw();
+    } else if (action === 'save' && ui.editing >= 0 && ui.draft) {
+      const edited = api.cleanStep(ui.draft);
+      if (edited.title === '') {
+        ui.error = 'Give the step a title.';
+        focus('.osa-plan-input');
+      } else {
+        plan.steps = api.editStep(plan.steps, ui.editing, edited);
+        focus(`.osa-plan-step:nth-child(${ui.editing + 1}) .osa-plan-edit-btn`);
+        ui.editing = -1;
+        ui.draft = null;
+        ui.error = '';
+      }
+      redraw();
+    } else if (action === 'cancel' && ui.editing >= 0) {
+      if (ui.draft && ui.draft.isNew) {
+        plan.steps = api.removeStep(plan.steps, ui.editing);
+        focus('.osa-plan-add');
+      } else {
+        focus(`.osa-plan-step:nth-child(${ui.editing + 1}) .osa-plan-edit-btn`);
+      }
+      ui.editing = -1;
+      ui.draft = null;
+      ui.error = '';
+      redraw();
+    } else if (action === 'ask' && ui.editing < 0) {
+      ui.asking = !ui.asking;
+      ui.error = '';
+      if (ui.asking) focus('.osa-plan-feedback textarea');
+      redraw();
+    } else if (action === 'cancel-feedback') {
+      ui.asking = false;
+      focus('.osa-plan-ask');
+      redraw();
+    } else if (action === 'send-feedback' && ui.editing < 0) {
+      decidePlan(container, msgIndex, 'changes_requested');
+    } else if (action === 'approve' && ui.editing < 0) {
+      decidePlan(container, msgIndex, 'approved');
+    }
+  }
+
+  // The live card's handlers. Delegated to the card, which is rebuilt on every redraw:
+  // clicks by the control's data-plan-action, typing kept on the plan (so a redraw
+  // caused by something else does not lose it), Enter and Escape in the step editor.
+  function wirePlanCard(container, card) {
+    const msgIndex = parseInt(card.getAttribute('data-msg-index'), 10);
+    const plan = messages[msgIndex] && messages[msgIndex].plan;
+    if (!plan || !plan._ui) return;
+    const ui = plan._ui;
+    card.addEventListener('click', (event) => {
+      const control = event.target && event.target.closest ? event.target.closest('[data-plan-action]') : null;
+      if (!control || !card.contains(control) || control.disabled) return;
+      event.stopPropagation();
+      const step = parseInt(control.getAttribute('data-step'), 10);
+      planAction(container, msgIndex, control.getAttribute('data-plan-action'), Number.isInteger(step) ? step : -1);
+    });
+    card.addEventListener('input', (event) => {
+      const field = event.target && event.target.getAttribute ? event.target.getAttribute('data-plan-field') : null;
+      if (field === 'title' && ui.draft) ui.draft.title = event.target.value;
+      else if (field === 'detail' && ui.draft) ui.draft.detail = event.target.value;
+      else if (field === 'feedback') ui.feedback = event.target.value;
+    });
+    card.addEventListener('change', (event) => {
+      const target = event.target;
+      if (!target || !target.getAttribute || target.getAttribute('data-plan-field') !== 'mode' || !target.checked) return;
+      plan.runMode = target.value === 'run_all' ? 'run_all' : 'pause';
+      card.querySelectorAll('.osa-plan-mode').forEach((label) => {
+        const input = label.querySelector('input');
+        label.classList.toggle('osa-plan-mode-on', Boolean(input && input.checked));
+      });
+    });
+    card.addEventListener('keydown', (event) => {
+      if (!event.target || !event.target.getAttribute) return;
+      const field = event.target.getAttribute('data-plan-field');
+      if (event.key === 'Enter' && field === 'title') {
+        event.preventDefault();
+        planAction(container, msgIndex, 'save', -1);
+      } else if (event.key === 'Escape' && (field === 'title' || field === 'detail')) {
+        event.preventDefault();
+        planAction(container, msgIndex, 'cancel', -1);
+      }
+    });
+  }
+
+  // "1.2 s", "340 ms", "1 min 5 s": how long a step took, or '' when it is not known.
+  function formatStepElapsed(ms) {
+    if (!(ms > 0)) return '';
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    const seconds = ms / 1000;
+    if (seconds < 59.95) return `${seconds.toFixed(1)} s`;
+    // Whole seconds first, so 119.6 s is "2 min 0 s", not "1 min 60 s".
+    const total = Math.round(seconds);
+    const minutes = Math.floor(total / 60);
+    return `${minutes} min ${total - minutes * 60} s`;
+  }
+
+  function isPlannedRun(run) {
+    return Number.isInteger(run.step) && run.step >= 1;
+  }
+
+  // A step that did not work, and is tried again: the statuses runFailed names, and
+  // `denied`, which under an approved plan is the runtime's refusal (a package it does
+  // not have, "denied_import"), since the gate answers Run. OSARuntime.plan.nextRun counts
+  // every run that is not ok as an attempt, so the card, the strip and the retry line
+  // agree with it.
+  function planStepFailed(run) {
+    return isPlannedRun(run) && (runFailed(run) || run.status === 'denied');
+  }
+
+  // The head of a run card: "Step 3 · title", "Step 4 failed · KeyError: 'x'" for a
+  // run that was a step of a plan, and the card's usual title for any other.
+  function runHeadingHtml(run, error) {
+    if (!isPlannedRun(run)) return escapeHtml(runTitle(run));
+    const title = planOneLine(run.stepTitle || run.description);
+    let head;
+    if (run.status === 'ok') {
+      head = `<strong>Step ${run.step}</strong>${title ? ` · ${escapeHtml(title)}` : ''}`;
+    } else if (planStepFailed(run)) {
+      const what = error ? [error.type, planOneLine(error.message)].filter(Boolean).join(': ') : '';
+      head = `<strong>Step ${run.step} failed</strong>${what ? ` · ${escapeHtml(what.slice(0, 160))}` : ''}`;
+    } else {
+      head = `<strong>Step ${run.step} stopped</strong>${title ? ` · ${escapeHtml(title)}` : ''}`;
+    }
+    return `<span class="osa-run-card-step-text">${head}</span>`;
+  }
+
+  function runElapsedHtml(run) {
+    const text = isPlannedRun(run) ? formatStepElapsed(run.elapsedMs) : '';
+    return text ? `<span class="osa-run-card-elapsed">${escapeHtml(text)}</span>` : '';
+  }
+
+  // The retry line of a failed step: it has an attempt left, and the assistant is about
+  // to use it. Null when the step has none; undefined when the run is not a step at all.
+  function planRetryOf(run) {
+    if (!isPlannedRun(run)) return undefined;
+    const attempt = planCount(run.attempt, 99) || 1;
+    return attempt < PLAN_STORAGE_LIMITS.attempts
+      ? { step: run.step, attempt: attempt + 1, of: PLAN_STORAGE_LIMITS.attempts }
+      : null;
+  }
+
+  // Where the newest plan stands, for the strip and the bar: null when there is no plan
+  // to follow (none, still a draft, or asked to change) or the runtime has not loaded.
+  function planProgressNow() {
+    if (!runtimeApi || !runtimeApi.plan) return null;
+    return runtimeApi.plan.progressOfConversation(messages, { active: planReplyActive() });
+  }
+
+  // Whether a reply is in flight, for where the plan stands. Not `isLoading`: that means
+  // "no visible text yet" and is cleared as soon as the reply shows any, so between two
+  // steps, once the model has written a sentence, it is false while the reply goes on
+  // and the plan would read as paused, with a Run step button that sends a second
+  // request alongside the one running (#731). `currentReply` is set when a message is
+  // sent and cleared when the whole reply, every run of it, has ended.
+  //
+  // Only a reply that is the plan's counts: one that proposed the plan and went on after
+  // its approval, one the bar's Run step N started, or one in which a run of the approved
+  // plan arrived (`forPlan`). An unrelated question asked while the plan waits is not,
+  // so the bar stays the waiting one for the length of its answer.
+  function planReplyActive() {
+    return (currentReply !== null && currentReply.forPlan === true) || toolActivity !== null;
+  }
+
+  function planStripLabel(progress) {
+    if (progress.state === 'stopped') return `Plan stopped · step ${progress.step} of ${progress.total}`;
+    if (progress.state === 'done') return `Plan · all ${planStepsLabel(progress.total)} done`;
+    return `Plan · step ${progress.step} of ${progress.total}`;
+  }
+
+  function planStripHtml(progress) {
+    const stopped = progress.state === 'stopped';
+    const done = progress.state === 'done';
+    const label = planStripLabel(progress);
+    const mode = stopped || done ? '' : `<span class="osa-plan-strip-mode">${escapeHtml(PLAN_MODE_LABELS[progress.mode])}</span>`;
+    const segments = progress.segments.map((state) => `<span class="osa-plan-seg osa-plan-seg-${escapeHtml(state)}"></span>`).join('');
+    return `<span class="osa-plan-strip-label">${escapeHtml(label)}</span>
+        <span class="osa-plan-segments" aria-hidden="true" style="grid-template-columns: repeat(${progress.total}, minmax(0, 1fr))">${segments}</span>
+        <span class="osa-sr-only">${escapeHtml(`${progress.doneCount} of ${planStepsLabel(progress.total)} done`)}</span>
+        ${mode}`;
+  }
+
+  // The words in the bar under the conversation, and which of its buttons show.
+  //
+  // A plan that runs all steps goes on by itself, so while its reply is going the bar
+  // does not offer Run step N: it would be a button for a click the plan does not wait
+  // for, and left out is clearer than a disabled one that looks like something to wait
+  // out. Pause takes its place beside Stop plan (osa-plan.js canPause). A plan that
+  // pauses after each step already does, so it is offered no Pause.
+  function planBarParts(progress) {
+    const { state, step, total, attempt } = progress;
+    const planApi = runtimeApi && runtimeApi.plan ? runtimeApi.plan : null;
+    const canPause = Boolean(planApi) && planApi.canPause(progress);
+    // Shown for as long as the pause is pending, so also once the running step was the
+    // second to last and the held one is the last, where Pause is no longer offered.
+    const pausing = Boolean(planApi) && planApi.runsOnItsOwn(progress) && Boolean(currentReply && currentReply.pausing);
+    // Asked, not yet done: the step that is running finishes first.
+    if (pausing) {
+      return { text: 'Pausing: the plan will wait before the next step starts.', buttons: ['stop'] };
+    }
+    if (state === 'paused') {
+      return {
+        text: step > 1 ? `Paused after step ${step - 1}.` : 'Approved. Step 1 has not run yet.',
+        buttons: ['run', 'change', 'stop'],
+      };
+    }
+    if (state === 'retrying') {
+      return {
+        text: step < total ? `Step ${step + 1} waits until step ${step} works.` : `The plan finishes when step ${step} works.`,
+        buttons: canPause ? ['pause', 'stop'] : ['stop'],
+      };
+    }
+    if (state === 'failed') {
+      return {
+        text: attempt >= PLAN_STORAGE_LIMITS.attempts ? `Step ${step} did not work after ${attempt} attempts.` : `Step ${step} did not work.`,
+        buttons: ['change', 'stop'],
+      };
+    }
+    return { text: `Working on step ${step} of ${total}.`, buttons: canPause ? ['pause', 'stop'] : ['stop'] };
+  }
+
+  function planBarHtml(progress) {
+    const { text, buttons } = planBarParts(progress);
+    const labels = {
+      run: `Run step ${progress.step}`,
+      pause: 'Pause',
+      change: `Change step ${progress.step}`,
+      stop: 'Stop plan',
+    };
+    // Run step N while a reply that is not the plan's is going (a question asked while the
+    // plan waits): a second request cannot start, so the button says so rather than
+    // doing nothing when pressed.
+    const busy = currentReply !== null;
+    const buttonHtml = buttons.map((name) =>
+      `<button type="button" class="osa-plan-bar-btn osa-plan-bar-${escapeHtml(name)}" data-plan-bar="${escapeHtml(name)}"${name === 'run' && busy ? ' aria-disabled="true"' : ''}>${escapeHtml(labels[name])}</button>`
+    ).join('');
+    return `<span class="osa-plan-bar-text">${escapeHtml(text)}</span><span class="osa-plan-bar-buttons">${buttonHtml}</span>`;
+  }
+
+  // Stop plan: no step of this plan runs again. Whatever is running is cancelled, and
+  // the reply stops answering requests for code (continueBrowserReply), leaving the
+  // parked call for the next message to repair, as the cap on runs does.
+  function stopPlan(container) {
+    const current = runtimeApi && runtimeApi.plan ? runtimeApi.plan.currentPlan(messages) : null;
+    if (!current) return;
+    current.plan.status = 'stopped';
+    if (currentReply) currentReply.stopped = true;
+    if (browserTools) browserTools.cancel();
+    try {
+      saveHistory();
+    } catch (saveError) {
+      console.error('[OSA] Failed to save history:', saveError);
+    }
+    renderMessages(container, { follow: false });
+  }
+
+  // Pause: the plan waits before the next step starts. The step that is running finishes
+  // and goes back to the model as usual; the request for the next one is then left
+  // parked, as Stop plan leaves it, and the reply ends with the plan approved and
+  // waiting, so the bar is the paused one: Run step N, Change step N, Stop plan.
+  function pausePlan(container) {
+    const progress = planProgressNow();
+    if (!currentReply || !runtimeApi || !runtimeApi.plan || !runtimeApi.plan.canPause(progress)) return;
+    currentReply.pausing = true;
+    // The bar the button was in is replaced; focus goes to the strip, as after Run step.
+    planFocusAfterRender = '.osa-plan-strip';
+    renderMessages(container, { follow: false });
+  }
+
+  // Whether the reply must leave this request for code unanswered because the reader
+  // paused it. Not a request that only reads a run's output, which is part of a step.
+  function planPauseDue(request) {
+    if (!currentReply || !currentReply.pausing || !runtimeApi || !runtimeApi.plan) return false;
+    if (request.tool === PROPOSE_PLAN_TOOL || request.tool === runtimeApi.FULL_OUTPUT_TOOL_NAME) return false;
+    return runtimeApi.plan.pauseDue(messages);
+  }
+
+  // What Run step N says. A plan that runs all steps goes on in that mode, so the reply
+  // must not stop again. After the reader's Pause the model's request for step N was left
+  // unanswered and the server repaired it as a call that did not complete; the message
+  // says the step never ran, so it is not counted as a failed attempt.
+  // Returns {text, plan, held}: `held` is the step the note is about, which sendMessage
+  // forgets only once the server has the message, so a send that fails keeps the note.
+  function planContinueMessage(progress) {
+    const current = runtimeApi && runtimeApi.plan ? runtimeApi.plan.currentPlan(messages) : null;
+    const plan = current ? current.plan : null;
+    const held = plan && plan.held === progress.step ? progress.step : 0;
+    const rest = progress.step < progress.total ? ', then run the remaining steps without stopping' : '';
+    const text = held
+      ? `Continue with step ${progress.step}. It has not run: I paused before it started, so it is not a failed attempt. Run it now${rest}.`
+      : `Continue with step ${progress.step}${progress.mode === 'run_all' ? rest : ''}.`;
+    return { text, plan, held };
+  }
+
+  function fillChatInput(container, text) {
+    const input = container.querySelector('.osa-chat-input input');
+    if (!input) return;
+    input.value = text;
+    input.focus();
+    if (typeof input.setSelectionRange === 'function') input.setSelectionRange(text.length, text.length);
+  }
+
+  function onPlanBarClick(container, name, progress) {
+    if (name === 'stop') {
+      stopPlan(container);
+    } else if (name === 'pause') {
+      pausePlan(container);
+    } else if (name === 'run') {
+      // sendMessage returns without drawing while a reply is going on (`isLoading` is
+      // not that: it is false once text shows); nothing is then pending, so focus is not
+      // moved by some later, unrelated render.
+      if (currentReply) return;
+      // The bar the button was in is replaced; focus goes to the strip, which says what runs.
+      planFocusAfterRender = '.osa-plan-strip';
+      const next = planContinueMessage(progress);
+      pendingPlanSend = { plan: next.plan, held: next.held };
+      sendMessage(container, next.text);
+      // sendMessage reads it before its first await; a send that was refused leaves none.
+      pendingPlanSend = null;
+    } else if (name === 'change') {
+      fillChatInput(container, `Change step ${progress.step}: `);
+    }
+  }
+
+  // renderMessages' one hook, called once the conversation is drawn: the cards'
+  // handlers, the progress strip at the top, the bar at the bottom, and focus returned
+  // to the control the reader just used.
+  function renderPlanChrome(container, messagesEl) {
+    messagesEl.querySelectorAll('.osa-plan-card.osa-plan-live[data-msg-index]').forEach((card) => wirePlanCard(container, card));
+    const progress = planProgressNow();
+    // Said by the plan's own announcer, which a redraw does not replace: where the plan
+    // stands after each step, which the strip and the bar (rebuilt every time) cannot say.
+    const announcer = container.querySelector('.osa-plan-announcer');
+    if (announcer) {
+      // A finished or stopped plan has no bar, so there is nothing to add to the strip's words.
+      const ended = progress && (progress.state === 'done' || progress.state === 'stopped');
+      const spoken = !progress ? '' : ended ? `${planStripLabel(progress)}.` : `${planStripLabel(progress)}. ${planBarParts(progress).text}`;
+      if (announcer.textContent !== spoken) announcer.textContent = spoken;
+    }
+    if (progress) {
+      const strip = document.createElement('div');
+      strip.className = `osa-plan-strip osa-plan-strip-${progress.state}`;
+      strip.setAttribute('role', 'group');
+      strip.setAttribute('tabindex', '-1');
+      strip.setAttribute('aria-label', 'Plan progress');
+      strip.innerHTML = planStripHtml(progress);
+      messagesEl.insertBefore(strip, messagesEl.firstChild);
+      if (progress.state !== 'done' && progress.state !== 'stopped') {
+        const bar = document.createElement('div');
+        bar.className = 'osa-plan-bar';
+        bar.setAttribute('role', 'group');
+        bar.setAttribute('aria-label', 'Plan controls');
+        bar.innerHTML = planBarHtml(progress);
+        bar.querySelectorAll('[data-plan-bar]').forEach((button) => {
+          button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            onPlanBarClick(container, button.getAttribute('data-plan-bar'), progress);
+          });
+        });
+        messagesEl.appendChild(bar);
+      }
+    }
+    // The center-stage dialog's rail and header button read the same conversation (E6.1).
+    // The rail first: focus below may have to land on it.
+    syncPlanRail(container);
+    syncCenterNotebook(container);
+    if (planFocusAfterRender) {
+      const wanted = messagesEl.querySelector(planFocusAfterRender);
+      planFocusAfterRender = null;
+      // focus() on an element that is not drawn does nothing, and the control that had
+      // focus has been replaced, so focus would fall to the page: the strip is hidden
+      // while the rail shows. The rail says the same, so it takes the focus, then the thread.
+      const fallback = Boolean(wanted) && !isDrawn(wanted);
+      const target = fallback
+        ? [container.querySelector('.osa-plan-rail'), messagesEl].find(isDrawn)
+        : wanted;
+      if (target && typeof target.focus === 'function') {
+        // Only a fallback is made focusable here: the wanted control is a real tab stop
+        // and a tabindex of -1 would take it out of the Tab order.
+        if (fallback && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+        target.focus();
+      }
+    }
+  }
+  // Whether an element is on screen, which focus() needs: display:none, or an ancestor
+  // with it, leaves no boxes.
+  function isDrawn(el) {
+    return Boolean(el) && typeof el.focus === 'function' && typeof el.getClientRects === 'function' && el.getClientRects().length > 0;
+  }
+  // --- End plan card ---
 
   // A malformed value is named here rather than dropped in silence: an embedder's
   // typo through setConfig() (or a hand-edited widget: block) otherwise looks
@@ -6442,13 +13986,14 @@
     }
 
     // Update initial assistant message if chat has only the default greeting
-    if (messages.length === 1 && messages[0].role === 'assistant') {
+    if (messages.length === 1 && chatIsEmpty() && messages[0].role === 'assistant') {
       messages[0].content = CONFIG.initialMessage;
       renderMessages(container);
     }
 
     // Update suggested questions
     renderSuggestions(container);
+    renderCenterStart(container);
 
     // Update avatar with community logo if available
     const avatar = container.querySelector('.osa-chat-avatar');
@@ -6637,9 +14182,60 @@
     }
   }
 
+  // The heap of the latest run in the chat on screen that reported one, in MB, or null.
+  function lastRunHeapMb() {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const runs = messages[i] && messages[i].executions;
+      if (!Array.isArray(runs)) continue;
+      for (let j = runs.length - 1; j >= 0; j -= 1) {
+        if (Number.isInteger(runs[j].heapMb) && runs[j].heapMb > 0) return runs[j].heapMb;
+      }
+    }
+    return null;
+  }
+
+  // The memory budget chosen in the dialog, as an offered size, else the saved one.
+  function memoryChoiceIn(container) {
+    const checked = container.querySelector('.osa-memory-radio:checked');
+    return checked ? normalizeMemoryBudget(Number(checked.value)) : normalizeMemoryBudget(userSettings.memoryBudgetMb);
+  }
+
+  // The Browser memory field: shown only on a page that can run code in the browser, with
+  // the saved budget chosen when the dialog opens (`reset`), the chosen choice marked, and
+  // how much the last step used against it. The choice is the dialog's until Save, like the
+  // model's; Cancel leaves what was saved.
+  function syncMemoryField(container, { reset = false } = {}) {
+    const field = container.querySelector('.osa-memory-field');
+    if (!field) return;
+    field.style.display = browserTools ? '' : 'none';
+    if (reset) {
+      const saved = normalizeMemoryBudget(userSettings.memoryBudgetMb);
+      field.querySelectorAll('.osa-memory-radio').forEach((radio) => { radio.checked = Number(radio.value) === saved; });
+    }
+    const chosen = memoryChoiceIn(container);
+    field.querySelectorAll('.osa-memory-choice').forEach((label) => {
+      const radio = label.querySelector('.osa-memory-radio');
+      label.classList.toggle('osa-memory-choice-on', !!radio && radio.checked);
+    });
+    const last = field.querySelector('.osa-memory-last');
+    if (!last) return;
+    const heapMb = lastRunHeapMb();
+    if (heapMb === null) {
+      last.hidden = true;
+      last.textContent = '';
+      return;
+    }
+    const percent = Math.max(0, Math.min(100, Math.round((heapMb / chosen) * 100)));
+    last.hidden = false;
+    last.innerHTML = `<div class="osa-memory-last-row"><span>Runtime memory after the last step</span><span>${escapeHtml(String(heapMb))} MB of ${escapeHtml(String(chosen))} MB${heapMb > chosen ? '<span class="osa-sr-only"> (over budget)</span>' : ''}</span></div>`
+      + `<div class="osa-memory-bar${heapMb > chosen ? ' osa-memory-bar-over' : ''}" aria-hidden="true"><div class="osa-memory-bar-fill" style="width: ${percent}%"></div></div>`;
+  }
+
   function openSettings(container) {
     // Don't open settings if chat window is closed
     if (!isOpen) return;
+    // The sheet is modal and lists the chats as they were: Settings opens above it.
+    closeHistory(container, { restoreFocus: false });
 
     const overlay = container.querySelector('.osa-settings-overlay');
     const apiKeyInput = container.querySelector('#osa-settings-api-key');
@@ -6695,6 +14291,7 @@
       }
     }
     syncCustomFields(container);
+    syncMemoryField(container, { reset: true });
 
     // Update hint with current default model
     if (modelHint) {
@@ -6778,6 +14375,8 @@
     userSettings.apiKey = apiKey || null;
     userSettings.model = model;
     userSettings.keyProvider = inferKeyProvider(apiKey);
+    // The budget is the saved one when the field is not showing (a page with no runtime).
+    userSettings.memoryBudgetMb = memoryChoiceIn(container);
 
     // Save to localStorage
     try {
@@ -6790,6 +14389,8 @@
 
     // Close modal only if save succeeded
     closeSettings(container);
+    // The plan rail names the budget (E6.1).
+    syncPlanRail(container);
   }
 
   // --- Feedback -----------------------------------------------------------
@@ -6958,12 +14559,15 @@
     }
 
     let ok = false;
+    syncPrivacyChoices();
     try {
       ok = await postFeedback({
         feedback_type: 'general',
         comment,
         session_id: sessionId || null,
-        page_url: (typeof window !== 'undefined' && window.location) ? window.location.href : null,
+        // The page's address goes only when the reader shares it, as with a question.
+        page_url: (CONFIG.allowPageContext && pageContextEnabled
+          && typeof window !== 'undefined' && window.location) ? window.location.href : null,
       });
     } finally {
       if (sendBtn) sendBtn.disabled = false;
@@ -7142,9 +14746,17 @@
         ${ICONS.chat}
       </button>
       <div class="osa-chat-tooltip">${escapeHtml(CONFIG.launcherLabel || ('Ask me about ' + CONFIG.title.replace(' Assistant', '')))}</div>
-      <div class="osa-chat-window">
+      <div class="osa-center-scrim" aria-hidden="true"></div>
+      <div class="osa-chat-window" tabindex="-1">
         <div class="osa-resize-handle"></div>
         <div class="osa-chat-header">
+          <span class="osa-center-pill">${ICONS.sparkle}AI Mode</span>
+          <div class="osa-center-tabs" role="tablist" aria-label="Chat or notebook" hidden>
+            <button type="button" role="tab" class="osa-center-tab osa-center-tab-chat" id="osa-center-tab-chat" aria-selected="true" tabindex="0">${ICONS.chat}<span>Chat</span><span class="osa-center-tab-cue" aria-hidden="true"></span><span class="osa-sr-only osa-center-tab-unread"></span></button>
+            <button type="button" role="tab" class="osa-center-tab osa-center-tab-notebook" id="osa-center-tab-notebook" aria-selected="false" tabindex="-1">${ICONS.notebook}<span>Notebook</span></button>
+          </div>
+          <div class="osa-center-context"></div>
+          <div class="osa-tab-announcer osa-sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
           <div class="osa-chat-avatar">${ICONS.brain}</div>
           <div class="osa-chat-title-area">
             <h3 class="osa-chat-title">
@@ -7154,9 +14766,20 @@
             <div class="osa-chat-status">
               <span class="osa-status-dot checking"></span>
               <span class="osa-status-text">Checking...</span>
+              <span class="osa-mode-label" role="note" hidden></span>
             </div>
           </div>
           <div class="osa-header-actions">
+            <button class="osa-header-btn osa-history-btn" title="History" aria-label="History" aria-expanded="false" aria-controls="osa-history-sheet" aria-describedby="osa-history-busy">
+              ${ICONS.historyClock}<span class="osa-center-label">History</span>
+            </button>
+            <span id="osa-history-busy" class="osa-sr-only"></span>
+            <button type="button" class="osa-header-btn osa-center-notebook-btn" aria-label="Continue in notebook" title="Continue in notebook" hidden>
+              ${ICONS.notebook}<span class="osa-center-label">Continue in notebook</span>
+            </button>
+            <button type="button" class="osa-header-btn osa-center-dock-btn" aria-label="Move to corner" title="Move to corner">
+              ${ICONS.dock}<span class="osa-center-label">Move to corner</span>
+            </button>
             <button class="osa-header-btn osa-settings-btn-open" title="Settings">
               ${ICONS.settings}
             </button>
@@ -7171,8 +14794,22 @@
             </button>
           </div>
         </div>
+        <div class="osa-center-start" hidden>
+          <div class="osa-center-start-body">
+            <h2 class="osa-center-heading"></h2>
+            <form class="osa-center-form">
+              <label class="osa-sr-only" for="osa-center-input"></label>
+              <input type="text" id="osa-center-input" class="osa-center-input" autocomplete="off" />
+              <button type="submit" class="osa-center-send" aria-label="Send">${ICONS.send}</button>
+            </form>
+            <div class="osa-center-pills" role="group" aria-label="Suggested questions"></div>
+            <div class="osa-center-cards"></div>
+          </div>
+          <footer class="osa-center-footer" hidden></footer>
+        </div>
         <div class="osa-chat-messages"></div>
         <div class="osa-status-announcer osa-sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+        <div class="osa-plan-announcer osa-sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
         <div class="osa-suggestions" style="display: none;">
           <span class="osa-suggestions-label">Try asking:</span>
           <div class="osa-suggestions-list"></div>
@@ -7180,6 +14817,8 @@
         <div class="osa-turnstile-container" style="display: none;"></div>
         <div class="osa-error" style="display: none;"></div>
         <div class="osa-warning" style="display: none;"></div>
+        <div class="osa-mode-note" hidden>${escapeHtml(MODE_NOTE)}</div>
+        <div class="osa-context-notice-slot" role="status" aria-live="polite"></div>
         <div class="osa-chat-input">
           <input type="text" placeholder="${escapeHtml(CONFIG.placeholder)}" />
           <button class="osa-send-btn" aria-label="Send">
@@ -7191,10 +14830,7 @@
           <button type="button" class="osa-feedback-link">Send feedback</button>
         </div>
         <div class="osa-combined-footer">
-          <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
-            <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
-            <label for="osa-page-context-checkbox">${escapeHtml(CONFIG.pageContextLabel)}</label>
-          </div>
+          ${privacyChoicesButtonHtml()}
           <div class="osa-footer-powered">
             Powered by <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">OSA</a><span class="osa-version"></span>
           </div>
@@ -7246,6 +14882,21 @@
               />
               <span class="osa-settings-hint">
                 An Anthropic or OpenRouter key. Required for a custom model. Stored in this browser and sent with your requests.
+              </span>
+            </div>
+            <div class="osa-settings-field osa-memory-field" style="display: none;">
+              <fieldset class="osa-memory-fieldset">
+                <legend class="osa-settings-label">Browser memory</legend>
+                <div class="osa-memory-choices">
+                  ${MEMORY_BUDGETS_MB.map((mb) => `<label class="osa-memory-choice">
+                    <input type="radio" name="osa-settings-memory" class="osa-memory-radio" value="${escapeHtml(String(mb))}">
+                    <span>${escapeHtml(memorySizeLabel(mb))}</span>
+                  </label>`).join('')}
+                </div>
+              </fieldset>
+              <div class="osa-memory-last" hidden></div>
+              <span class="osa-settings-hint">
+                The assistant sizes each step to fit this budget, reading long recordings in pieces. A larger budget reads more at once but can slow or crash the tab on a laptop with little memory. One array cannot exceed 2 GB in the browser.
               </span>
             </div>
             <div class="osa-settings-field osa-workspace-field" style="display: none;">
@@ -7309,6 +14960,8 @@
           </div>
         </div>
       </div>
+        ${privacyOverlayHtml()}
+      ${historySheetHtml()}
       </div>
     `;
     defaultAvatarHtml = container.querySelector('.osa-chat-avatar')?.innerHTML ?? null;
@@ -7360,6 +15013,7 @@
     validate: ['work', 'Validating'],
     check: ['work', 'Checking'],
     suggest: ['work', 'Suggesting'],
+    propose: ['work', 'Proposing'],
     render: ['render', 'Rendering'],
     // Running something is running code only if the name says it is code:
     // nemar_run_query and execute_sql run a query, and read "Working...".
@@ -7479,6 +15133,17 @@
       || (activity && next && (activity.label !== next.label || activity.messageIndex !== messageIndex));
     activity = next ? { kind: next.kind, label: next.label, messageIndex } : null;
     if (changed && container) paintStatus(container);
+  }
+
+  // Whether this reply is still waiting on the assistant, with no code of its own
+  // being asked about or run right now: after a run's result went back (answerToolRequest
+  // says "analyzing" for the wait) or, before any text, while it has none to show. A
+  // failed run on such a reply is one the assistant is about to answer.
+  function replyWaitingOnAssistant(msgIndex) {
+    if (toolActivity) return false;
+    if (activity) return activity.messageIndex === msgIndex;
+    // `isLoading` is false once the reply shows text, while it may still run the step again.
+    return currentReply !== null && msgIndex === messages.length - 1;
   }
 
   // The status the conversation shows, or null. While the reply has no text on screen
@@ -7604,18 +15269,26 @@
     const scrolledFrom = messagesEl.scrollTop;
     const awayFromBottom = messagesEl.scrollHeight - messagesEl.clientHeight - scrolledFrom;
     messagesEl.innerHTML = '';
+    syncHistoryAvailability(container);
+    syncCenterStart(container);
     // The loading bubble's label, or a line under the reply's text (#538), never both.
     const status = statusToShow();
     announceStatus(container, status);
 
     messages.forEach((msg, msgIndex) => {
+      const moveEl = contextMoveElementAt(msgIndex);
+      if (moveEl) messagesEl.appendChild(moveEl);
+      // The handover card and divider come before the reply they belong to, and while
+      // that reply is still hidden behind the loading bubble (E8.3).
+      const handover = handoverParts(msg, msgIndex);
+      if (handover.before) messagesEl.appendChild(handover.before);
       // The streaming handler keeps an empty assistant entry so the final
       // response can update it in place. While the model is thinking, that
       // state must stay invisible: the loading bubble below is the assistant
       // response placeholder until the first answer text arrives.
-      // A reply that has run code is shown even before it has text: the record
-      // of what ran is already part of it.
-      const ranCode = Array.isArray(msg.executions) && msg.executions.length > 0;
+      // A reply that has run code, or proposed a plan, is shown even before it has
+      // text: the record of what ran, or the plan to decide on, is already part of it.
+      const ranCode = Array.isArray(msg.executions) && msg.executions.length > 0 || Boolean(msg.plan);
       if (isLoading && msg.role === 'assistant' && !hasVisibleText(msg.content) && !ranCode && msgIndex === messages.length - 1) {
         return;
       }
@@ -7634,7 +15307,7 @@
       });
 
       const content = msg.role === 'assistant'
-        ? markdownToHtml(replyMarkdown(msg, msgIndex), citationsByMarker)
+        ? markdownToHtml(replyMarkdown(msg, msgIndex), citationsByMarker, { figureAbove: messageHasFigure(msg) })
         : escapeHtml(msg.content);
 
       // Compact numbered source list under the answer, when anything was cited. While
@@ -7664,13 +15337,14 @@
 
       // Add copy button for assistant messages
       const copyBtn = msg.role === 'assistant'
-        ? `<button class="osa-message-copy-btn" data-msg-index="${msgIndex}" title="Copy as markdown">${ICONS.copy}</button>`
+        ? `<button type="button" class="osa-message-copy-btn" data-msg-index="${msgIndex}" title="Copy as markdown" aria-label="Copy this reply as markdown">${ICONS.copy}</button>`
         : '';
 
       // Per-response feedback (thumbs up/down) for assistant replies, but not
-      // the canned opening greeting (index 0). Up is a one-click count; down
-      // reveals an optional "what went wrong?" box before it is committed.
-      const showFeedback = msg.role === 'assistant' && msgIndex > 0;
+      // the canned opening greeting (index 0) and a reply the page seeded. Up is a
+      // one-click count; down reveals an optional "what went wrong?" box before it is
+      // committed.
+      const showFeedback = msg.role === 'assistant' && msgIndex > 0 && !msg.seeded;
       const fb = msg.feedback;
       const committed = !!msg.feedbackCommitted;
       const pendingDown = fb === 'down' && !committed;
@@ -7700,9 +15374,11 @@
       msgEl.innerHTML = `
         <div class="osa-message-header">
           <span class="osa-message-label">${escapeHtml(label)}</span>
+          ${handover.tag}
           ${copyBtn}
         </div>
-        ${msg.role === 'assistant' ? executionsHtml(msg.executions, msgIndex) : ''}
+        ${msg.role === 'assistant' ? planCardHtml(msg, msgIndex) : ''}
+        ${msg.role === 'assistant' ? executionsHtml(msg.executions, msgIndex, { pending: replyWaitingOnAssistant(msgIndex) }) : ''}
         <div class="osa-message-content">${content}</div>
         ${status && status.where === 'inline' && status.messageIndex === msgIndex ? statusLineHtml(status) : ''}
         ${sourcesRow}
@@ -7710,6 +15386,8 @@
         ${feedbackRow}
       `;
       messagesEl.appendChild(msgEl);
+      const entryCard = notebookEntryCard(msgIndex);
+      if (entryCard) messagesEl.appendChild(entryCard);
     });
 
     // Add event listeners for copy buttons
@@ -7722,7 +15400,7 @@
         if (pre) {
           const code = pre.querySelector('code');
           if (code) {
-            copyToClipboard(code.textContent, btn);
+            copyCodeFromButton(btn, code.textContent, code);
           }
         }
       });
@@ -7734,7 +15412,9 @@
         e.stopPropagation();
         const msgIndex = parseInt(btn.getAttribute('data-msg-index'), 10);
         if (messages[msgIndex] && messages[msgIndex].content) {
-          copyToClipboard(messages[msgIndex].content, btn);
+          const messageEl = btn.closest('.osa-message');
+          const source = messages[msgIndex].content;
+          copyCodeFromButton(btn, source, messageEl && (() => replyFallbackFor(messageEl, source)));
         }
       });
     });
@@ -7777,9 +15457,8 @@
       });
     });
 
-    // A run's code (#491): Copy and Download read the code from the run's record,
-    // and whether the reader opened it is kept on the record, so a re-render (a
-    // streamed chunk, runtime progress) does not close it again.
+    // A run's code (#491): Copy and Download read the code from the run's record, not
+    // from the page. Whether the reader opened it is kept by the toggle handler below.
     messagesEl.querySelectorAll('.osa-code-copy[data-msg-index]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -7823,10 +15502,44 @@
         }
       });
     });
-    messagesEl.querySelectorAll('details.osa-execution-code[data-msg-index]').forEach((details) => {
-      details.addEventListener('toggle', () => {
-        const run = runAt(details);
-        if (run) run._codeOpen = details.open;
+    // A card's Show code, Output, Full traceback and warnings buttons: flip the panel
+    // in place (aria-expanded, hidden, and the label of a button that has one for
+    // each state) rather than redrawing the conversation, and keep the choice on the
+    // record, so a re-render (a streamed chunk, runtime progress) does not undo it.
+    messagesEl.querySelectorAll('.osa-run-card-toggle[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const run = runAt(btn);
+        // The panel is looked for in this card, not the page, so a second widget (or a
+        // host element) that happens to share an id cannot answer for it.
+        const card = btn.closest('.osa-run-card');
+        const panelId = btn.getAttribute('aria-controls') || '';
+        const panel = card ? [...card.querySelectorAll('[id]')].find((el) => el.id === panelId) : null;
+        if (!run || !panel) return;
+        const open = btn.getAttribute('aria-expanded') !== 'true';
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        panel.hidden = !open;
+        const label = btn.getAttribute(open ? 'data-label-open' : 'data-label-closed');
+        const labelEl = btn.querySelector('.osa-run-card-label');
+        if (label && labelEl) labelEl.textContent = label;
+        const which = btn.getAttribute('data-panel');
+        if (which === 'code') {
+          run._codeOpen = open;
+        } else if (which) {
+          run._panelsOpen = { ...(run._panelsOpen || {}), [which]: open };
+        }
+      });
+    });
+    // A failed run's error, as the card shows it: the type, the message and the
+    // failing line. The full traceback, when there is one, is its own button.
+    messagesEl.querySelectorAll('.osa-run-card-copy-error[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const run = runAt(btn);
+        const error = run && runErrorInfo(run);
+        if (!error) return;
+        const card = btn.closest('.osa-run-card');
+        copyCodeFromButton(btn, error.text, card && (() => errorFallbackFor(card, error.text)));
       });
     });
 
@@ -7886,6 +15599,11 @@
       });
     });
 
+    const trailingMoveEl = contextMoveElementAt(messages.length);
+    if (trailingMoveEl) messagesEl.appendChild(trailingMoveEl);
+    appendWelcomeBack(container, messagesEl);
+    syncModeChrome(container);
+
     if (toolActivity) {
       // In place of the loading dots: nothing is loading, the reply is waiting
       // on the person or on code running in this page.
@@ -7927,6 +15645,8 @@
       messagesEl.appendChild(loadingEl);
     }
 
+    renderPlanChrome(container, messagesEl);
+    renderContextNotice(container);
     messagesEl.scrollTop = !follow && awayFromBottom > SCROLL_FOLLOW_SLACK_PX
       ? scrolledFrom
       : messagesEl.scrollHeight;
@@ -7977,7 +15697,7 @@
   function suggestionsToShow() {
     if (isLoading) return null;
     const aboutDataset = datasetQuestions(currentDataset);
-    if (messages.length <= 1) {
+    if (chatIsEmpty()) {
       const questions = aboutDataset.length ? aboutDataset.slice(0, 3) : CONFIG.suggestedQuestions;
       return questions.length ? { questions, label: 'Try asking:', compact: false } : null;
     }
@@ -8003,6 +15723,7 @@
     } else {
       suggestionsEl.style.display = 'none';
     }
+    fillCenterPills(container, shown);
   }
 
   // Show error. The banner for a failed request (`persist`) stays until the reader
@@ -8156,24 +15877,10 @@
       copy.title = 'Copy the reference';
       copy.setAttribute('aria-label', 'Copy the error reference');
       copy.innerHTML = ICONS.copy;
-      copy.addEventListener('click', async (event) => {
+      copy.addEventListener('click', (event) => {
         event.stopPropagation();
-        if (await writeClipboard(reference)) {
-          copy.classList.add('copied');
-          copy.innerHTML = ICONS.check;
-          setTimeout(() => {
-            copy.classList.remove('copied');
-            copy.innerHTML = ICONS.copy;
-          }, CODE_COPIED_MS);
-        } else if (typeof window.getSelection === 'function') {
-          // A page that cannot copy for the reader: the reference is selected, so the
-          // keyboard's copy does it.
-          const selection = window.getSelection();
-          const range = document.createRange();
-          range.selectNodeContents(id);
-          selection.removeAllRanges();
-          selection.addRange(range);
-        }
+        // The one copy path: a refused copy selects the reference for the keyboard's copy.
+        copyCodeFromButton(copy, reference, id);
       });
       line.appendChild(copy);
       errorEl.appendChild(line);
@@ -8419,6 +16126,9 @@
     if (Array.isArray(event.citations)) {
       message.citations = event.citations;
     }
+    // The tier the turn ran on, for a community that routes between two models (E8.3).
+    const mode = normalizeReplyMode(event.mode);
+    if (mode) message.mode = mode;
     // This run's usage joins what earlier runs of the reply used (kept aside by the
     // tool_request branch until now), so the reply shows its total, and only once whole.
     // A run that reported none makes the total partial, not a quiet understatement.
@@ -8894,7 +16604,13 @@
             // only attaches to a reply that completed successfully.
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
+              serverConfirmedAt = Date.now();
             }
+          } else if (event.event === 'handover') {
+            // The chat is moving to the analysis model on a new session (E8.3): the card
+            // shows the steps. The new session id is adopted from the `session` event
+            // that opens the analysis run, as it always was.
+            noticeHandover(container, messages[messageIndex], event);
           } else if (event.event === 'warning') {
             // The banner (e.g., conversation getting long), and, for a reply that
             // stopped short, the reply's own mark: the banner goes in seconds.
@@ -8906,6 +16622,7 @@
             clearActivity();
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
+              serverConfirmedAt = Date.now();
             }
             // Let the reveal finish what the reader is still reading before the
             // backend's canonical text (below) replaces it. A redraw that failed
@@ -8961,6 +16678,7 @@
             const streamed = hasVisibleText(accumulatedContent) ? accumulatedContent : '';
             const runText = hasVisibleText(sent) ? sent : streamed;
             messages[messageIndex].content = compose(runText);
+            notePlanProposal(messages[messageIndex], event);
             if (Array.isArray(event.citations)) {
               messages[messageIndex].citations = event.citations;
             }
@@ -8983,6 +16701,8 @@
               messages[messageIndex].content = shown + `\n\n_[Error: ${errorMsg}]_`;
             } else {
               messages[messageIndex].content = `_[Error: ${errorMsg}]_`;
+              // Only the error, no reply: not a turn to carry into a reseeded session.
+              messages[messageIndex].failed = true;
             }
             renderMessages(container);
             try {
@@ -9070,6 +16790,7 @@
         }
 
         messages[messageIndex].content = (shown ? `${shown}\n\n` : '') + `_[${userMessage}]_`;
+        if (!shown) messages[messageIndex].failed = true;
         renderMessages(container);
         try {
           saveHistory();
@@ -9106,8 +16827,13 @@
   // Send message to API. `options.model` runs this one request on another model than the
   // saved setting (the button on a failed reply uses it); the setting is not changed.
   async function sendMessage(container, question, options = {}) {
-    if (isLoading || !question.trim()) return;
+    // `currentReply` as well as `isLoading`: the latter is false once text shows.
+    if (isLoading || currentReply !== null || !question.trim()) return;
     modelOverride = options.model || null;
+    // Whether this send continues the plan (the bar's Run step N), consumed here, before
+    // anything awaits, so a send that does nothing leaves no trace for the next.
+    const planSend = pendingPlanSend;
+    pendingPlanSend = null;
 
     // Commit any open thumbs-down comment box before the conversation moves on.
     flushPendingResponseFeedback(container);
@@ -9115,8 +16841,13 @@
     // The last failed request's banner has been read, or is about to be replaced.
     dismissPersistentError(container);
 
+    // A page context that moved since the chat began starts a new chat (E1.3); before
+    // isLoading is set, since a conversation cannot be replaced mid-reply.
+    prepareContextForSend();
+
     isLoading = true;
     isThinking = false;
+    currentReply = { stopped: false, pausing: false, forPlan: planSend !== null };
     beginWait();
 
     // Boot the browser runtime now if this community preloads on first message,
@@ -9130,6 +16861,8 @@
 
     // Track message indices to avoid corruption on error
     const userMessageIndex = messages.length;
+    // The conversation before this message, which a server that lost the session is told.
+    const conversationBefore = messages.slice();
     // The dataset on screen when it was sent (#477): what datasetInConversation reads.
     const userMessage = { role: 'user', content: question };
     if (currentDataset) userMessage.dataset = currentDataset.id;
@@ -9154,20 +16887,34 @@
     input.disabled = true;
     sendBtn.disabled = true;
     resetBtn.disabled = true;
+    emitHostEvent('send', { text: question.trim() });
 
     try {
       const body = { message: question.trim() };
+
+      // What the page and the reader say about themselves is captured now, as the question
+      // is sent: the wait for the runtime below can be long, and a reader who navigates
+      // during it still asked about the page they were on.
+      const carried = carriedMove();
+      const pageContext = getPageContext();
 
       // Include session ID for conversation continuity
       if (sessionId) {
         body.session_id = sessionId;
       }
 
-      // Add page context if enabled
-      const pageContext = getPageContext();
-      if (pageContext) {
-        body.page_context = pageContext;
-      }
+      // Until the server has confirmed this session in this page load (or after it has
+      // been idle longer than the server keeps one), carry the conversation so far: a
+      // server that forgot the session starts it from this, and one that has it ignores it.
+      const reseed = reseedFields({
+        list: conversationBefore,
+        confirmedAt: serverConfirmedAt,
+        now: Date.now(),
+        ttlMs: SESSION_TTL_MS,
+      });
+      Object.assign(body, reseed);
+      // A request with no turns for a session it names asks to be told if the server lost it.
+      Object.assign(body, expectSessionFields({ sessionId, reseed }));
 
       // Add Turnstile token if available
       if (turnstileToken) {
@@ -9185,6 +16932,9 @@
         body.stream = true;
       }
 
+      // "Share usage data" off: said on every request, left out while it is on.
+      Object.assign(body, usageRequestFields());
+
       if (!isValidCommunityId(CONFIG.communityId)) {
         throw new Error('Invalid community configuration. Please reload the page.');
       }
@@ -9198,24 +16948,68 @@
         }
       }
 
+      // Add page context if enabled. The reader's memory budget goes only with a request
+      // that declares tools to run code with, which is known once the runtime has loaded.
+      if (body.client_tools) {
+        body.page_context = withMemoryBudget(pageContext);
+      } else if (pageContext) {
+        body.page_context = pageContext;
+      }
+
       // A streamed request is bounded by its silence (60 s after the last data from the
       // server), not by its length; one sent with streaming off has no progress to
       // measure, so it keeps a fixed 2 minutes.
-      const idle = CONFIG.streamingEnabled ? createIdleTimeout() : null;
+      let idle = CONFIG.streamingEnabled ? createIdleTimeout() : null;
 
       // BYOK keys ride on the header matching their provider (inferred from the
       // key's own prefix; see inferKeyProvider and chatRequestHeaders).
-      let response;
-      try {
-        response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat`, {
-          method: 'POST',
-          headers: chatRequestHeaders(),
-          body: JSON.stringify(body),
-          signal: idle ? idle.signal : AbortSignal.timeout(120000),
-        });
-      } catch (fetchError) {
+      const postChat = async () => {
+        try {
+          return await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat`, {
+            method: 'POST',
+            headers: chatRequestHeaders(),
+            body: JSON.stringify(body),
+            signal: idle ? idle.signal : AbortSignal.timeout(120000),
+          });
+        } catch (fetchError) {
+          if (idle) idle.stop();
+          throw fetchError;
+        }
+      };
+      let response = await postChat();
+
+      // The server holds no session for the id the request named (it restarted, or let the
+      // session go), and refused to start an empty one. Send the request once more with the
+      // conversation, as a first request after a page load does. Nothing was run; the
+      // worker's limits still count the refused request.
+      if (body.expect_session && await refusedAsSessionUnknown(response)) {
         if (idle) idle.stop();
-        throw fetchError;
+        // Only its clone was read; let go of the original body.
+        response.body?.cancel().catch(() => {});
+        serverConfirmedAt = null;
+        delete body.expect_session;
+        Object.assign(body, reseedFields({
+          list: conversationBefore,
+          confirmedAt: serverConfirmedAt,
+          now: Date.now(),
+          ttlMs: SESSION_TTL_MS,
+        }));
+        // The refused request spent its Turnstile token, which the worker verifies once.
+        if (body.cf_turnstile_response) {
+          delete body.cf_turnstile_response;
+          const fresh = await freshTurnstileToken();
+          if (!fresh) throw new Error(SESSION_LOST_MESSAGE);
+          body.cf_turnstile_response = fresh;
+        }
+        idle = CONFIG.streamingEnabled ? createIdleTimeout() : null;
+        response = await postChat();
+        // Told the same again, though nothing asked for it: the question goes back in the
+        // input, and the next send carries the conversation.
+        if (await refusedAsSessionUnknown(response)) {
+          if (idle) idle.stop();
+          response.body?.cancel().catch(() => {});
+          throw new Error(SESSION_LOST_MESSAGE);
+        }
       }
 
       if (!response.ok) {
@@ -9227,6 +17021,10 @@
         }
       }
       serverAnswered = true;
+      // The server has the message that says the held step never ran: the note is spent.
+      // A send that fails before this keeps it, for the next click on Run step.
+      if (planSend && planSend.held && planSend.plan.held === planSend.held) delete planSend.plan.held;
+      markContextMoveTold(carried);
       if (idle) idleTimers.set(response, idle);
 
       // Extract session ID from response header (set by streaming responses)
@@ -9248,6 +17046,14 @@
           answer: (request, index) => answerToolRequest(container, request, index),
           resume: postResume,
           stream: (resumed, index) => handleStreamingResponse(resumed, container, { messageIndex: index }),
+          // Stop plan or Pause ended the reply: what it ran is kept, as a finished reply's is.
+          stopped: () => {
+            try {
+              saveHistory();
+            } catch (saveError) {
+              console.error('[OSA] Failed to save history:', saveError);
+            }
+          },
         });
       } else {
         // Non-streaming response (either streaming not enabled, or fallback)
@@ -9266,6 +17072,7 @@
         }
         if (data && typeof data.session_id === 'string') {
           sessionId = data.session_id;
+          serverConfirmedAt = Date.now();
         }
         const answer = (data && data.message && typeof data.message.content === 'string') ? data.message.content : null;
         if (!answer) {
@@ -9359,15 +17166,18 @@
       updateStatusDisplay(false);
     } finally {
       modelOverride = null;
+      currentReply = null;
+      planWait = null;
       isLoading = false;
       isThinking = false;
       clearActivity();
       input.disabled = false;
       sendBtn.disabled = false;
-      resetBtn.disabled = messages.length <= 1;
+      resetBtn.disabled = chatIsEmpty();
       // The box was emptied when the question was sent and nothing has been typed since
       // (it was disabled), so the question goes back as it was written.
       if (questionRemoved && !input.value) input.value = question;
+      if (!questionRemoved) noteUnreadReply(container);
       // With the question back in the box, a reader who has seen no reply can send it again
       // on another model. One who has seen part of a reply keeps that conversation as it is.
       if (suggestion && questionRemoved) addModelSuggestion(container, suggestion, question);
@@ -9417,11 +17227,17 @@
 
   // Reset chat
   function resetChat(container) {
-    if (messages.length <= 1 || isLoading) return;
+    if (chatIsEmpty() || isLoading) return;
+    // The sheet would go on listing the chat that is about to be discarded.
+    closeHistory(container, { restoreFocus: false });
     // Commit any open thumbs-down comment before the history is cleared.
     flushPendingResponseFeedback(container);
+    // The active conversation is discarded for good; the others stay.
+    if (activeConversation) droppedConversationIds.add(activeConversation.id);
     messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     sessionId = null; // Clear session to start fresh on next message
+    serverConfirmedAt = null;
+    beginConversation(null);
     try {
       saveHistory();
     } catch (saveError) {
@@ -9434,6 +17250,10 @@
   // Toggle chat window
   function toggleChat(container) {
     isOpen = !isOpen;
+    // What the host page hears, once the window has settled (the host API).
+    const hostEvents = [];
+    // Before anything moves focus into the widget.
+    if (isOpen) hostReturnFocus = focusedOutside(container);
     const chatWindow = container.querySelector('.osa-chat-window');
     const button = container.querySelector('.osa-chat-button');
     const tooltip = container.querySelector('.osa-chat-tooltip');
@@ -9448,7 +17268,12 @@
         button.innerHTML = ICONS.close;
         button.setAttribute('aria-label', 'Close chat');
       }
-      if (activeTab === 'chat') container.querySelector('.osa-chat-input input').focus();
+      // A window opened in center is the dialog from its first frame.
+      if (hostMode === 'center') engageCenter(container);
+      syncCenterStart(container);
+      if (activeTab === 'chat') focusChatField(container, hostMode === 'center');
+      else if (hostMode === 'center') focusActiveView(container);
+      hostEvents.push(['open', { mode: hostMode }]);
       // Hide tooltip when chat opens
       if (tooltip) tooltip.classList.remove('visible');
       // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
@@ -9458,17 +17283,30 @@
     } else {
       // Commit any open thumbs-down comment box on close.
       flushPendingResponseFeedback(container);
+      closeHistory(container, { restoreFocus: false });
+      closePrivacy(container, { restoreFocus: false });
       chatWindow.classList.remove('open');
       container.classList.remove('chat-open');
       if (!capsule) {
         button.innerHTML = ICONS.chat;
         button.setAttribute('aria-label', 'Open chat');
       }
+      // A closed dialog is the corner again; focus goes back to what had it before.
+      const wasCenter = hostMode === 'center';
+      if (wasCenter) {
+        applyHostMode(container, 'corner');
+        const back = hostReturnFocus && hostReturnFocus.isConnected ? hostReturnFocus : container.querySelector('.osa-chat-button');
+        if (back && typeof back.focus === 'function') back.focus();
+        hostEvents.push(['modechange', { mode: 'corner' }]);
+      }
+      hostReturnFocus = null;
+      hostEvents.push(['close', {}]);
     }
     if (capsule) {
       renderLauncherIcons(container);
       positionIndicator(container);
     }
+    for (const [name, payload] of hostEvents) emitHostEvent(name, payload);
   }
 
   // The script element the pop-out copies (#470): this script's own, or, for a copy
@@ -9544,6 +17382,8 @@
   // script's own address, integrity and crossorigin, which the host page's policy
   // already allows, since it loaded this script.
   function openPopout() {
+    const panel = document.querySelector('.osa-chat-widget');
+    if (panel) closeHistory(panel, { restoreFocus: false });
     // Reuse existing popup if still open
     if (chatPopup && !chatPopup.closed) {
       chatPopup.focus();
@@ -9668,10 +17508,13 @@
     if (launcherWaiting) setTimeout(revealLauncher, LAUNCHER_WAIT_MS);
 
     loadPageContextPreference();
+    loadShareUsagePreference();
     loadUserSettings();
     const historyNeedsSave = loadHistory();
+    startFreshChatOnReturn();
     injectStyles();
     const container = createWidget();
+    renderCenterStart(container);
     // Everything else the remembered config sets (the logo, the title, the
     // greeting), still before the first frame.
     if (remembered) applyWidgetConfig();
@@ -9691,6 +17534,10 @@
 
     renderMessages(container);
     renderSuggestions(container);
+    evaluateContextSwitch();
+    watchPageMoves();
+    // The figures of a restored chat, once the runtime that reads them is ready.
+    hydrateFigures();
 
     // Query required DOM elements with null checks
     const chatButton = container.querySelector('.osa-chat-button');
@@ -9716,13 +17563,15 @@
 
     // Update reset button state
     if (resetBtn) {
-      resetBtn.disabled = messages.length <= 1;
+      resetBtn.disabled = chatIsEmpty();
     }
 
     // Event listeners with null checks
     chatButton?.addEventListener('click', () => handleChatButtonClick(container));
     closeBtn?.addEventListener('click', () => toggleChat(container));
     resetBtn?.addEventListener('click', () => resetChat(container));
+    bindHistoryPanel(container);
+    bindCenterStage(container);
     popoutBtn?.addEventListener('click', () => openPopout());
     settingsBtn?.addEventListener('click', () => openSettings(container));
 
@@ -9739,17 +17588,16 @@
       }
     });
 
-    // Page context toggle
-    const pageContextCheckbox = container.querySelector('#osa-page-context-checkbox');
-    pageContextCheckbox?.addEventListener('change', (e) => {
-      pageContextEnabled = e.target.checked;
-      savePageContextPreference();
-    });
+    // Privacy choices: the footer button and its dialog (#706).
+    bindPrivacyChoices(container);
 
     // Settings modal event listeners
     settingsCloseBtn?.addEventListener('click', () => closeSettings(container));
     settingsCancelBtn?.addEventListener('click', () => closeSettings(container));
     settingsSaveBtn?.addEventListener('click', () => saveSettings(container));
+
+    // Browser memory (E5.1): the marked choice and the usage bar follow the radios.
+    container.querySelector('.osa-memory-field')?.addEventListener('change', () => syncMemoryField(container));
 
     // Workspace panel (#433), inside Settings.
     const workspaceDownloadBtn = container.querySelector('.osa-workspace-download-btn');
@@ -9829,12 +17677,1234 @@
         if (activeTab === 'chat') input?.focus();
       }, 100);
     }
+    // The host page's calls made before this point (open, ask, ...), in order.
+    flushHostCalls();
   }
 
   // Validate communityId contains only safe characters (alphanumeric, hyphens, underscores)
   function isValidCommunityId(id) {
     return typeof id === 'string' && /^[a-zA-Z0-9_-]+$/.test(id);
   }
+
+  // BEGIN host-api (E6.1, #701). The host page's way into the widget (open, close, ask,
+  // seed, setMode, on) and the center-stage dialog those calls drive. A page calls it the
+  // moment the script is there, so it is plain code in this file, not the runtime bundle.
+  //
+  // Center is the same .osa-chat-window with an osa-center class, never a second
+  // instance, so docking keeps the conversation: nothing here redraws the thread. The
+  // mode lives in memory only: it starts at 'corner', and a dialog that is closed is
+  // 'corner' again, so the launcher always opens the panel it always has.
+  const HOST_EVENTS = ['open', 'close', 'modechange', 'send'];
+  const HOST_MODES = ['corner', 'center'];
+  const hostListeners = new Map(HOST_EVENTS.map((name) => [name, []]));
+  let hostMode = 'corner';
+  // Calls made before init() built the widget, replayed in order once it has.
+  let hostQueue = [];
+  let hostLive = false;
+  // A page that calls before init() and never calls init() (or whose init stops early)
+  // would otherwise see nothing happen, and hear nothing. The queue is bounded, and one
+  // warning says what is waiting if init() has not built the widget after a while.
+  const HOST_QUEUE_MAX = 50;
+  const HOST_INIT_WARN_MS = 5000;
+  let hostInitTimer = null;
+  // What had focus when the window opened, for Close to give it back.
+  let hostReturnFocus = null;
+  // The page's own nodes made inert while the dialog is open, and the page's scroll
+  // before it was locked, to give back; and the dialog's Escape and Tab handler.
+  let centerInerted = [];
+  let centerScrollLock = null;
+  let centerKeyHandler = null;
+  // The cosmetic classes of a dock (osa-dock-in on the window, closing on the scrim) are
+  // taken off by these timers, after the 120 ms the CSS gives the effect. Nothing waits for
+  // an animation to end: the state (inert, scroll lock, focus, events) has already changed.
+  const CENTER_FADE_CLEANUP_MS = 150;
+  let dockMotionTimer = null;
+  let scrimFadeTimer = null;
+
+  function hostWarn(call, message, value) {
+    if (value === undefined) console.warn(`[OSA] ${call}: ${message}`);
+    else console.warn(`[OSA] ${call}: ${message}`, value);
+  }
+
+  // A handler gets its own copy of plain data, and nothing it does (a throw, a rejected
+  // promise) reaches the widget or another handler.
+  function emitHostEvent(name, payload) {
+    for (const entry of [...hostListeners.get(name)]) {
+      try {
+        const result = entry.handler({ ...payload });
+        if (result && typeof result.catch === 'function') {
+          result.catch((error) => console.error(`[OSA] A "${name}" handler failed:`, error));
+        }
+      } catch (error) {
+        console.error(`[OSA] A "${name}" handler threw:`, error);
+      }
+    }
+  }
+
+  // Returns the way to stop listening. A bad call returns one too, that does nothing, so
+  // a host that keeps the result and calls it later does not throw.
+  function hostOn(event, handler) {
+    const nothing = () => {};
+    if (!hostListeners.has(event)) {
+      hostWarn('on', `unknown event, ignoring (one of ${HOST_EVENTS.join(', ')}):`, event);
+      return nothing;
+    }
+    if (typeof handler !== 'function') {
+      hostWarn('on', 'the handler must be a function, ignoring:', handler);
+      return nothing;
+    }
+    const entry = { handler };
+    hostListeners.get(event).push(entry);
+    return function off() {
+      const list = hostListeners.get(event);
+      const at = list.indexOf(entry);
+      if (at !== -1) list.splice(at, 1);
+    };
+  }
+
+  function runHostCall(call) {
+    try {
+      call();
+    } catch (error) {
+      console.error('[OSA] A call to the widget failed:', error);
+    }
+  }
+
+  // A call is checked when it is made, and then run now, or queued until init() has
+  // built the widget.
+  function hostDo(call) {
+    if (hostLive) {
+      runHostCall(call);
+      return;
+    }
+    if (hostQueue.length >= HOST_QUEUE_MAX) {
+      hostWarn('call', `init() has not built the widget and ${HOST_QUEUE_MAX} calls are already waiting, ignoring this one`);
+      return;
+    }
+    hostQueue.push(call);
+    if (hostInitTimer === null) {
+      hostInitTimer = setTimeout(() => {
+        hostInitTimer = null;
+        if (!hostLive) hostWarn('call', `${hostQueue.length} call(s) are waiting; OSAChatWidget.init() has not been called or did not finish building the widget, and none runs until it has`);
+      }, HOST_INIT_WARN_MS);
+    }
+  }
+
+  function flushHostCalls() {
+    hostLive = true;
+    if (hostInitTimer !== null) clearTimeout(hostInitTimer);
+    const calls = hostQueue;
+    hostQueue = [];
+    calls.forEach(runHostCall);
+  }
+
+  // open() and ask() take {mode}: undefined when none is named, null when what is named
+  // is not a mode (the call is then refused), else the mode.
+  function modeOption(call, options) {
+    if (options === undefined || options === null) return undefined;
+    if (typeof options !== 'object' || Array.isArray(options)) {
+      hostWarn(call, 'options must be an object such as {mode}, ignoring the call:', options);
+      return null;
+    }
+    if (options.mode === undefined) return undefined;
+    if (!HOST_MODES.includes(options.mode)) {
+      hostWarn(call, `mode must be one of ${HOST_MODES.join(', ')}, ignoring the call:`, options.mode);
+      return null;
+    }
+    return options.mode;
+  }
+
+  function widgetContainer() {
+    return document.querySelector('.osa-chat-widget');
+  }
+
+  // The element that has focus, unless it is the page itself or part of the widget.
+  function focusedOutside(container) {
+    const active = document.activeElement;
+    if (!active || active === document.body || active === document.documentElement) return null;
+    return container.contains(active) ? null : active;
+  }
+
+  // Focus goes to the field the reader types in: the start screen's while it shows. When
+  // that is not possible (a reply is loading), `park` puts it on the window itself, so
+  // it is never left on a control that is gone.
+  function focusChatField(container, park = false) {
+    const win = container.querySelector('.osa-chat-window');
+    const target = win && win.classList.contains('osa-center-empty')
+      ? container.querySelector('.osa-center-input')
+      : container.querySelector('.osa-chat-input input');
+    if (target && !target.disabled) target.focus();
+    else if (park && win) win.focus();
+  }
+
+  // Open the window, in `mode` when one is given, on the chat and with nothing laid over
+  // it. A window that is open stays open and keeps what it shows.
+  function openChatWindow(container, mode) {
+    if (activeTab !== 'chat') setTab(container, 'chat');
+    closeHistory(container, { restoreFocus: false });
+    closeSettings(container);
+    closeFeedback(container);
+    closePrivacy(container, { restoreFocus: false });
+    const changed = mode !== undefined && applyHostMode(container, mode);
+    if (!isOpen) toggleChat(container);
+    else focusChatField(container, true);
+    if (changed) emitHostEvent('modechange', { mode: hostMode });
+  }
+
+  function hostOpen(mode) {
+    const container = widgetContainer();
+    if (!container) return;
+    if (CONFIG.fullscreen) {
+      hostWarn('open', 'the pop-out window is always open, ignoring the call');
+      return;
+    }
+    openChatWindow(container, mode);
+  }
+
+  function hostClose() {
+    const container = widgetContainer();
+    if (!container) return;
+    if (CONFIG.fullscreen) {
+      hostWarn('close', 'the pop-out window is always open, ignoring the call');
+      return;
+    }
+    if (!isOpen) return;
+    toggleChat(container);
+  }
+
+  // The question goes the way a typed one does, through sendMessage, so History, the
+  // context reset and the runtime preload all apply. A reply still loading refuses it.
+  function hostAsk(text, mode) {
+    const container = widgetContainer();
+    if (!container) return;
+    if (isLoading || currentReply !== null) {
+      hostWarn('ask', 'a reply is still loading, ignoring the question');
+      return;
+    }
+    if (!CONFIG.fullscreen) openChatWindow(container, mode);
+    // sendMessage empties the chat's input, as it does for a typed question. What the
+    // reader had typed and not sent is theirs, not the page's, so it goes back (and into
+    // the start screen's field, which is the same text) once the question is away.
+    const input = container.querySelector('.osa-chat-input input');
+    const draft = input ? input.value : '';
+    const sending = sendMessage(container, text);
+    if (input && draft && input.value === '') {
+      input.value = draft;
+      const field = container.querySelector('.osa-center-input');
+      if (field) field.value = draft;
+      // Tell whatever mirrors the field (the start screen's sync, the send button).
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    }
+    sending.catch((error) => console.error('[OSA] ask failed:', error));
+  }
+
+  // --- seed (#730) ---
+  // seed(text, {mode}?) puts `text` at the head of the chat as the assistant's own
+  // opening reply, for a host page that has something to say before the reader asks
+  // (a summary of the dataset on screen, the way the page got here). Nothing is sent:
+  // no request, no 'send' event, no Turnstile token, no usage. The first message the
+  // reader then sends carries the text as the one earlier turn (selectReseedTurns keeps
+  // a `seeded` message), so the model has seen what the reader has.
+  function hostSeed(text, mode) {
+    const container = widgetContainer();
+    if (!container) return;
+    if (CONFIG.fullscreen) {
+      hostWarn('seed', 'the pop-out window shows the chat of the page that opened it, ignoring the call');
+      return;
+    }
+    if (isLoading) {
+      hostWarn('seed', 'a reply is still loading, ignoring the text');
+      return;
+    }
+    // A chat the reader has written in is theirs: it stays in History and the seeded
+    // reply opens a new one, as a change of page context does. A chat with nothing of
+    // theirs in it is reused, without a session (one the server held would not be told
+    // the seeded text, since a request carries the conversation only to a new session).
+    if (messages.some((m) => m.role === 'user')) {
+      if (startConversation({ context: pageContext() }) === null) return;
+    } else {
+      flushFeedbackBeforeSwap();
+      sessionId = null;
+      serverConfirmedAt = null;
+      // The seeded reply is about the page the host is on now, whatever the chat was
+      // opened under.
+      if (activeConversation) activeConversation.context = pageContext();
+    }
+    messages = [{ role: 'assistant', content: text.trim(), seeded: true }];
+    welcomeBack = null;
+    saveHistoryQuietly('seeding a conversation');
+    renderMessages(container);
+    renderSuggestions(container);
+    const resetBtn = container.querySelector('.osa-reset-btn');
+    if (resetBtn) resetBtn.disabled = chatIsEmpty();
+    syncCenterStart(container);
+    evaluateContextSwitch();
+    openChatWindow(container, mode);
+  }
+
+  function hostSetMode(mode) {
+    const container = widgetContainer();
+    // The pop-out is a window of its own, with no corner to dock to.
+    if (!container) return;
+    if (CONFIG.fullscreen) {
+      hostWarn('setMode', 'the pop-out window has no corner to dock to, ignoring the call');
+      return;
+    }
+    if (!applyHostMode(container, mode)) return;
+    if (isOpen) focusActiveView(container);
+    emitHostEvent('modechange', { mode: hostMode });
+  }
+
+  // Take `mode`; whether it changed. Events are the caller's to send, once its own
+  // work is done.
+  function applyHostMode(container, mode) {
+    if (mode === hostMode) return false;
+    const docking = hostMode === 'center' && mode === 'corner' && isOpen;
+    hostMode = mode;
+    const win = container.querySelector('.osa-chat-window');
+    const center = mode === 'center';
+    win.classList.toggle('osa-center', center);
+    playDockMotion(win, docking);
+    if (center) {
+      win.setAttribute('role', 'dialog');
+      win.setAttribute('aria-modal', 'true');
+    } else {
+      win.removeAttribute('role');
+      win.removeAttribute('aria-modal');
+      win.removeAttribute('aria-label');
+    }
+    if (center && isOpen) engageCenter(container);
+    else releaseCenter(container);
+    syncCenterHeader(container);
+    syncCenterStart(container);
+    syncPlanRail(container);
+    syncCenterNotebook(container);
+    syncCenterTabs(container);
+    return true;
+  }
+
+  // The corner window fades in from a hair smaller after a dock; nothing else about the
+  // dock waits for it. Taken off by a timer, never by an animation event.
+  function playDockMotion(win, docking) {
+    if (dockMotionTimer !== null) clearTimeout(dockMotionTimer);
+    dockMotionTimer = null;
+    win.classList.remove('osa-dock-in');
+    if (!docking) return;
+    win.classList.add('osa-dock-in');
+    dockMotionTimer = setTimeout(() => {
+      dockMotionTimer = null;
+      win.classList.remove('osa-dock-in');
+    }, CENTER_FADE_CLEANUP_MS);
+  }
+
+  // The scrim of a dialog that docked fades out under `closing`; opening it again takes
+  // the class off at once.
+  function fadeScrimOut(scrim) {
+    if (scrimFadeTimer !== null) clearTimeout(scrimFadeTimer);
+    scrim.classList.add('closing');
+    scrimFadeTimer = setTimeout(() => {
+      scrimFadeTimer = null;
+      scrim.classList.remove('closing');
+    }, CENTER_FADE_CLEANUP_MS);
+  }
+
+  // Modal for as long as the dialog is open: the page behind it is inert and does not
+  // scroll, and Tab and Escape are the dialog's (handleCenterKey).
+  function engageCenter(container) {
+    if (centerKeyHandler) return;
+    const scrim = container.querySelector('.osa-center-scrim');
+    if (scrim) {
+      if (scrimFadeTimer !== null) clearTimeout(scrimFadeTimer);
+      scrimFadeTimer = null;
+      scrim.classList.remove('closing');
+      scrim.classList.add('open');
+    }
+    const hold = (node) => {
+      if (node.hasAttribute('inert')) return;
+      node.setAttribute('inert', '');
+      centerInerted.push(node);
+    };
+    for (const node of [...document.body.children]) {
+      if (node !== container && !node.contains(container)) hold(node);
+    }
+    // The launcher and its tooltip are the widget's own, and as far behind the dialog.
+    for (const node of [...container.children]) {
+      if (!node.classList.contains('osa-chat-window') && !node.classList.contains('osa-center-scrim')) hold(node);
+    }
+    centerScrollLock = { root: document.documentElement.style.overflow, body: document.body.style.overflow };
+    document.documentElement.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+    centerKeyHandler = (event) => handleCenterKey(container, event);
+    document.addEventListener('keydown', centerKeyHandler);
+    // Last, so a step above that threw leaves the launcher drawn, not hidden behind a
+    // dialog that is not modal. The launcher is inert above and, with it, taken out of
+    // sight (see the CSS).
+    container.classList.add('osa-center-engaged');
+  }
+
+  function releaseCenter(container) {
+    container.classList.remove('osa-center-engaged');
+    const scrim = container.querySelector('.osa-center-scrim');
+    if (scrim) {
+      const wasShown = scrim.classList.contains('open');
+      scrim.classList.remove('open');
+      // Only a dialog that docks, with the window staying, has a scrim worth fading.
+      if (wasShown && isOpen) fadeScrimOut(scrim);
+    }
+    centerInerted.forEach((node) => node.removeAttribute('inert'));
+    centerInerted = [];
+    if (centerScrollLock) {
+      document.documentElement.style.overflow = centerScrollLock.root;
+      document.body.style.overflow = centerScrollLock.body;
+      centerScrollLock = null;
+    }
+    if (centerKeyHandler) {
+      document.removeEventListener('keydown', centerKeyHandler);
+      centerKeyHandler = null;
+    }
+  }
+
+  // Escape and "Move to corner" put the same conversation in the corner: the thread, the
+  // session and what was typed are not touched.
+  function dockCenter(container) {
+    if (hostMode !== 'center') return;
+    if (applyHostMode(container, 'corner')) emitHostEvent('modechange', { mode: 'corner' });
+    focusActiveView(container);
+  }
+
+  // Where focus goes when the window opens in the dialog, or changes mode, on the tab that
+  // is showing: the chat's field; on the notebook tab, the dialog's selected tab (the
+  // notebook's frame is not taken over by a key that only changed the mode); and in the
+  // corner on that tab, the window itself, so it is never left on a control that is gone.
+  function focusActiveView(container) {
+    if (activeTab === 'chat') {
+      focusChatField(container, true);
+      return;
+    }
+    const tab = hostMode === 'center' ? container.querySelector('.osa-center-tab[aria-selected="true"]') : null;
+    const target = tab && !tab.closest('[hidden]') ? tab : container.querySelector('.osa-chat-window');
+    if (target) target.focus();
+  }
+
+  // A tab switch can take away the control that had focus: the chat's field goes inert
+  // with its view, and the header's History, Settings and Continue in notebook buttons
+  // are hidden on the notebook tab. In the dialog, where the page behind is inert, focus
+  // that falls to the body is on nothing at all, so it goes to the selected tab.
+  function rescueCenterFocus(container) {
+    if (hostMode !== 'center' || !isOpen) return;
+    const active = document.activeElement;
+    // The window itself counts as nowhere: syncCenterStart parks focus there when the
+    // start screen's field leaves with its view.
+    const nowhere = !active || active === document.body || active === document.documentElement ||
+      active === container.querySelector('.osa-chat-window');
+    const win = container.querySelector('.osa-chat-window');
+    const gone = !nowhere && container.contains(active) && (
+      !!active.closest('[inert]') || !isShown(active, win, new Map()) ||
+      (activeTab === 'notebook' && active.matches('.osa-history-btn, .osa-settings-btn-open, .osa-reset-btn, .osa-center-notebook-btn')));
+    if (nowhere || gone) focusActiveView(container);
+  }
+
+  // The dialog's Chat and Notebook tabs (#738), in its header, from the start and for as
+  // long as the notebook can be opened (#743): the reader does not have to wait for a
+  // reply to run code. A dialog with no notebook (no dataset, as under a Discover search's
+  // "Ask a follow-up") keeps the header it always had, and the corner never shows them
+  // (its tabs are the launcher's circles). They are the same two views the corner shows:
+  // the tab only chooses which is up, so the notebook's frame and its Python session are
+  // untouched by a switch.
+  function syncCenterTabs(container) {
+    const win = container.querySelector('.osa-chat-window');
+    const tabs = container.querySelector('.osa-center-tabs');
+    if (!win || !tabs) return;
+    const show = hostMode === 'center' && container.classList.contains('osa-capsule') &&
+      isNotebookAvailable();
+    // Read before the row is hidden: a browser blurs a focused control that goes away, and
+    // by the time the check below runs the focus is on the body.
+    const hadFocus = tabs.contains(document.activeElement);
+    tabs.hidden = !show;
+    win.classList.toggle('osa-center-tabbed', show);
+    for (const name of ['chat', 'notebook']) {
+      const tab = tabs.querySelector(`.osa-center-tab-${name}`);
+      const view = container.querySelector(`.osa-view-${name}`);
+      const on = activeTab === name;
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+      tab.tabIndex = on ? 0 : -1;
+      if (view) {
+        view.id = `osa-center-panel-${name}`;
+        tab.setAttribute('aria-controls', view.id);
+        // A tab panel only where there are tabs: the corner's views are plain regions.
+        if (show) {
+          view.setAttribute('role', 'tabpanel');
+          view.setAttribute('aria-labelledby', tab.id);
+        } else {
+          view.removeAttribute('role');
+          view.removeAttribute('aria-labelledby');
+        }
+      } else {
+        tab.removeAttribute('aria-controls');
+      }
+    }
+    // Tab can carry focus out of the notebook's frame only in the dialog, and only
+    // there is the guard that catches it a stop; in the corner it would be a stray one.
+    const chatTab = tabs.querySelector('.osa-center-tab-chat');
+    chatTab.classList.toggle('osa-tab-unread', chatUnread);
+    chatTab.querySelector('.osa-center-tab-unread').textContent = chatUnread ? ' (new reply)' : '';
+    const guard = container.querySelector('.osa-nb-guard');
+    if (guard) guard.tabIndex = hostMode === 'center' ? 0 : -1;
+    // A tab row that goes away (the page left a dataset with a notebook) must not take
+    // the focus with it, into an inert page.
+    if (!show && isOpen && hadFocus) focusActiveView(container);
+  }
+
+  // A reply that ends while the reader is on another tab (the Notebook tab, with the chat
+  // view inert): the chat's own live regions are inside that view, so a screen reader hears
+  // nothing from them, and nothing on the page says the reply came. The tab announcer is in
+  // the header, outside the views, and says it; the dialog's Chat tab gets a dot and "new
+  // reply" in its name until the chat is opened.
+  let chatUnread = false;
+  function noteUnreadReply(container) {
+    if (!isOpen || !container.classList.contains('osa-capsule') || activeTab === 'chat') return;
+    chatUnread = true;
+    const announcer = container.querySelector('.osa-tab-announcer');
+    if (announcer) {
+      const text = 'The assistant has replied. Open the Chat tab to read it.';
+      // A second reply says the same words: a live region only speaks a change.
+      announcer.textContent = '';
+      setTimeout(() => { if (chatUnread) announcer.textContent = text; }, 0);
+    }
+    syncCenterTabs(container);
+  }
+
+  function clearUnreadReply(container) {
+    if (!chatUnread) return;
+    chatUnread = false;
+    const announcer = container.querySelector('.osa-tab-announcer');
+    if (announcer) announcer.textContent = '';
+    syncCenterTabs(container);
+  }
+
+  function bindCenterTabs(container) {
+    const tabs = container.querySelector('.osa-center-tabs');
+    if (!tabs) return;
+    const pick = (name, focus) => {
+      if (name === 'notebook' && !isNotebookAvailable()) return;
+      if (activeTab !== name) setTab(container, name);
+      if (focus) tabs.querySelector(`.osa-center-tab-${name}`).focus();
+    };
+    for (const name of ['chat', 'notebook']) {
+      tabs.querySelector(`.osa-center-tab-${name}`).addEventListener('click', () => pick(name, false));
+    }
+    // Arrow keys move between the tabs and open the one they land on, Home and End go
+    // to the first and the last; the unselected tab is out of the Tab order, as in the
+    // pattern for tabs, so Tab goes past the pair in one press.
+    tabs.addEventListener('keydown', (event) => {
+      const names = { ArrowLeft: 'chat', ArrowRight: 'notebook', Home: 'chat', End: 'notebook' };
+      const name = names[event.key];
+      if (!name || event.altKey || event.ctrlKey || event.metaKey) return;
+      event.preventDefault();
+      pick(name, true);
+    });
+  }
+
+  // Focus Tab carries out of the notebook's frame lands on the guard that follows it in
+  // the notebook's view. The frame is another origin, so its keys never reach the
+  // dialog's own handler and the page behind the dialog is inert: without the guard the
+  // next stop is the browser's own controls. The guard hands focus to the dialog's first
+  // stop, the selected tab, which puts Close and the tabs within reach. (Shift+Tab out of
+  // the frame needs no help: the stop before the frame is the dialog's own.)
+  function guardNotebookFrame(view) {
+    const guard = view.querySelector('.osa-nb-guard');
+    if (!guard) return;
+    guard.addEventListener('focus', () => {
+      if (hostMode !== 'center') return;
+      const container = view.closest('.osa-chat-widget');
+      const win = container && container.querySelector('.osa-chat-window');
+      if (!win) return;
+      const stops = focusablesIn(win);
+      (stops[0] || win).focus();
+    });
+  }
+
+  // An iframe is a stop like any control; once focus is inside one, its keys stay in
+  // the frame and never reach the dialog's handler, so the notebook's frame is the one
+  // place Tab can leave: the guard after it (see guardNotebookFrame) takes the focus
+  // Tab carries out of the frame and gives it back to the dialog.
+  const FOCUSABLE_SELECTOR = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, iframe, [contenteditable]:not([contenteditable="false"]), [tabindex]';
+
+  // Whether `node` can be seen: neither it nor an ancestor up to `scope` is hidden or not
+  // displayed. `seen` remembers the answer for each node during one pass.
+  function isShown(node, scope, seen) {
+    if (!node || node === scope.parentElement) return true;
+    if (seen.has(node)) return seen.get(node);
+    let shown = !node.hidden;
+    if (shown) {
+      try {
+        const style = window.getComputedStyle(node);
+        shown = style.display !== 'none' && style.visibility !== 'hidden';
+      } catch (e) {
+        shown = true;
+      }
+    }
+    shown = shown && isShown(node.parentElement, scope, seen);
+    seen.set(node, shown);
+    return shown;
+  }
+
+  function focusablesIn(scope) {
+    const seen = new Map();
+    return [...scope.querySelectorAll(FOCUSABLE_SELECTOR)].filter((el) => {
+      if (el.disabled || el.hasAttribute('data-osa-guard') || el.closest('[inert]')) return false;
+      const tabindex = el.getAttribute('tabindex');
+      if (tabindex !== null && Number(tabindex) < 0) return false;
+      return isShown(el, scope, seen);
+    });
+  }
+
+  // Tab and Shift+Tab wrap inside the dialog, or inside what is laid over it (a settings
+  // panel, the History sheet). The page behind is inert, so the wrap is what keeps focus
+  // from leaving for the browser's own controls.
+  function trapTab(container, event) {
+    const win = container.querySelector('.osa-chat-window');
+    const overlays = [...win.querySelectorAll('.osa-settings-overlay.open')];
+    const scope = overlays.length ? overlays[overlays.length - 1] : (historyOpen ? historySheet(container) : win);
+    if (!scope) return;
+    const list = focusablesIn(scope);
+    const active = document.activeElement;
+    if (list.length === 0) {
+      event.preventDefault();
+      win.focus();
+      return;
+    }
+    const at = list.indexOf(active);
+    if (at === -1 && active && scope.contains(active) && active !== scope) return;
+    if (event.shiftKey) {
+      if (at <= 0) {
+        event.preventDefault();
+        list[list.length - 1].focus();
+      }
+    } else if (at === -1 || at === list.length - 1) {
+      event.preventDefault();
+      list[0].focus();
+    }
+  }
+
+  // Escape closes what is on top first: the History sheet, then a settings or feedback
+  // panel, and only then docks. (The sheet's own handler, which sees the key first when
+  // focus is inside the widget, stops it reaching this one.)
+  function handleCenterKey(container, event) {
+    if (event.defaultPrevented) return;
+    if (event.key === 'Tab') {
+      trapTab(container, event);
+      return;
+    }
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    if (historyOpen) {
+      closeHistory(container);
+      return;
+    }
+    const overlays = [...container.querySelectorAll('.osa-settings-overlay.open')];
+    if (overlays.length) {
+      const top = overlays[overlays.length - 1];
+      if (top.classList.contains('osa-privacy-overlay')) closePrivacy(container);
+      else if (top.classList.contains('osa-feedback-overlay')) closeFeedback(container);
+      else closeSettings(container);
+      return;
+    }
+    dockCenter(container);
+  }
+
+  // --- The center-stage dialog's header and start screen (boards C2 and C3) ---
+
+  // Every string the community sends is drawn as text, and held to the limits the server
+  // holds it to, so a config that is wrong (an older deploy, a page's own setConfig) is
+  // refused here too.
+  const CENTER_START_MAX_CARDS = 3;
+  function boundedText(value, max) {
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
+    return text && text.length <= max ? text : null;
+  }
+
+  function validCenterStart(raw) {
+    const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const cards = Array.isArray(source.capabilities) ? source.capabilities : [];
+    const capabilities = cards.slice(0, CENTER_START_MAX_CARDS)
+      .map((card) => (card && typeof card === 'object'
+        ? { title: boundedText(card.title, 40), text: boundedText(card.text, 160) }
+        : null))
+      .filter((card) => card && card.title && card.text);
+    return { capabilities, note: boundedText(source.note, 300) };
+  }
+
+  // The docs link: an https address with a host and no credentials, or nothing. It goes
+  // into an anchor on someone else's page, so nothing else gets that far.
+  function validAnalysisDocs(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const title = boundedText(raw.title, 80);
+    const address = boundedText(raw.url, 500);
+    if (!title || !address) return null;
+    try {
+      const url = new URL(address);
+      if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) return null;
+      return { title, url: url.href };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function docsAnchor(className, docs, text) {
+    const link = document.createElement('a');
+    link.className = className;
+    link.href = docs.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = text;
+    const hint = document.createElement('span');
+    hint.className = 'osa-sr-only';
+    hint.textContent = ' (opens in a new tab)';
+    link.appendChild(hint);
+    return link;
+  }
+
+  // The dialog's name for a screen reader, and the line under the AI Mode pill.
+  function syncCenterHeader(container) {
+    const win = container.querySelector('.osa-chat-window');
+    const context = container.querySelector('.osa-center-context');
+    if (!win || !context) return;
+    context.textContent = '';
+    if (currentDataset) {
+      const id = document.createElement('code');
+      id.textContent = currentDataset.id;
+      context.appendChild(id);
+      if (currentDataset.title) context.appendChild(document.createTextNode(` · ${currentDataset.title}`));
+    } else {
+      context.textContent = CONFIG.title;
+    }
+    if (hostMode === 'center') {
+      win.setAttribute('aria-label', currentDataset ? `AI Mode for ${currentDataset.id}` : 'AI Mode');
+    }
+  }
+
+  // The start screen's words that depend on the community and the dataset: the heading,
+  // the field, the cards, the footer, and the docs link in Settings. Drawn from CONFIG
+  // as it is now, so it is called again when the config or the dataset changes.
+  function renderCenterStart(container) {
+    const start = container.querySelector('.osa-center-start');
+    if (!start) return;
+    start.querySelector('.osa-center-heading').textContent = currentDataset
+      ? 'What would you like to know about this dataset?'
+      : 'What would you like to know?';
+    start.querySelector('.osa-sr-only').textContent = currentDataset ? `Ask about ${currentDataset.id}` : 'Ask a question';
+    start.querySelector('.osa-center-input').placeholder = CONFIG.placeholder;
+
+    const copy = validCenterStart(CONFIG.centerStart);
+    const docs = validAnalysisDocs(CONFIG.analysisDocs);
+    const cards = start.querySelector('.osa-center-cards');
+    cards.textContent = '';
+    for (const card of copy.capabilities) {
+      const el = document.createElement('div');
+      el.className = 'osa-center-card';
+      const title = document.createElement('div');
+      title.className = 'osa-center-card-title';
+      title.textContent = card.title;
+      const text = document.createElement('div');
+      text.className = 'osa-center-card-text';
+      text.textContent = card.text;
+      el.append(title, text);
+      cards.appendChild(el);
+    }
+
+    const footer = start.querySelector('.osa-center-footer');
+    footer.textContent = '';
+    if (copy.note) {
+      const note = document.createElement('span');
+      note.className = 'osa-center-note';
+      note.textContent = copy.note;
+      footer.appendChild(note);
+    }
+    if (docs) footer.appendChild(docsAnchor('osa-center-docs-link', docs, 'How it works'));
+    footer.hidden = !copy.note && !docs;
+    const win = container.querySelector('.osa-chat-window');
+    if (win) win.classList.toggle('osa-center-has-note', !!copy.note);
+
+    // A community with no docs page has no link in Settings either.
+    container.querySelectorAll('.osa-docs-field').forEach((row) => row.remove());
+    const body = container.querySelector('.osa-settings-body');
+    if (docs && body) {
+      const row = document.createElement('div');
+      row.className = 'osa-settings-field osa-docs-field';
+      const label = document.createElement('span');
+      label.className = 'osa-settings-label';
+      label.textContent = 'Learn more';
+      row.append(label, docsAnchor('osa-docs-link', docs, docs.title));
+      body.appendChild(row);
+    }
+    syncCenterHeader(container);
+  }
+
+  // The suggestion pills: what the chat's own suggestions show on an empty conversation.
+  function fillCenterPills(container, shown) {
+    const list = container.querySelector('.osa-center-pills');
+    if (!list) return;
+    list.textContent = '';
+    if (!shown || shown.compact) return;
+    for (const question of shown.questions) {
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = 'osa-center-suggestion';
+      pill.textContent = question;
+      list.appendChild(pill);
+    }
+  }
+
+  // The start screen is for an empty conversation in the dialog; any message, and the
+  // thread takes its place. The field it holds is the chat's own input, kept equal.
+  function syncCenterStart(container) {
+    const win = container.querySelector('.osa-chat-window');
+    const start = win && win.querySelector('.osa-center-start');
+    if (!start) return;
+    const show = hostMode === 'center' && activeTab === 'chat' && chatIsEmpty() && !isLoading;
+    const wasShown = !start.hidden;
+    if (show === wasShown) return;
+    start.hidden = !show;
+    win.classList.toggle('osa-center-empty', show);
+    if (show) {
+      start.querySelector('.osa-center-input').value = container.querySelector('.osa-chat-input input').value;
+    } else if (start.contains(document.activeElement)) {
+      // The field that had focus is gone: the window holds it until the reply is done.
+      win.focus();
+    }
+  }
+
+  function bindCenterStage(container) {
+    container.querySelector('.osa-center-dock-btn')?.addEventListener('click', () => dockCenter(container));
+    bindCenterTabs(container);
+    bindPlanRail(container);
+    const field = container.querySelector('.osa-center-input');
+    const main = container.querySelector('.osa-chat-input input');
+    field?.addEventListener('input', () => { main.value = field.value; });
+    container.querySelector('.osa-center-form')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (isLoading || !field.value.trim()) return;
+      sendMessage(container, field.value).catch((error) => console.error('[OSA] send failed:', error));
+      field.value = main.value;
+    });
+    container.querySelector('.osa-center-pills')?.addEventListener('click', (event) => {
+      const pill = event.target && typeof event.target.closest === 'function' ? event.target.closest('.osa-center-suggestion') : null;
+      if (pill) sendMessage(container, pill.textContent).catch((error) => console.error('[OSA] send failed:', error));
+    });
+  }
+  // END host-api
+
+  // BEGIN privacy-choices (#706). The footer's "Privacy choices" button and the small
+  // dialog it opens: "Use this page for answers" (what the footer's checkbox was, under
+  // the same storage key, so a reader's earlier choice carries over) and "Share usage
+  // data" (new, on by default), and a link to the privacy page.
+  //
+  // The dialog is one more .osa-settings-overlay (so the center dialog's Tab trap already
+  // scopes to it, and Escape closes it first, see handleCenterKey) with its own keydown,
+  // because Settings and Feedback have no trap in the corner and this one is a modal there
+  // as well: Tab and Shift+Tab wrap inside it, and Escape closes only it.
+  const DEFAULT_PRIVACY_URL = 'https://docs.osc.earth/osa/privacy/';
+  const PRIVACY_URL_MAX = 500;
+  // Runtime state of "Share usage data". True until the reader says otherwise.
+  let shareUsageEnabled = true;
+  // Storage keys whose last save failed, so the in-memory choice outranks what is stored.
+  const unsavedChoices = new Set();
+
+  // nemar.org's opt-out symbol (PrivacyChoicesIcon.astro), copied as it is: the 30:14
+  // proportions and the fixed #fff and #06f are what make it recognizable, so it is
+  // never themed. Decorative: the text beside it names the control.
+  const PRIVACY_ICON_HTML = '<svg class="osa-privacy-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 14" width="30" height="14" aria-hidden="true" focusable="false">'
+    + '<path fill="#fff" fill-rule="evenodd" clip-rule="evenodd" d="M7.4 12.8h6.8l3.1-11.6H7.4C4.2 1.2 1.6 3.8 1.6 7s2.6 5.8 5.8 5.8z"></path>'
+    + '<path fill="#06f" fill-rule="evenodd" clip-rule="evenodd" d="M22.6 0H7.4C3.5 0 .4 3.1.4 7s3.1 7 7 7h15.2c3.9 0 7-3.1 7-7s-3.1-7-7-7zM1.6 7c0-3.2 2.6-5.8 5.8-5.8h9.9l-3.1 11.6H7.4C4.2 12.8 1.6 10.2 1.6 7z"></path>'
+    + '<path fill="#fff" d="M24.6 4c.2.2.2.6 0 .8L22.5 7l2.2 2.2c.2.2.2.6 0 .8-.2.2-.6.2-.8 0l-2.2-2.2L19.5 10c-.2.2-.6.2-.8 0-.2-.2-.2-.6 0-.8L20.8 7l-2.2-2.2c-.2-.2-.2-.6 0-.8.2-.2.6-.2.8 0l2.2 2.2L23.8 4c.2-.2.6-.2.8 0z"></path>'
+    + '<path fill="#06f" d="M12.7 4.1c.2.2.3.6.1.8L8.6 9.8c-.1.1-.2.2-.3.2-.2.1-.5.1-.7-.1L5.4 7.7c-.2-.2-.2-.6 0-.8.2-.2.6-.2.8 0L8 8.6l3.8-4.5c.2-.2.6-.2.9 0z"></path>'
+    + '</svg>';
+
+  function privacyChoicesButtonHtml() {
+    return `<button type="button" class="osa-privacy-btn" aria-haspopup="dialog">${PRIVACY_ICON_HTML}<span>Privacy choices</span></button>`;
+  }
+
+  function privacyOverlayHtml() {
+    return `
+        <div class="osa-settings-overlay osa-privacy-overlay" tabindex="-1">
+        <div class="osa-settings-modal osa-privacy-modal" role="dialog" aria-modal="true" aria-labelledby="osa-privacy-title">
+          <div class="osa-settings-header">
+            <h3 class="osa-settings-title" id="osa-privacy-title">Privacy choices</h3>
+            <button type="button" class="osa-settings-close-btn osa-privacy-close-btn" aria-label="Close privacy choices">
+              ${ICONS.close}
+            </button>
+          </div>
+          <div class="osa-settings-body osa-privacy-body">
+            <div class="osa-privacy-field osa-privacy-page-field">
+              <div class="osa-privacy-row">
+                <input type="checkbox" id="osa-privacy-page" aria-describedby="osa-privacy-page-hint" />
+                <label for="osa-privacy-page">Use this page for answers</label>
+              </div>
+              <span class="osa-settings-hint" id="osa-privacy-page-hint">
+                Sends this page's address and title, so answers can be about what you are viewing. The dataset a page names is still sent.
+              </span>
+            </div>
+            <div class="osa-privacy-field osa-privacy-usage-field">
+              <div class="osa-privacy-row">
+                <input type="checkbox" id="osa-privacy-usage" aria-describedby="osa-privacy-usage-hint" />
+                <label for="osa-privacy-usage">Share usage data</label>
+              </div>
+              <span class="osa-settings-hint" id="osa-privacy-usage-hint">
+                Lets the maintainers group your requests into conversations and see which tools ran. Off, the usage log keeps only counts and costs, and your conversation is not traced. Feedback you send is still received, but is not attached to a trace.
+              </span>
+            </div>
+            <p class="osa-settings-hint osa-privacy-save-note" role="status"></p>
+            <div class="osa-privacy-links"></div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // The privacy page's address: an https URL with a host and no credentials, or the
+  // platform's own page. It goes into an anchor on someone else's page, so whatever the
+  // community config (or a page's setConfig) sent is checked here too.
+  function validPrivacyUrl(raw) {
+    if (typeof raw !== 'string') return DEFAULT_PRIVACY_URL;
+    const address = raw.trim();
+    if (!address || address.length > PRIVACY_URL_MAX || /\s/.test(address)) return DEFAULT_PRIVACY_URL;
+    try {
+      const url = new URL(address);
+      if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) return DEFAULT_PRIVACY_URL;
+      return url.href;
+    } catch (e) {
+      return DEFAULT_PRIVACY_URL;
+    }
+  }
+
+  function loadShareUsagePreference() {
+    shareUsageEnabled = CONFIG.shareUsageDefaultEnabled;
+    syncPrivacyChoices();
+  }
+
+  // Save the choice; false when the browser would not keep it.
+  function saveShareUsagePreference() {
+    try {
+      localStorage.setItem(CONFIG.shareUsageStorageKey, shareUsageEnabled.toString());
+      unsavedChoices.delete(CONFIG.shareUsageStorageKey);
+      return true;
+    } catch (e) {
+      console.warn('Could not save usage sharing preference:', e);
+      unsavedChoices.add(CONFIG.shareUsageStorageKey);
+      return false;
+    }
+  }
+
+  // The stored value of a boolean choice, or null when there is none or storage will not
+  // answer (the choice already in memory then stands).
+  function storedChoice(key) {
+    try {
+      const saved = localStorage.getItem(key);
+      return saved === null ? null : saved === 'true';
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Take the saved choices as the truth, so a choice made in another tab, a pop-out or a
+  // notebook tab applies to this widget too, and not only after it reloads. Called when a
+  // request or feedback is built and when the dialog opens; it returns nothing and changes
+  // only what storage actually holds.
+  function syncPrivacyChoices() {
+    // A choice whose last save failed is this page's own, newer than anything stored.
+    const usage = unsavedChoices.has(CONFIG.shareUsageStorageKey) ? null : storedChoice(CONFIG.shareUsageStorageKey);
+    if (usage !== null) shareUsageEnabled = usage;
+    if (CONFIG.allowPageContext && !unsavedChoices.has(CONFIG.pageContextStorageKey)) {
+      const page = storedChoice(CONFIG.pageContextStorageKey);
+      if (page !== null) pageContextEnabled = page;
+    }
+  }
+
+  // What a request says about the choice: nothing while usage is shared (the default, and
+  // what an older server expects), `share_usage: false` once it is not.
+  function usageRequestFields() {
+    syncPrivacyChoices();
+    return shareUsageEnabled ? {} : { share_usage: false };
+  }
+
+  // Say so in the dialog while any choice could not be saved: it holds until the page
+  // reloads and then goes back to the default, which for usage sharing is sharing. The note
+  // follows every unsaved choice, not the last save, so one choice saving cleanly does not
+  // hide another that did not.
+  function showPrivacySaveNote(container) {
+    const note = privacyOverlay(container)?.querySelector('.osa-privacy-save-note');
+    if (!note) return;
+    note.textContent = unsavedChoices.size === 0
+      ? ''
+      : 'Your choice could not be saved in this browser. It applies until you reload this page, then goes back to the default.';
+  }
+
+  function privacyOverlay(container) {
+    return container.querySelector('.osa-privacy-overlay');
+  }
+
+  function openPrivacy(container) {
+    // Not from a closed window, and not twice.
+    if (!isOpen) return;
+    const overlay = privacyOverlay(container);
+    if (!overlay || overlay.classList.contains('open')) return;
+    syncPrivacyChoices();
+    const pageBox = overlay.querySelector('#osa-privacy-page');
+    const usageBox = overlay.querySelector('#osa-privacy-usage');
+    showPrivacySaveNote(container);
+    pageBox.checked = CONFIG.allowPageContext && pageContextEnabled;
+    usageBox.checked = shareUsageEnabled;
+    // A community that turns page context off has no choice to make about it.
+    overlay.querySelector('.osa-privacy-page-field').hidden = !CONFIG.allowPageContext;
+    const links = overlay.querySelector('.osa-privacy-links');
+    links.textContent = '';
+    links.appendChild(docsAnchor('osa-privacy-link', { url: validPrivacyUrl(CONFIG.privacyUrl) }, 'Privacy policy'));
+    overlay.classList.add('open');
+    (CONFIG.allowPageContext ? pageBox : usageBox).focus();
+  }
+
+  // Close the dialog; focus goes back to the button that opened it, unless the caller is
+  // closing the whole window (`restoreFocus` false).
+  function closePrivacy(container, { restoreFocus = true } = {}) {
+    const overlay = privacyOverlay(container);
+    if (!overlay || !overlay.classList.contains('open')) return;
+    overlay.classList.remove('open');
+    if (!restoreFocus) return;
+    const button = container.querySelector('.osa-privacy-btn');
+    if (button) button.focus();
+  }
+
+  // Tab and Shift+Tab stay inside the dialog, and Escape closes it and nothing else: the
+  // key stops here, so neither the center dialog's handler nor a host page's sees it.
+  function privacyKeydown(container, event) {
+    const overlay = privacyOverlay(container);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closePrivacy(container);
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const list = focusablesIn(overlay);
+    if (list.length === 0) {
+      event.preventDefault();
+      overlay.focus();
+      return;
+    }
+    const at = list.indexOf(document.activeElement);
+    if (event.shiftKey && at <= 0) {
+      event.preventDefault();
+      list[list.length - 1].focus();
+    } else if (!event.shiftKey && (at === -1 || at === list.length - 1)) {
+      event.preventDefault();
+      list[0].focus();
+    }
+  }
+
+  function bindPrivacyChoices(container) {
+    const overlay = privacyOverlay(container);
+    if (!overlay) return;
+    container.querySelector('.osa-privacy-btn')?.addEventListener('click', () => openPrivacy(container));
+    overlay.querySelector('.osa-privacy-close-btn')?.addEventListener('click', () => closePrivacy(container));
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) closePrivacy(container);
+    });
+    overlay.addEventListener('keydown', (event) => privacyKeydown(container, event));
+    overlay.querySelector('#osa-privacy-page')?.addEventListener('change', (event) => {
+      pageContextEnabled = event.target.checked;
+      savePageContextPreference();
+      showPrivacySaveNote(container);
+    });
+    overlay.querySelector('#osa-privacy-usage')?.addEventListener('change', (event) => {
+      shareUsageEnabled = event.target.checked;
+      saveShareUsagePreference();
+      showPrivacySaveNote(container);
+    });
+  }
+  // END privacy-choices
+
+  // BEGIN plan-rail (E6.1, #701; board C3). What the center-stage dialog adds beside the
+  // conversation: the plan rail, and "Continue in notebook" in its header. Both read the
+  // conversation the thread already shows, so docking redraws nothing: the rail is
+  // inserted before the thread and removed again, and the thread's own nodes are never
+  // moved. The rows come from OSARuntime.planRail (frontend/osa-plan-rail.js), which
+  // reads the plan the way the progress strip does. The run mode is shown, not offered:
+  // it goes to the model once, in the plan's decision, and there is no way to change it
+  // afterwards.
+  const PLAN_RAIL_ICONS = Object.freeze({
+    done: RUN_ICONS.ok,
+    failed: RUN_ICONS.failed,
+    stopped: RUN_ICONS.stopped,
+    current: '<span class="osa-plan-rail-dot osa-plan-rail-dot-current"></span>',
+    pending: '<span class="osa-plan-rail-dot"></span>',
+  });
+
+  // What each rail on screen was last drawn from, so an unchanged rail is left alone.
+  const planRailDrawn = new WeakMap();
+
+  // What the rail shows now, or null: only in the center dialog, only with the runtime
+  // that carries the rail's logic, and only for a plan worth following.
+  function planRailModel() {
+    if (hostMode !== 'center' || !runtimeApi || !runtimeApi.plan || !runtimeApi.planRail) return null;
+    try {
+      return runtimeApi.planRail.planRailOf(messages, { active: planReplyActive() });
+    } catch (error) {
+      console.error('[OSA] Could not read the plan for the rail:', error);
+      return null;
+    }
+  }
+
+  function planRailHtml(model, memoryLabel) {
+    const rows = model.rows.map((row) => {
+      const icon = `<span class="osa-plan-rail-icon" aria-hidden="true">${PLAN_RAIL_ICONS[row.state] || PLAN_RAIL_ICONS.pending}</span>`;
+      const content = `${icon}<span class="osa-sr-only">${escapeHtml(row.label)}: </span><span class="osa-plan-rail-title">${escapeHtml(row.title)}</span>`;
+      // A step that has run has a card to go to; the others are only said.
+      const body = row.hasCard
+        ? `<button type="button" class="osa-plan-rail-step" data-plan-rail-step="${escapeHtml(String(row.n))}">${content}</button>`
+        : `<span class="osa-plan-rail-step">${content}</span>`;
+      return `<li class="osa-plan-rail-row osa-plan-rail-${escapeHtml(row.state)}"${row.state === 'current' ? ' aria-current="step"' : ''}>${body}</li>`;
+    }).join('');
+    const memory = memoryLabel
+      ? `<div class="osa-plan-rail-memory">Memory budget ${escapeHtml(memoryLabel)} <span aria-hidden="true">·</span> <button type="button" class="osa-plan-rail-change" aria-label="Change memory budget">change</button></div>`
+      : '';
+    return `<p class="osa-plan-rail-heading">${escapeHtml(model.heading)}</p>
+        <ol class="osa-plan-rail-list" role="list">${rows}</ol>
+        <div class="osa-plan-rail-foot">
+          <div class="osa-plan-rail-mode"><span class="osa-sr-only">Run mode: </span>${escapeHtml(model.modeLabel)}</div>
+          ${memory}
+        </div>`;
+  }
+
+  // Draw the rail for the conversation on screen, or take it away. Cheap when nothing it
+  // shows has changed, and a control in it that has focus keeps it across a redraw.
+  function syncPlanRail(container) {
+    const win = container.querySelector('.osa-chat-window');
+    const thread = win && win.querySelector('.osa-chat-messages');
+    if (!thread || !thread.parentElement) return;
+    const model = planRailModel();
+    let rail = win.querySelector('.osa-plan-rail');
+    if (!model) {
+      if (rail) rail.remove();
+      win.classList.remove('osa-center-has-rail');
+      return;
+    }
+    win.classList.add('osa-center-has-rail');
+    // The budget is named only where Settings has the field to change it.
+    const memoryLabel = browserTools ? memorySizeLabel(normalizeMemoryBudget(userSettings.memoryBudgetMb)) : '';
+    const key = JSON.stringify([model, memoryLabel]);
+    if (!rail) {
+      rail = document.createElement('aside');
+      rail.className = 'osa-plan-rail';
+      rail.setAttribute('aria-label', 'Plan');
+      // Focus goes here when the strip it stands for is hidden: see renderPlanChrome.
+      rail.setAttribute('tabindex', '-1');
+    }
+    // Beside the thread, before it: the header, the rail, the thread, the input.
+    if (rail.nextElementSibling !== thread) thread.parentElement.insertBefore(rail, thread);
+    if (planRailDrawn.get(rail) === key) return;
+    const active = document.activeElement;
+    const kept = active && rail.contains(active) && active.getAttribute
+      ? (active.getAttribute('data-plan-rail-step') || (active.classList.contains('osa-plan-rail-change') ? 'change' : null))
+      : null;
+    rail.innerHTML = planRailHtml(model, memoryLabel);
+    planRailDrawn.set(rail, key);
+    if (kept !== null) {
+      const again = kept === 'change'
+        ? rail.querySelector('.osa-plan-rail-change')
+        : [...rail.querySelectorAll('[data-plan-rail-step]')].find((button) => button.getAttribute('data-plan-rail-step') === kept);
+      if (again) again.focus();
+    }
+  }
+
+  // A row with a run card takes the reader to that card, which is focused so a screen
+  // reader says what it is. A step that was tried twice has two; the newest is the one
+  // that stands. Nothing here touches the address: a link to "#s3" would.
+  function goToPlanStep(container, step) {
+    const thread = container.querySelector('.osa-chat-messages');
+    if (!thread) return;
+    const runCards = [...thread.querySelectorAll('.osa-run-card[data-plan-step]')];
+    const cards = runCards.filter((el) => el.getAttribute('data-plan-step') === String(step));
+    // A row drawn as a button always has an effect: when its card is not in the thread
+    // (a run mirrored into an open local editor has none), the newest card, or the thread.
+    const card = cards.length ? cards[cards.length - 1] : (runCards.length ? runCards[runCards.length - 1] : thread);
+    if (!card.hasAttribute('tabindex')) card.setAttribute('tabindex', '-1');
+    if (typeof card.scrollIntoView === 'function') {
+      card.scrollIntoView({ block: 'start', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    }
+    card.focus({ preventScroll: true });
+  }
+
+  // "change": Settings, with the focus on the memory choices.
+  function openPlanRailMemory(container) {
+    openSettings(container);
+    const choice = container.querySelector('.osa-memory-radio:checked') || container.querySelector('.osa-memory-radio');
+    if (choice) choice.focus();
+  }
+
+  function bindPlanRail(container) {
+    const win = container.querySelector('.osa-chat-window');
+    if (!win) return;
+    // The rail is made and thrown away as the dialog is docked and raised, so the
+    // listeners are on the window, which stays.
+    win.addEventListener('click', (event) => {
+      const target = event.target && typeof event.target.closest === 'function' ? event.target.closest('.osa-plan-rail button') : null;
+      if (!target) return;
+      if (target.classList.contains('osa-plan-rail-change')) openPlanRailMemory(container);
+      else if (target.hasAttribute('data-plan-rail-step')) goToPlanStep(container, target.getAttribute('data-plan-rail-step'));
+    });
+    // The run mode on a draft plan's card changes what the rail says until it is decided.
+    win.addEventListener('change', (event) => {
+      if (event.target && event.target.getAttribute && event.target.getAttribute('data-plan-field') === 'mode') syncPlanRail(container);
+    });
+    container.querySelector('.osa-center-notebook-btn')?.addEventListener('click', () => continueFromCenterHeader(container));
+  }
+
+  // The header's Continue in notebook: in the dialog only, and only when the reply card
+  // would offer it too: a notebook for this dataset's page, nothing in the way, and a run
+  // that succeeded in the chat. Disabled while an import (or a reply) is in progress.
+  function centerNotebookOffer() {
+    if (hostMode !== 'center') return null;
+    const conversation = activeConversationRecord();
+    const datasetId = conversationDatasetId(conversation);
+    if (!datasetId || !hasSuccessfulRun(conversation)) return null;
+    const state = notebookContinueState(datasetId);
+    if (!state.offered || state.reason) return null;
+    return { id: conversation.id, busy: notebookEntry.importing.has(conversation.id) };
+  }
+
+  function syncCenterNotebook(container) {
+    const button = container.querySelector('.osa-center-notebook-btn');
+    if (!button) return;
+    const offer = centerNotebookOffer();
+    button.hidden = !offer;
+    button.disabled = !!offer && (offer.busy || isLoading);
+    if (offer && offer.busy) button.setAttribute('aria-busy', 'true');
+    else button.removeAttribute('aria-busy');
+  }
+
+  // The same path as the card's button: the chat's code is built again (a run may have
+  // been added), and runNotebookImport sends it. The import opens the notebook tab, in the
+  // dialog (#738): the dialog stays modal, with the Chat and Notebook tabs in its header.
+  function continueFromCenterHeader(container) {
+    const offer = centerNotebookOffer();
+    if (!offer || offer.busy || isLoading) return;
+    const conversation = activeConversationRecord();
+    const built = buildConversationCode(conversation);
+    if (built.error) {
+      showError(container, built.error);
+      return;
+    }
+    runNotebookImport(offer.id, built).then((result) => {
+      // A failure leaves focus nowhere (the button was disabled while it waited); the
+      // card under the reply says why, and the button is there to try again.
+      const failed = !result || !(result.ok || result.path);
+      const active = document.activeElement;
+      const live = document.querySelector('.osa-chat-widget .osa-center-notebook-btn');
+      if (failed && live && !live.hidden && !live.disabled && (!active || active === document.body)) live.focus();
+    });
+  }
+  // END plan-rail
 
   // Expose configuration for customization
   window.OSAChatWidget = {
@@ -9925,6 +18995,57 @@
     getBrowserRuntimeStatus: function() {
       return browserRuntimeStatus();
     },
+    // The host page's controls (E6.1, #701). A call made before init() is kept and runs,
+    // in order, once the widget is built; a bad one warns and does nothing.
+    // open({mode}?): show the window, as 'corner' (the default) or 'center' (the dialog).
+    open: function(options) {
+      const mode = modeOption('open', options);
+      if (mode === null) return;
+      hostDo(() => hostOpen(mode));
+    },
+    close: function() {
+      hostDo(hostClose);
+    },
+    // ask(text, {mode}?): open the window and send `text` as if it were typed. Refused,
+    // with a warning, for empty text or while a reply is loading.
+    ask: function(text, options) {
+      if (typeof text !== 'string' || !text.trim()) {
+        hostWarn('ask', 'the question must be a non-empty string, ignoring:', text);
+        return;
+      }
+      const mode = modeOption('ask', options);
+      if (mode === null) return;
+      hostDo(() => hostAsk(text, mode));
+    },
+    // seed(text, {mode}?): open the window with `text` (Markdown, at most
+    // RESEED_TURN_MAX_CHARS characters) as the assistant's first message. Sends nothing.
+    // Refused, with a warning, for empty text or while a reply is loading.
+    seed: function(text, options) {
+      if (typeof text !== 'string' || !text.trim()) {
+        hostWarn('seed', 'the text must be a non-empty string, ignoring:', text);
+        return;
+      }
+      // The stored and sent text is the trimmed one, so that is what the limit counts.
+      const trimmedLength = text.trim().length;
+      if (trimmedLength > RESEED_TURN_MAX_CHARS) {
+        hostWarn('seed', `the text must be at most ${RESEED_TURN_MAX_CHARS} characters, ignoring a text of`, trimmedLength);
+        return;
+      }
+      const mode = modeOption('seed', options);
+      if (mode === null) return;
+      hostDo(() => hostSeed(text, mode));
+    },
+    // setMode('corner' | 'center'): dock or undock the window. No effect in a pop-out.
+    setMode: function(mode) {
+      if (!HOST_MODES.includes(mode)) {
+        hostWarn('setMode', `mode must be one of ${HOST_MODES.join(', ')}, ignoring:`, mode);
+        return;
+      }
+      hostDo(() => hostSetMode(mode));
+    },
+    // on(event, handler): 'open' {mode}, 'close' {}, 'modechange' {mode}, 'send' {text}.
+    // Returns a function that stops listening.
+    on: hostOn,
     // Manually initialize the widget (use with data-no-auto-init on the script tag)
     init: function() {
       if (!initialized) {
@@ -9936,6 +19057,7 @@
 
   // Keep the state reducer testable without exposing it in normal embeds.
   if (window.__OSA_TEST__) {
+    window.OSAChatWidget.__center = { focusables: focusablesIn };
     window.OSAChatWidget.__firstPaint = {
       setWait(ms) {
         LAUNCHER_WAIT_MS = ms;
@@ -9954,6 +19076,8 @@
     window.OSAChatWidget.__idle = {
       set: (ms, toolMs = ms * 2) => { requestIdleMs = ms; requestToolMs = toolMs; },
     };
+    // How long a resend waits for a fresh Turnstile token, for a test that cannot wait 10 s.
+    window.OSAChatWidget.__turnstileWait = { set: (ms) => { turnstileRefreshWaitMs = ms; } };
     window.OSAChatWidget.__reveal = {
       fencedRanges,
       nextRevealEnd,
@@ -9967,21 +19091,35 @@
     window.OSAChatWidget.__isSameResponseMessage = isSameResponseMessage;
     window.OSAChatWidget.__notebook = {
       // The notebook tab's own state (#470), read-only, and its two timeouts.
-      state: () => ({ ...notebookEmbed, frame: undefined, loadTimer: undefined, readyTimer: undefined }),
+      state: () => ({
+        ...notebookEmbed, frame: undefined, loadTimer: undefined, readyTimer: undefined,
+        outbox: [...notebookEmbed.outbox], requests: notebookEmbed.requests.size
+      }),
+      // What the notebook card and the History item call, through runNotebookImport
+      // (E4.3); exposed so the import's own suite can drive it directly.
+      importNotebookToTab,
       setTimeouts: (afterLoadMs, totalMs) => {
         NOTEBOOK_AFTER_LOAD_MS = afterLoadMs;
         NOTEBOOK_TOTAL_MS = totalMs;
+      },
+      // How long a request waits for its answer: most of them, and Run all.
+      setRequestTimeouts: (requestMs, runAllMs) => {
+        NOTEBOOK_REQUEST_MS = requestMs;
+        NOTEBOOK_RUN_ALL_MS = runAllMs;
       },
     };
     window.OSAChatWidget.__browser = {
       MAX_BROWSER_RUNS_PER_REPLY,
       EXECUTION_FIELD_LIMITS,
+      EXECUTION_LABELS,
       answerToolRequest,
       composeReply,
       continueBrowserReply,
       declaredClientToolsWithin,
       executionRecord,
       executionsHtml,
+      fillPersistentError,
+      injectStyles,
       handleStreamingResponse,
       loadRuntimeBundle,
       normalizePersistedExecutions,
@@ -9989,6 +19127,12 @@
       runtimeBundleUrl,
       toolPanelHtml,
       declaredClientTools,
+      withPlanTool,
+      PLAN_STORAGE_LIMITS,
+      PLAN_STATUS_LABELS,
+      formatStepElapsed,
+      normalizePersistedPlan,
+      planCardHtml,
       setUpBrowserTools,
       getBrowserTools: () => browserTools,
       getBrowserRuntime: () => browserRuntime,
@@ -10008,6 +19152,9 @@
       runningActivity,
       getMessages: () => messages,
       setMessages: (list) => { messages = list; },
+      setLoading: (value) => { isLoading = value; },
+      // The reply being paced onto the screen, as the stream sets it (-1 for none).
+      setRevealingIndex: (index) => { revealingIndex = index; },
       // The Settings workspace panel (#433): workspaceStore is normally
       // set only by setUpBrowserTools once a runtime bundle loads, which
       // needs IndexedDB behind it to mean anything; a test sets it directly
@@ -10032,8 +19179,45 @@
       renderMessages,
       saveHistory,
       loadHistory,
+      hydrateFigures,
+      // The conversation store (#654): the four functions E1.3 and E1.4 build on,
+      // the pure store functions the format tests drive, and the active
+      // conversation's identity.
+      startConversation,
+      listConversations,
+      activateConversation,
+      deleteConversation,
+      clearAllConversations,
+      getActiveConversation: () => (activeConversation ? { ...activeConversation } : null),
+      conversationStore: {
+        MAX_CONVERSATIONS,
+        CONVERSATION_TITLE_LIMIT,
+        newConversationId,
+        conversationTitle,
+        readConversationStore,
+        mergeActiveConversation,
+        trimConversations,
+        evictOldestInactive,
+      },
+      // The History panel (E1.4): the pure helpers, and what is on screen.
+      history: {
+        conversationSummary,
+        groupByDay,
+        open: (container) => openHistory(container),
+        close: (container) => closeHistory(container),
+        isOpen: () => historyOpen,
+        sync: (container) => syncHistoryAvailability(container),
+      },
       getSessionId: () => sessionId,
+      // Whether the server has confirmed the session in this page load (E1.6).
+      getServerConfirmedAt: () => serverConfirmedAt,
+      setServerConfirmedAt: (value) => { serverConfirmedAt = value; },
       setSessionId: (value) => { sessionId = value; },
+      // The context switch (E1.3): the pure helpers.
+      contextForPage,
+      sameContext,
+      pageContext,
+      getPageContext,
     };
     // What a pending reply is doing (#538): the labels, and the clock the elapsed
     // time is read from, which a test turns by hand.

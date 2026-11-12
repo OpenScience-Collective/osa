@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS request_log (
     stream INTEGER DEFAULT 0,
     tool_call_count INTEGER DEFAULT 0,
     error_message TEXT,
-    langfuse_trace_id TEXT
+    langfuse_trace_id TEXT,
+    tier TEXT,
+    conversation_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_request_log_community
@@ -86,6 +88,15 @@ _MIGRATION_COLUMNS = [
     ("tool_call_count", "INTEGER DEFAULT 0"),
     ("error_message", "TEXT"),
     ("langfuse_trace_id", "TEXT"),
+    ("tier", "TEXT"),
+    ("conversation_id", "TEXT"),
+]
+
+# Indexes on migrated columns. They cannot sit in METRICS_SCHEMA_SQL: that script runs
+# before the migration, and on a database from before the column existed the index
+# would fail with "no such column".
+_MIGRATION_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_request_log_conversation ON request_log(conversation_id)",
 ]
 
 
@@ -111,6 +122,19 @@ class RequestLogEntry:
     tool_call_count: int = 0
     error_message: str | None = None
     langfuse_trace_id: str | None = None
+    # Which model tier the turn ran on ("quick" or "analysis") for a community that
+    # routes between the two, None otherwise. `model` says which model; this says which
+    # side of the quick/analysis split a row belongs to without a model-name lookup.
+    tier: str | None = None
+    # Groups the rows of one conversation. A handover opens a new server session for the
+    # analysis model, so the session id changes mid-conversation; this id does not.
+    conversation_id: str | None = None
+    # The reader's usage-data choice for this request ("Share usage data" in the widget's
+    # Privacy choices). Not a column: ``log_request`` reads it and, when it is False,
+    # writes the row without ``conversation_id``, ``tools_called`` and
+    # ``langfuse_trace_id``, the three fields that link a row to what was asked or done.
+    # The tokens, cost, tier and counts stay, so budgets and the cost report still add up.
+    share_usage: bool = True
 
 
 @dataclass
@@ -155,8 +179,8 @@ class FeedbackEntry:
             raise ValueError("general feedback must not carry a sentiment")
 
 
-def get_metrics_db_path() -> Path:
-    """Return path to the metrics SQLite database.
+def resolve_metrics_db_path() -> Path:
+    """Return where the metrics SQLite database is, without creating anything.
 
     Uses DATA_DIR environment variable if set (Docker deployments),
     otherwise falls back to platform-specific user data directory.
@@ -167,8 +191,14 @@ def get_metrics_db_path() -> Path:
 
     data_dir_env = os.environ.get("DATA_DIR")
     base = Path(data_dir_env) if data_dir_env else Path(user_data_dir("osa", "osc"))
-    base.mkdir(parents=True, exist_ok=True)
     return base / "metrics.db"
+
+
+def get_metrics_db_path() -> Path:
+    """Return path to the metrics SQLite database, creating its directory if needed."""
+    path = resolve_metrics_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def get_metrics_connection(db_path: Path | None = None) -> sqlite3.Connection:
@@ -216,6 +246,8 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
             else:
                 logger.error("Failed to add column %s to request_log: %s", col_name, e)
                 raise
+    for statement in _MIGRATION_INDEXES:
+        conn.execute(statement)
 
 
 def init_metrics_db(db_path: Path | None = None) -> None:
@@ -239,14 +271,90 @@ def init_metrics_db(db_path: Path | None = None) -> None:
         conn.close()
 
 
+# Usage metrics (request_log) and feedback (feedback_log) are kept for this many calendar
+# years, then deleted (#725). PRIVACY.md states it; change both together.
+METRICS_RETENTION_YEARS = 5
+
+
+class PurgeCounts(NamedTuple):
+    """How many rows ``purge_expired_metrics`` deleted from each table."""
+
+    requests: int
+    feedback: int
+
+
+def retention_cutoff(now: datetime | None = None) -> str:
+    """The UTC ISO timestamp before which rows are deleted.
+
+    ``METRICS_RETENTION_YEARS`` calendar years before ``now``; 29 February falls back to
+    28 February in a year without it. Every writer stores ``datetime.now(UTC).isoformat()``,
+    so rows compare against this as strings.
+    """
+    now = (now or datetime.now(UTC)).astimezone(UTC)
+    year = now.year - METRICS_RETENTION_YEARS
+    try:
+        cutoff = now.replace(year=year)
+    except ValueError:  # 29 February, and the cutoff year has none
+        cutoff = now.replace(year=year, day=28)
+    return cutoff.isoformat()
+
+
+def purge_expired_metrics(db_path: Path | None = None, now: datetime | None = None) -> PurgeCounts:
+    """Delete the usage-metrics rows and feedback older than the retention period.
+
+    Runs at startup and daily from the scheduler. Both deletes commit together.
+
+    A feedback comment can hold personal data, so the rows are erased, not only unlinked:
+    ``secure_delete`` makes SQLite overwrite the freed content with zeros, and a checkpoint
+    that truncates the write-ahead log removes the older copies of those pages from it.
+    A checkpoint that a concurrent reader blocks is logged: the older copies then stay in
+    the log until SQLite reuses those frames, which is not bounded in time.
+
+    Args:
+        db_path: Optional path override (for testing).
+        now: The current time (for testing); defaults to now in UTC.
+    """
+    cutoff = retention_cutoff(now)
+    conn = get_metrics_connection(db_path)
+    try:
+        conn.execute("PRAGMA secure_delete=ON")
+        requests = conn.execute("DELETE FROM request_log WHERE timestamp < ?", (cutoff,)).rowcount
+        feedback = conn.execute("DELETE FROM feedback_log WHERE timestamp < ?", (cutoff,)).rowcount
+        conn.commit()
+        if requests or feedback:
+            busy, _, _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if busy:
+                logger.warning(
+                    "Deleted expired metrics, but a reader blocked the checkpoint, so older "
+                    "copies of those rows stay in the write-ahead log until SQLite reuses "
+                    "those frames"
+                )
+    finally:
+        conn.close()
+    if requests or feedback:
+        logger.info(
+            "Deleted %d usage-metrics rows and %d feedback entries older than %s "
+            "(kept for %d years)",
+            requests,
+            feedback,
+            cutoff,
+            METRICS_RETENTION_YEARS,
+        )
+    return PurgeCounts(requests, feedback)
+
+
 def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
     """Insert a request log entry into the database.
+
+    A row whose ``share_usage`` is False is written without its conversation id, its
+    tools and its Langfuse trace id; everything else is kept (see ``RequestLogEntry``).
 
     Args:
         entry: The log entry to insert.
         db_path: Optional path override (for testing).
     """
     global _log_request_failures
+    shared = entry.share_usage
     conn = get_metrics_connection(db_path)
     try:
         conn.execute(
@@ -255,8 +363,8 @@ def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
                 request_id, timestamp, community_id, endpoint, method,
                 duration_ms, status_code, model, input_tokens, output_tokens,
                 total_tokens, estimated_cost, tools_called, key_source, stream,
-                tool_call_count, error_message, langfuse_trace_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tool_call_count, error_message, langfuse_trace_id, tier, conversation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.request_id,
@@ -271,12 +379,14 @@ def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
                 entry.output_tokens,
                 entry.total_tokens,
                 entry.estimated_cost,
-                json.dumps(entry.tools_called) if entry.tools_called else None,
+                json.dumps(entry.tools_called) if entry.tools_called and shared else None,
                 entry.key_source,
                 1 if entry.stream else 0,
                 entry.tool_call_count,
                 entry.error_message,
-                entry.langfuse_trace_id,
+                entry.langfuse_trace_id if shared else None,
+                entry.tier,
+                entry.conversation_id if shared else None,
             ),
         )
         conn.commit()

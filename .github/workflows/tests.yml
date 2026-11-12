@@ -36,9 +36,10 @@ jobs:
   #
   # code=false docs=false: a push of a bot bookkeeping commit alone (below).
   #
-  # code=false docs=true: only documentation changed. Test runs the one test that
-  # reads documentation (test_embed_snippet_hygiene.py scans every tracked text
-  # file, docs/**/*.md included, for widget embed snippets); nothing else runs.
+  # code=false docs=true: only documentation changed. Test runs the two tests that
+  # read documentation (test_embed_snippet_hygiene.py scans every tracked text
+  # file, docs/**/*.md included, for widget embed snippets; test_privacy_page.py
+  # keeps PRIVACY.md naming the widget dialog's controls); nothing else runs.
   # Anything this job cannot classify, or fails on, runs everything.
   changes:
     name: Classify changes
@@ -222,15 +223,22 @@ jobs:
         run: |
           uv sync --frozen --extra dev
 
-      # tests/test_frontend/test_workspace_export.py spawns a small Bun
-      # script (build_workspace_export_fixture.js) that calls the real
-      # frontend/osa-workspace.js; it has no external package dependencies,
-      # so `bun` on PATH is enough here, with no `bun install` needed.
+      # Two kinds of frontend fixture run under Bun here. tests/test_frontend/
+      # test_workspace_export.py spawns build_workspace_export_fixture.js, which calls
+      # the real frontend/osa-workspace.js and has no package dependencies. The plan
+      # tests (test_plan_resume_payload.py, build_plan_payload_fixture.js) load the
+      # widget through frontend/test-support/plan-widget-harness.js, which imports
+      # happy-dom, so the dependencies are installed too. There is no Bun lockfile in
+      # the repo, so this is a plain `bun install`, as in the Frontend job.
       - name: Set up Bun
         if: env.RUN_ALL == 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
+
+      - name: Install frontend test dependencies
+        if: env.RUN_ALL == 'true'
+        run: bun install
 
       # The union of the two old selections: tests.yml ran everything outside
       # tests/test_integration that is not network or llm, test.yml everything
@@ -243,12 +251,13 @@ jobs:
         run: |
           uv run pytest tests/ -v --cov=src --cov-report=xml -m "not network and not llm"
 
-      # A documentation-only change can still break this one test: it checks every
-      # widget embed snippet in any tracked text file, docs/**/*.md included.
-      - name: Run the test that reads documentation
+      # A documentation-only change can still break these tests: the first checks every
+      # widget embed snippet in any tracked text file, docs/**/*.md included; the second
+      # checks that PRIVACY.md still names the controls of the widget's privacy dialog.
+      - name: Run the tests that read documentation
         if: env.RUN_DOCS == 'true'
         run: |
-          uv run pytest tests/test_frontend/test_embed_snippet_hygiene.py -v -m "not network and not llm"
+          uv run pytest tests/test_frontend/test_embed_snippet_hygiene.py tests/test_frontend/test_privacy_page.py -v -m "not network and not llm"
 
       # The widget's light and dark appearance in real Chrome (#469). The bug is the
       # browser's own drawing of form controls on a dark host page, which the happy-dom
@@ -295,7 +304,9 @@ jobs:
     # Not a required check, so a job-level skip is fine here.
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Recent runs take 400 to 465 s with the Chrome harnesses; the Privacy choices harness
+    # adds about a minute, so 10 minutes left too little room.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -344,11 +355,24 @@ jobs:
       - name: Run workspace tests
         run: bun frontend/test-workspace.js
 
+      # The conversation notebook builder's own behavior: cells, import
+      # hoisting, left-out runs, ids, the script's shape. That the notebook is
+      # valid nbformat and that Jupytext reads the script back is
+      # tests/test_frontend/test_notebook_builder.py, in the Python job.
+      - name: Run notebook builder tests
+        run: bun frontend/test-notebook-builder.js
+
       # notebook/open.js's pure logic (validation, token filling, entry shape);
       # the real IndexedDB write and redirect are notebook/e2e-check.js, run
       # separately in real Chrome (see notebook/README.md).
       - name: Run notebook bootstrap tests
         run: bun notebook/test-open.js
+
+      # osa-notebook-files.js, the pure half of the notebook page's tabs and
+      # import: file names, what an import may hold, which messages to act on.
+      # What the page does with them is notebook/e2e-check.js, in real Chrome.
+      - name: Run notebook files tests
+        run: bun notebook/test-notebook-files.js
 
       # The worker core runs against the REAL Pyodide from npm, so the Python half
       # of the runtime is tested in CI rather than only by hand in a browser. The
@@ -436,6 +460,15 @@ jobs:
       - name: Run the notebook tab tests on a real DOM
         run: bun frontend/test-widget-notebook-tab.js
 
+      - name: Run the notebook import tests on a real DOM
+        run: bun frontend/test-widget-notebook-import.js
+
+      - name: Run the notebook strip tests on a real DOM
+        run: bun frontend/test-widget-notebook-strip.js
+
+      - name: Run the notebook entry point tests on a real DOM
+        run: bun frontend/test-widget-notebook-entry.js
+
       - name: Run the first paint tests on a real DOM
         run: bun frontend/test-widget-first-paint.js
 
@@ -445,14 +478,130 @@ jobs:
       - name: Run the pop-out tests on a real DOM
         run: bun frontend/test-widget-popout.js
 
+      - name: Run the conversation store tests on a real DOM
+        run: bun frontend/test-widget-history-store.js
+
       - name: Run the Settings dialog tests on a real DOM
         run: bun frontend/test-widget-settings.js
+
+      # Privacy choices (#706): the footer button and its modal, "Use this page for
+      # answers" under its old storage key and "Share usage data" under its own, the
+      # share_usage field on /chat and /chat/resume only while it is off, the Tab trap and
+      # Escape in the corner and the center, focus returning to the button, and the https
+      # privacy link from the community config or the default.
+      - name: Run the Privacy choices tests on a real DOM
+        run: bun frontend/test-widget-privacy-choices.js
 
       - name: Run the paced streaming tests on a real DOM
         run: bun frontend/test-widget-paced-streaming.js
 
       - name: Run the activity status tests on a real DOM
         run: bun frontend/test-widget-activity-status.js
+
+      # The handover stream (#670): the `handover` events and a second `session`
+      # event, and how the widget takes them.
+      - name: Run the handover stream tests on a real DOM
+        run: bun frontend/test-widget-handover-events.js
+
+      # The handover card (#677, E8.3): the stages, the divider, the mode label and the
+      # footnote, and all of it back after a reload and from History.
+      - name: Run the handover card tests on a real DOM
+        run: bun frontend/test-widget-handover-card.js
+
+      # The run card: consent, running, done with and without a figure, each status,
+      # the same card after a reload, and a failed run's error, failing line,
+      # warnings and cut output, from stderr recorded off real Pyodide.
+      - name: Run the run card tests on a real DOM
+        run: bun frontend/test-widget-run-card.js
+
+      # The one copy path (#665): the Clipboard API, then the copy command, then the
+      # text selected with the keys named, for a reply's code block, the whole-reply
+      # copy and the run card, each with a visible "Copied".
+      - name: Run the copy tests on a real DOM
+        run: bun frontend/test-widget-copy.js
+
+      # A fresh chat on return: a new browser session or a chat over a day old starts a
+      # new conversation, never in a pop-out or over an empty chat, and the empty state
+      # offers the chat just left.
+      - name: Run the fresh chat on return tests on a real DOM
+        run: bun frontend/test-widget-fresh-return.js
+
+      # Reseeding a chat the server forgot: the request carries the conversation so far
+      # (newest 12 turns, text only, each bounded) and its tier until the server has
+      # confirmed the session in this page load, and carries nothing for a new chat.
+      - name: Run the reseed tests on a real DOM
+        run: bun frontend/test-widget-reseed.js
+
+      # A chat the server forgot while the page stayed open: a request with no turns for a
+      # session it names says it expects the session, and the widget sends it once more
+      # with the turns when the server answers 409 session_unknown.
+      - name: Run the session-lost tests on a real DOM
+        run: bun frontend/test-widget-session-lost.js
+
+      # General feedback carries the page's address only when the reader shares the page,
+      # as a question does.
+      - name: Run the feedback page-address tests on a real DOM
+        run: bun frontend/test-widget-feedback-page-url.js
+
+      # The context switch: a page whose dataset or search page differs from the chat's
+      # shows a notice and starts a new chat on the next message, or continues with the
+      # move told to the assistant; an empty chat switches silently.
+      - name: Run the context switch tests on a real DOM
+        run: bun frontend/test-widget-context-switch.js
+
+      # The History sheet: chats by day with dataset, step and figure counts, Open,
+      # Delete, Clear all (two clicks), off while a reply loads, hidden on the
+      # notebook tab; and a run's figures read back from the workspace into restored
+      # and opened chats, never into storage.
+      - name: Run the History panel tests on a real DOM
+        run: bun frontend/test-widget-history-panel.js
+
+      # The host API and the center-stage dialog (E6.1): open, close, ask, setMode and
+      # on, queued before init and replayed in order, bad calls refused, events once and
+      # safe from a throwing handler; the dialog's role, scrim, inert page, scroll lock,
+      # Tab trap, Escape and Move to corner docking the same conversation, and Close
+      # returning focus; and the start screen with its cards, footer and https docs link
+      # from the community config.
+      - name: Run the host API and center-stage tests on a real DOM
+        run: bun frontend/test-widget-host-api.js
+
+      # OSAChatWidget.seed (#730): the text becomes the assistant's first message and
+      # nothing is sent (no request, no send event, no Turnstile token); it is Markdown,
+      # sanitized, unrated, in History and across a reload; a chat with no reader message
+      # is reused, one with a message is kept and a new chat opens; the first send carries
+      # prior_turns; bad calls warn, calls before init are replayed, a loading reply
+      # refuses it. The server's half is tests/test_api/test_reseed.py.
+      - name: Run the seed tests on a real DOM
+        run: bun frontend/test-widget-seed.js
+
+      # The plan card and the step progress (E2.3, E2.4), the real widget and the runtime
+      # bundle as built, with fetch answering recorded-shape SSE: the card and its edits,
+      # the decision posted to /chat/resume, consent, step headers, the strip and bar,
+      # Stop plan, and a restored chat. The Python half is
+      # tests/test_frontend/test_plan_resume_payload.py.
+      - name: Run the plan card tests on a real DOM
+        run: bun frontend/test-widget-plan-card.js
+
+      # The plan rail beside the center-stage conversation (E6.1, board C3). The logic
+      # (frontend/osa-plan-rail.js, reading the plan the way the strip does): none, draft,
+      # approved, paused, failed, stopped, done, a re-proposed plan, the run mode.
+      - name: Run the plan rail logic tests
+        run: bun frontend/test-plan-rail.js
+
+      # The rail on a real DOM, the real widget and the runtime bundle as built: the aside
+      # and its rows as steps run, the rows that go to a run card without touching the
+      # address, the read-only run mode, "change" opening Settings, the hidden strip, docking
+      # without redrawing the thread, Tab order, Escape; and the header's Continue in
+      # notebook (visibility rules, the card's import, a busy button).
+      - name: Run the plan rail and Continue in notebook tests on a real DOM
+        run: bun frontend/test-widget-plan-rail.js
+
+      # The browser memory budget (E5.1): the Settings field and its stored value, the
+      # budget on /chat and /chat/resume only from a page with the runtime, the run card's
+      # "Heap N MB of B MB" and its warning by step, the plan card's warning, and a reload
+      # and History restoring the line. The real widget and the runtime bundle as built.
+      - name: Run the memory budget tests on a real DOM
+        run: bun frontend/test-widget-memory-budget.js
 
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a
@@ -467,6 +616,87 @@ jobs:
       # ticking after. Its own server, so no backend and no network.
       - name: Check the activity status in headless Chrome
         run: bun frontend/browser-harness/activity-status-check.mjs
+
+      # The run card in real Chrome, where layout is the browser's own: the card
+      # inside the 400 px panel with no sideways scroll, every button at least 36 px,
+      # the failing line marked, and Show code revealing the code. Its own server,
+      # so no backend and no network; the runner ships Chrome.
+      - name: Check the run card in headless Chrome
+        run: bun frontend/browser-harness/run-card-check.mjs
+
+      # The notebook card and the History row menu's notebook items in real Chrome at
+      # 400 px, in light and dark: inside the panel, 44 px controls, text at 4.5:1,
+      # and the tallest History menu wholly inside the list that clips it. Its own
+      # server, so no backend and no network; the runner ships Chrome.
+      - name: Check the notebook card and History items in headless Chrome
+        env:
+          NOTEBOOK_ENTRY_CHECK_SCREENSHOTS: ${{ runner.temp }}/notebook-entry-check
+        run: bun frontend/browser-harness/notebook-entry-check.mjs
+
+      - name: Upload the notebook card check screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notebook-entry-check-screenshots
+          path: ${{ runner.temp }}/notebook-entry-check
+          if-no-files-found: ignore
+
+      # The History sheet and saved figures in real Chrome at 390 x 844: a run that
+      # draws a figure is saved to the real IndexedDB, the page reloads, and the figure
+      # comes back in the restored chat, in the chat opened from History (and as its
+      # row's thumbnail), and in the pop-out. Its own server, so no backend and no
+      # network; the runner ships Chrome.
+      - name: Check the History sheet and saved figures in headless Chrome
+        env:
+          HISTORY_CHECK_SCREENSHOTS: ${{ runner.temp }}/history-check
+        run: bun frontend/browser-harness/history-check.mjs
+
+      # The screenshots the check took, for a failure to be looked at rather than guessed.
+      - name: Upload the History check screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: history-check-screenshots
+          path: ${{ runner.temp }}/history-check
+          if-no-files-found: ignore
+
+      # The center-stage dialog in real Chrome at 1280 x 900 and 390 x 844, light and
+      # dark: inside the viewport with no sideways scroll, the page inert, the real Tab
+      # key never leaving the dialog, Escape docking the same conversation, Close giving
+      # focus back, pills and send at least 44 px, and the colors at their contrast
+      # ratios. Its own server, so no backend and no network; the runner ships Chrome.
+      - name: Check the center-stage dialog in headless Chrome
+        env:
+          CENTER_CHECK_SCREENSHOTS: ${{ runner.temp }}/center-stage-check
+        run: bun frontend/browser-harness/center-stage-check.mjs
+
+      - name: Upload the center-stage check screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: center-stage-check-screenshots
+          path: ${{ runner.temp }}/center-stage-check
+          if-no-files-found: ignore
+
+      # The Privacy choices button and dialog in real Chrome at 1280 x 900 and 390 x 844,
+      # light and dark, in the corner and in the center: inside the viewport with no
+      # sideways scroll, every target at least 24 px and every row 44, the real Tab key
+      # never leaving the dialog, Space toggling, Escape closing only the dialog with
+      # focus back on the button, and the colors at their contrast ratios.
+      - name: Check the Privacy choices dialog in headless Chrome
+        env:
+          PRIVACY_CHECK_SCREENSHOTS: ${{ runner.temp }}/privacy-check
+        run: bun frontend/browser-harness/privacy-choices-check.mjs
+
+      # Always, not only on failure: the eight combinations are the reviewer's evidence.
+      - name: Upload the Privacy choices check screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: privacy-check-screenshots
+          path: ${{ runner.temp }}/privacy-check
+          if-no-files-found: ignore
+          retention-days: 14
 
       # What only a browser can check: Pyodide under a real Content-Security-Policy,
       # the egress guard on a real worker global, and NEMAR's lock overlay loaded by

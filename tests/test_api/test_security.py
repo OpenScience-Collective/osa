@@ -281,7 +281,7 @@ class TestEndpointsThatDoNotSpendByokRequireAdminAuth:
         """Generalized version of every case above: enumerate every route
         that depends on verify_api_key (RequireAuth's BYOK bypass) and
         assert it's exactly the set of routes that actually spend the
-        credential against an LLM (/ask, /chat). This is the check that
+        credential against an LLM (/ask, /chat, /overview). This is the check that
         would have caught /health/communities automatically instead of
         needing a dedicated case added after the fact -- a future route
         added with RequireAuth by copy-paste, whatever its path, fails
@@ -291,6 +291,9 @@ class TestEndpointsThatDoNotSpendByokRequireAdminAuth:
         credential: it is run 2 of a browser-execution turn and invokes the
         model with the tool result appended, exactly as `/chat` does. It is
         not a status or fetch route that merely reads state.
+
+        `/overview` is on it for the same reason: it calls the quick model with
+        the caller's key (or the platform's, for an authorized origin).
         """
         from fastapi.routing import APIRoute
 
@@ -307,7 +310,7 @@ class TestEndpointsThatDoNotSpendByokRequireAdminAuth:
         }
         assert routes_using_verify_api_key, "expected at least one route to use verify_api_key"
         for path in routes_using_verify_api_key:
-            assert path.endswith(("/ask", "/chat", "/chat/resume")), (
+            assert path.endswith(("/ask", "/chat", "/chat/resume", "/overview")), (
                 f"{path} depends on verify_api_key (RequireAuth), whose BYOK bypass "
                 "is only safe for a route that actually spends the credential against "
                 "an LLM. If this route genuinely does, add it to this allowlist; "

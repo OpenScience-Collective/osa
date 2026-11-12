@@ -27,6 +27,9 @@ on:
       - 'src/assistants/*/notebook/**'
       - 'src/assistants/*/runtime/**'
       - 'src/assistants/*/config.yaml'
+      # The check posts a real import made by the builder over a recorded conversation.
+      - 'frontend/osa-notebook-builder.js'
+      - 'frontend/test-support/notebook-conversations.js'
       - '.github/workflows/notebook-site-check.yml'
   schedule:
     - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC
@@ -46,7 +49,7 @@ jobs:
   check:
     name: Build and open the notebook site
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

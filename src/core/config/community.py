@@ -37,6 +37,7 @@ from pydantic import (
     ConfigDict,
     Field,
     HttpUrl,
+    PrivateAttr,
     ValidationInfo,
     field_validator,
     model_validator,
@@ -54,7 +55,11 @@ from src.core.config.notebook_lock import (
     environment_base_url_problem,
     starter_path_problem,
 )
-from src.core.config.runtime_lock import canonical_name, lockfile_path_problem
+from src.core.config.runtime_lock import (
+    canonical_name,
+    lockfile_path_problem,
+    relative_community_path_problem,
+)
 from src.core.limits import (
     MAX_IMAGE_EDGE_PX,
     MAX_IMAGES,
@@ -635,8 +640,52 @@ than in ``src.tools.client_tools`` because this module must import without the
 ``server`` extra, and the name has to be reserved at config load.
 """
 
-RESERVED_CLIENT_TOOL_NAMES = frozenset({FULL_OUTPUT_TOOL_NAME})
+PROPOSE_PLAN_TOOL_NAME = "propose_plan"
+"""The client tool the analysis model calls to show the reader a plan before it runs code.
+
+Derived like ``get_full_output``: ``src.tools.client_tools.build_client_tools`` binds it on
+an analysis turn when a python tool is bound and the caller declares it, so a community
+never lists it. The call runs nothing; the reader's decision comes back through
+``/chat/resume`` as a ``PlanDecision`` (``src.api.tool_results``).
+"""
+
+RESERVED_CLIENT_TOOL_NAMES = frozenset({FULL_OUTPUT_TOOL_NAME, PROPOSE_PLAN_TOOL_NAME})
 """Names a community may not configure, because the server binds them itself."""
+
+Tier = Literal["quick", "analysis"]
+"""Which of a community's two models (``quick_model``, ``analysis_model``) a turn runs on.
+
+A chat session's ``mode`` is one of these. Defined here, with the tool-name constants,
+because this module imports nothing heavy; the routing code, the assistant and the client
+tools all import it from here, so a third tier is added in one place.
+"""
+
+START_ANALYSIS_TOOL_NAME = "start_analysis"
+"""The client tool a quick-tier turn calls to hand the conversation to the analysis model.
+
+Bound by the server on a quick turn only (``src.tools.client_tools.build_client_tools``,
+``tier="quick"``), never declared by a widget and never configured, so a community may not
+name a tool this. It is kept out of ``RESERVED_CLIENT_TOOL_NAMES`` because that set is
+what a widget declares, and this one is not declared.
+"""
+
+EXECUTE_CODE_TOOL_NAME = "execute_code"
+"""The client tool that runs code in the browser: what the analysis model is for.
+
+A community that routes turns between a quick and an analysis model (``quick_model`` and
+``analysis_model``) must configure a tool under this name, and a request must declare it
+for routing to apply.
+"""
+
+GET_PROCEDURE_TOOL_NAME = "get_procedure"
+"""The server tool that returns one of a community's known procedure documents.
+
+Bound by ``CommunityAssistant`` only when the community declares ``procedures`` and the
+turn can run code (``execute_code`` is bound): a procedure is a recipe for a plan that
+ends in code, so a turn with nothing to run gets neither the tool nor the prompt section
+that names it. A server tool, not a client one: it reads a file the server loaded at
+start-up and spends no browser run.
+"""
 
 MAX_DECLARED_CLIENT_TOOLS = 8
 """How many client tool names one chat or resume request may declare."""
@@ -706,6 +755,11 @@ class ClientToolConfig(BaseModel):
             raise ValueError(
                 f"'{value}' is reserved: the server binds it itself whenever a python "
                 "client tool is bound, so it must not be configured."
+            )
+        if value == START_ANALYSIS_TOOL_NAME:
+            raise ValueError(
+                f"'{value}' is reserved: the server binds it itself on a quick-model "
+                "turn, so it must not be configured."
             )
         return value
 
@@ -1497,6 +1551,133 @@ class DatasetSuggestedQuestion(BaseModel):
         return v
 
 
+# The center-stage dialog's start screen and docs link (E6.1, #701). The widget draws the
+# copy as plain text, so each string is bounded and refuses markup; the docs link is
+# https only, since the widget puts it in an anchor on a host page.
+MAX_CENTER_START_CAPABILITIES = 3
+MAX_CENTER_START_TITLE = 40
+MAX_CENTER_START_TEXT = 160
+MAX_CENTER_START_NOTE = 300
+MAX_ANALYSIS_DOCS_TITLE = 80
+MAX_ANALYSIS_DOCS_URL = 500
+MAX_PRIVACY_URL = 500
+
+
+def _plain_text(v: object, field: str) -> object:
+    """Strip whitespace, refuse an empty string and refuse markup."""
+    if not isinstance(v, str):
+        return v
+    v = v.strip()
+    if not v:
+        msg = f"{field} must not be empty"
+        raise ValueError(msg)
+    if "<" in v or ">" in v:
+        msg = f"{field} must be plain text (no '<' or '>')"
+        raise ValueError(msg)
+    return v
+
+
+class CenterStartCapability(BaseModel):
+    """One card on the center-stage dialog's start screen: what the assistant can do."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(..., max_length=MAX_CENTER_START_TITLE)
+    """The card's heading, for example "Describe"."""
+
+    text: str = Field(..., max_length=MAX_CENTER_START_TEXT)
+    """One or two sentences under the heading."""
+
+    @field_validator("title", "text", mode="before")
+    @classmethod
+    def validate_plain_text(cls, v: object, info: ValidationInfo) -> object:
+        """Plain text only."""
+        return _plain_text(v, f"a capability's {info.field_name}")
+
+
+class CenterStartConfig(BaseModel):
+    """What the center-stage dialog's start screen says about the assistant (E6.1).
+
+    The widget keeps no copy of its own about a community's tools: the cards and the
+    footer note come from here, and a community that sets nothing gets a start screen
+    of the question field and the suggestions alone.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    capabilities: list[CenterStartCapability] = Field(default_factory=list)
+    """Up to ``MAX_CENTER_START_CAPABILITIES`` cards, in this order."""
+
+    note: str | None = Field(default=None, max_length=MAX_CENTER_START_NOTE)
+    """A line in the start screen's footer, for example what runs where."""
+
+    @field_validator("capabilities")
+    @classmethod
+    def validate_capabilities(cls, v: list[CenterStartCapability]) -> list[CenterStartCapability]:
+        """At most three cards: the start screen lays them in one row."""
+        if len(v) > MAX_CENTER_START_CAPABILITIES:
+            msg = (
+                f"Too many capability cards ({len(v)}). Maximum is {MAX_CENTER_START_CAPABILITIES}."
+            )
+            raise ValueError(msg)
+        return v
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def validate_note(cls, v: object) -> object:
+        """Plain text; an empty note is no note."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return _plain_text(v, "note")
+
+
+def _https_url(v: object, label: str) -> object:
+    """``v`` stripped, if it is an https URL with a host, no credentials and no whitespace.
+
+    Anything that is not a string is returned as it is, for pydantic's own type error.
+    ``label`` names the field in the message.
+    """
+    if not isinstance(v, str):
+        return v
+    v = v.strip()
+    if any(ch.isspace() for ch in v):
+        msg = f"{label} must not contain whitespace"
+        raise ValueError(msg)
+    parsed = urlparse(v)
+    if parsed.scheme != "https" or not parsed.hostname:
+        msg = f"{label} must be an https:// URL with a host"
+        raise ValueError(msg)
+    if parsed.username or parsed.password:
+        msg = f"{label} must not carry credentials"
+        raise ValueError(msg)
+    return v
+
+
+class AnalysisDocsConfig(BaseModel):
+    """A docs page about analyzing in the browser, linked from the start screen's footer
+    ("How it works") and from the widget's Settings (E6.1)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(..., max_length=MAX_ANALYSIS_DOCS_TITLE)
+    """The link's text in Settings, for example "Analyze data in your browser"."""
+
+    url: str = Field(..., max_length=MAX_ANALYSIS_DOCS_URL)
+    """An https URL; the widget opens it in a new tab with no opener."""
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def validate_title(cls, v: object) -> object:
+        """Plain text only."""
+        return _plain_text(v, "analysis_docs title")
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def validate_url(cls, v: object) -> object:
+        """https only, with a host, no credentials and no whitespace."""
+        return _https_url(v, "analysis_docs url")
+
+
 # The launcher's limits and defaults, in pixels (#553). The widget carries the same
 # numbers (LAUNCHER_LIMITS in osa-chat-widget.js, and the fallbacks in its stylesheet);
 # tests/test_frontend/test_widget_drift.py keeps them from drifting. The floor is WCAG
@@ -1525,6 +1706,9 @@ LAUNCHER_GEOMETRY_FIELDS = (
     "launcher_mobile_offset_x",
     "launcher_mobile_offset_y",
 )
+
+
+MAX_WIDGET_SEARCH_PATHS = 5
 
 
 class WidgetConfig(BaseModel):
@@ -1558,6 +1742,36 @@ class WidgetConfig(BaseModel):
     conversation has not been on yet gets up to two, in a compact row above the
     input. Unset, every page shows ``suggested_questions`` as before.
     """
+
+    search_paths: list[str] = Field(default_factory=list)
+    """Page paths where the reader is searching rather than viewing a dataset (E1.3).
+
+    A page whose ``location.pathname`` is one of these, or below one at a path-segment
+    boundary (``/discover`` matches ``/discover/x`` but not ``/discovery``), gives the
+    conversation the "search" context, as ``setDataset`` gives it a dataset's. A page
+    that names a dataset or matches no path keeps the conversation's context. Each
+    path starts with ``/`` and has no query or fragment; at most
+    ``MAX_WIDGET_SEARCH_PATHS``.
+    """
+
+    center_start: CenterStartConfig | None = None
+    """The center-stage dialog's start screen copy (E6.1): up to three capability cards
+    and a footer note. Unset, the start screen shows only the question field and the
+    suggestions."""
+
+    analysis_docs: AnalysisDocsConfig | None = None
+    """A docs page linked from the start screen's footer and from the widget's Settings
+    (E6.1). Unset, neither shows a link."""
+
+    privacy_url: str | None = Field(default=None, max_length=MAX_PRIVACY_URL)
+    """The privacy page the widget's Privacy choices dialog links to (#706): an https
+    URL. Unset, the widget links to the platform's own privacy page."""
+
+    @field_validator("privacy_url", mode="before")
+    @classmethod
+    def validate_privacy_url(cls, v: object) -> object:
+        """https only, with a host, no credentials and no whitespace."""
+        return _https_url(v, "privacy_url")
 
     theme_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     """Primary theme color as a hex code (e.g., '#008a79').
@@ -1786,6 +2000,24 @@ class WidgetConfig(BaseModel):
             raise ValueError(msg)
         return v
 
+    @field_validator("search_paths")
+    @classmethod
+    def validate_search_paths(cls, v: list[str]) -> list[str]:
+        """Each path starts with ``/`` and carries no query, fragment or whitespace."""
+        if len(v) > MAX_WIDGET_SEARCH_PATHS:
+            msg = f"Too many search paths ({len(v)}). Maximum is {MAX_WIDGET_SEARCH_PATHS}."
+            raise ValueError(msg)
+        for path in v:
+            if not path.startswith("/"):
+                raise ValueError(f"Search path {path!r} must start with '/'")
+            if any(ch in path for ch in "?#") or any(ch.isspace() for ch in path):
+                raise ValueError(
+                    f"Search path {path!r} must not contain a query, a fragment or whitespace"
+                )
+            if len(path) > 200:
+                raise ValueError(f"Search path {path!r} is longer than 200 characters")
+        return v
+
     def resolve(self, community_name: str, logo_url: str | None = None) -> dict[str, Any]:
         """Return widget config with defaults applied.
 
@@ -1805,6 +2037,14 @@ class WidgetConfig(BaseModel):
             result["dataset_suggested_questions"] = [
                 q.model_dump() for q in self.dataset_suggested_questions
             ]
+        if self.search_paths:
+            result["search_paths"] = list(self.search_paths)
+        if self.center_start:
+            result["center_start"] = self.center_start.model_dump(exclude_none=True)
+        if self.analysis_docs:
+            result["analysis_docs"] = self.analysis_docs.model_dump()
+        if self.privacy_url:
+            result["privacy_url"] = self.privacy_url
         if self.theme_color:
             result["theme_color"] = self.theme_color
         if self.user_bubble_color:
@@ -1911,6 +2151,130 @@ class SyncConfig(BaseModel):
 
     discourse: SyncTypeSchedule | None = None
     """Schedule for Discourse forum topic sync."""
+
+
+MAX_PROCEDURES = 20
+"""How many procedures one community may declare."""
+
+MAX_PROCEDURE_CHARS = 32_000
+"""The longest a procedure document may be, in characters.
+
+About 8,000 tokens: the model reads a whole document in one tool result, so a bound
+keeps one fetch from taking a large share of the context.
+"""
+
+_PROCEDURE_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+class ProcedureConfig(BaseModel):
+    """One known analysis procedure a community offers, kept as a Markdown document.
+
+    The prompt carries only ``id``, ``title`` and ``when``; the model fetches the document
+    (``get_procedure``, ``GET_PROCEDURE_TOOL_NAME``) when a request matches, so the text
+    and code of a procedure cost context only on the turns that use it. Example:
+
+        procedures:
+          - id: power-spectrum
+            title: Power spectrum
+            when: Power spectrum or PSD of a recording
+            file: procedures/power-spectrum.md
+
+    This model checks the shape of each field. That the file exists, stays inside the
+    community's folder, is UTF-8 and is within the size bound is checked by
+    ``CommunityConfig.from_yaml``, the one place the folder is known.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    """What the model passes to ``get_procedure``: lowercase words joined by hyphens."""
+
+    title: str
+    """The procedure's name, one line, as the prompt lists it."""
+
+    when: str
+    """One line naming the requests this procedure covers, so the model can match one."""
+
+    file: str
+    """A Markdown file's path relative to the community's folder (``procedures/x.md``)."""
+
+    @field_validator("id")
+    @classmethod
+    def _id_is_a_slug(cls, value: str) -> str:
+        if not 1 <= len(value) <= 64 or not _PROCEDURE_ID.fullmatch(value):
+            raise ValueError(
+                f"procedure id {value!r} must be 1 to 64 characters of lowercase letters "
+                "and digits joined by single hyphens (for example 'power-spectrum')"
+            )
+        return value
+
+    @field_validator("title", "when")
+    @classmethod
+    def _one_line(cls, value: str, info: ValidationInfo) -> str:
+        bounds = {"title": (3, 80), "when": (10, 300)}[info.field_name or "title"]
+        # Strip first: a YAML folded or literal scalar (``when: >``) ends in one newline.
+        value = value.strip()
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"procedure {info.field_name} must be one line")
+        if not bounds[0] <= len(value) <= bounds[1]:
+            raise ValueError(
+                f"procedure {info.field_name} must be {bounds[0]} to {bounds[1]} characters"
+            )
+        return value
+
+    @field_validator("file")
+    @classmethod
+    def _file_stays_in_the_community_folder(cls, value: str) -> str:
+        problem = relative_community_path_problem(value, ".md")
+        if problem is not None:
+            raise ValueError(f"procedure file {value!r}: {problem}")
+        return value
+
+
+def _why(err: Exception) -> str:
+    """The reason for a read failure: the OS's message when it gave one, else the error's."""
+    return getattr(err, "strerror", None) or str(err)
+
+
+def read_procedure_documents(
+    procedures: list[ProcedureConfig], community_dir: Path
+) -> dict[str, str]:
+    """Each procedure's document text, keyed by id, read once from the community folder.
+
+    Raises ValueError, in plain words, for a file that is missing, cannot be read, resolves
+    outside the folder (a symlink included), is too large, is not UTF-8, or is blank.
+    ``Path.resolve`` raises RuntimeError for a symlink loop on Python 3.11 and 3.12, so that
+    is caught with OSError and reported the same way.
+    """
+    try:
+        root = community_dir.resolve()
+    except (OSError, RuntimeError) as err:
+        raise ValueError(f"the community's folder cannot be read: {_why(err)}") from err
+    texts: dict[str, str] = {}
+    for procedure in procedures:
+        where = f"procedure {procedure.id!r}: file {procedure.file!r}"
+        try:
+            path = (root / procedure.file).resolve()
+            if not path.is_relative_to(root):
+                raise ValueError(f"{where} resolves outside the community's folder")
+            if not path.is_file():
+                raise ValueError(f"{where} does not exist in the community's folder")
+            # UTF-8 takes at most four bytes a character, so a larger file cannot fit.
+            if path.stat().st_size > 4 * MAX_PROCEDURE_CHARS:
+                raise ValueError(f"{where} is longer than {MAX_PROCEDURE_CHARS:,} characters")
+            raw = path.read_bytes()
+        except (OSError, RuntimeError) as err:
+            raise ValueError(f"{where} cannot be read: {_why(err)}") from err
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise ValueError(f"{where} is not valid UTF-8 text") from err
+        if not text.strip():
+            raise ValueError(f"{where} is blank")
+        if len(text) > MAX_PROCEDURE_CHARS:
+            raise ValueError(f"{where} is longer than {MAX_PROCEDURE_CHARS:,} characters")
+        texts[procedure.id] = text
+    return texts
 
 
 class CommunityConfig(BaseModel):
@@ -2064,8 +2428,11 @@ class CommunityConfig(BaseModel):
     """Allowed CORS origins for this community's widget embedding.
 
     Supports exact origins (e.g., 'https://hedtags.org') and wildcard
-    subdomains (e.g., 'https://*.pages.dev'). These are aggregated with
-    platform-level origins at API startup.
+    subdomains of a domain you control (e.g., 'https://*.hedtags.org';
+    never a shared host such as 'https://*.pages.dev', which would allow every
+    site on it). A wildcard matches one subdomain label and never the domain
+    itself, so list 'https://hedtags.org' too if it embeds the widget. These
+    are aggregated with platform-level origins at API startup.
     """
 
     anthropic_api_key_env_var: str | None = None
@@ -2116,6 +2483,45 @@ class CommunityConfig(BaseModel):
 
     If not specified, uses the platform-level default from Settings.
     """
+
+    quick_model: str | None = None
+    """The model that answers most turns when this community routes between two models.
+
+    Set together with ``analysis_model`` or not at all. A model class or id that resolves
+    through ``normalize_model`` to an offered model (``haiku``). Used for the turns of a
+    request that declares ``execute_code`` and names no ``model`` of its own, until one
+    asks for code, a plot or an analysis (see ``src.agents.model_routing``). A community
+    without the pair behaves exactly as if the keys did not exist.
+    """
+
+    analysis_model: str | None = None
+    """The model that runs code, plots and analysis (``sonnet``). See ``quick_model``.
+
+    A conversation reaches it by a handover into a new session, never by switching
+    models inside one session, so the quick model's thinking blocks never meet it.
+    """
+
+    plan_first_instructions: str | None = None
+    """Prompt text that makes the analysis model propose a plan before it runs code.
+
+    Valid only with ``quick_model`` and ``analysis_model``, because a plan is made by the
+    analysis model. Appended to the system prompt of an analysis turn, and only when the
+    request declares ``propose_plan`` (``PROPOSE_PLAN_TOOL_NAME``) and client tools are
+    not disabled: text that tells a model to call a tool it was not given would send it to
+    invent one. See ``src.agents.plan_first``.
+    """
+
+    procedures: list[ProcedureConfig] = Field(default_factory=list)
+    """Known analysis procedures, each a Markdown document the model fetches on demand.
+
+    The prompt lists only each one's ``id``, ``title`` and ``when``; when a request
+    matches, the model calls ``get_procedure`` (``GET_PROCEDURE_TOOL_NAME``) and proposes
+    the document's plan. Offered only on a turn that can run code. Ids are unique, at most
+    ``MAX_PROCEDURES``. Each ``file`` is read once by ``from_yaml``; see ``ProcedureConfig``.
+    """
+
+    _procedure_texts: dict[str, str] | None = PrivateAttr(default=None)
+    """The documents' text by id, filled once by ``from_yaml``; None on any other build."""
 
     reasoning_effort: ReasoningEffort | None = None
     """How much this community's assistant thinks: one level of a provider-neutral scale.
@@ -2247,7 +2653,7 @@ class CommunityConfig(BaseModel):
             if not origin_pattern.match(origin):
                 raise ValueError(
                     f"Invalid CORS origin '{origin}'. Must be a valid origin "
-                    f"(e.g., 'https://example.org' or 'https://*.pages.dev')"
+                    f"(e.g., 'https://example.org' or 'https://*.example.org')"
                 )
             if origin not in validated:
                 validated.append(origin)
@@ -2356,6 +2762,25 @@ class CommunityConfig(BaseModel):
     def validate_default_model(cls, v: str | None) -> str | None:
         """Validate model name format (provider/model-name)."""
         return _validate_model_id(v, field_label="Model name")
+
+    @field_validator("quick_model", "analysis_model")
+    @classmethod
+    def validate_routing_model(cls, v: str | None, info: ValidationInfo) -> str | None:
+        """Format-check a routing model and require it to be an offered model.
+
+        Stricter than ``default_model``, which only warns: a routing model that does not
+        resolve would fail every turn that reaches its tier, and the tier is chosen per
+        message, so the failure would show up as a conversation that breaks at the first
+        plot instead of at load.
+        """
+        v = _validate_model_id(v, field_label=info.field_name or "Routing model")
+        if v is None:
+            return None
+        try:
+            normalize_model(v)
+        except ValueError as e:
+            raise ValueError(f"{info.field_name}={v!r} is not an offered model: {e}") from e
+        return v
 
     @field_validator("model_instructions")
     @classmethod
@@ -2568,6 +2993,68 @@ class CommunityConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def validate_procedures(self) -> "CommunityConfig":
+        """At most ``MAX_PROCEDURES``, each id used once."""
+        if len(self.procedures) > MAX_PROCEDURES:
+            raise ValueError(f"procedures: at most {MAX_PROCEDURES} may be declared")
+        seen: set[str] = set()
+        for procedure in self.procedures:
+            if procedure.id in seen:
+                raise ValueError(f"procedures: id {procedure.id!r} is declared twice")
+            seen.add(procedure.id)
+        return self
+
+    def procedure_documents(self) -> dict[str, str]:
+        """The text of every declared procedure, by id, in declaration order.
+
+        Empty when the community declares none. Raises ValueError when it declares some
+        but their texts were never loaded, which is a config built without
+        ``CommunityConfig.from_yaml`` (the only place the folder is known): serving the
+        list without the documents would send the model to a tool that has nothing.
+        """
+        if not self.procedures:
+            return {}
+        texts = self._procedure_texts
+        if texts is None or set(texts) != {p.id for p in self.procedures}:
+            raise ValueError(
+                f"Community '{self.id}' declares procedures but their documents were not "
+                "loaded; build the config with CommunityConfig.from_yaml, which reads them "
+                "from the community's folder"
+            )
+        return {p.id: texts[p.id] for p in self.procedures}
+
+    @model_validator(mode="after")
+    def validate_model_routing(self) -> "CommunityConfig":
+        """``quick_model`` and ``analysis_model`` go together, and need ``execute_code``.
+
+        ``plan_first_instructions`` is valid only beside them, and may not be blank.
+
+        The pair routes a turn to the analysis model when it asks for code, so without a
+        client tool that runs code there is nothing for the analysis model to do and the
+        quick model would hand over to no purpose.
+        """
+        if (self.quick_model is None) != (self.analysis_model is None):
+            raise ValueError("quick_model and analysis_model must both be set or both unset")
+        if self.plan_first_instructions is not None and not self.plan_first_instructions.strip():
+            raise ValueError("plan_first_instructions must not be blank; omit the key instead")
+        if self.quick_model is None:
+            if self.plan_first_instructions is not None:
+                raise ValueError(
+                    "plan_first_instructions is given to the analysis model, so it needs "
+                    "quick_model and analysis_model"
+                )
+            return self
+        configured = (
+            {entry.name for entry in self.extensions.client_tools} if self.extensions else set()
+        )
+        if EXECUTE_CODE_TOOL_NAME not in configured:
+            raise ValueError(
+                "quick_model and analysis_model route code requests to the analysis model, "
+                f"so extensions.client_tools must configure '{EXECUTE_CODE_TOOL_NAME}'"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_client_tools_have_runtime(self) -> "CommunityConfig":
         """A configured client tool must name a runtime this community configures.
 
@@ -2720,6 +3207,8 @@ class CommunityConfig(BaseModel):
             FileNotFoundError: If file doesn't exist.
             yaml.YAMLError: If YAML syntax is invalid.
             ValidationError: If YAML structure is invalid.
+            ValueError: If a declared procedure's document is missing, outside the
+                community's folder, too large, not UTF-8 or blank.
         """
         try:
             with open(path) as f:
@@ -2727,7 +3216,10 @@ class CommunityConfig(BaseModel):
         except yaml.YAMLError as e:
             raise yaml.YAMLError(f"Failed to parse YAML file {path}: {e}") from e
 
-        return cls.model_validate(data or {})
+        config = cls.model_validate(data or {})
+        if config.procedures:
+            config._procedure_texts = read_procedure_documents(config.procedures, path.parent)
+        return config
 
 
 class CommunitiesConfig(BaseModel):

@@ -26,7 +26,7 @@
  * Run with: bun workers/osa-worker/test-routing.js
  */
 
-import worker from './index.js';
+import worker, { ROUTE_PATTERNS } from './index.js';
 
 let testsPassed = 0;
 let testsFailed = 0;
@@ -128,6 +128,8 @@ const ROUTES = [
   // Phase 1's two-run continuation route (#430). Three segments, so it is a
   // separate matcher from the two-segment action route above.
   [`/${COMMUNITY}/chat/resume`, { method: 'POST', body: {} }],
+  // The Discover panel's search overview (#702).
+  [`/${COMMUNITY}/overview`, { method: 'POST', body: {} }],
   // The browser runtime's wheels (#431).
   [`/${COMMUNITY}/runtime/tinypkg-1.0-py3-none-any.whl`, {}],
 ];
@@ -226,6 +228,192 @@ assertEqual(
   404,
   'GET on the resume route does not match; it is POST only'
 );
+
+// The search overview (#702) has its own matcher and its own handler: rate
+// limit only, no Turnstile, because the readers of the Discover panel hold no
+// token. POST only; the matcher is anchored to exactly two segments.
+console.log('\nthe overview route matches /:communityId/overview, POST only, prefixed and not');
+for (const host of [MOUNTED_HOST, UNMOUNTED_HOST]) {
+  await assertReachesHandler(
+    `/${COMMUNITY}/overview`,
+    { method: 'POST', body: {}, host },
+    `POST /${COMMUNITY}/overview reaches the overview handler on ${host}`
+  );
+}
+await assertReachesHandler(
+  `/osa/${COMMUNITY}/overview`,
+  { method: 'POST', body: {}, host: MOUNTED_HOST },
+  `POST /osa/${COMMUNITY}/overview reaches the overview handler through the mount`
+);
+await assertReachesHandler(
+  `/osa-dev/${COMMUNITY}/overview`,
+  { method: 'POST', body: {}, host: 'edge.osc.earth' },
+  `dev: POST edge.osc.earth/osa-dev/${COMMUNITY}/overview reaches the overview handler`
+);
+for (const method of ['GET', 'PUT', 'DELETE']) {
+  await assertNotFound(
+    `/${COMMUNITY}/overview`,
+    { method, host: MOUNTED_HOST },
+    `${method} /${COMMUNITY}/overview does not match; it is POST only`
+  );
+}
+await assertNotFound(
+  `/${COMMUNITY}/overview/extra`,
+  { method: 'POST', body: {} },
+  'POST /:communityId/overview/extra matches no route (two segments exactly)'
+);
+await assertNotFound(
+  '/health/overview',
+  { method: 'POST', body: {} },
+  '/health/overview is rejected (community id "health" is reserved)'
+);
+assertEqual(
+  await statusOf('/invalid!id/overview', { method: 'POST', body: {} }),
+  400,
+  '/invalid!id/overview is rejected as a 400 (matched, then validated)'
+);
+assert(
+  ROUTE_PATTERNS.communityAction.exec(`/${COMMUNITY}/overview`) === null,
+  'the ask/chat action matcher does not take overview, so it never needs a Turnstile token'
+);
+assert(
+  ROUTE_PATTERNS.communityOverview.exec(`/${COMMUNITY}/ask`) === null &&
+    ROUTE_PATTERNS.communityOverview.exec(`/${COMMUNITY}/chat/resume`) === null,
+  'the overview matcher takes neither ask nor chat/resume'
+);
+
+// What the handler forwards, against a real backend on a socket, and that no
+// Turnstile token is asked for even with a secret configured, where /ask would
+// refuse the same request.
+console.log('\nthe overview route forwards its body and Origin, and asks for no Turnstile token');
+const overviewSeen = [];
+const overviewBackend = Bun.serve({
+  port: 0,
+  async fetch(request) {
+    const { pathname } = new URL(request.url);
+    overviewSeen.push({
+      method: request.method,
+      path: pathname,
+      origin: request.headers.get('Origin'),
+      body: await request.text(),
+    });
+    return new Response(JSON.stringify({ summary: [], cached: false }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  },
+});
+const overviewEnv = {
+  BACKEND_URL: `http://localhost:${overviewBackend.port}`,
+  BACKEND_API_KEY: 'test-key',
+  TURNSTILE_SECRET_KEY: 'a-secret-that-would-demand-a-token',
+};
+try {
+  const payload = { query: 'faces in EEG', filters: {}, results: [{ id: 'xx099901', title: 't', description: 'd' }] };
+  const origin = 'https://test.nemar.org';
+  const viaWorker = await worker.fetch(
+    new Request(`https://${MOUNTED_HOST}/osa/${COMMUNITY}/overview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: origin },
+      body: JSON.stringify(payload),
+    }),
+    stubEnv(overviewEnv),
+    {}
+  );
+  assertEqual(viaWorker.status, 200, 'with a Turnstile secret set and no token, the overview is served');
+  assertEqual((await viaWorker.json()).cached, false, "with the backend's body");
+  assertEqual(viaWorker.headers.get('Access-Control-Allow-Origin'), origin, 'with CORS for the page that asked');
+  assertEqual(overviewSeen.length, 1, 'one request reached the backend');
+  assertEqual(overviewSeen[0].path, `/${COMMUNITY}/overview`, 'at the stripped path');
+  assertEqual(overviewSeen[0].method, 'POST', 'as a POST');
+  assertEqual(overviewSeen[0].origin, origin, 'with the Origin the backend authorizes on');
+  assertEqual(JSON.stringify(JSON.parse(overviewSeen[0].body)), JSON.stringify(payload), 'and the body unchanged');
+
+  const askWithoutToken = await worker.fetch(
+    new Request(`https://${MOUNTED_HOST}/${COMMUNITY}/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'hi' }),
+    }),
+    stubEnv(overviewEnv),
+    {}
+  );
+  assertEqual(askWithoutToken.status, 403, 'while /ask with the same secret and no token is refused');
+  assertEqual(overviewSeen.length, 1, 'and that refused request never reached the backend');
+
+  const notJson = await worker.fetch(
+    new Request(`https://${MOUNTED_HOST}/${COMMUNITY}/overview`, { method: 'POST', body: 'not json' }),
+    stubEnv(overviewEnv),
+    {}
+  );
+  assertEqual(notJson.status, 400, 'a body that is not JSON is a 400 at the edge');
+  assertEqual(overviewSeen.length, 1, 'and is not forwarded');
+
+  // A KV binding stands in for the platform's. No CF-Connecting-IP header, so the
+  // caller's key is "unknown"; development allows 100 chat requests and 500
+  // overviews an hour.
+  const hour = Math.floor(Date.now() / 1000 / 3600);
+  const kvOf = (entries) => {
+    const store = new Map(entries);
+    return { store, get: async (key) => store.get(key) ?? null, put: async (key, value) => { store.set(key, value); } };
+  };
+  const overviewAsk = (kv) =>
+    statusOf(`/${COMMUNITY}/overview`, { method: 'POST', body: payload, env: { ...overviewEnv, RATE_LIMITER_KV: kv } });
+
+  const chatSpent = kvOf([[`rl:hour:unknown:${hour}`, '100']]);
+  assertEqual(await overviewAsk(chatSpent), 200, "with the caller's /chat hour spent, the overview is still served");
+  assertEqual(chatSpent.store.get(`rl:hour:unknown:${hour}`), '100', 'and it did not add to the /chat count');
+  assertEqual(chatSpent.store.get(`rl:overview:hour:unknown:${hour}`), '1', 'it counted against its own');
+  assertEqual(overviewSeen.length, 2, 'and the request reached the backend');
+
+  const overviewSpent = kvOf([[`rl:overview:hour:unknown:${hour}`, '500']]);
+  assertEqual(await overviewAsk(overviewSpent), 429, "with the caller's overview hour spent, the overview is rate limited");
+  assertEqual(overviewSeen.length, 2, 'and the refused request never reached the backend');
+  assertEqual(
+    await statusOf('/hed/', { env: { ...overviewEnv, RATE_LIMITER_KV: overviewSpent } }),
+    200,
+    'while /chat is untouched by the overview budget'
+  );
+} finally {
+  overviewBackend.stop(true);
+}
+
+// The reader's usage-data choice (#706) is a body field the backend reads, so the worker
+// must pass it through untouched: it removes the Turnstile token and nothing else.
+console.log('\nshare_usage in the body reaches the backend on /chat and /chat/resume');
+const usageSeen = [];
+const usageBackend = Bun.serve({
+  port: 0,
+  async fetch(request) {
+    usageSeen.push({ path: new URL(request.url).pathname, body: JSON.parse(await request.text()) });
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  },
+});
+try {
+  const env = { BACKEND_URL: `http://localhost:${usageBackend.port}`, BACKEND_API_KEY: 'test-key' };
+  const post = (path, body) => call(path, { method: 'POST', body, env });
+  const chatBody = { message: 'hi', stream: true, cf_turnstile_response: 'token', share_usage: false };
+  const resumeBody = { session_id: 's', result: { call_id: 'c', status: 'ok' }, share_usage: false };
+
+  assertEqual((await post(`/${COMMUNITY}/chat`, chatBody)).status, 200, '/chat with share_usage false is served');
+  assertEqual(usageSeen.at(-1).path, `/${COMMUNITY}/chat`, 'at the stripped path');
+  assertEqual(usageSeen.at(-1).body.share_usage, false, '/chat carries share_usage: false to the backend');
+  assert(!('cf_turnstile_response' in usageSeen.at(-1).body), 'while the Turnstile token is still removed');
+
+  assertEqual((await post(`/${COMMUNITY}/chat/resume`, resumeBody)).status, 200, '/chat/resume with share_usage false is served');
+  assertEqual(usageSeen.at(-1).path, `/${COMMUNITY}/chat/resume`, 'at the resume path');
+  assertEqual(usageSeen.at(-1).body.share_usage, false, '/chat/resume carries share_usage: false to the backend');
+
+  await post(`/${COMMUNITY}/chat`, { message: 'hi' });
+  assert(!('share_usage' in usageSeen.at(-1).body), 'a /chat without the field forwards none (sharing is the default)');
+  await post(`/${COMMUNITY}/chat/resume`, { session_id: 's', result: { call_id: 'c', status: 'ok' } });
+  assert(!('share_usage' in usageSeen.at(-1).body), 'nor does a /chat/resume');
+} finally {
+  usageBackend.stop(true);
+}
 
 console.log('\nthe runtime route takes a bare wheel name, and GET only');
 // No '..' case: URL parsing resolves it before any route sees the path.
@@ -565,6 +753,73 @@ console.log('\nthe CORS preflight allows the demo hosts but not the demo\'s *.pa
   }
   for (const origin of ['https://osa-demo.pages.dev', 'https://develop.osa-demo.pages.dev']) {
     assertEqual(await allowOriginFor(origin), 'https://demo.osc.earth', `${origin} is not allowed`);
+  }
+}
+
+// A /chat the backend refuses with 409 session_unknown (#698) must reach the
+// widget with that status and that exact body, because the widget keys its one
+// resend on both. The backend here is a real socket that answers the shared
+// fixture tests/fixtures/session_unknown_409.json, the file the backend's own
+// test asserts the real server produces. An X-Anthropic-API-Key header skips
+// Turnstile, so the request goes straight through to the proxy.
+console.log('\na 409 session_unknown from the backend reaches the caller unchanged');
+{
+  const fixture = await Bun.file(new URL('../../tests/fixtures/session_unknown_409.json', import.meta.url)).json();
+  const seen = [];
+  const refusing = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      seen.push({ path: new URL(request.url).pathname, body: await request.json() });
+      return new Response(JSON.stringify(fixture), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+  });
+  const refusingEnv = { BACKEND_URL: `http://localhost:${refusing.port}`, BACKEND_API_KEY: 'test-key' };
+  try {
+    // /chat takes expect_session, so its body carries it and the worker must forward it.
+    // /chat/resume does not take that field (its model forbids extra keys), so its body is
+    // a realistic resume body and the iteration only proves that the backend's status and
+    // JSON pass through untouched.
+    const bodies = {
+      chat: {
+        message: 'and how many participants',
+        session_id: 'gone',
+        expect_session: true,
+        cf_turnstile_response: 'spent-token',
+      },
+      'chat/resume': {
+        session_id: 'gone',
+        result: { call_id: 'call-1', status: 'ok', summary: 'shape (3, 4)' },
+      },
+    };
+    for (const route of ['chat', 'chat/resume']) {
+      seen.length = 0;
+      const response = await worker.fetch(
+        new Request(`https://${MOUNTED_HOST}/osa/nemar/${route}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Anthropic-API-Key': 'sk-ant-test' },
+          body: JSON.stringify(bodies[route]),
+        }),
+        stubEnv(refusingEnv),
+        {}
+      );
+      assertEqual(response.status, 409, `POST /nemar/${route} keeps the backend's 409`);
+      assertEqual(
+        JSON.stringify(await response.json()),
+        JSON.stringify(fixture),
+        `POST /nemar/${route} returns the backend's body, detail and code, unchanged`
+      );
+      assertEqual(seen[0]?.path, `/nemar/${route}`, `POST /nemar/${route} reached the backend`);
+      // Only /chat is Turnstile-gated and takes expect_session; /chat/resume forwards its body as sent.
+      if (route === 'chat') {
+        assertEqual(seen[0]?.body.expect_session, true, '/nemar/chat forwards expect_session untouched');
+        assert(!('cf_turnstile_response' in seen[0].body), '/nemar/chat still strips the Turnstile token');
+      }
+    }
+  } finally {
+    refusing.stop(true);
   }
 }
 

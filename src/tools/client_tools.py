@@ -22,9 +22,15 @@ import os
 from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from src.core.config.community import FULL_OUTPUT_TOOL_NAME
+from src.core.config.community import (
+    EXECUTE_CODE_TOOL_NAME,
+    FULL_OUTPUT_TOOL_NAME,
+    PROPOSE_PLAN_TOOL_NAME,
+    START_ANALYSIS_TOOL_NAME,
+    Tier,
+)
 
 if TYPE_CHECKING:
     from src.core.config.community import CommunityConfig
@@ -130,6 +136,108 @@ _FULL_OUTPUT_DESCRIPTION = (
 )
 
 
+class StartAnalysisArgs(BaseModel):
+    """Argument schema for the derived `start_analysis` client tool.
+
+    The call carries no work of its own: the reader's message is what the analysis model
+    answers. `reason` exists only so a model has something short to write that is not
+    prose for the reader, and it is bounded because it is stored in history.
+    """
+
+    reason: str = Field(
+        "",
+        max_length=300,
+        description="One short phrase on why the reader's request needs code or a plot.",
+    )
+
+
+_START_ANALYSIS_DESCRIPTION = (
+    "Hand this conversation to the analysis model, which can run code in the reader's "
+    "browser. Call it when the reader asks you to run, plot, analyze or compute "
+    "something. Calling it ends your turn: write nothing before or after the call, "
+    "because the analysis model answers the reader instead."
+)
+
+
+MAX_PLAN_STEPS = 8
+"""Most steps one plan may carry, and the most a reader may leave it with after edits."""
+
+MAX_PLAN_STEP_TITLE_CHARS = 120
+MAX_PLAN_STEP_DETAIL_CHARS = 600
+MAX_PLAN_FINDINGS_CHARS = 2000
+MAX_PLAN_PEAK_MB = 8192
+
+
+class PlanStep(BaseModel):
+    """One step of a proposed plan: what it does, in a line, and how, in a few."""
+
+    title: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_PLAN_STEP_TITLE_CHARS,
+        description="Short name of the step, shown as its heading.",
+    )
+    detail: str = Field(
+        ...,
+        max_length=MAX_PLAN_STEP_DETAIL_CHARS,
+        description="What the step's one code run does and what it produces.",
+    )
+
+    @field_validator("title")
+    @classmethod
+    def _one_line_title(cls, value: str) -> str:
+        """Collapse every run of whitespace, newlines included, to one space.
+
+        The title is a heading on the card and one line of the tool message that answers
+        the call, so it may be neither blank nor span lines: a newline in it would add a
+        line of its own to that message. Applied to the decision's steps as well as the
+        proposal's (both are `PlanStep`), so an edited step stays comparable.
+        """
+        collapsed = " ".join(value.split())
+        if not collapsed:
+            raise ValueError("title must not be blank")
+        return collapsed
+
+
+class ProposePlanArgs(BaseModel):
+    """Argument schema for the derived `propose_plan` client tool.
+
+    The plan is shown to the reader before any code runs, and the reader may edit it.
+    Every field is bounded because the call is stored in history and rendered in the
+    widget. `est_peak_mb` is only validated here; what it is compared with is the memory
+    budget (plan E5.1), not this tool.
+    """
+
+    findings: str = Field(
+        ...,
+        max_length=MAX_PLAN_FINDINGS_CHARS,
+        description="A short paragraph on what the inspection found, which the plan rests on.",
+    )
+    steps: list[PlanStep] = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_PLAN_STEPS,
+        description="The ordered steps; each one runs as exactly one execute_code call.",
+    )
+    est_peak_mb: int = Field(
+        ...,
+        ge=0,
+        le=MAX_PLAN_PEAK_MB,
+        description="Estimated peak memory, in megabytes, of the plan's largest step.",
+    )
+
+
+_PROPOSE_PLAN_DESCRIPTION = (
+    "Show the reader a plan for an analysis and wait for their decision before running "
+    "any code. Call it once, after inspecting the data, with what you found, 3 to 6 "
+    "steps (each will be one execute_code call) and the estimated peak memory in "
+    "megabytes of the largest step. The answer tells you whether the reader approved "
+    "(with the steps as they left them, which you follow as written, and whether to "
+    "pause after each step or run them all) or asked for changes (revise the plan and "
+    "call this again). It runs no code."
+)
+
+
 # Maps a client tool's configured `runtime` value to the pydantic model
 # describing that runtime's call arguments. Phase 1 ships exactly one
 # runtime ("python"); the indirection through a mapping, rather than a
@@ -210,7 +318,11 @@ def client_tools_disabled() -> bool:
     return env_flag_set(CLIENT_TOOL_KILL_SWITCH_ENV)
 
 
-def build_client_tools(config: CommunityConfig, declared: set[str] | None) -> list[ClientTool]:
+def build_client_tools(
+    config: CommunityConfig,
+    declared: set[str] | None,
+    tier: Tier | None = None,
+) -> list[ClientTool]:
     """Client tools that are BOTH configured on the community AND declared by the caller.
 
     Returns `[]` when the kill switch is set, when the config declares none,
@@ -227,16 +339,26 @@ def build_client_tools(config: CommunityConfig, declared: set[str] | None) -> li
     gets exactly today's behavior: no client tools bound, no `tool_request`
     possible.
 
+    `tier` is the model tier of a routed turn (`src.agents.model_routing`). A quick turn
+    binds the community's client tools minus `execute_code` and `get_full_output`, which
+    belong to the analysis model, plus `start_analysis`, the call that hands the
+    conversation over. `start_analysis` is bound only here, never because a caller
+    declared it: it is not configured and not in `declared`'s vocabulary, so no request
+    can switch it on. An analysis turn, and a turn with no tier, bind exactly what they
+    always did.
+
     Args:
         config: The community's parsed configuration.
         declared: Client tool names the caller's request body claims it can
             execute. `None` or empty means "declares nothing".
+        tier: The turn's model tier, or None when the community does not route.
 
     Returns:
         A `ClientTool` for every entry in `config.extensions.client_tools`
         whose name is also in `declared`, in that list's order, followed by the
         derived `get_full_output` tool when a python tool was bound and the
-        caller declared it.
+        caller declared it, then `propose_plan` on an analysis turn under the
+        same two conditions.
     """
     configured = list(config.extensions.client_tools) if config.extensions else []
 
@@ -267,6 +389,8 @@ def build_client_tools(config: CommunityConfig, declared: set[str] | None) -> li
     for entry in configured:
         if entry.name not in declared:
             continue
+        if tier == "quick" and entry.name == EXECUTE_CODE_TOOL_NAME:
+            continue
         args_schema = _args_schema_for_runtime(entry.runtime)
         tools.append(
             ClientTool(
@@ -283,12 +407,37 @@ def build_client_tools(config: CommunityConfig, declared: set[str] | None) -> li
     # it, because an old cached widget that cannot answer it would otherwise park
     # every such call forever. No permission gate: it reads output the person's
     # own browser already holds and runs nothing.
-    if python_bound and FULL_OUTPUT_TOOL_NAME in declared:
+    if python_bound and FULL_OUTPUT_TOOL_NAME in declared and tier != "quick":
         tools.append(
             ClientTool(
                 name=FULL_OUTPUT_TOOL_NAME,
                 description=_FULL_OUTPUT_DESCRIPTION,
                 args_schema=GetFullOutputArgs,
+                requires_permission=False,
+            )
+        )
+    # Derived, like get_full_output, and only where a plan leads to code: a python tool
+    # is bound, the caller declares it, and the turn is on the analysis model. Never on
+    # a quick turn or a turn with no tier, which have no code to plan. No permission
+    # gate here: the call runs nothing, and the reader's approval is the answer to it.
+    if python_bound and PROPOSE_PLAN_TOOL_NAME in declared and tier == "analysis":
+        tools.append(
+            ClientTool(
+                name=PROPOSE_PLAN_TOOL_NAME,
+                description=_PROPOSE_PLAN_DESCRIPTION,
+                args_schema=ProposePlanArgs,
+                requires_permission=False,
+            )
+        )
+    if tier == "quick":
+        # Derived, like get_full_output, and for the same reason it has no permission
+        # gate: it runs nothing. The graph parks the call, and the stream layer turns
+        # that parked call into a handover instead of a tool_request.
+        tools.append(
+            ClientTool(
+                name=START_ANALYSIS_TOOL_NAME,
+                description=_START_ANALYSIS_DESCRIPTION,
+                args_schema=StartAnalysisArgs,
                 requires_permission=False,
             )
         )

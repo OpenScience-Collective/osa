@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dataset page with AI Mode pill</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1d4ed8}a:hover{color:#1e3a8a}
+</style>
+</helmet>
+<div style="min-height: 1000px; background: #ffffff; font-family: Inter, system-ui, sans-serif; color: #0f172a; position: relative">
+  <header style="border-bottom: 1px solid #e2e8f0; background: #ffffff">
+    <div style="max-width: 1120px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap">
+      <div style="display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 26px; letter-spacing: -0.5px; color: #0b1a3a">
+        <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="12" fill="none" stroke="#5bbad5" stroke-width="2"></circle><circle cx="14" cy="14" r="5" fill="#5bbad5"></circle></svg>
+        <span>NEMAR</span>
+      </div>
+      <nav aria-label="Main" style="display: flex; gap: 22px; font-size: 14px; flex-wrap: wrap; flex: 1 1 auto; justify-content: center">
+        <a href="#" style="color: #475569; text-decoration: none">About</a>
+        <a href="#" style="color: #475569; text-decoration: none">Discover</a>
+        <a href="#" style="color: #475569; text-decoration: none">News</a>
+        <a href="#" style="color: #475569; text-decoration: none">Citation Dashboard</a>
+        <a href="#" style="color: #475569; text-decoration: none">Documentation</a>
+        <a href="#" style="color: #475569; text-decoration: none">Support</a>
+      </nav>
+      <a href="#" style="border: 1px solid #cbd5e1; border-radius: 999px; padding: 7px 16px; font-size: 14px; color: #0f172a; text-decoration: none">Sign in</a>
+    </div>
+  </header>
+
+  <main style="max-width: 1120px; margin: 0 auto; padding: 28px 24px 120px">
+    <div style="display: flex; align-items: center; gap: 10px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #64748b">
+      <span>ON002718</span>
+      <span style="border: 1px solid #b9e0eb; background: #ecf7fa; color: #0e5a70; border-radius: 999px; padding: 3px 10px">NEMAR copy of ds002718</span>
+    </div>
+    <h1 style="font-size: 44px; line-height: 1.1; margin: 14px 0 18px; letter-spacing: -1px; max-width: 640px">Face processing EEG dataset for EEGLAB</h1>
+    <div style="border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px 18px; font-size: 14px; line-height: 1.6; color: #334155">This dataset is the EEG and structural MRI portion of a multi-subject, multi-modal face processing study (originally ds000117), repackaged in EEGLAB format with augmented event logs and HED annotation. Eighteen participants viewed famous, unfamiliar, and scrambled faces while making symmetry judgments.</div>
+    <div style="display: flex; gap: 8px; margin: 14px 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; flex-wrap: wrap">
+      <span style="border: 1px solid #cbd5e1; border-radius: 999px; padding: 4px 10px; color: #475569">ANAT</span>
+      <span style="border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 999px; padding: 4px 10px; color: #1d4ed8">EEG</span>
+      <span style="border: 1px solid #bbf7d0; background: #f0fdf4; border-radius: 999px; padding: 4px 10px; color: #15803d">Zarr</span>
+    </div>
+
+    <div style="position: relative">
+      <div style="display: flex; gap: 8px; flex-wrap: wrap">
+        <button type="button" style="display: inline-flex; align-items: center; gap: 6px; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #0f172a; background: #0f172a; color: #ffffff; font: 500 14px Inter, sans-serif">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"></path></svg>
+          Download
+        </button>
+        <button type="button" aria-haspopup="dialog" style="display: inline-flex; align-items: center; gap: 6px; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #5bbad5; background: #5bbad5; color: #04121f; font: 600 14px Inter, sans-serif">
+          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z" fill="currentColor"></path><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" fill="currentColor"></path></svg>
+          AI Mode
+        </button>
+        <button type="button" style="display: inline-flex; align-items: center; gap: 6px; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #cbd5e1; background: #ffffff; color: #0f172a; font: 500 14px Inter, sans-serif">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          View data
+        </button>
+        <button type="button" style="display: inline-flex; align-items: center; gap: 6px; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #cbd5e1; background: #ffffff; color: #0f172a; font: 500 14px Inter, sans-serif">Compute instructions</button>
+        <button type="button" style="display: inline-flex; align-items: center; gap: 6px; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #cbd5e1; background: #ffffff; color: #0f172a; font: 500 14px Inter, sans-serif">Citations: 80</button>
+        <button type="button" style="display: inline-flex; align-items: center; gap: 6px; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #cbd5e1; background: #ffffff; color: #0f172a; font: 500 14px Inter, sans-serif">Issues</button>
+        <button type="button" style="display: inline-flex; align-items: center; gap: 6px; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #cbd5e1; background: #ffffff; color: #0f172a; font: 500 14px Inter, sans-serif">GitHub</button>
+        <button type="button" style="display: inline-flex; align-items: center; gap: 6px; padding: 0 16px; min-height: 44px; border-radius: 999px; border: 1px solid #cbd5e1; background: #ffffff; color: #0f172a; font: 500 14px Inter, sans-serif">OpenNeuro ds002718</button>
+      </div>
+
+      <div role="note" style="position: absolute; left: 118px; top: 56px; width: 300px; background: #0b1a3a; color: #f8fafc; border-radius: 12px; padding: 12px 14px; box-shadow: 0 12px 30px rgba(6, 17, 42, 0.25); display: flex; flex-direction: column; gap: 8px; z-index: 2">
+        <span aria-hidden="true" style="position: absolute; top: -6px; left: 40px; width: 12px; height: 12px; background: #0b1a3a; transform: rotate(45deg)"></span>
+        <div style="font-size: 13px; line-height: 1.5">New: ask about this dataset, or describe an analysis and run it in your browser.</div>
+        <div style="display: flex; justify-content: space-between; align-items: center">
+          <a href="#" style="font-size: 12px; color: #9fd6e6">How it works</a>
+          <button type="button" style="background: transparent; border: 1px solid #5bbad5; color: #e6f6fb; border-radius: 999px; padding: 4px 12px; font: 500 12px Inter, sans-serif">Got it</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: baseline; gap: 24px; margin-top: 26px; font-size: 13px; color: #64748b; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px">
+      <span style="letter-spacing: 0.8px; font-size: 11px">VERSION</span>
+      <span style="color: #0f172a; font-family: 'JetBrains Mono', monospace">v1.1.0</span>
+    </div>
+
+    <div style="display: flex; gap: 24px; margin-top: 24px; flex-wrap: wrap">
+      <div style="flex: 999 1 560px; min-width: 0; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px 20px; font-size: 14px; line-height: 1.6; color: #334155">
+        <p style="margin: 0 0 10px"><strong>Introduction:</strong> This dataset consists of the MEEG (sMRI+MEG+EEG) portion of the multi-subject, multi-modal face processing dataset (ds000117). This dataset was originally acquired and shared by Daniel Wakeman and Richard Henson.</p>
+        <p style="margin: 0"><strong>Overview of the experiment:</strong> Eighteen participants completed two recording sessions spaced three months apart, one session recorded fMRI and the other simultaneously recorded MEG and EEG data.</p>
+        <div style="height: 200px"></div>
+      </div>
+      <aside style="flex: 1 1 280px; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px 18px; font-size: 13px; color: #475569; background: #f7f8fb">
+        <div style="font-size: 11px; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 8px">Cite this dataset</div>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px">DOI 10.82901/nemar.on002718</div>
+        <div style="height: 220px"></div>
+      </aside>
+    </div>
+  </main>
+
+  <div style="position: absolute; right: 28px; bottom: 28px; display: flex; flex-direction: column; gap: 10px; align-items: center">
+    <button type="button" aria-label="Notebook" style="width: 44px; height: 44px; border-radius: 999px; background: #ffffff; border: 1px solid #5bbad5; display: flex; align-items: center; justify-content: center">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0e7490" stroke-width="2" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"></rect><path d="M9 8h6M9 12h6M9 16h4"></path></svg>
+    </button>
+    <button type="button" aria-label="Chat" style="width: 56px; height: 56px; border-radius: 999px; background: #5bbad5; border: 0; display: flex; align-items: center; justify-content: center">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06112a" stroke-width="2" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"></path></svg>
+    </button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

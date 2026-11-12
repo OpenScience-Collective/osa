@@ -71,7 +71,7 @@ This prevents abuse of expensive models on platform keys.
 #### `_is_authorized_origin(origin, community_id)`
 Validates Origin header against community's `cors_origins` config.
 - Supports exact origins: `https://hedtags.org`
-- Supports wildcards: `https://*.pages.dev`
+- Supports wildcards: `https://*.hedtags.org` (one label, not the apex itself; never a shared host such as `*.pages.dev`)
 - Returns `False` if no Origin (CLI, mobile apps)
 
 #### `_select_api_key(community_id, byok, origin)`

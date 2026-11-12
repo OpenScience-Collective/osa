@@ -40,7 +40,7 @@ from langchain_core.messages import BaseMessage, ToolMessage
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from src.agents.content import CitationMark
-from src.core.config.community import FULL_OUTPUT_TOOL_NAME
+from src.core.config.community import FULL_OUTPUT_TOOL_NAME, PROPOSE_PLAN_TOOL_NAME
 
 # The caps live in `src.core.limits`, which imports nothing but the standard library,
 # because `src.core.config.community` bounds `RuntimeLimits` by the same numbers and
@@ -56,6 +56,7 @@ from src.core.limits import (  # noqa: E402
     MAX_TOOL_RESULT_LENGTH,
 )
 from src.core.services.anthropic_models import IMAGE_MEDIA_TYPES
+from src.tools.client_tools import MAX_PLAN_STEPS, PlanStep
 
 #: How long an unanswered browser call stays claimable. Generous, because it covers a
 #: person reading code before approving it, and unrelated to any HTTP timeout.
@@ -220,6 +221,106 @@ class ClientToolResult(BaseModel):
         return self.status != "ok"
 
 
+#: Longest note a reader may attach when asking for changes to a plan.
+MAX_PLAN_FEEDBACK_CHARS = 1000
+
+PlanDecisionKind = Literal["approved", "changes_requested"]
+PlanRunMode = Literal["pause", "run_all"]
+
+
+class PlanDecision(BaseModel):
+    """What the browser sends back for a `propose_plan` call: the reader's decision.
+
+    `steps` are the steps as the reader left them, after any edit, add or remove, so the
+    plan that runs is the one on the card rather than the one the model proposed.
+    Whether they differ from the proposal is not a field: the server works it out
+    (`build_plan_tool_message`), because a client's claim about it would be trusted by
+    nobody. `run_mode` is the card's two radios: stop after each step, or run them all.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    call_id: str = Field(min_length=1, max_length=256)
+    decision: PlanDecisionKind
+    steps: list[PlanStep] = Field(min_length=1, max_length=MAX_PLAN_STEPS)
+    run_mode: PlanRunMode = "pause"
+    feedback: str = Field(default="", max_length=MAX_PLAN_FEEDBACK_CHARS)
+
+
+_PLAN_RUN_MODE_TEXT: Final = {
+    "pause": "pause (report each step, then stop and wait for the reader)",
+    "run_all": "run_all (continue through every step without stopping)",
+}
+
+
+# Said once more, beside the decision, because a reply that ends after a step is the one
+# thing run_all must not do: the reader was told they would not be asked (issue #731).
+_RUN_ALL_NEXT: Final = (
+    "In run_all mode, after each step's result call execute_code for the next step in the "
+    "same turn, and write no closing message until the last step has run. An execute_code "
+    "call left unanswered during a run_all plan was not run (most likely the reader paused "
+    "before that step started); it is not a failed attempt. If a step fails a second time, "
+    "stop and say what went wrong: that is the one case for a message before the last step."
+)
+
+
+def _plan_step_pairs(steps: Any) -> list[tuple[str, str]]:
+    """`(title, detail)` for each step of a proposal, or an empty list for a shape that
+    is not one, so a malformed stored call reads as "changed" rather than raising."""
+    if not isinstance(steps, Sequence) or isinstance(steps, str):
+        return []
+    pairs: list[tuple[str, str]] = []
+    for step in steps:
+        if not isinstance(step, Mapping):
+            return []
+        pairs.append((str(step.get("title", "")), str(step.get("detail", ""))))
+    return pairs
+
+
+def build_plan_tool_message(
+    decision: PlanDecision, proposed_args: Mapping[str, Any]
+) -> ToolMessage:
+    """The message that answers a `propose_plan` call, live and in stored history alike.
+
+    It carries no image, so one message serves both. The text is deterministic, for the
+    same reason `_fence`'s is: prompt caching matches a byte-exact prefix. It is the
+    reader's own words and edits, so it is not fenced as data the way tool output is.
+    """
+    left = [(step.title, step.detail) for step in decision.steps]
+    unchanged = left == _plan_step_pairs(proposed_args.get("steps"))
+    lines = [
+        f"Plan decision: {decision.decision}",
+        f"Run mode: {_PLAN_RUN_MODE_TEXT[decision.run_mode]}",
+        "Steps as the reader left them "
+        f"({'the same as you proposed' if unchanged else 'DIFFERENT from what you proposed'}):",
+    ]
+    # A detail can echo untrusted text and may span lines; one line per step keeps it
+    # from adding a line that reads as part of the message's own structure.
+    for number, (title, detail) in enumerate(left, start=1):
+        one_line = " ".join(detail.split())
+        lines.append(f"{number}. {title}: {one_line}" if one_line else f"{number}. {title}")
+    if decision.feedback:
+        lines.append(f"Reader feedback: {decision.feedback}")
+    if decision.decision == "approved":
+        lines.append(
+            "Next: run exactly one execute_code per step, in order, using the steps "
+            "above as written, in the run mode above. Run no code outside this plan."
+        )
+        if decision.run_mode == "run_all":
+            lines.append(_RUN_ALL_NEXT)
+    else:
+        lines.append(
+            "Next: the reader asked for changes. Revise the plan and call propose_plan "
+            "again; run no code."
+        )
+    return ToolMessage(
+        content="\n".join(lines),
+        tool_call_id=decision.call_id,
+        name=PROPOSE_PLAN_TOOL_NAME,
+        status="success",
+    )
+
+
 def _fence(result: ClientToolResult) -> str:
     """Render the text of a result, fenced and labeled as data.
 
@@ -297,15 +398,29 @@ def _placeholder_tool_message(
     )
 
 
-def build_unanswered_tool_message(call_id: str, reason: str) -> ToolMessage:
+def build_unanswered_tool_message(
+    call_id: str, reason: str, *, tool: str | None = None
+) -> ToolMessage:
     """Stand in for a browser call that never came back.
 
     Without this the session holds an assistant message carrying `tool_calls` and no
     matching tool result, which the provider rejects outright, so the session is not
     merely missing a turn: it is unusable for every turn after it.
+
+    A plan the reader did not decide on is not code that failed to run, so for
+    `propose_plan` the text says so: the model must not run code from a plan nobody
+    approved, and should re-plan or ask before it does.
     """
+    if tool == PROPOSE_PLAN_TOOL_NAME:
+        text = (
+            f"The reader did not decide on the plan ({reason}), so it was not approved. "
+            "Run no code from it. If the reader's next message still needs an analysis, "
+            "propose a plan again or ask what they want."
+        )
+    else:
+        text = f"Browser execution did not complete: {reason}."
     return ToolMessage(
-        content=[{"type": "text", "text": f"Browser execution did not complete: {reason}."}],
+        content=[{"type": "text", "text": text}],
         tool_call_id=call_id,
         status="error",
     )
@@ -473,16 +588,25 @@ class PendingClientCall:
 
         It keeps one for every tool but the full-output tool, which only reads back output
         an earlier run kept locally (`answerToolRequest` in `frontend/osa-chat-widget.js`
-        records `message.executions` only when the tool is not `FULL_OUTPUT_TOOL_NAME`).
+        records `message.executions` only when the tool is not `FULL_OUTPUT_TOOL_NAME`),
+        and the plan tool, which runs nothing and is answered by a decision, not a run.
         The widget drops a reply with no text and no such record, so the rule is one the
-        server has to match exactly.
+        server has to match exactly. Today `runsCode` in the widget is
+        `tool !== FULL_OUTPUT_TOOL_NAME`, which differs from this for the plan tool; that
+        is inert only while the widget never declares `propose_plan`. The widget change
+        that adds the plan card (#662) must exclude the plan tool from `runsCode` too.
         """
-        return self.tool != FULL_OUTPUT_TOOL_NAME
+        return self.tool not in (FULL_OUTPUT_TOOL_NAME, PROPOSE_PLAN_TOOL_NAME)
 
     @property
     def runs_after_answer(self) -> int:
-        """How many browser results the reply has sent back once this call is answered."""
-        return self.runs_before + 1
+        """How many browser runs the reply has sent back once this call is answered.
+
+        A plan is a decision, not a run, so answering one does not spend any of
+        `MAX_BROWSER_RUNS_PER_REPLY`: a reader who keeps asking for changes cannot use up
+        the budget the plan's own steps need.
+        """
+        return self.runs_before + (0 if self.tool == PROPOSE_PLAN_TOOL_NAME else 1)
 
     @property
     def code_runs_after_answer(self) -> int:

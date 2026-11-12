@@ -3,7 +3,9 @@
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 import respx
+from langchain_core.messages import AIMessage
 
 from src.assistants import discover_assistants, registry
 from src.assistants.community import PageContext
@@ -14,6 +16,7 @@ from src.utils.page_fetcher import (
     fetch_page_content,
     is_safe_url,
 )
+from tests.helpers.chat_models import ScriptedChatModel
 
 # Discover assistants at module load
 discover_assistants()
@@ -748,3 +751,180 @@ class TestCommunityAssistantWithPageContext:
         prompt = assistant.get_system_prompt()
         assert "Widget Page Context" not in prompt
         assert "Page Context" in prompt
+
+
+class TestReaderContextInSystemPrompt:
+    """The dataset the page names, and the move the reader chose to continue across (#656)."""
+
+    @staticmethod
+    def _nemar_prompt(page_context: PageContext) -> str:
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        assistant = registry.create_assistant(
+            "nemar", model=model, preload_docs=False, page_context=page_context
+        )
+        return assistant.get_system_prompt()
+
+    def test_dataset_id_without_page_url(self):
+        """The dataset id is in the prompt when the reader shares no page URL."""
+        prompt = self._nemar_prompt(PageContext(dataset_id="nm000241"))
+        assert "Reader Context" in prompt
+        assert "nm000241" in prompt
+        assert "Page URL" not in prompt
+
+    def test_no_moved_from_note_by_default(self):
+        """Without moved_from the prompt does not say the reader moved."""
+        prompt = self._nemar_prompt(PageContext(dataset_id="nm000241"))
+        assert "moved from" not in prompt
+
+    def test_moved_from_dataset_note(self):
+        """A move between datasets names both."""
+        prompt = self._nemar_prompt(
+            PageContext(dataset_id="nm000241", moved_from={"type": "dataset", "id": "on002718"})
+        )
+        assert "moved from dataset `on002718` to dataset `nm000241`" in prompt
+
+    def test_moved_from_search_note(self):
+        """A move from the search page to a dataset says so."""
+        prompt = self._nemar_prompt(
+            PageContext(dataset_id="nm000241", moved_from={"type": "search"})
+        )
+        assert "moved from the dataset search to dataset `nm000241`" in prompt
+
+    def test_moved_to_search_note(self):
+        """A move from a dataset to the search page has no dataset id to name."""
+        prompt = self._nemar_prompt(PageContext(moved_from={"type": "dataset", "id": "on002718"}))
+        assert "moved from dataset `on002718` to the dataset search" in prompt
+
+    def test_a_move_back_to_the_start_is_no_move(self):
+        """moved_from equal to where the reader is now says nothing about a move."""
+        same_dataset = self._nemar_prompt(
+            PageContext(dataset_id="nm000241", moved_from={"type": "dataset", "id": "nm000241"})
+        )
+        assert "Reader Context" in same_dataset
+        assert "moved from" not in same_dataset
+        search_to_search = self._nemar_prompt(PageContext(moved_from={"type": "search"}))
+        assert "Reader Context" not in search_to_search
+        assert "moved from" not in search_to_search
+
+    def test_a_community_that_turns_page_context_off_gets_no_reader_context(self):
+        """enable_page_context: false suppresses the dataset and the move too."""
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        assistant = registry.create_assistant(
+            "nemar",
+            model=model,
+            preload_docs=False,
+            page_context=PageContext(
+                dataset_id="nm000241", moved_from={"type": "dataset", "id": "on002718"}
+            ),
+        )
+        assert "nm000241" in assistant.get_system_prompt()
+        assistant.config = assistant.config.model_copy(update={"enable_page_context": False})
+        prompt = assistant.get_system_prompt()
+        assert "Reader Context" not in prompt
+        assert "nm000241" not in prompt
+        assert "on002718" not in prompt
+        assert "moved from" not in prompt
+
+    def test_dataset_id_beside_page_url(self):
+        """With a URL as well, both sections are present."""
+        prompt = self._nemar_prompt(
+            PageContext(
+                url="https://nemar.org/dataset/nm000241",
+                title="nm000241",
+                dataset_id="nm000241",
+            )
+        )
+        assert "Reader Context" in prompt
+        assert "https://nemar.org/dataset/nm000241" in prompt
+
+
+class TestMemoryBudgetInSystemPrompt:
+    """The reader's browser memory budget reaches the model (E5.1, #668)."""
+
+    @staticmethod
+    def _nemar_prompt(page_context: PageContext) -> str:
+        model = ScriptedChatModel(responses=[AIMessage(content="ok")])
+        assistant = registry.create_assistant(
+            "nemar", model=model, preload_docs=False, page_context=page_context
+        )
+        return assistant.get_system_prompt()
+
+    @pytest.mark.parametrize("budget", [256, 512, 1024, 2048])
+    def test_budget_alone_gets_a_section(self, budget):
+        """A request carrying only the budget still renders it (no URL, no dataset)."""
+        prompt = self._nemar_prompt(PageContext(memory_budget_mb=budget))
+        assert "## Browser memory budget" in prompt
+        assert (
+            f"Each step must fit in {budget} MB of the reader's browser memory; "
+            "read long recordings in pieces."
+        ) in prompt
+
+    def test_no_budget_no_section(self):
+        prompt = self._nemar_prompt(PageContext(dataset_id="nm000241"))
+        assert "Browser memory budget" not in prompt
+
+    def test_budget_beside_the_dataset_and_the_page(self):
+        prompt = self._nemar_prompt(
+            PageContext(
+                url="https://nemar.org/dataset/nm000241",
+                title="nm000241",
+                dataset_id="nm000241",
+                memory_budget_mb=1024,
+            )
+        )
+        assert "## Reader Context" in prompt
+        assert "Each step must fit in 1024 MB" in prompt
+        assert "## Page Context" in prompt
+        # The budget follows the reader context, as its own section.
+        assert prompt.index("## Reader Context") < prompt.index("## Browser memory budget")
+
+    def test_a_community_that_turns_page_context_off_states_no_budget(self):
+        model = ScriptedChatModel(responses=[AIMessage(content="ok")])
+        assistant = registry.create_assistant(
+            "nemar",
+            model=model,
+            preload_docs=False,
+            page_context=PageContext(memory_budget_mb=512),
+        )
+        assert "Each step must fit in 512 MB" in assistant.get_system_prompt()
+        assistant.config = assistant.config.model_copy(update={"enable_page_context": False})
+        assert "Browser memory budget" not in assistant.get_system_prompt()
+
+
+class TestMemoryBudgetIsValidatedOnTheDataclass:
+    """The dataclass accepts the same four sizes as the API model (E5.1, #668)."""
+
+    @pytest.mark.parametrize("budget", [None, 256, 512, 1024, 2048])
+    def test_offered_sizes_and_none_are_accepted(self, budget):
+        assert PageContext(memory_budget_mb=budget).memory_budget_mb == budget
+
+    @pytest.mark.parametrize("budget", [0, 300, 4096, -512, "512"])
+    def test_any_other_value_is_refused(self, budget):
+        with pytest.raises(ValueError, match="memory_budget_mb"):
+            PageContext(memory_budget_mb=budget)
+
+    def test_a_refused_budget_never_reaches_a_prompt(self):
+        with pytest.raises(ValueError):
+            registry.create_assistant(
+                "nemar",
+                model=ScriptedChatModel(responses=[AIMessage(content="ok")]),
+                preload_docs=False,
+                page_context=PageContext(memory_budget_mb=300),
+            )
+
+    def test_the_sizes_are_the_api_models(self):
+        """One list of sizes: the router's Literal and the dataclass's tuple."""
+        from typing import get_args
+
+        from src.api.routers.community import PageContext as ApiPageContext
+        from src.assistants.community import MEMORY_BUDGETS_MB
+
+        annotation = ApiPageContext.model_fields["memory_budget_mb"].annotation
+        offered = {arg for arg in get_args(annotation) if arg is not type(None)}
+        # The annotation is Literal[...] | None: unwrap the Literal's own arguments.
+        sizes = set()
+        for arg in offered:
+            sizes.update(get_args(arg) or (arg,))
+        assert sizes == set(MEMORY_BUDGETS_MB)

@@ -18,7 +18,8 @@ A precise, reliable AI assistant platform for researchers working with open scie
 
 **Branch Protection (GitHub rulesets `protect-main` / `protect-dev` / `prevent-branch-deletion`):**
 - Both `main` and `develop` require changes to go through a pull request; direct pushes are blocked
-- Both require at least 1 approving review before merge, from someone other than the PR author; an Admin-role account may bypass this review requirement for a self-merge (`bypass_actors` on both rulesets)
+- `main` requires at least 1 approving review before merge, from someone other than the PR author; an Admin-role account may bypass this review requirement for a self-merge (`bypass_actors` on both rulesets)
+- `develop` requires no approving review (`required_approving_review_count: 0` since 2026-11-10), so a reviewed feature PR merges without `--admin`; the agent review (`.rules/code_review.md`) and green `Lint` and `Test (3.12)` checks are the gate, and the branch must be up to date with `develop`
 - A separate, non-bypassable `prevent-branch-deletion` ruleset (no exempt actors) protects both branches from deletion regardless of the admin bypass above — see `docs/adr/0005-enforce-pr-approval-requirement.md` for why this needed its own ruleset
 - `main` only allows a regular merge commit (`allowed_merge_methods: ["merge"]`) — release PRs are not squashed, so the individual feature history survives on `main`
 - `develop` allows merge or squash; feature branches into `develop` are always squash-merged per the workflow below
@@ -48,6 +49,7 @@ A precise, reliable AI assistant platform for researchers working with open scie
 5. **Give every finding an outcome** (fixed, rejected with a reason, or filed as an issue for untouched code); fix commits go on the feature branch, never a follow-up PR (a large fix is the one exception, see `.rules/code_review.md`)
 6. **Create PR to develop**: `gh pr create --base develop`
 7. **Squash and merge**: `gh pr merge --squash --delete-branch` (always squash to keep history clean)
+8. **Close the issue**: an issue closes when the pull request that resolves it merges into `develop`, not at the release. GitHub honours `Closes #N` only for a pull request merged into the default branch (`main`), so for a `develop` merge it does nothing on its own; `.github/workflows/close-issues-on-develop-merge.yml` reads the keywords (`Closes`, `Fixes`, `Resolves`, followed by `#N`, `OpenScience-Collective/osa#N` or the issue URL) in the PR body and closes those issues with a comment. Write one keyword per issue: in `Closes #1, #2` only #1 counts, as with GitHub. Keywords inside code spans and fenced blocks are ignored, and a pull request number is skipped. Check the issue is closed after the merge, and close it by hand (`gh issue close N --reason completed --comment "Done in #PR"`) if the PR body had no keyword. A feature PR should not name its epic; close an epic when its last child closes. An issue that needs verification on develop-demo before it counts as done stays open with a comment saying so, and the PR body says `Refs #N` instead of `Closes #N`.
 
 ```bash
 # Example workflow
@@ -189,6 +191,7 @@ src/
 ### Architecture & Planning
 - **[Architecture](https://docs.osc.earth/osa/architecture/)** - High-level system diagrams
 - **.context/plan.md** - Implementation roadmap and current tasks
+- **.context/nemar-ai-ux-plan.md** - NEMAR AI experience epics (E1 to E8) and the delivery loop; design references in `.context/designs/nemar-ai-ux/`
 - **.context/research.md** - Technical notes, target project resources
 - **docs/adr/** - Architecture Decision Records for significant, hard-to-reverse decisions
 
@@ -224,7 +227,7 @@ src/
 
 A change that touches only documentation (`CHANGELOG.md`, `README.md`, `docs/`, `.context/`, `.rules/`, `AGENTS.md`, and other Markdown outside the code directories `src/`, `frontend/`, `notebook/`, `workers/`, `dashboard/`, `deploy/`, `scripts/` and `tests/`) needs no CI marker on its branch.
 
-- **Its pull request reports on its own.** The `changes` job in `tests.yml` sees that only documentation changed. `Lint` and `Test (3.12)` (and on `main`, `Test (3.11)`) still report, and pass after running only `tests/test_frontend/test_embed_snippet_hygiene.py`, the one test that reads documentation; Frontend Tests and the Docker build do not run. It merges like any other pull request, with no admin merge.
+- **Its pull request reports on its own.** The `changes` job in `tests.yml` sees that only documentation changed. `Lint` and `Test (3.12)` (and on `main`, `Test (3.11)`) still report, and pass after running only `tests/test_frontend/test_embed_snippet_hygiene.py` and `tests/test_frontend/test_privacy_page.py`, the two tests that read documentation; Frontend Tests and the Docker build do not run. It merges like any other pull request, with no admin merge.
 - **Put `[skip-bump]` in the pull request title, not `[skip ci]`.** `auto-bump-dev.yml` then skips the version bump, and the squash commit does not carry the CI marker. GitHub reads that marker from a pull request's head commit, so a documentation merge that left it as the head of `develop` would make the next `develop` to `main` release pull request run no checks, and it could not backstop a code change that slipped in. The cost is one dev image build per documentation merge. The docs site is rebuilt from `main` by `notify-docs.yml`, which a release triggers.
 - **Not on the branch's own commits.** GitHub reads the marker from a pull request's head commit, and a pull request whose head commit carries it runs no workflow at all, so `Lint` and `Test (3.12)` stay "expected" until an admin merges it (the rulesets exempt the Admin role).
 - **Never** for a change that touches code, configuration, tests, workflows or anything under `src/` or `frontend/` (the widget deploys from there), and never for a release pull request. A release into `main` runs every check, so a change that skipped CI by mistake is caught there.
