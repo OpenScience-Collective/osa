@@ -108,9 +108,11 @@ cached.
 
 | Status | Meaning |
 |---|---|
+| 400 | The body is not JSON (the worker in front of the server answers this one) |
 | 403 | The origin is not allowed and no key was sent |
 | 404 | The community has no quick model |
 | 422 | A field is out of bounds (the body names which), including a `query` under 3 words ("an overview needs a search of at least 3 words") |
+| 429 | Too many requests from one address (the worker answers this one): more than 10 a minute, or more than 100 overviews an hour in production (500 in development); the body's `details` says which |
 | 500 | A bug or a missing configuration on the server, not the model provider; the body has an error id to give the maintainers |
 | 502 | The model wrote no overview that could be shown, or the provider failed; try again later. Nothing is cached |
 
