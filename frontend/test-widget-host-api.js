@@ -16,8 +16,8 @@
  * to what had it before the window opened. The start screen (board C2) is for an empty
  * conversation only, its pills send their text, and its cards, note and docs link come
  * from the community config, the link only when it is an https address. The notebook is a
- * tab of the dialog (#738): the header's Chat and Notebook tabs appear once the notebook
- * has been opened and only for a capsule with one, the tab keeps the one frame (never moved)
+ * tab of the dialog (#738): the header's Chat and Notebook tabs show from the start (#743),
+ * before any code has run, for a capsule whose dataset has a notebook and for no other, the tab keeps the one frame (never moved)
  * through switches and docking, open() and ask() show the chat, the tabs take arrow keys,
  * and Tab cannot strand focus after the frame.
  *
@@ -833,32 +833,57 @@ async function onNotebook(options = {}) {
   return ctx;
 }
 
-console.log('\nthe dialog has no tabs until the notebook has been opened');
+console.log('\nthe dialog has its tabs from the start, before any code has run (#743)');
 {
   const ctx = await start({ widget: { launcher: 'capsule', center_start: CENTER_START }, dataset: NOTEBOOK_DATASET });
   ctx.api.open({ mode: 'center' });
-  assert(ctx.q('.osa-center-tabs').hidden && !ctx.win().classList.contains('osa-center-tabbed'), 'a chat-only dialog keeps the header it had: the tab row is hidden');
-  assert(ctx.api.__center.focusables(ctx.win()).every((el) => !el.classList.contains('osa-center-tab')), 'and neither tab is a stop');
-  assert(ctx.q('.osa-notebook-frame') === null, 'there is no notebook frame yet');
-  ctx.api.setMode('corner');
-  ctx.q('.osa-notebook-btn').click();
-  assert(ctx.q('.osa-center-tabs').hidden, 'the corner never shows them, on the notebook tab or not');
-  ctx.api.setMode('center');
-  assert(!ctx.q('.osa-center-tabs').hidden, 'raised once the notebook has been opened, the dialog shows them');
+  assert(!ctx.q('.osa-center-tabs').hidden && ctx.win().classList.contains('osa-center-tabbed'), 'a dialog on a dataset with a notebook shows the tab row at once');
+  assert(ctx.q('.osa-notebook-frame') === null && ctx.q('.osa-chat-messages .osa-run-card') === null, 'with the notebook never opened and no code run');
   const tabs = ctx.q('.osa-center-tabs');
   assertEqual([tabs.getAttribute('role'), tabs.getAttribute('aria-label')], ['tablist', 'Chat or notebook'], 'a tablist, named');
   assertEqual([...tabs.querySelectorAll('[role="tab"]')].map((el) => text(el)), ['Chat', 'Notebook'], 'of the Chat and Notebook tabs');
   assert([...tabs.querySelectorAll('button')].every((el) => el.type === 'button'), 'each a real button');
-  assertEqual(['chat', 'notebook'].map((n) => ctx.q(`.osa-center-tab-${n}`).getAttribute('aria-selected')), ['false', 'true'], 'aria-selected follows the open tab: Notebook');
-  assertEqual(['chat', 'notebook'].map((n) => ctx.q(`.osa-center-tab-${n}`).getAttribute('tabindex')), ['-1', '0'], 'with only the selected tab in the Tab order');
+  assertEqual(['chat', 'notebook'].map((n) => ctx.q(`.osa-center-tab-${n}`).getAttribute('aria-selected')), ['true', 'false'], 'aria-selected follows the open tab: Chat, since open() opens on the chat');
+  assertEqual(['chat', 'notebook'].map((n) => ctx.q(`.osa-center-tab-${n}`).getAttribute('tabindex')), ['0', '-1'], 'with only the selected tab in the Tab order');
+  const stops = ctx.api.__center.focusables(ctx.win());
+  assert(stops.includes(ctx.q('.osa-center-tab-chat')) && !stops.includes(ctx.q('.osa-center-tab-notebook')), 'the selected tab is a stop, the other one is reached by the arrows');
   for (const name of ['chat', 'notebook']) {
     const panel = ctx.q(`.osa-view-${name}`);
     const tab = ctx.q(`.osa-center-tab-${name}`);
     assert(panel.getAttribute('role') === 'tabpanel' && tab.getAttribute('aria-controls') === panel.id && panel.getAttribute('aria-labelledby') === tab.id,
       `the ${name} view is the tab panel its tab controls and is named by`);
   }
+
+  // Selecting the Notebook tab the first time creates the frame, in the same window.
+  ctx.q('.osa-center-tab-notebook').click();
+  const frame = ctx.q('.osa-notebook-frame');
+  assert(frame !== null && ctx.q('.osa-view-notebook').contains(frame) && ctx.win().contains(frame), 'the Notebook tab creates the frame the first time it is selected');
+  assert(ctx.isCenter() && ctx.win().getAttribute('aria-modal') === 'true' && ctx.document.getElementById('host-page').hasAttribute('inert'), 'and the dialog stays modal');
+  assertEqual(['chat', 'notebook'].map((n) => ctx.q(`.osa-center-tab-${n}`).getAttribute('aria-selected')), ['false', 'true'], 'aria-selected moves to Notebook');
+  assertEqual(['chat', 'notebook'].map((n) => ctx.q(`.osa-center-tab-${n}`).getAttribute('tabindex')), ['-1', '0'], 'and so does the Tab stop');
+
+  // The corner never shows them; raised again, the dialog does.
   ctx.api.setMode('corner');
+  assert(ctx.q('.osa-center-tabs').hidden, 'the corner never shows them, on the notebook tab or not');
   assert(ctx.q('.osa-view-chat').getAttribute('role') === null && ctx.q('.osa-view-notebook').getAttribute('role') === null, 'docked, the views are plain regions again');
+  ctx.api.setMode('center');
+  assert(!ctx.q('.osa-center-tabs').hidden, 'raised again, the dialog shows them');
+}
+
+console.log('\nthe tabs follow the dataset: a dialog with no notebook stays chat only (#743)');
+{
+  const noDataset = await start({ widget: { launcher: 'capsule', center_start: CENTER_START } });
+  noDataset.api.open({ mode: 'center' });
+  assert(noDataset.q('.osa-center-tabs').hidden && !noDataset.win().classList.contains('osa-center-tabbed'), 'no dataset (a Discover search\'s "Ask a follow-up"): the tab row is hidden');
+  assert(noDataset.api.__center.focusables(noDataset.win()).every((el) => !el.classList.contains('osa-center-tab')), 'and neither tab is a stop');
+  noDataset.api.setDataset(NOTEBOOK_DATASET);
+  assert(!noDataset.q('.osa-center-tabs').hidden, 'a dataset with a notebook arriving while the dialog is open brings the tabs');
+  noDataset.api.setDataset(null);
+  assert(noDataset.q('.osa-center-tabs').hidden, 'and leaving it takes them away');
+
+  const noZarr = await start({ widget: { launcher: 'capsule', center_start: CENTER_START }, dataset: { id: A, title: TITLE, zarr: false } });
+  noZarr.api.open({ mode: 'center' });
+  assert(noZarr.q('.osa-center-tabs').hidden, 'a dataset with no Zarr copy has no notebook, so no tabs');
 }
 
 console.log('\nthe tabs are for a capsule with a notebook: not a bubble, not a dataset without one, not the pop-out');
@@ -888,6 +913,38 @@ console.log('\nthe tabs are for a capsule with a notebook: not a bubble, not a d
   popout.q('.osa-strip-notebook').click();
   assert(popout.q('.osa-center-tabs').hidden && popout.container().classList.contains('osa-tab-notebook'), 'whichever tab it opens');
   assert(popout.q('.osa-nb-guard').getAttribute('tabindex') === '-1', 'and its focus guard is no tab stop');
+}
+
+console.log('\nthe launcher is out of sight while the dialog is open, and back as it was after (#743)');
+for (const launcher of ['capsule', 'bubble']) {
+  const ctx = await start({ widget: { launcher, center_start: CENTER_START }, dataset: NOTEBOOK_DATASET });
+  const parts = () => [...ctx.container().children].filter((el) => el.matches('.osa-launcher-capsule, .osa-chat-button, .osa-chat-tooltip'));
+  const seen = (el) => ctx.window.getComputedStyle(el).visibility !== 'hidden';
+  assert(parts().length > 0, `${launcher}: set up: the launcher has parts to hide`);
+  ctx.api.open();
+  const before = parts().map((el) => [ctx.window.getComputedStyle(el).visibility, ctx.window.getComputedStyle(el).opacity]);
+  assert(!ctx.container().classList.contains('osa-center-engaged') && parts().every(seen), `${launcher}: open in the corner, the launcher shows`);
+  ctx.api.setMode('center');
+  assert(parts().every((el) => !seen(el)), `${launcher}: in the dialog, every part of the launcher is hidden`);
+  assert(parts().filter((el) => !el.matches('.osa-chat-tooltip')).every((el) => el.hasAttribute('inert')), `${launcher}: and still inert`);
+  if (launcher === 'capsule') {
+    const circles = [...ctx.container().querySelectorAll('.osa-launcher-icon, .osa-chat-button')];
+    assert(circles.length >= 3 && circles.every((el) => el.closest('[inert]') !== null), 'capsule: its circles are inert');
+    // That the circles that show themselves while the panel is open are hidden too is a
+    // matter of the cascade, which happy-dom does not resolve: the browser harness checks it.
+  }
+  ctx.q('.osa-center-dock-btn').click();
+  assert(parts().every(seen) && !ctx.container().classList.contains('osa-center-engaged'), `${launcher}: Move to corner shows the launcher again`);
+  assertEqual(parts().map((el) => [ctx.window.getComputedStyle(el).visibility, ctx.window.getComputedStyle(el).opacity]), before, `${launcher}: exactly as it was in the corner`);
+  assert(parts().every((el) => !el.hasAttribute('inert')), `${launcher}: and no longer inert`);
+  ctx.api.setMode('center');
+  ctx.document.dispatchEvent(key(ctx, 'Escape'));
+  assert(!ctx.isCenter() && parts().every(seen), `${launcher}: Escape shows it again`);
+  ctx.api.setMode('center');
+  ctx.api.close();
+  assert(!ctx.isOpen() && parts().every(seen) && !ctx.container().classList.contains('osa-center-engaged'), `${launcher}: Close shows it again`);
+  ctx.api.open({ mode: 'center' });
+  assert(parts().every((el) => !seen(el)), `${launcher}: a window opened in the dialog hides it from the first frame`);
 }
 
 console.log('\nthe Notebook tab opens the notebook in the dialog: one frame, still modal');

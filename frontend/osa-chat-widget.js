@@ -2076,10 +2076,37 @@
       animation: osa-spin 1s linear infinite;
     }
 
+    /* The launcher behind the center-stage dialog (#743). engageCenter makes it inert, so
+       it is also taken out of sight: a capsule or bubble drawn at the corner would look
+       pressable and do nothing. A short fade out, then visibility: hidden, which also
+       keeps it out of the accessibility tree. The capsule's circles set visibility
+       themselves while the panel is open, so they take their parent's here, and stay
+       still while it fades. releaseCenter takes the class off and the launcher is back at
+       once, as it was. One class more than the launcher's own rules, so it wins. */
+    .osa-chat-widget.osa-center-engaged > .osa-launcher-capsule,
+    .osa-chat-widget.osa-center-engaged > .osa-chat-button,
+    .osa-chat-widget.osa-center-engaged > .osa-chat-tooltip {
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 120ms ease, visibility 0s linear 120ms;
+    }
+
+    .osa-chat-widget.osa-center-engaged > .osa-launcher-capsule .osa-launcher-icon,
+    .osa-chat-widget.osa-center-engaged > .osa-launcher-capsule .osa-chat-button {
+      visibility: inherit;
+      transition: none;
+    }
+
     /* Reduced motion: every change is immediate except a short plain fade
        between the views, and nothing turns or slides. The launcher's closed and
        open sizes (#490, #553) are among them: it is one or the other, never between. */
     @media (prefers-reduced-motion: reduce) {
+      .osa-chat-widget.osa-center-engaged > .osa-launcher-capsule,
+      .osa-chat-widget.osa-center-engaged > .osa-chat-button,
+      .osa-chat-widget.osa-center-engaged > .osa-chat-tooltip {
+        transition: none !important;
+      }
+
       .osa-launcher-capsule::before,
       .osa-capsule-indicator,
       .osa-launcher-icon,
@@ -6118,11 +6145,11 @@
       }
     }
 
-    /* The dialog's Chat and Notebook tabs (#738): in the header once the notebook has been
-       opened (syncCenterTabs), a pair of pills in the History and Move to corner buttons'
-       look, 36px tall like them: one border round both, the open tab filled with the
-       assistant surface and bold. No second filled pill, so the AI Mode
-       pill stays the one strong mark in the header. Every color is a token. */
+    /* The dialog's Chat and Notebook tabs (#738, #743): in the header from the start while
+       the page's dataset has a notebook (syncCenterTabs), a pair of pills in the History
+       and Move to corner buttons' look, 36px tall like them: one border round both, the
+       open tab filled with the assistant surface and bold. No second filled pill, so the
+       AI Mode pill stays the one strong mark in the header. Every color is a token. */
     .osa-chat-window .osa-center-tabs {
       display: none;
     }
@@ -6787,12 +6814,11 @@
   //
   // The center-stage dialog (E6.1) is the same window, so it has the same two views
   // and the notebook's frame stays where it is: switching tabs, and docking, never
-  // move or reload it (#738). The first time the notebook opens, the dialog's header
-  // gains its Chat and Notebook tabs (syncCenterTabs); until then it is chat only.
+  // move or reload it (#738). The dialog's header has its Chat and Notebook tabs from the
+  // start while a notebook is available (syncCenterTabs, #743); with none it is chat only.
   function setTab(container, tab) {
     if (!container.classList.contains('osa-capsule')) return;
     if (tab === 'notebook' && !isNotebookAvailable()) tab = 'chat';
-    if (tab === 'notebook') notebookTabSeen = true;
     activeTab = tab;
     if (tab === 'notebook') {
       closeHistory(container, { restoreFocus: false });
@@ -17672,9 +17698,6 @@
   const HOST_MODES = ['corner', 'center'];
   const hostListeners = new Map(HOST_EVENTS.map((name) => [name, []]));
   let hostMode = 'corner';
-  // Whether the notebook has been opened in this page session: the dialog shows its
-  // Chat and Notebook tabs from then on, and a chat-only dialog keeps its plain header.
-  let notebookTabSeen = false;
   // Calls made before init() built the widget, replayed in order once it has.
   let hostQueue = [];
   let hostLive = false;
@@ -18013,9 +18036,14 @@
     document.body.style.overflow = 'hidden';
     centerKeyHandler = (event) => handleCenterKey(container, event);
     document.addEventListener('keydown', centerKeyHandler);
+    // Last, so a step above that threw leaves the launcher drawn, not hidden behind a
+    // dialog that is not modal. The launcher is inert above and, with it, taken out of
+    // sight (see the CSS).
+    container.classList.add('osa-center-engaged');
   }
 
   function releaseCenter(container) {
+    container.classList.remove('osa-center-engaged');
     const scrim = container.querySelector('.osa-center-scrim');
     if (scrim) {
       const wasShown = scrim.classList.contains('open');
@@ -18076,17 +18104,22 @@
     if (nowhere || gone) focusActiveView(container);
   }
 
-  // The dialog's Chat and Notebook tabs (#738), in its header, once the notebook has
-  // been opened in this page session and while it can be opened. A chat-only dialog keeps
-  // the header it always had, and the corner never shows them (its tabs are the launcher's
-  // circles). They are the same two views the corner shows: the tab only chooses which is
-  // up, so the notebook's frame and its Python session are untouched by a switch.
+  // The dialog's Chat and Notebook tabs (#738), in its header, from the start and for as
+  // long as the notebook can be opened (#743): the reader does not have to wait for a
+  // reply to run code. A dialog with no notebook (no dataset, as under a Discover search's
+  // "Ask a follow-up") keeps the header it always had, and the corner never shows them
+  // (its tabs are the launcher's circles). They are the same two views the corner shows:
+  // the tab only chooses which is up, so the notebook's frame and its Python session are
+  // untouched by a switch.
   function syncCenterTabs(container) {
     const win = container.querySelector('.osa-chat-window');
     const tabs = container.querySelector('.osa-center-tabs');
     if (!win || !tabs) return;
     const show = hostMode === 'center' && container.classList.contains('osa-capsule') &&
-      notebookTabSeen && isNotebookAvailable();
+      isNotebookAvailable();
+    // Read before the row is hidden: a browser blurs a focused control that goes away, and
+    // by the time the check below runs the focus is on the body.
+    const hadFocus = tabs.contains(document.activeElement);
     tabs.hidden = !show;
     win.classList.toggle('osa-center-tabbed', show);
     for (const name of ['chat', 'notebook']) {
@@ -18119,7 +18152,7 @@
     if (guard) guard.tabIndex = hostMode === 'center' ? 0 : -1;
     // A tab row that goes away (the page left a dataset with a notebook) must not take
     // the focus with it, into an inert page.
-    if (!show && isOpen && tabs.contains(document.activeElement)) focusActiveView(container);
+    if (!show && isOpen && hadFocus) focusActiveView(container);
   }
 
   // A reply that ends while the reader is on another tab (the Notebook tab, with the chat

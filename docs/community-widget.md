@@ -1265,7 +1265,8 @@ Center is the same `.osa-chat-window`, with an `osa-center` class and a scrim be
   It takes the same path as the card's button (`runNotebookImport`), is disabled with `aria-busy` while the import runs or a reply loads, and, as for the card, opening the notebook opens the Notebook tab of the dialog (below); the dialog does not dock and there is no `modechange` event.
 - **The Notebook tab in the dialog.**
   A capsule community's dialog has a second view, the same notebook the corner shows, in the same window and the same `<iframe>`; the dialog is the corner window with a class, so the frame is not moved or reloaded by tab switches, docking or mode changes, and those keep the reader's Python session and edits (only Try again, or a change of dataset, replaces the frame).
-  The header gets two tabs, **Chat** and **Notebook** (`role="tablist"`, `aria-selected`, arrow keys, Home and End, only the selected tab in the Tab order), from the first time the notebook is opened in the page session while a notebook is available; a dialog that has only been used for chat keeps the header above, and the corner never shows them.
+  The header gets two tabs, **Chat** and **Notebook** (`role="tablist"`, `aria-selected`, arrow keys, Home and End, only the selected tab in the Tab order), from the start, before any reply has run code, whenever the page's dataset has a notebook available (#743); a dialog with no notebook (no dataset, as under a search's "Ask a follow-up") keeps the header above, and the corner never shows them.
+  Selecting the Notebook tab the first time creates the frame; `open()`, `ask()` and `seed()` open on Chat.
   On the Notebook tab History, Settings and **Continue in notebook** are hidden (they are the chat's), **Move to corner** and Close stay, and moving to the corner, with the button or with Escape, keeps the tab: the capsule shows the notebook.
   Raising the dialog from a corner window that is on the notebook keeps it too.
   The tab switch fades the two views over each other in 60 ms, with nothing at all under `prefers-reduced-motion`; at 1100 px and under the tabs take a row of their own under the pill and the buttons.
@@ -1278,6 +1279,9 @@ Center is the same `.osa-chat-window`, with an `osa-center` class and a scrim be
   A plan the conversation holds shows as a rail beside the thread; see [The plan card and step progress](#the-plan-card-and-step-progress).
 - **Narrow screens.**
   At 600 px and under the dialog fills the screen, and the header's buttons keep their icons only; at 900 px and under there is no plan rail.
+- **The launcher behind the dialog.**
+  The capsule (or the bubble) is `inert` while the dialog is open and is also hidden (`visibility: hidden` after a 120 ms fade, immediate under `prefers-reduced-motion`), so nothing at the bottom right looks pressable and does nothing.
+  Move to corner, Escape and Close show it again as it was.
 - **Looks.**
   Colors come from the widget's own tokens, so the dark scheme and the community's theme carry over.
   **Move to corner** shows an arrow pointing to the bottom right, where the window goes.

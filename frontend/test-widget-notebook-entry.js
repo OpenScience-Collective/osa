@@ -928,6 +928,24 @@ console.log('\nan import that another one replaced still opens the notebook it m
   assertEqual(opens.map((p) => p.message.path), [IMPORT_PATH], 'Open notebook asks for the path the answer named, not a record that never finished');
 }
 
+console.log('\nthe dialog offers the notebook before any code has run (#743)');
+{
+  // A reply that printed code and did not run it: no card, no Continue in notebook.
+  const ctx = await start({ storage: record('chat-plain', [chat('chat-plain', { title: 'What is in this dataset?', runs: [] })]), openNotebookFrame: false });
+  ctx.api.setMode('center');
+  const win = ctx.q('.osa-chat-window');
+  assert(win.classList.contains('osa-center') && ctx.activeTab() === 'chat', 'set up: the dialog is up on the chat tab');
+  assert(ctx.card() === null && ctx.q('.osa-center-notebook-btn').hidden, 'set up: no code has run, so there is no card and no Continue in notebook');
+  assert(!ctx.q('.osa-center-tabs').hidden, 'the Chat and Notebook tabs are in the header all the same');
+  assert(ctx.q('.osa-notebook-frame') === null, 'the notebook frame is not made until the Notebook tab is selected');
+  ctx.click(ctx.q('.osa-center-tab-notebook'));
+  assert(ctx.activeTab() === 'notebook' && ctx.q('.osa-notebook-frame') !== null, 'the Notebook tab opens the notebook, making its frame');
+  assert(win.classList.contains('osa-center') && win.getAttribute('aria-modal') === 'true' && ctx.q('.osa-center-scrim').classList.contains('open'), 'and the dialog stays modal');
+  const other = await start({ storage: record('chat-plain', [chat('chat-plain', { title: 'What is in this dataset?', runs: [] })]), dataset: null, openNotebookFrame: false });
+  other.api.setMode('center');
+  assert(other.q('.osa-center-tabs').hidden, 'with no dataset (a search\'s "Ask a follow-up") the tabs stay hidden');
+}
+
 console.log('\nthe card in the host API\'s dialog opens the notebook as a tab of the dialog (#738)');
 {
   const modes = [];
