@@ -48,10 +48,15 @@
  * nothing of it under its old place, none of it animating under prefers-reduced-motion)
  * and is back, pressable, after Move to corner, after Escape and after Close.
  *
- * The header holds all of its controls at every width: a sweep from 360 to 1440 px (every
- * 40 px, and 601, 700, 768, 800, 1000, 1100 and 1101) of the chat-only dialog with
- * Continue in notebook showing and of the tabbed one on both tabs asserts no horizontal
- * overflow, Close and Move to corner inside the dialog, and no label broken in two.
+ * And the focus rescue (#743): with focus on the dialog's Chat tab, the page drops the
+ * dataset (so the tabs go), and focus must land in the dialog's active view, not on the body
+ * of the inert page, which only a real browser shows (it blurs the control that is hidden).
+ *
+ * The header holds all of its controls at every width: a sweep from 320 to 1440 px (every
+ * 40 px, and 601, 700, 768, 800, 1000, 1100 and 1101) of the tabbed dialog on its Chat tab
+ * (with History and Continue in notebook showing) and on its Notebook tab asserts no
+ * horizontal overflow, Close and Move to corner inside the dialog, and no label broken in
+ * two.
  *
  * It stands up its own servers, so it needs no backend and no network. Screenshots are
  * written when a directory is given, as the argument or as CENTER_CHECK_SCREENSHOTS
@@ -1230,6 +1235,21 @@ async function checkDialogEntry(cdp, base, screenshotDir, viewport, site) {
   report(behind.visible.length === 0, `${label}: no part of the launcher is drawn behind the dialog (capsule, circles, chat button, tooltip)`, behind.visible);
   report(behind.inert && behind.onTop !== 'launcher', `${label}: it is still inert, and what is at the notebook circle's old place is not the launcher`, behind);
 
+  // The page drops the dataset while focus is on a tab: the tabs go, and focus must not be
+  // left on the body of the inert page (a browser blurs a control that is hidden).
+  await call(`document.querySelector('.osa-center-tab-chat').focus()`);
+  report(await call(`document.activeElement === document.querySelector('.osa-center-tab-chat')`), `${label}: set up: focus is on the Chat tab`);
+  await call(`OSAChatWidget.setDataset(null)`);
+  const rescued = await call(`(() => {
+    const win = document.querySelector('.osa-chat-window');
+    const active = document.activeElement;
+    return { tabsHidden: document.querySelector('.osa-center-tabs').hidden, inWindow: win.contains(active), onBody: active === document.body, place: active ? (active.className || active.tagName).toString().slice(0, 60) : null, pageInert: document.getElementById('host-page').inert === true };
+  })()`);
+  report(rescued.tabsHidden && rescued.pageInert, `${label}: with no dataset the tabs are hidden and the page is still inert`, rescued);
+  report(rescued.inWindow && !rescued.onBody, `${label}: and focus is in the dialog's active view, not on the body`, rescued);
+  await call(`OSAChatWidget.setDataset({ id: ${JSON.stringify(DATASET.id)}, title: ${JSON.stringify(DATASET.title)}, zarr: true })`);
+  report(await waitFor(cdp, sessionId, `!document.querySelector('.osa-center-tabs').hidden`, 'the tabs are back'), `${label}: a dataset with a notebook brings the tabs back`);
+
   // The Notebook tab: the frame is made, fills the dialog, and the dialog stays modal.
   await call(`document.querySelector('.osa-center-tab-notebook').click()`, { userGesture: true });
   report(await waitFor(cdp, sessionId, `document.querySelector('.osa-notebook-frame') !== null && document.querySelector('.osa-chat-widget').classList.contains('osa-tab-notebook')`, 'the notebook tab'), `${label}: the Notebook tab opens the notebook`);
@@ -1321,7 +1341,7 @@ const HEADER_FIT = `(() => {
 
 const SWEEP_WIDTHS = (() => {
   const widths = new Set([601, 700, 768, 800, 1000, 1100, 1101]);
-  for (let w = 360; w <= 1440; w += 40) widths.add(w);
+  for (let w = 320; w <= 1440; w += 40) widths.add(w);
   return [...widths].sort((a, b) => a - b);
 })();
 
@@ -1334,11 +1354,11 @@ async function sweepHeader(cdp, sessionId, state) {
     const fit = await call(HEADER_FIT);
     if (fit.overflow || fit.outside.length || !fit.close || !fit.dock || fit.wrapped) bad.push({ width, ...fit });
   }
-  report(bad.length === 0, `header sweep, ${state}: at ${SWEEP_WIDTHS.length} widths from 360 to 1440 nothing overflows, Close and Move to corner are inside the dialog, no label wraps`, bad.slice(0, 3));
+  report(bad.length === 0, `header sweep, ${state}: at ${SWEEP_WIDTHS.length} widths from 320 to 1440 nothing overflows, Close and Move to corner are inside the dialog, no label wraps`, bad.slice(0, 3));
 }
 
 async function checkHeaderSweep(cdp, base, site) {
-  console.log('--- header sweep: every width from 360 to 1440');
+  console.log('--- header sweep: every width from 320 to 1440');
   const notebookBase = `http://127.0.0.1:${site.server.port}/`;
   const page = await openPage(cdp, base, { name: 'sweep', width: 1280, height: 900 }, `/plan?launcher=capsule&notebook=${encodeURIComponent(notebookBase)}`);
   const { sessionId } = page;
