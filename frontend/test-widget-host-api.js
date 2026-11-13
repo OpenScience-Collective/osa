@@ -1339,6 +1339,41 @@ console.log('\nThe header\'s expand button follows widget.expand: pop-out, Expan
   assert(heardWrong.warn.some((line) => /invalid expand from the community config "sideways"/.test(line)), 'a community value outside them warns');
   assert(!wrong.q('.osa-popout-btn').hidden && wrong.q('.osa-expand-btn').hidden, 'and the pop-out default stays');
 
+  // Escape after Expand docks, as it does any dialog, and the page hears it.
+  const esc = await start({ widget: { expand: 'center' } });
+  esc.api.open();
+  const escHeard = record(esc);
+  esc.q('.osa-expand-btn').click();
+  const escape = key(esc, 'Escape');
+  active(esc).dispatchEvent(escape);
+  assert(esc.isOpen() && !esc.isCenter(), 'Escape after Expand docks to the corner');
+  assertEqual(escHeard.events, [['modechange', { mode: 'center' }], ['modechange', { mode: 'corner' }]], 'with modechange center, then corner');
+  escHeard.stop();
+
+  // Expand with History open: the sheet goes into the dialog with the focus in it, not
+  // on the field behind it, which is inert, nor on the Expand button the dialog hides.
+  const hist = await start({ widget: { expand: 'center' } });
+  hist.api.open();
+  await typeAndSend(hist, 'A question for History');
+  hist.q('.osa-history-btn').click();
+  assert(hist.q('.osa-history-sheet').classList.contains('open'), 'sanity: History is open in the corner');
+  hist.q('.osa-expand-btn').focus();
+  hist.q('.osa-expand-btn').click();
+  assert(hist.isCenter() && hist.q('.osa-history-sheet').classList.contains('open'), 'Expand keeps History open, now in the dialog');
+  assert(hist.q('.osa-history-sheet').contains(active(hist)), 'and the focus is in the History sheet');
+  const histEscape = key(hist, 'Escape');
+  active(hist).dispatchEvent(histEscape);
+  assert(!hist.q('.osa-history-sheet').classList.contains('open') && hist.isCenter(), 'the first Escape closes History, and the dialog stays');
+
+  // A capsule on its notebook tab expands onto the notebook tab, as setMode('center') does.
+  const nb = await onNotebook({ widget: { launcher: 'capsule', center_start: CENTER_START, expand: 'center' } });
+  assertEqual(nb.tab(), 'notebook', 'sanity: the corner is on the notebook tab');
+  assert(!nb.q('.osa-expand-btn').hidden, 'Expand is there on the notebook tab');
+  nb.q('.osa-expand-btn').click();
+  assert(nb.isCenter() && nb.tab() === 'notebook', 'Expand opens the dialog on the notebook tab');
+  assertEqual(nb.tabButton('notebook').getAttribute('aria-selected'), 'true', 'with the Notebook tab selected');
+  assertEqual(active(nb), nb.tabButton('notebook'), 'and the focus on it');
+
   const popout = await load({ popout: true, widget: { expand: 'center' } });
   await popout.boot();
   assert(popout.q('.osa-popout-btn').hidden && popout.q('.osa-expand-btn').hidden, 'a pop-out window shows neither: it is the expanded view');

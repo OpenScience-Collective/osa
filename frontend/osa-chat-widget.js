@@ -17410,13 +17410,6 @@
     }
   }
 
-  // Open chat in a new popup window. The pop-out is an about:blank window of this
-  // page's own origin, and so inherits this page's Content Security Policy: it
-  // runs no inline script, which a host page without script-src 'unsafe-inline'
-  // would refuse (#470). Its document is written without one, its presets are set
-  // on its window from here, and the widget arrives as a script element with this
-  // script's own address, integrity and crossorigin, which the host page's policy
-  // already allows, since it loaded this script.
   // The header's expand button (#756), as CONFIG.expand says: the pop-out button, Expand
   // (to the center-stage dialog), or neither. A pop-out window has neither: it is the
   // expanded view already. In the dialog the stylesheet hides both, and Move to corner
@@ -17434,11 +17427,26 @@
   // corner brings it back. The dialog's open motion plays from the class it gains.
   function expandToCenter(container) {
     if (CONFIG.fullscreen || CONFIG.expand !== 'center') return;
+    // On the notebook tab nothing laid over it goes into the dialog, as setTab has it:
+    // the dialog's Tab trap is scoped to the topmost overlay and would keep the reader
+    // out of the notebook. On the chat tab an open panel is the reader's and stays.
+    if (activeTab === 'notebook') {
+      closeSettings(container);
+      closeFeedback(container);
+      closePrivacy(container, { restoreFocus: false });
+    }
     if (!applyHostMode(container, 'center')) return;
     if (isOpen) focusActiveView(container);
     emitHostEvent('modechange', { mode: hostMode });
   }
 
+  // Open chat in a new popup window. The pop-out is an about:blank window of this
+  // page's own origin, and so inherits this page's Content Security Policy: it
+  // runs no inline script, which a host page without script-src 'unsafe-inline'
+  // would refuse (#470). Its document is written without one, its presets are set
+  // on its window from here, and the widget arrives as a script element with this
+  // script's own address, integrity and crossorigin, which the host page's policy
+  // already allows, since it loaded this script.
   function openPopout() {
     // Only the pop-out button opens it, and only while the community's expand is 'popout'.
     if (CONFIG.expand !== 'popout') return;
@@ -18140,6 +18148,18 @@
   // notebook's frame is not taken over by a key that only changed the mode); and in the
   // corner on that tab, the window itself, so it is never left on a control that is gone.
   function focusActiveView(container) {
+    // What is laid over the view takes the focus first, the way the Tab trap is scoped:
+    // the topmost settings panel, else the History sheet. A field behind one is inert,
+    // so focusing it would leave focus on nothing (#756: Expand with History open).
+    const win = container.querySelector('.osa-chat-window');
+    const overlays = win ? [...win.querySelectorAll('.osa-settings-overlay.open')] : [];
+    const layer = overlays.length ? overlays[overlays.length - 1] : (historyOpen ? historySheet(container) : null);
+    if (layer) {
+      const first = focusablesIn(layer)[0];
+      if (first) first.focus();
+      else if (win) win.focus();
+      return;
+    }
     if (activeTab === 'chat') {
       focusChatField(container, true);
       return;
