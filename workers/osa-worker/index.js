@@ -376,6 +376,7 @@ function isAllowedOrigin(origin) {
   const allowedPatterns = [
     'https://osc.earth',
     'https://*.mne.tools',
+    'https://app.nemar.org',
     'https://bids-specification--2442.org.readthedocs.build',
     'https://bids-specification.readthedocs.io',
     'https://bids-website--847.org.readthedocs.build',

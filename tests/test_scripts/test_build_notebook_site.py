@@ -748,7 +748,12 @@ class TestEmbedOrigins:
 
         for environment in site.NOTEBOOK_ENVIRONMENTS:
             origins = site.embed_origins(communities, environment)
-            for origin in ("https://nemar.org", "https://www.nemar.org", "https://test.nemar.org"):
+            for origin in (
+                "https://nemar.org",
+                "https://www.nemar.org",
+                "https://app.nemar.org",
+                "https://test.nemar.org",
+            ):
                 assert origin in origins, (environment, origin)
 
 
