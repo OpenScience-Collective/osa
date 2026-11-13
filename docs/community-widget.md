@@ -26,6 +26,7 @@ this page is about the widget's appearance and copy.
 | `center_start` | `{capabilities, note}` | none | The center-stage dialog's start screen: up to three `{title, text}` cards and a footer note; see [The start screen](#the-start-screen). |
 | `analysis_docs` | `{title, url}`, an `https://` address | none | A docs page linked from the start screen's footer and from Settings; see [The start screen](#the-start-screen). |
 | `privacy_url` | string, an `https://` address of at most 500 characters | the platform's own privacy page | The page the **Privacy choices** dialog links to; see [Privacy choices](#privacy-choices). |
+| `expand` | `"popout"`, `"center"` or `"none"` | `"popout"` | What the corner window's expand button does: a separate window, the center-stage dialog, or no button; see [`expand`](#expand-the-pop-out-window-the-center-stage-dialog-or-neither). |
 | `logo_url` | string: an `http://`/`https://` URL, or a path starting with `/` | none | A custom logo/icon for the widget header avatar. When unset, the API looks for a `logo.*` file (SVG, PNG, JPG, JPEG, WEBP) in the community's own folder; failing that, the widget falls back to a default brain icon. |
 
 ```yaml
@@ -398,8 +399,9 @@ close button, closes the panel.
   a starter with no setup cell), `Setup did not finish; see the notebook`, or
   `The notebook did not open here`.
   The chat's own header buttons (Settings and reset) are hidden on the notebook tab;
-  the close button stays, and so does the pop-out button, which opens the pop-out on
-  the notebook tab (see "The pop-out window" below).
+  the close button stays, and so does the expand button: the pop-out button, which opens
+  the pop-out on the notebook tab, or, with `expand: center`, **Expand**, which opens the
+  dialog on it (see "The pop-out window" below).
 - **The frame is kept.** Going back to chat hides it without unloading it, so its
   Python keeps running and returning finds the notebook as it was left.
   A new dataset on screen replaces the frame; a dataset with no Zarr copy drops it
@@ -455,20 +457,6 @@ from the window's edges in every frame.
 
 The header's pop-out button opens the widget in a window of its own, which the panel fills.
 
-### `expand`: the pop-out window, the center-stage dialog, or neither
-
-A community chooses what the corner window's expand button does with `widget.expand` (#756):
-
-| Field | Values | Default | What it does |
-|---|---|---|---|
-| `expand` | `"popout"`, `"center"` or `"none"` | `"popout"` | `popout` is the pop-out button this section describes. `center` replaces it with **Expand**, which opens the center-stage dialog ("The host API and the center-stage dialog" below) with the same conversation, as `setMode('center')` does, `modechange` included; **Move to corner** goes back. `none` shows no expand button. |
-
-- A community that uses the center-stage dialog sets `center`, so the corner and the dialog go both ways and there is no third, detached window: NEMAR does.
-- `GET /{community}` sends `expand` only when it is not `popout`, and the widget remembers it with the rest of the community's look ("The first paint" below).
-- A host page can choose with `setConfig({expand})`, which outranks the community's value and redraws the header at once.
-  A value other than the three is ignored with a `console.warn`, from the page or from the config, and the other value still applies.
-- Expand is not drawn in the dialog (Move to corner stands there), and a pop-out window shows neither button: it is the expanded view already.
-
 - **It carries the page's widget.** Its settings, every `setConfig` the page made included, the color scheme the host page chose, if it chose one, and the dataset on screen.
   A later `setColorScheme` or `setDataset` on the page reaches an open pop-out too, including one whose script is still loading.
 - **It shares the page's storage.** The pop-out is an `about:blank` window of the page's own origin,
@@ -483,6 +471,20 @@ A community chooses what the corner window's expand button does with `widget.exp
   The notebook opens with the edits that had reached storage, which an edit does within about five seconds (`docs/community-notebook.md`).
   The page's own notebook frame is left as it was, still running, so both windows have the same stored notebook open: edit it in one of them at a time.
 - **A bubble community's pop-out is unchanged**: the chat only, with no tab strip.
+
+### `expand`: the pop-out window, the center-stage dialog, or neither
+
+A community chooses what the corner window's expand button does with `widget.expand` (#756):
+
+| Field | Values | Default | What it does |
+|---|---|---|---|
+| `expand` | `"popout"`, `"center"` or `"none"` | `"popout"` | `popout` is the pop-out button this section describes. `center` replaces it with **Expand**, which opens the center-stage dialog ("The host API and the center-stage dialog" below) with the same conversation, as `setMode('center')` does, `modechange` included; **Move to corner** goes back. `none` shows no expand button. |
+
+- A community that uses the center-stage dialog sets `center`, so the corner and the dialog go both ways and there is no third, detached window: NEMAR does.
+- `GET /{community}` sends `expand` only when it is not `popout`, and the widget remembers it with the rest of the community's look ("The first paint" below).
+- A host page can choose with `setConfig({expand})`, which outranks the community's value and redraws the header at once.
+  A value other than the three is ignored with a `console.warn`, from the page or from the config, and the community's value (or `popout`) still applies.
+- Expand is not drawn in the dialog (Move to corner stands there), and a pop-out window shows neither button: it is the expanded view already.
 
 ### What a host page's policy needs for the pop-out
 
@@ -1224,7 +1226,7 @@ OSAChatWidget.close();
 | `close()` | Closes the window, as the Close button does. |
 | `ask(text, {mode}?)` | Opens the window (in `mode` if given), then sends `text` through the same path as a typed question: it is in the saved conversation and History, the page-context reset of [A context change starts a new chat](#a-context-change-starts-a-new-chat) applies, and the browser runtime is preloaded as for any first message. `text` must be a non-empty string; a reply that is still loading refuses it. What the reader had typed in the chat's input and not sent is theirs: it stays there (and in the start screen's field) after `ask`. |
 | `seed(text, {mode}?)` | Opens the window (in `mode` if given) with `text` as the assistant's first message, and sends nothing; see [seed](#seed) below. |
-| `setMode(mode)` | `'center'` makes the window the dialog; `'corner'` docks it. On a closed window the mode is kept for the next open. A capsule community's window that is on the notebook tab keeps it when it becomes the dialog (and when it docks), and **Continue in notebook** or **Open notebook**, under a reply or in the header, open the notebook as a tab of the dialog rather than docking it; see "The Notebook tab in the dialog" below. `open()`, `ask()` and `seed()` always show the chat tab, because they are about asking a question. |
+| `setMode(mode)` | `'center'` makes the window the dialog (the header's **Expand**, under `expand: center`, does the same); `'corner'` docks it. On a closed window the mode is kept for the next open. A capsule community's window that is on the notebook tab keeps it when it becomes the dialog (and when it docks), and **Continue in notebook** or **Open notebook**, under a reply or in the header, open the notebook as a tab of the dialog rather than docking it; see "The Notebook tab in the dialog" below. `open()`, `ask()` and `seed()` always show the chat tab, because they are about asking a question. |
 | `on(event, handler)` | Listens for an event, below, and returns a function that stops listening. |
 
 - **Before `init()`.**
@@ -1249,7 +1251,7 @@ OSAChatWidget.close();
 |---|---|---|
 | `open` | `{mode}` | The window opened, after the mode was applied. |
 | `close` | `{}` | The window closed, by the Close button, the launcher or `close()`. |
-| `modechange` | `{mode}` | The mode changed: `setMode`, `open({mode})`, Escape or Move to corner, or a dialog being closed (then `{mode: 'corner'}`, just before `close`). |
+| `modechange` | `{mode}` | The mode changed: `setMode`, `open({mode})`, **Expand** (`expand: center`), Escape or Move to corner, or a dialog being closed (then `{mode: 'corner'}`, just before `close`). |
 | `send` | `{text}` | A question was sent, typed or by `ask`; `text` is as the server receives it, trimmed. |
 
 Each event fires once per occurrence.
@@ -1401,6 +1403,7 @@ field: once an embedder sets `themeColor`, no community config value for
 | `launcher_mobile_offset_x` | `launcherMobileOffsetX` |
 | `launcher_mobile_offset_y` | `launcherMobileOffsetY` |
 | `color_scheme` | `colorScheme` (also `'dark'`; see `setColorScheme` above) |
+| `expand` | `expand` (`'popout'`, `'center'` or `'none'`; see "`expand`" under "The pop-out window") |
 
 ```html
 <script src="https://demo.osc.earth/osa-chat-widget.js" data-no-auto-init></script>
