@@ -4,6 +4,10 @@ A community that routes its turns between a quick and an analysis model
 (`quick_model` and `analysis_model` in its `config.yaml`) also answers
 `POST /{community_id}/overview`: a short, cited reading of the top results of a
 dataset search, written by the quick model.
+It reads the way a colleague would talk the results through:
+a lead-in on what the search seems to focus on,
+a list of the results that look most promising and how each relates to it,
+and a suggestion of where to start (#748).
 It exists for the Discover panel of nemar.org (the "AI overview" of board D2),
 which already holds the search results and does not need a conversation.
 
@@ -13,7 +17,7 @@ The implementation notes (cache internals, budget wiring) are in
 
 ## Calling it
 
-Send the reader's query, the filters they applied, and up to 10 results in the
+Send the reader's query, the filters they applied, and up to 20 results in the
 search's ranking order.
 
 ```js
@@ -24,7 +28,7 @@ const response = await fetch('https://widget.osc.earth/osa/nemar/overview', {
     query: 'face recognition in EEG',
     filters: { modality: ['eeg'] },
     total_count: 240,
-    results: results.slice(0, 10).map((r) => ({
+    results: results.slice(0, 20).map((r) => ({
       id: r.dataset_id,
       title: r.name,
       description: r.description.slice(0, 500),
@@ -52,7 +56,7 @@ when crossed; it does not block requests.
 |---|---|
 | `query` | 1 to 300 characters, and at least 3 words: whitespace-separated tokens that hold a letter or digit, so `P300` and `α-band` are words and a lone `-` is not |
 | `filters` | at most 20 keys; values are strings, booleans, integers or lists of strings |
-| `results` | 1 to 10 rows; `id` unique, up to 64 characters of letters, digits, `.`, `_`, `-`; `title` up to 200 characters; `description` up to 500; `modalities` an optional string |
+| `results` | 1 to 20 rows; `id` unique, up to 64 characters of letters, digits, `.`, `_`, `-`; `title` up to 200 characters; `description` up to 500; `modalities` an optional string |
 | `total_count` | optional, the number of matches in all |
 
 An overview needs a search of at least three words;
@@ -65,28 +69,41 @@ nemar.org's Discover panel counts words the same way and shows a note instead of
 ```json
 {
   "summary": [
-    {"text": "For event-related potentials to faces, "},
-    {"dataset_id": "on002718"},
-    {"text": " is the closest match: 18 participants viewed famous and scrambled faces."}
+    {"text": "Your search seems to focus on how the brain responds to faces. I had a look at the top 20 matches, and these two look especially promising."}
   ],
-  "picks": [{"id": "on002718", "reason": "Face conditions, HED events."}],
-  "cited_ids": ["on002718"],
-  "shown": 10,
+  "picks": [
+    {"id": "on002718", "reason": "18 participants viewed famous and scrambled faces, with HED events."},
+    {"id": "on003645", "reason": "Faces against houses in MEG, if you can work with another modality."}
+  ],
+  "suggestion": [
+    {"text": "I'd start with "},
+    {"dataset_id": "on002718"},
+    {"text": ", since it is the only one built around famous faces."}
+  ],
+  "cited_ids": ["on002718", "on003645"],
+  "shown": 20,
   "cached": false,
   "model": "claude-haiku-5-5",
   "generated_at": "2026-11-11T08:30:00.123456Z"
 }
 ```
 
-- `summary` is a list of segments: `{"text": ...}` is plain text to show as
-  text, and `{"dataset_id": ...}` is a result to link, so the page never parses
-  markdown or HTML.
-  It is about 100 words; sentences after the first are dropped once it would pass
-  120, and a first sentence that is long on its own is kept.
-- `picks` are at most three of the given results, best first, each with a short
-  reason in plain text.
-- `cited_ids` are the ids the summary and the picks name, in order of first
-  mention; every one is an `id` you sent.
+- `summary` is the lead-in: what the search seems to focus on and how many
+  results look promising.
+  It is a list of segments: `{"text": ...}` is plain text to show as text, and
+  `{"dataset_id": ...}` is a result to link, so the page never parses markdown or
+  HTML.
+  It is asked for in about 45 words; sentences after the first are dropped once it
+  would pass 60, and a first sentence that is long on its own is kept.
+  It always has text and may name no result.
+- `picks` are at most ten of the given results, best first, each with a short
+  reason in plain text saying how it relates to the search.
+  Show them right after the lead-in.
+- `suggestion` is where to start: one or two sentences, segments like the summary,
+  held to the same 60-word rule, to show after the picks.
+  It is an empty list when the model wrote none that survives the filter.
+- `cited_ids` are the ids the summary, the picks and then the suggestion name, in
+  order of first mention; every one is an `id` you sent.
 - `shown` is how many results it was written from, and `cached` says whether
   this request did not call the model.
 
@@ -102,9 +119,13 @@ must render text segments as plain text and never autolink them.
 An id is checked inside `[[...]]` markers for every community; a bare id with no
 brackets is also checked, but only in the shape NEMAR ids have (two letters and
 six digits).
-A reply whose summary names no result at all (a refusal, a reply that is not the
-JSON asked for, text with no citation) is not an overview: it is a 502 and is not
+A reply whose summary has no words, or that names no result anywhere (in the
+summary, the picks or the suggestion: a refusal, a reply that is not the JSON
+asked for, text with no citation) is not an overview: it is a 502 and is not
 cached.
+
+A caller written for the earlier contract (up to 10 results, up to 3 picks, no
+`suggestion`) keeps working: it reads the first picks and ignores the new field.
 
 | Status | Meaning |
 |---|---|
