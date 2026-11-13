@@ -230,6 +230,9 @@ widget:
 cors_origins:
   - https://nemar.org
   - https://www.nemar.org
+  # nemar.org's app host: a signed-in reader's pages (dashboard, settings, upload) are
+  # served there, with the same widget (#751).
+  - https://app.nemar.org
   # nemar.org's staging site (the website's `staging` branch), where the widget is
   # tested against the dev worker before a release pins it on nemar.org.
   - https://test.nemar.org
