@@ -90,6 +90,11 @@
     // or 'auto'; a host page with its own theme switch passes the reader's choice
     // with OSAChatWidget.setColorScheme, which outranks the community's value.
     colorScheme: 'light',
+    // What the corner window's expand button does (#756): 'popout' (the default) opens
+    // the conversation in a separate window, 'center' opens the center-stage dialog
+    // (as setMode('center') does), 'none' leaves the button out. From the community
+    // config (widget.expand), or the host page's setConfig, which outranks it.
+    expand: 'popout',
     // The notebook site's base URL (a sibling PR builds it); setDataset's active
     // notebook button opens `${notebookUrl}open.html?community=...&dataset=...`.
     // /osa/ names this widget's project on the shared notebook.osc.earth plane,
@@ -414,7 +419,7 @@
   const DISPLAY_KEYS = ['title', 'initialMessage', 'placeholder', 'suggestedQuestions',
     'datasetSuggestedQuestions', 'searchPaths', 'centerStart', 'analysisDocs', 'privacyUrl', 'themeColor',
     'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor', 'logo', 'launcher',
-    'launcherLabel', 'colorScheme', ...LAUNCHER_GEOMETRY_KEYS.map(([, key]) => key)];
+    'launcherLabel', 'colorScheme', 'expand', ...LAUNCHER_GEOMETRY_KEYS.map(([, key]) => key)];
   // The header avatar as createWidget draws it, for a config that drops its logo.
   let defaultAvatarHtml = null;
   // Browser code execution (#431). browserToolsReady is assigned, to a pending
@@ -865,6 +870,9 @@
   // bottom right, where the window goes (boards C2, C3; #730).
   ICONS.sparkle = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z"/><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>';
   ICONS.dock = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7l10 10"/><path d="M17 7v10H7"/></svg>';
+  // Expand to the center-stage dialog (#756): arrows out to two corners, the opposite of
+  // the dock's single arrow into one.
+  ICONS.expand = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
 
   // CSS Styles
   const STYLES = `
@@ -2314,6 +2322,13 @@
     .osa-header-actions {
       display: flex;
       gap: 4px;
+    }
+
+    /* The expand buttons (#756) are shown or left out by their hidden attribute, which
+       the display: flex below would otherwise override. */
+    .osa-chat-header .osa-popout-btn[hidden],
+    .osa-chat-header .osa-expand-btn[hidden] {
+      display: none !important;
     }
 
     .osa-header-btn {
@@ -5738,6 +5753,7 @@
 
     .osa-chat-window.osa-center .osa-resize-handle,
     .osa-chat-window.osa-center .osa-popout-btn,
+    .osa-chat-window.osa-center .osa-expand-btn,
     .osa-chat-window.osa-center .osa-reset-btn,
     .osa-chat-window.osa-center .osa-chat-avatar,
     .osa-chat-window.osa-center .osa-chat-title-area {
@@ -11004,6 +11020,14 @@
         warnInvalidColorScheme('color_scheme from the community config', w.color_scheme, COMMUNITY_COLOR_SCHEMES);
       }
     }
+    if (w.expand != null && !_userSetKeys.has('expand')) {
+      if (EXPAND_MODES.includes(w.expand)) {
+        CONFIG.expand = w.expand;
+        changed = true;
+      } else {
+        warnInvalidExpand('expand from the community config', w.expand);
+      }
+    }
     return changed;
   }
 
@@ -13649,6 +13673,13 @@
   // (WidgetConfig.color_scheme refuses 'dark' on the server as well).
   const COLOR_SCHEMES = ['light', 'dark', 'auto'];
   const COMMUNITY_COLOR_SCHEMES = ['light', 'auto'];
+  // CONFIG.expand's values (#756), the community's and a host page's alike.
+  const EXPAND_MODES = ['popout', 'center', 'none'];
+
+  function warnInvalidExpand(what, value) {
+    const expected = EXPAND_MODES.map(v => `'${v}'`).join(', ');
+    console.warn(`[OSA] Ignoring invalid ${what} ${JSON.stringify(value)}; expected one of ${expected}`);
+  }
 
   function isValidColorScheme(value) {
     return COLOR_SCHEMES.includes(value);
@@ -13959,6 +13990,8 @@
     applyThemeProperties(container);
 
     applyColorScheme(container);
+
+    syncExpandButton(container);
 
     // Update header title
     const titleEl = container.querySelector('.osa-chat-title');
@@ -14783,7 +14816,10 @@
             <button class="osa-header-btn osa-settings-btn-open" title="Settings">
               ${ICONS.settings}
             </button>
-            <button class="osa-header-btn osa-popout-btn" title="Open in new window" style="display: ${CONFIG.fullscreen ? 'none' : 'flex'}">
+            <button type="button" class="osa-header-btn osa-expand-btn" aria-label="Expand" title="Expand" hidden>
+              ${ICONS.expand}
+            </button>
+            <button class="osa-header-btn osa-popout-btn" title="Open in new window" aria-label="Open in new window" ${CONFIG.fullscreen || CONFIG.expand !== 'popout' ? 'hidden' : ''}>
               ${ICONS.popout}
             </button>
             <button class="osa-header-btn osa-reset-btn" title="Clear chat">
@@ -17381,7 +17417,31 @@
   // on its window from here, and the widget arrives as a script element with this
   // script's own address, integrity and crossorigin, which the host page's policy
   // already allows, since it loaded this script.
+  // The header's expand button (#756), as CONFIG.expand says: the pop-out button, Expand
+  // (to the center-stage dialog), or neither. A pop-out window has neither: it is the
+  // expanded view already. In the dialog the stylesheet hides both, and Move to corner
+  // stands where Expand was.
+  function syncExpandButton(container) {
+    const mode = CONFIG.fullscreen ? 'none' : CONFIG.expand;
+    const popout = container.querySelector('.osa-popout-btn');
+    const expand = container.querySelector('.osa-expand-btn');
+    if (popout) popout.hidden = mode !== 'popout';
+    if (expand) expand.hidden = mode !== 'center';
+  }
+
+  // Expand (#756): the corner window becomes the center-stage dialog with the same
+  // conversation, the way setMode('center') makes it, modechange included; Move to
+  // corner brings it back. The dialog's open motion plays from the class it gains.
+  function expandToCenter(container) {
+    if (CONFIG.fullscreen || CONFIG.expand !== 'center') return;
+    if (!applyHostMode(container, 'center')) return;
+    if (isOpen) focusActiveView(container);
+    emitHostEvent('modechange', { mode: hostMode });
+  }
+
   function openPopout() {
+    // Only the pop-out button opens it, and only while the community's expand is 'popout'.
+    if (CONFIG.expand !== 'popout') return;
     const panel = document.querySelector('.osa-chat-widget');
     if (panel) closeHistory(panel, { restoreFocus: false });
     // Reuse existing popup if still open
@@ -17544,6 +17604,7 @@
     const closeBtn = container.querySelector('.osa-close-btn');
     const resetBtn = container.querySelector('.osa-reset-btn');
     const popoutBtn = container.querySelector('.osa-popout-btn');
+    const expandBtn = container.querySelector('.osa-expand-btn');
     const settingsBtn = container.querySelector('.osa-settings-btn-open');
     const input = container.querySelector('.osa-chat-input input');
     const sendBtn = container.querySelector('.osa-send-btn');
@@ -17573,6 +17634,8 @@
     bindHistoryPanel(container);
     bindCenterStage(container);
     popoutBtn?.addEventListener('click', () => openPopout());
+    expandBtn?.addEventListener('click', () => expandToCenter(container));
+    syncExpandButton(container);
     settingsBtn?.addEventListener('click', () => openSettings(container));
 
     if (sendBtn && input) {
@@ -18931,6 +18994,11 @@
         warnInvalidColorScheme('colorScheme', opts.colorScheme, COLOR_SCHEMES);
         delete opts.colorScheme;
       }
+      // Refused here, like a bad color scheme, so the community's own value still applies.
+      if ('expand' in opts && !EXPAND_MODES.includes(opts.expand)) {
+        warnInvalidExpand('expand', opts.expand);
+        delete opts.expand;
+      }
       // A launcher setting a page gets wrong is refused here, so the community's own value
       // still applies: a key the page sets outranks the community's, and a wrong one would
       // otherwise lock it out. undefined is not a value (a wrapper passing along a setting
@@ -18956,6 +19024,10 @@
       }
       Object.assign(CONFIG, opts);
       if ('colorScheme' in opts) applyColorSchemeEverywhere();
+      if ('expand' in opts) {
+        const container = document.querySelector('.osa-chat-widget');
+        if (container) syncExpandButton(container);
+      }
       // A page that moves or resizes the launcher after init() sees it at once.
       if (LAUNCHER_GEOMETRY_KEYS.some(([, key]) => key in opts)) {
         const container = document.querySelector('.osa-chat-widget');

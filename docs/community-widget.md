@@ -455,6 +455,20 @@ from the window's edges in every frame.
 
 The header's pop-out button opens the widget in a window of its own, which the panel fills.
 
+### `expand`: the pop-out window, the center-stage dialog, or neither
+
+A community chooses what the corner window's expand button does with `widget.expand` (#756):
+
+| Field | Values | Default | What it does |
+|---|---|---|---|
+| `expand` | `"popout"`, `"center"` or `"none"` | `"popout"` | `popout` is the pop-out button this section describes. `center` replaces it with **Expand**, which opens the center-stage dialog ("The host API and the center-stage dialog" below) with the same conversation, as `setMode('center')` does, `modechange` included; **Move to corner** goes back. `none` shows no expand button. |
+
+- A community that uses the center-stage dialog sets `center`, so the corner and the dialog go both ways and there is no third, detached window: NEMAR does.
+- `GET /{community}` sends `expand` only when it is not `popout`, and the widget remembers it with the rest of the community's look ("The first paint" below).
+- A host page can choose with `setConfig({expand})`, which outranks the community's value and redraws the header at once.
+  A value other than the three is ignored with a `console.warn`, from the page or from the config, and the other value still applies.
+- Expand is not drawn in the dialog (Move to corner stands there), and a pop-out window shows neither button: it is the expanded view already.
+
 - **It carries the page's widget.** Its settings, every `setConfig` the page made included, the color scheme the host page chose, if it chose one, and the dataset on screen.
   A later `setColorScheme` or `setDataset` on the page reaches an open pop-out too, including one whose script is still loading.
 - **It shares the page's storage.** The pop-out is an `about:blank` window of the page's own origin,
