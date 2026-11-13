@@ -94,7 +94,8 @@ nemar.org's Discover panel counts words the same way and shows a note instead of
   `{"dataset_id": ...}` is a result to link, so the page never parses markdown or
   HTML.
   It is asked for in about 45 words; sentences after the first are dropped once it
-  would pass 60, and a first sentence that is long on its own is kept.
+  would pass 60, and a first sentence that is long on its own is kept unless it
+  is over twice that.
   It always has text and may name no result.
 - `picks` are at most ten of the given results, best first, each with a short
   reason in plain text saying how it relates to the search.
