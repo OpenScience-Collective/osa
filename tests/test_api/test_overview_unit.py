@@ -260,6 +260,9 @@ class TestPrompt:
         assert f"never more than {MAX_PICKS}" in prompt
         # A search nothing fits still gets picks: a reply with none names no result.
         assert "still pick" in prompt
+        # The voice stays on the datasets, not on the text the model was given.
+        assert "never about the text you were given" in prompt
+        assert "leave it out rather than guess" in prompt
         assert '"suggestion"' in prompt
 
 
