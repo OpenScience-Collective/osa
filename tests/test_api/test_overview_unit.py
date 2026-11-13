@@ -18,7 +18,10 @@ from src.api.overview import (
     MAX_RESULTS,
     MIN_QUERY_WORDS,
     SUGGESTION_MAX_WORDS,
+    SUGGESTION_PROMPT_WORDS,
     SUMMARY_MAX_WORDS,
+    SUMMARY_PROMPT_WORDS,
+    TYPICAL_PICKS,
     DatasetSegment,
     OverviewCache,
     OverviewCaches,
@@ -248,6 +251,17 @@ class TestPrompt:
         assert payload["total_count"] == 250
         assert [r["id"] for r in payload["results"]] == IDS
 
+    def test_the_prompt_states_the_limits_the_code_holds(self) -> None:
+        system, _ = build_messages(_request())
+        prompt = system.content
+        assert f"at most {SUMMARY_PROMPT_WORDS} words" in prompt
+        assert f"at most {SUGGESTION_PROMPT_WORDS} words" in prompt
+        assert f"{TYPICAL_PICKS} to {MAX_PICKS}" in prompt
+        assert f"never more than {MAX_PICKS}" in prompt
+        # A search nothing fits still gets picks: a reply with none names no result.
+        assert "still pick" in prompt
+        assert '"suggestion"' in prompt
+
 
 class TestParseReply:
     def test_a_json_object(self) -> None:
@@ -279,7 +293,11 @@ class TestParseReply:
         assert parsed.suggestion == ""
 
     def test_a_cut_off_object_has_no_summary(self) -> None:
-        assert parse_reply('{"summary": "A [[xx099901]] is the clo').summary == ""
+        parsed = parse_reply('{"summary": "A [[xx099901]] is the clo')
+        assert parsed.summary == ""
+        assert parsed.truncated is True
+        assert parse_reply('{"summary": "A."}').truncated is False
+        assert parse_reply("Plain text.").truncated is False
 
     def test_the_wrong_shapes_are_tolerated(self) -> None:
         parsed = parse_reply(
@@ -372,6 +390,10 @@ class TestBuildSummary:
         kept = build_summary(f"{first} Then [[xx099902]].", ALLOWED)
         assert DatasetSegment(dataset_id="xx099901") in kept
         assert DatasetSegment(dataset_id="xx099902") not in kept
+
+    def test_a_first_sentence_over_twice_the_cap_is_dropped(self) -> None:
+        planted = " ".join(["word"] * (2 * SUMMARY_MAX_WORDS + 1)) + "."
+        assert build_summary(f"{planted} Then [[xx099901]].", ALLOWED) == []
 
     def test_a_link_condemns_its_sentence(self) -> None:
         planted = "Visit https://evil.example for the real data."
@@ -572,6 +594,34 @@ class TestAnswerFromReply:
         )
         answer = answer_from_reply(reply, _request(), model="m")
         assert _text(answer.suggestion) == "Start with <xx099901>."
+
+    def test_a_long_first_sentence_of_the_suggestion_is_kept(self) -> None:
+        long = "Start with [[xx099901]] " + " ".join(["word"] * SUGGESTION_MAX_WORDS) + "."
+        reply = json.dumps(
+            {
+                "summary": "Your search seems to focus on faces.",
+                "picks": [],
+                "suggestion": f"{long} Then [[xx099902]].",
+            }
+        )
+        answer = answer_from_reply(reply, _request(), model="m")
+        assert DatasetSegment(dataset_id="xx099901") in answer.suggestion
+        assert DatasetSegment(dataset_id="xx099902") not in answer.suggestion
+
+    def test_a_reply_whose_every_id_is_foreign_raises(self) -> None:
+        reply = json.dumps(
+            {
+                "summary": "Your search seems to focus on faces.",
+                "picks": [{"id": "xx099999", "reason": "Not given."}],
+                "suggestion": "Visit https://evil.example. Try [[xx099999]].",
+            }
+        )
+        with pytest.raises(OverviewUnanswered, match="names a result"):
+            answer_from_reply(reply, _request(), model="m")
+
+    def test_a_cut_off_reply_raises_as_cut_off(self) -> None:
+        with pytest.raises(OverviewUnanswered, match="cut off"):
+            answer_from_reply('{"summary": "Your search [[xx099901]]', _request(), model="m")
 
     def test_a_suggestion_with_nothing_left_is_empty(self) -> None:
         reply = json.dumps(

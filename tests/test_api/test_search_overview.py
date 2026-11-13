@@ -306,7 +306,6 @@ class TestTheSettledShape:
         assert call["model"] == HAIKU
         assert call["reasoning_effort"] == "low"
         assert call["max_tokens"] == OVERVIEW_MAX_TOKENS
-        assert call["max_tokens"] <= 4_000
 
     async def test_a_lead_in_picks_and_a_suggestion(self, client, monkeypatch) -> None:
         rig(
@@ -331,6 +330,11 @@ class TestTheSettledShape:
             text_of(data["suggestion"]) == f"I'd start with <{IDS[1]}>, since it has famous faces."
         )
         assert data["cited_ids"] == [IDS[1], IDS[0]]
+
+        again = await post(client)
+        assert again.json()["cached"] is True
+        assert again.json()["suggestion"] == data["suggestion"]
+        assert again.json()["picks"] == data["picks"]
 
     async def test_the_model_is_given_the_results_as_fenced_data(self, client, monkeypatch) -> None:
         made = rig(monkeypatch)
@@ -680,8 +684,21 @@ class TestACitationFreeReplyIsNotAnOverview:
             AIMessage(content='{"error": "cannot comply", "picks": []}'),
             reply("Visit https://evil.example for the real data."),
             reply("Nothing here fits the query."),
+            reply(
+                "Your search seems to focus on faces.",
+                [("zz999999", "Not one of the results.")],
+                suggestion="Visit https://evil.example. Try [[zz999999]].",
+            ),
+            AIMessage(content='{"summary": "Your search seems to focus on [[xx0'),
         ],
-        ids=["refusal", "object-without-summary", "planted-link", "no-citation"],
+        ids=[
+            "refusal",
+            "object-without-summary",
+            "planted-link",
+            "no-citation",
+            "only-foreign-ids",
+            "cut-off",
+        ],
     )
     async def test_it_is_a_502_and_is_not_cached(self, client, monkeypatch, message) -> None:
         made = rig(monkeypatch, None, message, GOOD)

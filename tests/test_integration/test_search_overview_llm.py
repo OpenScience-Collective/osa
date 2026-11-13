@@ -64,13 +64,15 @@ async def test_a_real_overview_cites_only_the_results_it_was_given() -> None:
         if isinstance(segment, DatasetSegment):
             assert segment.dataset_id in given
     assert response.summary
-    assert 0 < _plain_words(response.summary) <= SUMMARY_MAX_WORDS
+    # A first sentence over the cap is kept up to twice the cap (``build_summary``).
+    assert 0 < _plain_words(response.summary) <= 2 * SUMMARY_MAX_WORDS
+    assert response.cited_ids
     assert len(response.picks) <= MAX_PICKS
     assert {pick.id for pick in response.picks} <= given
     for segment in response.suggestion:
         if isinstance(segment, DatasetSegment):
             assert segment.dataset_id in given
-    assert _plain_words(response.suggestion) <= SUGGESTION_MAX_WORDS
+    assert _plain_words(response.suggestion) <= 2 * SUGGESTION_MAX_WORDS
     assert response.shown == len(request.results)
     assert run.usage.input_tokens > 0
     assert run.usage.output_tokens > 0

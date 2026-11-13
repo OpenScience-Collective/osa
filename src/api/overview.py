@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import time
 import unicodedata
@@ -48,6 +49,8 @@ from src.metrics.db import TokenUsage, extract_token_usage
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
+logger = logging.getLogger(__name__)
+
 MAX_QUERY_CHARS = 300
 # The maintainer's rule (#728): an overview needs a search of at least this many words, and a
 # shorter one is refused before the model is called. nemar.org's Discover panel counts words
@@ -64,6 +67,8 @@ MAX_DESCRIPTION_CHARS = 500
 MAX_MODALITIES_CHARS = 200
 
 MAX_PICKS = 10
+TYPICAL_PICKS = 5
+"""The prompt asks for this many picks to ``MAX_PICKS`` when that many fit."""
 MAX_PICK_REASON_CHARS = 240
 
 SUMMARY_PROMPT_WORDS = 45
@@ -196,8 +201,9 @@ class OverviewResponse(BaseModel):
         "search seems to focus on and how many results look promising. It may name no result."
     )
     picks: list[OverviewPick] = Field(
+        max_length=MAX_PICKS,
         description=f"At most {MAX_PICKS}, best first, ids from the request: the results that "
-        "look most promising, each with how it relates to the search."
+        "look most promising, each with how it relates to the search.",
     )
     suggestion: list[Segment] = Field(
         default_factory=list,
@@ -266,9 +272,8 @@ def canonical_filters(filters: dict[str, FilterValue]) -> str:
 def results_digest(results: list[OverviewResultRow], total_count: int | None) -> str:
     """A hash of the results payload, in the order given, and of ``total_count``.
 
-    The order is part of the payload: it is the search's ranking, which the overview
-    reads ("the closest match is..."). ``total_count`` is in it because the prompt
-    mentions it.
+    The order is part of the payload: it is the search's ranking, which the model is told
+    the results are in. ``total_count`` is in it because the prompt mentions it.
     """
     payload = json.dumps(
         {
@@ -426,18 +431,24 @@ inside a text.
 
 Your reply has three parts.
 1. "summary": an opening of one or two sentences, at most {SUMMARY_PROMPT_WORDS} words. \
-Say what the search seems to focus on, then that you had a look at the results and how \
-many look most promising; for example "Your search seems to focus on ... I had a look at \
-the top 20 matches, and these six look especially promising." Fit the wording to the \
-search. If more results matched than you were shown, make clear you read only the top ones.
+Say what the search seems to focus on, then that you had a look at the results and which \
+look most promising; for example "Your search seems to focus on ... I had a look at the \
+top matches, and these look especially promising." Fit the wording to the search. Do \
+not say how many picks there are: the page shows the list right after. If you say how \
+many results you read, use the "shown" number from the data, and if more matched than \
+you were shown, make clear you read only the top ones.
 2. "picks": the results that look most promising for this search, best first: usually \
-five to ten, never more than {MAX_PICKS}, and fewer when fewer genuinely fit. Each has a \
-given id, without brackets, and a reason of one short sentence (under 25 words) saying \
-how that dataset relates to the search.
+{TYPICAL_PICKS} to {MAX_PICKS} when that many fit, never more than {MAX_PICKS}, and fewer \
+when fewer genuinely fit. Each has a result's id exactly as given, without brackets, and \
+a reason of one short sentence (under 25 words) saying how that dataset relates to the \
+search.
 3. "suggestion": one or two sentences, at most {SUGGESTION_PROMPT_WORDS} words, \
 suggesting which pick to start with and why; for example "I'd start with [[ID]], since \
-it is the only one that ...". If nothing fits the search well, say so kindly and suggest \
-what to try instead, such as other words or fewer filters.
+it is the only one that ...".
+
+If nothing fits the search well, say so kindly in the opening, still pick the few \
+closest results, and in the suggestion say what to try instead, such as other words or \
+fewer filters.
 
 Rules:
 - Use only what the results say. Do not add facts about a result that its title, \
@@ -502,11 +513,16 @@ _FENCE = re.compile(r"^```[A-Za-z]*\s*(.*?)\s*```$", re.DOTALL)
 
 @dataclass(frozen=True)
 class ParsedReply:
-    """What the model wrote, split into its summary text, its raw picks and its suggestion."""
+    """What the model wrote, split into its summary text, its raw picks and its suggestion.
+
+    ``truncated`` is true for a reply that starts like JSON and does not parse: one cut
+    off, most likely at ``OVERVIEW_MAX_TOKENS``.
+    """
 
     summary: str
     picks: list[tuple[str, str]]
     suggestion: str = ""
+    truncated: bool = False
 
 
 def parse_reply(text: str) -> ParsedReply:
@@ -514,7 +530,8 @@ def parse_reply(text: str) -> ParsedReply:
 
     A code fence around the object is removed, and so is prose before it. A reply that is
     not JSON at all is taken as the summary on its own, with no picks and no suggestion. A
-    reply that starts like JSON and does not parse (it was cut off) has no summary.
+    reply that starts like JSON and does not parse (it was cut off) has no summary and is
+    marked ``truncated``.
     """
     text = text.strip()
     fenced = _FENCE.match(text)
@@ -529,7 +546,7 @@ def parse_reply(text: str) -> ParsedReply:
         if isinstance(obj, dict) and "summary" in obj:
             return _parsed_from_object(obj)
         if text.lstrip().startswith("{"):
-            return ParsedReply("", [])
+            return ParsedReply("", [], truncated=True)
     return ParsedReply(text, [])
 
 
@@ -596,13 +613,16 @@ def _plain_words(segments: list[Segment]) -> int:
 def build_summary(
     text: str, allowed: frozenset[str], max_words: int = SUMMARY_MAX_WORDS
 ) -> list[Segment]:
-    """Prose as segments: only sentences that cite allowed ids, within ``max_words``.
+    """Prose as segments: the sentences that name no id outside ``allowed`` and hold no
+    link, within ``max_words``.
 
     Used for the summary and, with ``SUGGESTION_MAX_WORDS``, for the suggestion. A sentence
-    naming an id the request did not hold is dropped whole. Sentences are kept in order
-    until one would carry the text past ``max_words``; it and the ones after it are
-    dropped. The first sentence is kept even when it alone is over the cap, so a long but
-    valid answer is not a billed failure. Empty when nothing survives.
+    naming an id the request did not hold, or holding a link, is dropped whole. Sentences
+    are kept in order until one would carry the text past ``max_words``; it and the ones
+    after it are dropped. The first sentence is kept when it alone is over the cap, so a
+    long but valid answer is not a billed failure, unless it is over twice the cap: a
+    sentence that long is not the lead-in the prompt asks for (a summary need not name a
+    result, so length is what bounds text a result planted). Empty when nothing survives.
     """
     kept: list[list[Segment]] = []
     words = 0
@@ -612,6 +632,8 @@ def build_summary(
             continue
         sentence_words = _plain_words(segments)
         if kept and words + sentence_words > max_words:
+            break
+        if not kept and sentence_words > 2 * max_words:
             break
         words += sentence_words
         kept.append(segments)
@@ -691,14 +713,20 @@ def answer_from_reply(
 ) -> OverviewResponse:
     """The response for the model's reply, with only ids from ``request`` in it.
 
+    What the filter drops (picks, or a whole suggestion) is logged at info, so a drift in
+    what the model writes shows in the logs and not only as a shorter overview.
+
     Raises:
-        OverviewUnanswered: When no sentence of the summary survives the filter, when it
-            has no words, or when the summary, the picks and the suggestion together name
-            no result. The prompt asks for picks by id, so a reply that names nothing is a
-            refusal, an off-format reply or planted text, and is not shown or cached.
+        OverviewUnanswered: When the reply was cut off, when no sentence of the summary
+            survives the filter, when it has no words, or when the summary, the picks and
+            the suggestion together name no result. The prompt asks for picks by id, so a
+            reply that names nothing is a refusal, an off-format reply or planted text, and
+            is not shown or cached.
     """
     allowed = frozenset(row.id for row in request.results)
     parsed = parse_reply(text)
+    if parsed.truncated:
+        raise OverviewUnanswered("the reply is not complete JSON (cut off)")
     summary = build_summary(parsed.summary, allowed)
     if not summary:
         raise OverviewUnanswered("no sentence of the reply survived the citation filter")
@@ -706,6 +734,13 @@ def answer_from_reply(
         raise OverviewUnanswered("the summary of the reply has no words")
     picks = build_picks(parsed.picks, allowed)
     suggestion = build_summary(parsed.suggestion, allowed, SUGGESTION_MAX_WORDS)
+    if len(picks) < len(parsed.picks) or (parsed.suggestion.strip() and not suggestion):
+        logger.info(
+            "Search overview filter kept %d of %d picks; suggestion %s",
+            len(picks),
+            len(parsed.picks),
+            "dropped" if parsed.suggestion.strip() and not suggestion else "kept or absent",
+        )
     cited = cited_ids_of(summary, picks, suggestion)
     if not cited:
         raise OverviewUnanswered("no part of the reply names a result")
