@@ -16,7 +16,7 @@ the version being released and start a new `[Unreleased]` section above it.
 ### Fixed
 
 - **NEMAR: `app.nemar.org` is an approved origin (#751)**: a signed-in reader's pages on nemar.org (dashboard, settings, upload) are served from `app.nemar.org`, where the widget was refused because NEMAR's `cors_origins` did not list it.
-  It is added there, which authorizes chat and the search overview from that origin, adds it to the CORS allow list, and to the notebook site's `frame-ancestors` (built from `cors_origins`) at its next build. The worker already admitted any `*.nemar.org` origin.
+  It is added there, which authorizes chat and the search overview from that origin, adds it to the CORS allow list, and to the notebook site's `frame-ancestors` (built from `cors_origins`: the develop site on this merge, the production site at the next release). The worker already admitted any `*.nemar.org` origin; its generated origin list (`scripts/sync_worker_cors.py`) gains the entry in the same change, so no bot commit follows.
   Tests: `test_nemar_app_host_is_authorized_for_nemar_only`, and the notebook site's embed origins include it.
 
 ### Changed
