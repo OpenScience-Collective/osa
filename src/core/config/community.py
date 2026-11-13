@@ -1843,6 +1843,19 @@ class WidgetConfig(BaseModel):
     A community that never sets this renders exactly as it did before this field existed.
     """
 
+    expand: Literal["popout", "center", "none"] = "popout"
+    """What the corner window's expand button in the header does (#756).
+
+    "popout" (default) is the button the widget always had: it opens the conversation in
+    a separate browser window. "center" makes it an **Expand** button that opens the
+    center-stage dialog with the same conversation (as ``OSAChatWidget.setMode('center')``
+    does, ``modechange`` included), so a community that uses the dialog has two surfaces
+    that go both ways (Expand, and **Move to corner** back) and no third, detached one.
+    "none" shows no expand button. A host page can still choose with
+    ``init``/``setConfig({expand})``, which outranks this.
+    A community that never sets this renders exactly as it did before this field existed.
+    """
+
     color_scheme: Literal["light", "auto"] = "light"
     """Whether the widget has a dark appearance (#469).
 
@@ -2059,6 +2072,8 @@ class WidgetConfig(BaseModel):
             result["launcher"] = self.launcher
         if self.color_scheme != "light":
             result["color_scheme"] = self.color_scheme
+        if self.expand != "popout":
+            result["expand"] = self.expand
         if self.launcher_label:
             result["launcher_label"] = self.launcher_label
         if self.launcher_position != WidgetConfig.model_fields["launcher_position"].default:

@@ -189,6 +189,9 @@ widget:
   # the reader's own choice from nemar.org's theme button once the site passes it on
   # with setColorScheme (a website change, not yet made).
   color_scheme: auto
+  # The corner window's expand button opens the center-stage AI Mode dialog, which
+  # nemar.org already uses, instead of a separate browser window (#756).
+  expand: center
   # The center-stage AI Mode dialog's start screen (E6.1, board C2): what the assistant
   # can do, and what runs where. The widget carries no copy of its own about NEMAR.
   center_start:

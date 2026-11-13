@@ -1275,6 +1275,110 @@ console.log('\ncalls before init() are bounded, and a page that never calls init
   assertEqual(none.warn.filter((line) => /OSAChatWidget\.init/.test(line)), [], 'a page that does call init() in time hears nothing');
 }
 
+console.log('\nThe header\'s expand button follows widget.expand: pop-out, Expand to the dialog, or none (#756)');
+{
+  const plain = await start();
+  plain.api.open();
+  assert(!plain.q('.osa-popout-btn').hidden, 'by default the pop-out button is there');
+  assert(plain.q('.osa-expand-btn').hidden, 'and Expand is not');
+
+  const ctx = await start({ widget: { expand: 'center' } });
+  ctx.api.open();
+  await typeAndSend(ctx, 'What is the sampling rate?');
+  assert(!ctx.isCenter(), 'sanity: the corner window');
+  assert(ctx.q('.osa-popout-btn').hidden, 'with expand: center the pop-out button is gone');
+  assert(!ctx.q('.osa-expand-btn').hidden, 'and Expand stands in its place');
+  assertEqual(ctx.q('.osa-expand-btn').getAttribute('aria-label'), 'Expand', 'named Expand');
+  let opened = 0;
+  ctx.window.open = () => { opened++; return null; };
+  ctx.q('.osa-popout-btn').click();
+  assertEqual(opened, 0, 'the hidden pop-out button opens no window');
+  const nodes = ctx.qa('.osa-chat-messages .osa-message').length;
+  const session = ctx.hooks.getSessionId();
+  const heard = record(ctx);
+  ctx.q('.osa-expand-btn').click();
+  assert(ctx.isCenter() && ctx.isOpen(), 'Expand opens the center-stage dialog');
+  assertEqual(ctx.win().getAttribute('role'), 'dialog', 'as the modal dialog');
+  assertEqual(heard.events, [['modechange', { mode: 'center' }]], 'the page hears modechange once, with center');
+  assertEqual(ctx.qa('.osa-chat-messages .osa-message').length, nodes, 'with the same thread');
+  assertEqual(ctx.hooks.getSessionId(), session, 'and the same session');
+  assert(inWindow(ctx, active(ctx)), 'focus is in the dialog');
+  assertEqual(ctx.window.getComputedStyle(ctx.q('.osa-expand-btn')).display, 'none', 'Expand is not drawn in the dialog');
+  ctx.q('.osa-center-dock-btn').click();
+  assert(ctx.isOpen() && !ctx.isCenter(), 'Move to corner brings it back');
+  assert(!ctx.q('.osa-expand-btn').hidden, 'where Expand is again');
+  assertEqual(heard.names(), ['modechange', 'modechange'], 'and the page hears the dock too');
+  heard.stop();
+
+  const none = await start({ widget: { expand: 'none' } });
+  none.api.open();
+  assert(none.q('.osa-popout-btn').hidden && none.q('.osa-expand-btn').hidden, 'expand: none shows neither button');
+
+  const host = await load({ widget: { expand: 'center' } });
+  host.api.setConfig({ expand: 'none' });
+  await host.boot();
+  host.api.open();
+  assert(host.q('.osa-popout-btn').hidden && host.q('.osa-expand-btn').hidden, "a host page's expand outranks the community's");
+  host.api.setConfig({ expand: 'center' });
+  assert(!host.q('.osa-expand-btn').hidden, 'and a later setConfig redraws the header at once');
+
+  const bad = await load({ widget: { expand: 'center' } });
+  const warnings = listen();
+  bad.api.setConfig({ expand: 'window' });
+  warnings.stop();
+  await bad.boot();
+  bad.api.open();
+  assert(warnings.warn.some((line) => /invalid expand "window"/.test(line)), 'a host value outside popout, center and none is refused with a warning');
+  assert(!bad.q('.osa-expand-btn').hidden, "and the community's own value still applies");
+
+  const wrong = await load({ widget: { expand: 'sideways' } });
+  const heardWrong = listen();
+  await wrong.boot();
+  heardWrong.stop();
+  wrong.api.open();
+  assert(heardWrong.warn.some((line) => /invalid expand from the community config "sideways"/.test(line)), 'a community value outside them warns');
+  assert(!wrong.q('.osa-popout-btn').hidden && wrong.q('.osa-expand-btn').hidden, 'and the pop-out default stays');
+
+  // Escape after Expand docks, as it does any dialog, and the page hears it.
+  const esc = await start({ widget: { expand: 'center' } });
+  esc.api.open();
+  const escHeard = record(esc);
+  esc.q('.osa-expand-btn').click();
+  const escape = key(esc, 'Escape');
+  active(esc).dispatchEvent(escape);
+  assert(esc.isOpen() && !esc.isCenter(), 'Escape after Expand docks to the corner');
+  assertEqual(escHeard.events, [['modechange', { mode: 'center' }], ['modechange', { mode: 'corner' }]], 'with modechange center, then corner');
+  escHeard.stop();
+
+  // Expand with History open: the sheet goes into the dialog with the focus in it, not
+  // on the field behind it, which is inert, nor on the Expand button the dialog hides.
+  const hist = await start({ widget: { expand: 'center' } });
+  hist.api.open();
+  await typeAndSend(hist, 'A question for History');
+  hist.q('.osa-history-btn').click();
+  assert(hist.q('.osa-history-sheet').classList.contains('open'), 'sanity: History is open in the corner');
+  hist.q('.osa-expand-btn').focus();
+  hist.q('.osa-expand-btn').click();
+  assert(hist.isCenter() && hist.q('.osa-history-sheet').classList.contains('open'), 'Expand keeps History open, now in the dialog');
+  assert(hist.q('.osa-history-sheet').contains(active(hist)), 'and the focus is in the History sheet');
+  const histEscape = key(hist, 'Escape');
+  active(hist).dispatchEvent(histEscape);
+  assert(!hist.q('.osa-history-sheet').classList.contains('open') && hist.isCenter(), 'the first Escape closes History, and the dialog stays');
+
+  // A capsule on its notebook tab expands onto the notebook tab, as setMode('center') does.
+  const nb = await onNotebook({ widget: { launcher: 'capsule', center_start: CENTER_START, expand: 'center' } });
+  assertEqual(nb.tab(), 'notebook', 'sanity: the corner is on the notebook tab');
+  assert(!nb.q('.osa-expand-btn').hidden, 'Expand is there on the notebook tab');
+  nb.q('.osa-expand-btn').click();
+  assert(nb.isCenter() && nb.tab() === 'notebook', 'Expand opens the dialog on the notebook tab');
+  assertEqual(nb.tabButton('notebook').getAttribute('aria-selected'), 'true', 'with the Notebook tab selected');
+  assertEqual(active(nb), nb.tabButton('notebook'), 'and the focus on it');
+
+  const popout = await load({ popout: true, widget: { expand: 'center' } });
+  await popout.boot();
+  assert(popout.q('.osa-popout-btn').hidden && popout.q('.osa-expand-btn').hidden, 'a pop-out window shows neither: it is the expanded view');
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`${passed} passed, ${failed} failed`);
 console.log('='.repeat(60));
