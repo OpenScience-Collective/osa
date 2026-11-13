@@ -15,8 +15,13 @@ from src.api.overview import (
     CACHE_MAX_ENTRIES,
     CACHE_TTL_SECONDS,
     MAX_PICKS,
+    MAX_RESULTS,
     MIN_QUERY_WORDS,
+    SUGGESTION_MAX_WORDS,
+    SUGGESTION_PROMPT_WORDS,
     SUMMARY_MAX_WORDS,
+    SUMMARY_PROMPT_WORDS,
+    TYPICAL_PICKS,
     DatasetSegment,
     OverviewCache,
     OverviewCaches,
@@ -189,7 +194,7 @@ class TestRequestBounds:
             {"query": "P300 speller"},
             {"query": "EEG - MEG"},
             {"results": []},
-            {"results": [_row(f"xx0999{n:02d}") for n in range(11)]},
+            {"results": [_row(f"xx0999{n:02d}") for n in range(MAX_RESULTS + 1)]},
             {"results": [_row("xx099901", title="t" * 201)]},
             {"results": [_row("xx099901", description="d" * 501)]},
             {"results": [_row("xx099901"), _row("xx099901")]},
@@ -211,10 +216,11 @@ class TestRequestBounds:
             query="q" * 99 + " " + "q" * 99 + " " + "q" * 100,
             filters={f"k{n}": "v" for n in range(20)},
             results=[
-                _row(f"xx0999{n:02d}", title="t" * 200, description="d" * 500) for n in range(10)
+                _row(f"xx0999{n:02d}", title="t" * 200, description="d" * 500)
+                for n in range(MAX_RESULTS)
             ],
         )
-        assert len(request.results) == 10
+        assert len(request.results) == MAX_RESULTS
 
     def test_filter_values_keep_their_types(self) -> None:
         request = _request(filters={"s": "x", "b": True, "i": 3, "l": ["a", "b"]})
@@ -245,6 +251,17 @@ class TestPrompt:
         assert payload["total_count"] == 250
         assert [r["id"] for r in payload["results"]] == IDS
 
+    def test_the_prompt_states_the_limits_the_code_holds(self) -> None:
+        system, _ = build_messages(_request())
+        prompt = system.content
+        assert f"at most {SUMMARY_PROMPT_WORDS} words" in prompt
+        assert f"at most {SUGGESTION_PROMPT_WORDS} words" in prompt
+        assert f"{TYPICAL_PICKS} to {MAX_PICKS}" in prompt
+        assert f"never more than {MAX_PICKS}" in prompt
+        # A search nothing fits still gets picks: a reply with none names no result.
+        assert "still pick" in prompt
+        assert '"suggestion"' in prompt
+
 
 class TestParseReply:
     def test_a_json_object(self) -> None:
@@ -253,6 +270,13 @@ class TestParseReply:
         )
         assert parsed.summary == "A [[xx099901]]."
         assert parsed.picks == [("xx099901", "Best.")]
+        assert parsed.suggestion == ""
+
+    def test_the_suggestion_is_read(self) -> None:
+        parsed = parse_reply(
+            '{"summary": "Hi.", "picks": [], "suggestion": "Start with [[xx099901]]."}'
+        )
+        assert parsed.suggestion == "Start with [[xx099901]]."
 
     def test_a_fenced_object(self) -> None:
         parsed = parse_reply('```json\n{"summary": "Hello.", "picks": []}\n```')
@@ -266,9 +290,14 @@ class TestParseReply:
         parsed = parse_reply("Just plain text about [[xx099901]].")
         assert parsed.summary == "Just plain text about [[xx099901]]."
         assert parsed.picks == []
+        assert parsed.suggestion == ""
 
     def test_a_cut_off_object_has_no_summary(self) -> None:
-        assert parse_reply('{"summary": "A [[xx099901]] is the clo').summary == ""
+        parsed = parse_reply('{"summary": "A [[xx099901]] is the clo')
+        assert parsed.summary == ""
+        assert parsed.truncated is True
+        assert parse_reply('{"summary": "A."}').truncated is False
+        assert parse_reply("Plain text.").truncated is False
 
     def test_the_wrong_shapes_are_tolerated(self) -> None:
         parsed = parse_reply(
@@ -276,6 +305,7 @@ class TestParseReply:
         )
         assert parsed.picks == [("xx099901", "")]
         assert parse_reply('{"summary": 5, "picks": "none"}').summary == ""
+        assert parse_reply('{"summary": "S.", "suggestion": ["x"]}').suggestion == ""
 
     def test_an_object_without_a_summary_is_not_taken_for_one(self) -> None:
         assert parse_reply('{"answer": "S."}').summary == ""
@@ -342,17 +372,28 @@ class TestBuildSummary:
         assert "]]" not in _text(stray)
 
     def test_the_summary_is_held_to_the_word_cap(self) -> None:
-        long_sentence = " ".join(["word"] * 70) + "."
+        long_sentence = " ".join(["word"] * (SUMMARY_MAX_WORDS * 2 // 3)) + "."
         text = f"{long_sentence} {long_sentence} Third [[xx099901]]."
         kept = _text(build_summary(text, ALLOWED))
         assert kept == long_sentence
         assert len(kept.split()) <= SUMMARY_MAX_WORDS
+
+    def test_the_cap_is_a_parameter(self) -> None:
+        sentence = " ".join(["word"] * 10) + "."
+        assert _text(build_summary(f"{sentence} {sentence}", ALLOWED, 15)) == sentence
+        assert (
+            _text(build_summary(f"{sentence} {sentence}", ALLOWED, 20)) == f"{sentence} {sentence}"
+        )
 
     def test_a_first_sentence_over_the_cap_is_kept_and_the_rest_are_dropped(self) -> None:
         first = " ".join(["word"] * (SUMMARY_MAX_WORDS + 1)) + " [[xx099901]]."
         kept = build_summary(f"{first} Then [[xx099902]].", ALLOWED)
         assert DatasetSegment(dataset_id="xx099901") in kept
         assert DatasetSegment(dataset_id="xx099902") not in kept
+
+    def test_a_first_sentence_over_twice_the_cap_is_dropped(self) -> None:
+        planted = " ".join(["word"] * (2 * SUMMARY_MAX_WORDS + 1)) + "."
+        assert build_summary(f"{planted} Then [[xx099901]].", ALLOWED) == []
 
     def test_a_link_condemns_its_sentence(self) -> None:
         planted = "Visit https://evil.example for the real data."
@@ -413,8 +454,8 @@ class TestBuildPicks:
         )
         assert [p.id for p in picks] == ["xx099901"]
 
-    def test_at_most_three_picks(self) -> None:
-        allowed = frozenset(f"xx0999{n:02d}" for n in range(6))
+    def test_at_most_max_picks(self) -> None:
+        allowed = frozenset(f"xx0999{n:02d}" for n in range(MAX_PICKS + 3))
         raw = [(i, "Why.") for i in sorted(allowed)]
         assert len(build_picks(raw, allowed)) == MAX_PICKS
 
@@ -437,6 +478,17 @@ class TestCitedIds:
             OverviewPick(id="xx099901", reason="r"),
         ]
         assert cited_ids_of(summary, picks) == ["xx099903", "xx099901", "xx099902"]
+
+    def test_the_suggestion_comes_after_the_picks(self) -> None:
+        summary = [TextSegment(text="Your search seems to focus on faces.")]
+        picks = [OverviewPick(id="xx099902", reason="r")]
+        suggestion = [
+            TextSegment(text="Start with "),
+            DatasetSegment(dataset_id="xx099901"),
+            TextSegment(text=" or "),
+            DatasetSegment(dataset_id="xx099902"),
+        ]
+        assert cited_ids_of(summary, picks, suggestion) == ["xx099902", "xx099901"]
 
 
 class TestAnswerFromReply:
@@ -494,6 +546,95 @@ class TestAnswerFromReply:
         with pytest.raises(OverviewUnanswered):
             answer_from_reply(reply, _request(), model="m")
 
+    def test_a_summary_of_only_an_id_has_no_words(self) -> None:
+        reply = '{"summary": "[[xx099901]]", "picks": [{"id": "xx099901", "reason": "Why."}]}'
+        with pytest.raises(OverviewUnanswered, match="no words"):
+            answer_from_reply(reply, _request(), model="m")
+
+    def test_a_lead_in_that_names_no_result_is_an_answer_with_picks(self) -> None:
+        reply = json.dumps(
+            {
+                "summary": "Your search seems to focus on face perception. Two look promising.",
+                "picks": [
+                    {"id": "xx099902", "reason": "Famous faces."},
+                    {"id": "xx099901", "reason": "Scrambled faces."},
+                ],
+                "suggestion": "I'd start with [[xx099902]], since it has the most faces.",
+            }
+        )
+        answer = answer_from_reply(reply, _request(), model="m")
+        assert all(isinstance(s, TextSegment) for s in answer.summary)
+        assert [p.id for p in answer.picks] == ["xx099902", "xx099901"]
+        assert _text(answer.suggestion) == "I'd start with <xx099902>, since it has the most faces."
+        assert answer.cited_ids == ["xx099902", "xx099901"]
+
+    def test_a_suggestion_alone_can_name_the_result(self) -> None:
+        reply = json.dumps(
+            {
+                "summary": "Your search seems to focus on faces.",
+                "picks": [],
+                "suggestion": "Start with [[xx099903]].",
+            }
+        )
+        answer = answer_from_reply(reply, _request(), model="m")
+        assert answer.picks == []
+        assert answer.cited_ids == ["xx099903"]
+
+    def test_the_suggestion_is_filtered_like_the_summary(self) -> None:
+        over = " ".join(["word"] * SUGGESTION_MAX_WORDS) + "."
+        reply = json.dumps(
+            {
+                "summary": "Your search seems to focus on faces.",
+                "picks": [{"id": "xx099901", "reason": "Why."}],
+                "suggestion": (
+                    "Try [[xx099999]] first. Visit https://evil.example now. "
+                    f"Start with [[xx099901]]. {over}"
+                ),
+            }
+        )
+        answer = answer_from_reply(reply, _request(), model="m")
+        assert _text(answer.suggestion) == "Start with <xx099901>."
+
+    def test_a_long_first_sentence_of_the_suggestion_is_kept(self) -> None:
+        long = "Start with [[xx099901]] " + " ".join(["word"] * SUGGESTION_MAX_WORDS) + "."
+        reply = json.dumps(
+            {
+                "summary": "Your search seems to focus on faces.",
+                "picks": [],
+                "suggestion": f"{long} Then [[xx099902]].",
+            }
+        )
+        answer = answer_from_reply(reply, _request(), model="m")
+        assert DatasetSegment(dataset_id="xx099901") in answer.suggestion
+        assert DatasetSegment(dataset_id="xx099902") not in answer.suggestion
+
+    def test_a_reply_whose_every_id_is_foreign_raises(self) -> None:
+        reply = json.dumps(
+            {
+                "summary": "Your search seems to focus on faces.",
+                "picks": [{"id": "xx099999", "reason": "Not given."}],
+                "suggestion": "Visit https://evil.example. Try [[xx099999]].",
+            }
+        )
+        with pytest.raises(OverviewUnanswered, match="names a result"):
+            answer_from_reply(reply, _request(), model="m")
+
+    def test_a_cut_off_reply_raises_as_cut_off(self) -> None:
+        with pytest.raises(OverviewUnanswered, match="cut off"):
+            answer_from_reply('{"summary": "Your search [[xx099901]]', _request(), model="m")
+
+    def test_a_suggestion_with_nothing_left_is_empty(self) -> None:
+        reply = json.dumps(
+            {
+                "summary": "Your search seems to focus on faces.",
+                "picks": [{"id": "xx099901", "reason": "Why."}],
+                "suggestion": "Open [[xx099999]].",
+            }
+        )
+        answer = answer_from_reply(reply, _request(), model="m")
+        assert answer.suggestion == []
+        assert answer.cited_ids == ["xx099901"]
+
     def test_an_answer_serializes_to_the_settled_shape(self) -> None:
         answer = answer_from_reply(
             '{"summary": "See [[xx099901]].", "picks": [{"id": "xx099901", "reason": "Why."}]}',
@@ -504,6 +645,7 @@ class TestAnswerFromReply:
         assert set(body) == {
             "summary",
             "picks",
+            "suggestion",
             "cited_ids",
             "shown",
             "cached",
@@ -512,6 +654,7 @@ class TestAnswerFromReply:
         }
         assert body["summary"] == [{"text": "See "}, {"dataset_id": "xx099901"}, {"text": "."}]
         assert body["picks"] == [{"id": "xx099901", "reason": "Why."}]
+        assert body["suggestion"] == []
 
 
 class FakeClock:
