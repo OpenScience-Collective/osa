@@ -198,6 +198,12 @@ class TestIsAuthorizedOrigin:
         assert _is_authorized_origin("https://other.nemar.org", "nemar") is False
         assert _is_authorized_origin("https://test.nemar.org", "hed") is False
 
+    def test_nemar_app_host_is_authorized_for_nemar_only(self):
+        """A signed-in reader's pages on nemar.org are served from app.nemar.org with the
+        same widget (#751), so it reaches the platform key for NEMAR and no other community."""
+        assert _is_authorized_origin("https://app.nemar.org", "nemar") is True
+        assert _is_authorized_origin("https://app.nemar.org", "hed") is False
+
     def test_unknown_community_returns_false(self):
         """Should return False for unknown community ID."""
         origin = _get_exact_origin("hed")
