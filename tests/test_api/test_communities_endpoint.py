@@ -250,6 +250,18 @@ class TestCommunitiesEndpoint:
         others = {cid: w.get("color_scheme") for cid, w in by_id.items() if cid != "nemar"}
         assert others and all(value is None for value in others.values()), others
 
+    def test_only_nemar_expands_to_the_center_stage_dialog(self) -> None:
+        """NEMAR's expand button opens the center-stage dialog instead of a separate
+        window (#756); every other community keeps the 'popout' default, which the API
+        omits."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        assert by_id["nemar"].get("expand") == "center"
+        others = {cid: w.get("expand") for cid, w in by_id.items() if cid != "nemar"}
+        assert others and all(value is None for value in others.values()), others
+
     def test_only_nemar_runs_code_or_opens_a_notebook(self) -> None:
         """Running the assistant's Python in the reader's browser, and the notebook
         opened from the widget, are both opt-in per community: a client tool under
