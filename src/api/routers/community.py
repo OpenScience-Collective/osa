@@ -3415,9 +3415,10 @@ def create_community_router(community_id: str) -> APIRouter:
     ) -> OverviewResponse:
         """A short, cited overview of the top results of a search, on the quick model.
 
-        The caller sends the query, its filters and up to 10 results; the community's
-        quick model writes a summary of at most about 100 words, as text and result-id
-        segments, with up to 3 picks. Only ids from the request's results can appear.
+        The caller sends the query, its filters and up to 20 results; the community's
+        quick model writes a short lead-in, up to 10 picks and a suggestion of where to
+        start, the prose as text and result-id segments. Only ids from the request's
+        results can appear.
 
         The overview is cached in memory for 24 hours, keyed on the normalized query, the
         filters and the results, and identical requests in flight share one model call.

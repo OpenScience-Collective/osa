@@ -8,7 +8,8 @@ markers is not observable offline.
 The input is ``tests/fixtures/overview_results.json``: rows recorded from the NEMAR
 staging API (``api-test.nemar.org/datasets``, the ``xx0999NN`` test datasets). What is
 asserted is what must hold of any answer, not its wording: every id the answer cites is one
-of the ids it was given, and the summary has words and fits the length cap.
+of the ids it was given, the summary has words and fits the length cap, and so does the
+suggestion of where to start.
 
 A real, paid API call (one short request on the quick model).
 """
@@ -23,6 +24,7 @@ from src.api.overview import (
     MAX_PICKS,
     OVERVIEW_MAX_TOKENS,
     OVERVIEW_REASONING_EFFORT,
+    SUGGESTION_MAX_WORDS,
     SUMMARY_MAX_WORDS,
     DatasetSegment,
     OverviewRequest,
@@ -65,6 +67,10 @@ async def test_a_real_overview_cites_only_the_results_it_was_given() -> None:
     assert 0 < _plain_words(response.summary) <= SUMMARY_MAX_WORDS
     assert len(response.picks) <= MAX_PICKS
     assert {pick.id for pick in response.picks} <= given
+    for segment in response.suggestion:
+        if isinstance(segment, DatasetSegment):
+            assert segment.dataset_id in given
+    assert _plain_words(response.suggestion) <= SUGGESTION_MAX_WORDS
     assert response.shown == len(request.results)
     assert run.usage.input_tokens > 0
     assert run.usage.output_tokens > 0

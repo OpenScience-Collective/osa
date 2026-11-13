@@ -33,6 +33,8 @@ from src.api.overview import (
     CACHE_MAX_ENTRIES,
     CACHE_TTL_SECONDS,
     MAX_PICKS,
+    MAX_RESULTS,
+    OVERVIEW_MAX_TOKENS,
     OverviewCache,
     overview_caches,
 )
@@ -96,12 +98,19 @@ class GatedChatModel(ScriptedChatModel):
         return self._generate(messages, stop, run_manager, **kwargs)
 
 
-def reply(summary: str, picks: list[tuple[str, str]] = (), *, usage: bool = True) -> AIMessage:
+def reply(
+    summary: str,
+    picks: list[tuple[str, str]] = (),
+    *,
+    suggestion: str | None = None,
+    usage: bool = True,
+) -> AIMessage:
     """What the model writes: the JSON the prompt asks for, with its token usage."""
+    written: dict = {"summary": summary, "picks": [{"id": i, "reason": r} for i, r in picks]}
+    if suggestion is not None:
+        written["suggestion"] = suggestion
     return AIMessage(
-        content=json.dumps(
-            {"summary": summary, "picks": [{"id": i, "reason": r} for i, r in picks]}
-        ),
+        content=json.dumps(written),
         usage_metadata=(
             {
                 "input_tokens": INPUT_TOKENS,
@@ -262,6 +271,7 @@ class TestTheSettledShape:
         assert set(data) == {
             "summary",
             "picks",
+            "suggestion",
             "cited_ids",
             "shown",
             "cached",
@@ -278,6 +288,7 @@ class TestTheSettledShape:
             {"id": IDS[1], "reason": "Use it for MEG."},
         ]
         assert len(data["picks"]) <= MAX_PICKS
+        assert data["suggestion"] == []
         assert data["cited_ids"] == IDS[:2]
         assert data["shown"] == len(IDS)
         assert data["cached"] is False
@@ -294,7 +305,32 @@ class TestTheSettledShape:
         (call,) = made.factory_calls
         assert call["model"] == HAIKU
         assert call["reasoning_effort"] == "low"
-        assert call["max_tokens"] <= 2_000
+        assert call["max_tokens"] == OVERVIEW_MAX_TOKENS
+        assert call["max_tokens"] <= 4_000
+
+    async def test_a_lead_in_picks_and_a_suggestion(self, client, monkeypatch) -> None:
+        rig(
+            monkeypatch,
+            None,
+            reply(
+                "Your search seems to focus on face perception in EEG. "
+                "I had a look, and two of these look especially promising.",
+                [(IDS[1], "Famous faces in EEG."), (IDS[0], "Scrambled faces.")],
+                suggestion=f"I'd start with [[{IDS[1]}]], since it has famous faces. "
+                "Skip [[zz999999]].",
+            ),
+        )
+        response = await post(client)
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert all("text" in s for s in data["summary"])
+        assert [p["id"] for p in data["picks"]] == [IDS[1], IDS[0]]
+        assert all(set(s) in ({"text"}, {"dataset_id"}) for s in data["suggestion"])
+        assert (
+            text_of(data["suggestion"]) == f"I'd start with <{IDS[1]}>, since it has famous faces."
+        )
+        assert data["cited_ids"] == [IDS[1], IDS[0]]
 
     async def test_the_model_is_given_the_results_as_fenced_data(self, client, monkeypatch) -> None:
         made = rig(monkeypatch)
@@ -812,10 +848,10 @@ class TestGuards:
         assert "quick model" in response.json()["detail"]
         assert made.model.calls == 0
 
-    async def test_more_than_ten_results_is_a_422(self, client, monkeypatch) -> None:
+    async def test_more_than_the_most_results_is_a_422(self, client, monkeypatch) -> None:
         made = rig(monkeypatch)
-        eleven = [row(f"xx0999{n:02d}") for n in range(11)]
-        response = await post(client, body(results=eleven))
+        too_many = [row(f"xx0999{n:02d}") for n in range(MAX_RESULTS + 1)]
+        response = await post(client, body(results=too_many))
         assert response.status_code == 422
         assert made.model.calls == 0
 
@@ -867,14 +903,17 @@ class TestGuards:
         assert "at least 3 words" in response.text
         assert made.model.calls == 0
 
-    async def test_ten_results_at_the_limits_are_accepted(self, client, monkeypatch) -> None:
+    async def test_the_most_results_at_the_limits_are_accepted(self, client, monkeypatch) -> None:
         rig(monkeypatch, None, reply("The first is [[xx099900]]."))
-        results = [row(f"xx0999{n:02d}", title="t" * 200, description="d" * 500) for n in range(10)]
+        results = [
+            row(f"xx0999{n:02d}", title="t" * 200, description="d" * 500)
+            for n in range(MAX_RESULTS)
+        ]
         response = await post(
             client, body(query="q" * 99 + " " + "q" * 99 + " " + "q" * 100, results=results)
         )
         assert response.status_code == 200, response.text
-        assert response.json()["shown"] == 10
+        assert response.json()["shown"] == MAX_RESULTS
 
     async def test_without_an_authorized_origin_or_a_key_it_is_a_403(
         self, client, monkeypatch
