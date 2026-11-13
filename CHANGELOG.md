@@ -18,6 +18,7 @@ the version being released and start a new `[Unreleased]` section above it.
 - **Search overview: the top 20, up to 10 picks, and where to start (#748)**: `POST /{community}/overview` accepts up to 20 results (was 10) and answers the way a colleague would talk them through.
   `summary` is now a short lead-in on what the search seems to focus on and how many results look promising (asked for in 45 words, held to 60; it may name no result), `picks` holds up to 10 (was 3), best first, each saying how it relates to the search, and a new `suggestion` field says which pick to start with and why, as segments under the same citation filter.
   A reply is an overview when its summary has words and the summary, picks and suggestion together name a result; `OVERVIEW_MAX_TOKENS` goes from 1500 to 3000 for the longer reply.
+  The voice stays on the datasets: the prompt forbids talking about the descriptions or snippets it was given (a real overview on dev said "the snippet is partial").
   A caller written for the earlier contract keeps working (it reads the first picks and ignores `suggestion`); nemar.org's side is nemarOrg/website#531, which must deploy after this.
   Tests: `tests/test_api/test_overview_unit.py` and `tests/test_api/test_search_overview.py` updated and extended; the real-model test also checks the suggestion.
 
