@@ -1340,7 +1340,8 @@ const HEADER_FIT = `(() => {
 })()`;
 
 const SWEEP_WIDTHS = (() => {
-  const widths = new Set([601, 700, 768, 800, 1000, 1100, 1101]);
+  // Either side of each breakpoint: 1000 (labels) and 1200 (the tabs' own row), #759.
+  const widths = new Set([601, 700, 768, 800, 900, 1000, 1001, 1199, 1200, 1201]);
   for (let w = 320; w <= 1440; w += 40) widths.add(w);
   return [...widths].sort((a, b) => a - b);
 })();

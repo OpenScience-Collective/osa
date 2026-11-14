@@ -1379,6 +1379,58 @@ console.log('\nThe header\'s expand button follows widget.expand: pop-out, Expan
   assert(popout.q('.osa-popout-btn').hidden && popout.q('.osa-expand-btn').hidden, 'a pop-out window shows neither: it is the expanded view');
 }
 
+console.log('\nThe dialog\'s New chat: a fresh conversation, the one on screen kept in History (#759)');
+{
+  const ctx = await start();
+  ctx.api.open({ mode: 'center' });
+  const newBtn = () => ctx.q('.osa-center-new-btn');
+  const actions = [...ctx.q('.osa-header-actions').children].filter((el) => el.tagName === 'BUTTON');
+  assert(actions.indexOf(newBtn()) === actions.indexOf(ctx.q('.osa-history-btn')) - 1, 'New chat is the pill just before History');
+  assertEqual([newBtn().getAttribute('aria-label'), text(newBtn())], ['New chat', 'New chat'], 'named and labelled New chat');
+  assert(newBtn().disabled, 'disabled while the conversation is empty');
+
+  const release = ctx.hold();
+  ctx.q('.osa-center-input').value = 'What is the sampling rate?';
+  ctx.q('.osa-center-send').click();
+  await waitUntil(() => ctx.sent.length === 1, 'the question is in flight');
+  assert(newBtn().disabled, 'and while a reply is loading');
+  release();
+  await answered(ctx);
+  assert(!newBtn().disabled, 'enabled once the conversation has a reply');
+
+  const before = ctx.stored();
+  const firstId = before.activeId;
+  const session = ctx.hooks.getSessionId();
+  const heard = record(ctx);
+  newBtn().click();
+  const after = ctx.stored();
+  assert(after.activeId !== firstId, 'it starts a new conversation');
+  assert(after.conversations.some((c) => c.id === firstId && c.messages.length >= 2), 'and the one on screen is kept, in History');
+  assert(ctx.hooks.getSessionId() !== session, 'with a new session');
+  assert(ctx.isCenter() && ctx.win().classList.contains('osa-center-empty'), 'the dialog stays, on its start screen');
+  assertEqual(active(ctx), ctx.q('.osa-center-input'), 'with the focus in the start screen\'s field');
+  assert(newBtn().disabled, 'and New chat disabled again, the new conversation being empty');
+  assertEqual(heard.events, [], 'the page hears nothing: no mode change, no send');
+  heard.stop();
+
+  // History's own New chat, in the dialog, lands on the start screen's field too.
+  ctx.q('.osa-center-input').value = 'A second question';
+  ctx.q('.osa-center-send').click();
+  await answered(ctx, 2);
+  ctx.q('.osa-history-btn').click();
+  ctx.q('.osa-history-new').click();
+  assert(!ctx.q('.osa-history-sheet').classList.contains('open') && ctx.win().classList.contains('osa-center-empty'), 'History\'s New chat starts one as well');
+  assertEqual(active(ctx), ctx.q('.osa-center-input'), 'with the focus in the start screen\'s field, not the hidden chat field');
+
+  ctx.api.setMode('corner');
+  assertEqual(ctx.window.getComputedStyle(newBtn()).display, 'none', 'the corner does not draw it: Clear chat is the corner\'s');
+
+  const nb = await onNotebook();
+  nb.api.setMode('center');
+  assertEqual(nb.tab(), 'notebook', 'sanity: the dialog on the notebook tab');
+  assertEqual(nb.window.getComputedStyle(nb.q('.osa-center-new-btn')).visibility, 'hidden', 'on the notebook tab it is hidden, with History');
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`${passed} passed, ${failed} failed`);
 console.log('='.repeat(60));
