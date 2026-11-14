@@ -23,8 +23,8 @@ the version being released and start a new `[Unreleased]` section above it.
   Tests: a block in `frontend/test-widget-host-api.js`; `center-stage-check.mjs` samples either side of both breakpoints.
 - **Widget: `widget.expand` chooses what the header's expand button does (#756)**: `popout` (the default, a separate window, as before), `center` (an **Expand** button that opens the center-stage dialog with the same conversation, as `setMode('center')` does, `modechange` included, and **Move to corner** goes back) or `none` (no button).
   A community using the center-stage dialog no longer has a third, detached surface, and the corner can reach the dialog; NEMAR sets `center`.
-  `GET /{community}` sends `expand` only when it is not `popout`; the widget remembers it with the community's look, and a host page's `setConfig({expand})` outranks it. Expand is hidden in the dialog and in a pop-out window.
-  Tests: `WidgetConfig` and `GET /communities` tests, and a block in `frontend/test-widget-host-api.js` (default, center, none, host override, bad values, the pop-out window).
+  `GET /{community}` sends `expand` only when it is not `popout`; the widget remembers it with the community's look, and a host page's `setConfig({expand})` outranks it. `setConfig({expand: null})` puts it back to `popout`, as `null` does for the launcher settings, and `undefined` is dropped without a warning. A pop-out window open when a host moves `expand` off `popout` is closed, so the window and the dialog do not show one conversation. Expand is hidden in the dialog and in a pop-out window.
+  Tests: `WidgetConfig` and `GET /communities` tests, and a block in `frontend/test-widget-host-api.js` (default, center, none, host override, bad values, undefined and null, the pop-out window), and `frontend/test-widget-popout.js` (a host moving expand off `popout` closes an open pop-out).
 
 ## [0.8.21] - 2026-11-13
 

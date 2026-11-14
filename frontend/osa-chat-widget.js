@@ -19060,10 +19060,19 @@
         warnInvalidColorScheme('colorScheme', opts.colorScheme, COLOR_SCHEMES);
         delete opts.colorScheme;
       }
-      // Refused here, like a bad color scheme, so the community's own value still applies.
-      if ('expand' in opts && !EXPAND_MODES.includes(opts.expand)) {
-        warnInvalidExpand('expand', opts.expand);
-        delete opts.expand;
+      // As for the launcher keys below: undefined is not a value (a wrapper passing along a
+      // setting it does not have), and null puts the setting back to its default, over the
+      // community's. Any other value outside the three modes is refused here, so the
+      // community's own value still applies.
+      if ('expand' in opts) {
+        if (opts.expand === undefined) {
+          delete opts.expand;
+        } else if (opts.expand === null) {
+          opts.expand = 'popout';
+        } else if (!EXPAND_MODES.includes(opts.expand)) {
+          warnInvalidExpand('expand', opts.expand);
+          delete opts.expand;
+        }
       }
       // A launcher setting a page gets wrong is refused here, so the community's own value
       // still applies: a key the page sets outranks the community's, and a wrong one would
@@ -19091,6 +19100,10 @@
       Object.assign(CONFIG, opts);
       if ('colorScheme' in opts) applyColorSchemeEverywhere();
       if ('expand' in opts) {
+        // A pop-out window the reader opened is closed when the host moves expand off 'popout':
+        // the window and the center-stage dialog would otherwise show one conversation. An
+        // unsent draft typed into the window goes with it.
+        if (CONFIG.expand !== 'popout' && chatPopup && !chatPopup.closed) chatPopup.close();
         const container = document.querySelector('.osa-chat-widget');
         if (container) syncExpandButton(container);
       }

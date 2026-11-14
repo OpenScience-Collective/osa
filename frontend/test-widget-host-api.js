@@ -1331,6 +1331,24 @@ console.log('\nThe header\'s expand button follows widget.expand: pop-out, Expan
   assert(warnings.warn.some((line) => /invalid expand "window"/.test(line)), 'a host value outside popout, center and none is refused with a warning');
   assert(!bad.q('.osa-expand-btn').hidden, "and the community's own value still applies");
 
+  // As for the launcher keys: undefined is not a value, so it is dropped without a warning and
+  // the community's value stands; null puts the setting back to the pop-out default, over the
+  // community's center.
+  const unset = await load({ widget: { expand: 'center' } });
+  const quiet = listen();
+  unset.api.setConfig({ expand: undefined });
+  quiet.stop();
+  await unset.boot();
+  unset.api.open();
+  assert(!quiet.warn.some((line) => /expand/.test(line)), 'expand: undefined is dropped without a warning');
+  assert(!unset.q('.osa-expand-btn').hidden, "and the community's own value still applies");
+
+  const reset = await load({ widget: { expand: 'center' } });
+  reset.api.setConfig({ expand: null });
+  await reset.boot();
+  reset.api.open();
+  assert(!reset.q('.osa-popout-btn').hidden && reset.q('.osa-expand-btn').hidden, "expand: null puts it back to the pop-out default, over the community's center");
+
   const wrong = await load({ widget: { expand: 'sideways' } });
   const heardWrong = listen();
   await wrong.boot();
