@@ -19100,6 +19100,10 @@
       Object.assign(CONFIG, opts);
       if ('colorScheme' in opts) applyColorSchemeEverywhere();
       if ('expand' in opts) {
+        // A pop-out window the reader opened is closed when the host moves expand off 'popout':
+        // the window and the center-stage dialog would otherwise show one conversation. An
+        // unsent draft typed into the window goes with it.
+        if (CONFIG.expand !== 'popout' && chatPopup && !chatPopup.closed) chatPopup.close();
         const container = document.querySelector('.osa-chat-widget');
         if (container) syncExpandButton(container);
       }
