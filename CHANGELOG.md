@@ -13,6 +13,8 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+## [0.8.22] - 2026-11-13
+
 ### Added
 
 - **AI Mode dialog: a New chat button in the header (#759)**: a **New chat** pill before History starts a fresh conversation, keeping the one on screen in History, as History's own **+ New chat** does, and shows the start screen with the focus in its field.
