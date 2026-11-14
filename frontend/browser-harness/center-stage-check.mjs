@@ -53,7 +53,7 @@
  * of the inert page, which only a real browser shows (it blurs the control that is hidden).
  *
  * The header holds all of its controls at every width: a sweep from 320 to 1440 px (every
- * 40 px, and 601, 700, 768, 800, 1000, 1100 and 1101) of the tabbed dialog on its Chat tab
+ * 40 px, and 601, 700, 768, 800, 900, 1000, 1001, 1199, 1200 and 1201) of the tabbed dialog on its Chat tab
  * (with History and Continue in notebook showing) and on its Notebook tab asserts no
  * horizontal overflow, Close and Move to corner inside the dialog, and no label broken in
  * two.
@@ -943,6 +943,7 @@ const NOTEBOOK_GEOMETRY = `(() => {
     dock: box(document.querySelector('.osa-center-dock-btn')),
     close: box(document.querySelector('.osa-close-btn')),
     shown: {
+      newChat: visible('.osa-center-new-btn'),
       history: visible('.osa-history-btn'),
       settings: visible('.osa-settings-btn-open'),
       continue: visible('.osa-center-notebook-btn'),
@@ -1017,7 +1018,7 @@ async function checkNotebookTab(cdp, base, screenshotDir, viewport, site) {
   report(g.tabs !== null && g.selected.length === 1 && g.selected[0] === 'Notebook', `${label}: the tabs are in the header, with Notebook selected`, [g.tabs, g.selected]);
   report(g.tabs && Math.abs(g.tabs.height - 36) <= 0.5 && g.tabButtons.every((b) => b.height >= 30), `${label}: the tab pair is 36 px tall like the header's buttons, each tab at least 30`, [g.tabs, g.tabButtons]);
   report(g.tabs && g.tabs.left >= g.win.left - 1 && g.tabs.right <= g.win.right + 1, `${label}: the tabs are inside the dialog`, [g.tabs, g.win]);
-  if (width > 1100) {
+  if (width > 1200) {
     report(g.tabs && g.tabs.top < g.pill.bottom && g.tabs.bottom > g.pill.top, `${label}: on the laptop the tabs share the pill's row`, [g.tabs, g.pill]);
   } else {
     report(g.tabs && g.tabs.top >= g.pill.bottom - 1, `${label}: on a narrow window the tabs take a row of their own under the pill`, [g.tabs, g.pill]);
@@ -1027,7 +1028,7 @@ async function checkNotebookTab(cdp, base, screenshotDir, viewport, site) {
     `${label}: the notebook's frame fills the dialog's width and runs to its bottom edge`, [g.frame, g.win]);
   report(g.frame !== null && g.frame.top >= g.header.bottom - 1 && g.frame.height >= g.win.height - g.header.height - 130,
     `${label}: under the header, which it does not overlap`, [g.frame, g.header]);
-  report(!g.shown.history && !g.shown.settings && !g.shown.continue, `${label}: History, Settings and Continue in notebook are hidden on the Notebook tab`, g.shown);
+  report(!g.shown.newChat && !g.shown.history && !g.shown.settings && !g.shown.continue, `${label}: New chat, History, Settings and Continue in notebook are hidden on the Notebook tab`, g.shown);
   report(g.shown.dock && g.shown.close && g.dock.height >= 36 && g.close.height >= 36, `${label}: Move to corner and Close stay, at least 36 px tall`, [g.shown, g.dock, g.close]);
   report(!g.sideways, `${label}: nothing scrolls sideways`);
   const light = await call(`getComputedStyle(document.querySelector('.osa-chat-window')).backgroundColor`);
@@ -1336,6 +1337,14 @@ const HEADER_FIT = `(() => {
     wrapped: [...header.querySelectorAll('.osa-center-label')].filter((l) => getComputedStyle(l).display !== 'none').some((l) => l.getBoundingClientRect().height > 20),
     continueShown: !document.querySelector('.osa-center-notebook-btn').hidden,
     tabs: !document.querySelector('.osa-center-tabs').hidden,
+    labels: [...header.querySelectorAll('.osa-center-label')].filter((l) => getComputedStyle(l).display !== 'none').length,
+    tabsShareRow: (() => {
+      const tabs = document.querySelector('.osa-center-tabs');
+      if (!tabs || tabs.hidden) return null;
+      const t = tabs.getBoundingClientRect();
+      const p = document.querySelector('.osa-center-pill').getBoundingClientRect();
+      return t.top < p.bottom && t.bottom > p.top;
+    })(),
   };
 })()`;
 
@@ -1349,13 +1358,21 @@ const SWEEP_WIDTHS = (() => {
 async function sweepHeader(cdp, sessionId, state) {
   const call = (expression, options) => evaluate(cdp, sessionId, expression, options);
   const bad = [];
+  const at = {};
   for (const width of SWEEP_WIDTHS) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false }, sessionId);
     await Bun.sleep(60);
     const fit = await call(HEADER_FIT);
+    at[width] = fit;
     if (fit.overflow || fit.outside.length || !fit.close || !fit.dock || fit.wrapped) bad.push({ width, ...fit });
   }
   report(bad.length === 0, `header sweep, ${state}: at ${SWEEP_WIDTHS.length} widths from 320 to 1440 nothing overflows, Close and Move to corner are inside the dialog, no label wraps`, bad.slice(0, 3));
+  // The breakpoints themselves (#759): the labels go at 1000 px and under, and the tabs
+  // take their own row at 1200 px and under.
+  report(at[1001].labels > 0 && at[1000].labels === 0, `header sweep, ${state}: labels show at 1001 px and the buttons are icons only at 1000 px`, [at[1000].labels, at[1001].labels]);
+  if (at[1201].tabs) {
+    report(at[1201].tabsShareRow === true && at[1200].tabsShareRow === false, `header sweep, ${state}: the tabs share the pill's row at 1201 px and take their own at 1200 px`, [at[1200].tabsShareRow, at[1201].tabsShareRow]);
+  }
 }
 
 async function checkHeaderSweep(cdp, base, site) {
