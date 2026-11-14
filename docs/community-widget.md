@@ -1273,7 +1273,10 @@ Center is the same `.osa-chat-window`, with an `osa-center` class and a scrim be
 - **Focus.**
   Focus moves into the dialog on open, and **Close** (or `close()`) gives it back to the element that had it before the window opened, or to the launcher when there was none.
 - **Header.**
-  The AI Mode pill, the dataset id and, when the page gave one, its title; History; **Continue in notebook** (below); Move to corner; Settings; and Close.
+  The AI Mode pill, the dataset id and, when the page gave one, its title; **New chat**; History; **Continue in notebook** (below); Move to corner; Settings; and Close.
+  **New chat** (#759) does what History's own **+ New chat** does, without opening History: a fresh conversation, with the one on screen kept in History, and the start screen with the focus in its field.
+  It is disabled while the conversation is empty or a reply is loading. The corner window has **Clear chat** instead, which discards the conversation.
+  Below a 1000px viewport the header's buttons show their icons only, and below 1200px the Chat and Notebook tabs take a row of their own.
   `setDataset({id, title})` takes an optional `title`, a string of 1 to 200 characters.
   A title that is not one is dropped alone, with a `console.warn`, and the id is shown without it.
 - **Continue in notebook.**
@@ -1283,7 +1286,7 @@ Center is the same `.osa-chat-window`, with an `osa-center` class and a scrim be
   A capsule community's dialog has a second view, the same notebook the corner shows, in the same window and the same `<iframe>`; the dialog is the corner window with a class, so the frame is not moved or reloaded by tab switches, docking or mode changes, and those keep the reader's Python session and edits (only Try again, or a change of dataset, replaces the frame).
   The header gets two tabs, **Chat** and **Notebook** (`role="tablist"`, `aria-selected`, arrow keys, Home and End, only the selected tab in the Tab order), from the start, before any reply has run code, whenever the page's dataset has a notebook available (#743); a dialog with no notebook (no dataset, as under a search's "Ask a follow-up") keeps the header above, and the corner never shows them.
   Selecting the Notebook tab the first time creates the frame; `open()`, `ask()` and `seed()` open on Chat.
-  On the Notebook tab History, Settings and **Continue in notebook** are hidden (they are the chat's), **Move to corner** and Close stay, and moving to the corner, with the button or with Escape, keeps the tab: the capsule shows the notebook.
+  On the Notebook tab New chat, History, Settings and **Continue in notebook** are hidden (they are the chat's), **Move to corner** and Close stay, and moving to the corner, with the button or with Escape, keeps the tab: the capsule shows the notebook.
   Raising the dialog from a corner window that is on the notebook keeps it too.
   The tab switch fades the two views over each other in 60 ms, with nothing at all under `prefers-reduced-motion`; at 1100 px and under the tabs take a row of their own under the pill and the buttons.
   Tabbing inside the notebook's frame is the frame's own (its keys never reach the page, so the dialog cannot trap them there, and Escape inside it is the notebook's).

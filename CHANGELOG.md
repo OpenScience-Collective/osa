@@ -15,6 +15,10 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **AI Mode dialog: a New chat button in the header (#759)**: a **New chat** pill before History starts a fresh conversation, keeping the one on screen in History, as History's own **+ New chat** does, and shows the start screen with the focus in its field.
+  It is disabled while the conversation is empty or a reply is loading, hidden on the Notebook tab with History, and icon-only where the header drops its labels; History's New chat in the dialog now also focuses the start screen's field.
+  The header drops its labels below a 1000px viewport (was 900px) and gives the Chat and Notebook tabs their own row below 1200px (was 1100px), measured in Chrome with the extra pill.
+  Tests: a block in `frontend/test-widget-host-api.js`; `center-stage-check.mjs` samples either side of both breakpoints.
 - **Widget: `widget.expand` chooses what the header's expand button does (#756)**: `popout` (the default, a separate window, as before), `center` (an **Expand** button that opens the center-stage dialog with the same conversation, as `setMode('center')` does, `modechange` included, and **Move to corner** goes back) or `none` (no button).
   A community using the center-stage dialog no longer has a third, detached surface, and the corner can reach the dialog; NEMAR sets `center`.
   `GET /{community}` sends `expand` only when it is not `popout`; the widget remembers it with the community's look, and a host page's `setConfig({expand})` outranks it. Expand is hidden in the dialog and in a pop-out window.
