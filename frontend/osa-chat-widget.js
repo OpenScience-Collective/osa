@@ -5847,6 +5847,15 @@
       display: inline;
     }
 
+    /* New chat while it has nothing to do (#759): dimmed as a disabled header button is,
+       over the dialog's own opacity: 1 and hover wash. */
+    .osa-chat-window.osa-center .osa-center-new-btn:disabled,
+    .osa-chat-window.osa-center .osa-center-new-btn:disabled:hover {
+      opacity: 0.4;
+      cursor: not-allowed;
+      background: var(--osa-bg);
+    }
+
     .osa-chat-widget.osa-dark .osa-chat-window.osa-center .osa-history-btn[aria-expanded="true"] {
       color: var(--osa-accent);
       background: var(--osa-assistant-bg);
@@ -9905,14 +9914,16 @@
     const empty = chatIsEmpty();
     const resetBtn = container.querySelector('.osa-reset-btn');
     if (resetBtn) resetBtn.disabled = empty;
+    // isLoading turns false at a reply's first visible text; currentReply lasts until the
+    // reply has ended, so New chat waits for that.
     const newBtn = container.querySelector('.osa-center-new-btn');
-    if (newBtn) newBtn.disabled = empty || isLoading;
+    if (newBtn) newBtn.disabled = empty || isLoading || currentReply !== null;
   }
 
   // The dialog's New chat (#759): what History's New chat does, without opening History.
   // The conversation on screen stays in History, and the dialog shows its start screen.
   function startDialogConversation(container) {
-    if (isLoading || chatIsEmpty()) return;
+    if (isLoading || currentReply !== null || chatIsEmpty()) return;
     startHistoryConversation(container);
   }
 
@@ -17314,7 +17325,10 @@
     }
     renderMessages(container);
     renderSuggestions(container);
+    // Clear chat is disabled now (the chat is empty); focus that was on it goes to the field.
+    const hadFocus = document.activeElement === container.querySelector('.osa-reset-btn');
     syncChatActions(container);
+    if (hadFocus) focusChatField(container, true);
   }
 
   // Toggle chat window
