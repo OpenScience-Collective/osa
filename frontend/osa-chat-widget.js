@@ -870,6 +870,8 @@
   // bottom right, where the window goes (boards C2, C3; #730).
   ICONS.sparkle = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z"/><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>';
   ICONS.dock = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7l10 10"/><path d="M17 7v10H7"/></svg>';
+  // New chat in the dialog's header (#759): the chat bubble with a plus.
+  ICONS.newChat = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="12" y1="7" x2="12" y2="13"/><line x1="9" y1="10" x2="15" y2="10"/></svg>';
   // Expand to the center-stage dialog (#756): arrows out to two corners, the opposite of
   // the dock's single arrow into one.
   ICONS.expand = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
@@ -2182,9 +2184,11 @@
       .osa-chat-window.osa-center .osa-view,
       .osa-chat-window.osa-center .osa-view.osa-view-on,
       .osa-chat-window.osa-center .osa-view.osa-view-off,
+      .osa-capsule .osa-chat-window.osa-center .osa-center-new-btn,
       .osa-capsule .osa-chat-window.osa-center .osa-history-btn,
       .osa-capsule .osa-chat-window.osa-center .osa-settings-btn-open,
       .osa-capsule .osa-chat-window.osa-center .osa-center-notebook-btn,
+      .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-new-btn,
       .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-history-btn,
       .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-settings-btn-open,
       .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-notebook-btn,
@@ -5729,6 +5733,7 @@
     /* What only the dialog shows. */
     .osa-center-pill,
     .osa-center-context,
+    .osa-center-new-btn,
     .osa-center-dock-btn,
     .osa-center-label,
     .osa-center-start {
@@ -5821,10 +5826,12 @@
       background: var(--osa-assistant-bg);
     }
 
+    .osa-chat-window.osa-center .osa-center-new-btn,
     .osa-chat-window.osa-center .osa-center-dock-btn {
       display: flex;
     }
 
+    .osa-chat-window.osa-center .osa-center-new-btn,
     .osa-chat-window.osa-center .osa-history-btn,
     .osa-chat-window.osa-center .osa-center-dock-btn {
       gap: 6px;
@@ -5838,6 +5845,15 @@
 
     .osa-chat-window.osa-center .osa-center-label {
       display: inline;
+    }
+
+    /* New chat while it has nothing to do (#759): dimmed as a disabled header button is,
+       over the dialog's own opacity: 1 and hover wash. */
+    .osa-chat-window.osa-center .osa-center-new-btn:disabled,
+    .osa-chat-window.osa-center .osa-center-new-btn:disabled:hover {
+      opacity: 0.4;
+      cursor: not-allowed;
+      background: var(--osa-bg);
     }
 
     .osa-chat-widget.osa-dark .osa-chat-window.osa-center .osa-history-btn[aria-expanded="true"] {
@@ -6114,6 +6130,7 @@
         display: none;
       }
 
+      .osa-chat-window.osa-center .osa-center-new-btn,
       .osa-chat-window.osa-center .osa-history-btn,
       .osa-chat-window.osa-center .osa-center-dock-btn {
         padding: 0;
@@ -6254,12 +6271,14 @@
        chat's. Hidden, not removed, as in the corner, so Move to corner and Close do not
        move as the tabs switch; hidden controls are out of the Tab order too. The fade is
        the capsule's, shortened to a few tens of milliseconds. */
+    .osa-capsule .osa-chat-window.osa-center .osa-center-new-btn,
     .osa-capsule .osa-chat-window.osa-center .osa-history-btn,
     .osa-capsule .osa-chat-window.osa-center .osa-settings-btn-open,
     .osa-capsule .osa-chat-window.osa-center .osa-center-notebook-btn {
       transition: opacity 60ms linear, background 0.2s, visibility 0s;
     }
 
+    .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-new-btn,
     .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-history-btn,
     .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-settings-btn-open,
     .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-notebook-btn {
@@ -6299,15 +6318,17 @@
 
     /* The header's buttons never shrink or wrap (the dataset line is what gives way, with
        an ellipsis), so they must fit the dialog on their own. Measured in Chrome with
-       Continue in notebook showing: pill, History, Continue in notebook, Move to corner,
-       Settings and Close with their labels need about 700px, and the dialog is the
-       viewport less 160px, so below 900px (a dialog of 740px, with room to spare) they
-       keep their icons only, as they do on a phone. */
-    @media (max-width: 900px) {
+       Continue in notebook showing: New chat (#759), History, Continue in notebook, Move to
+       corner, Settings and Close with their labels take 632px, about 780px with the pill
+       and the header's padding, and the dialog is the viewport less 160px, so below
+       1000px (a dialog of 840px, with room to spare) they keep their icons only, as they
+       do on a phone. */
+    @media (max-width: 1000px) {
       .osa-chat-window.osa-center .osa-center-label {
         display: none;
       }
 
+      .osa-chat-window.osa-center .osa-center-new-btn,
       .osa-chat-window.osa-center .osa-history-btn,
       .osa-chat-window.osa-center .osa-center-dock-btn,
       .osa-chat-window.osa-center .osa-center-notebook-btn:not([hidden]) {
@@ -6316,10 +6337,10 @@
     }
 
     /* The dialog's header with its tabs: the tabs share the pill's row while the row has
-       room for them (the labelled buttons, the pill and the tab pair need about 890px, a
-       dialog of a viewport of 1050px), and take a row of their own, shared between
-       them, from 1100px down. */
-    @media (max-width: 1100px) {
+       room for them (the labelled buttons, New chat included (#759), the pill and the tab
+       pair need about 1000px, a dialog of a viewport of 1160px), and take a row of their
+       own, shared between them, from 1200px down. */
+    @media (max-width: 1200px) {
       .osa-chat-window.osa-center.osa-center-tabbed .osa-chat-header {
         flex-wrap: wrap;
       }
@@ -9887,13 +9908,31 @@
     else openHistory(container);
   }
 
+  // The actions on the conversation as a whole, enabled as it allows: the corner's Clear
+  // chat, and the dialog's New chat (#759), which also waits for a reply to finish.
+  function syncChatActions(container) {
+    const empty = chatIsEmpty();
+    const resetBtn = container.querySelector('.osa-reset-btn');
+    if (resetBtn) resetBtn.disabled = empty;
+    // isLoading turns false at a reply's first visible text; currentReply lasts until the
+    // reply has ended, so New chat waits for that.
+    const newBtn = container.querySelector('.osa-center-new-btn');
+    if (newBtn) newBtn.disabled = empty || isLoading || currentReply !== null;
+  }
+
+  // The dialog's New chat (#759): what History's New chat does, without opening History.
+  // The conversation on screen stays in History, and the dialog shows its start screen.
+  function startDialogConversation(container) {
+    if (isLoading || currentReply !== null || chatIsEmpty()) return;
+    startHistoryConversation(container);
+  }
+
   // What the chat shows after the active conversation changed under it: the same
   // redraw the resume card makes.
   function redrawChat(container) {
     renderMessages(container);
     renderSuggestions(container);
-    const resetBtn = container.querySelector('.osa-reset-btn');
-    if (resetBtn) resetBtn.disabled = chatIsEmpty();
+    syncChatActions(container);
     evaluateContextSwitch();
   }
 
@@ -9945,7 +9984,8 @@
     if (startConversation({ context: pageContext() }) === null) return;
     closeHistory(container, { restoreFocus: false });
     redrawChat(container);
-    container.querySelector('.osa-chat-input input')?.focus();
+    // The field on screen: in the dialog, the start screen's, since the chat is empty.
+    focusChatField(container, true);
   }
 
   // Two clicks, as the workspace's Delete: a stray click leaves it one click from
@@ -10258,8 +10298,7 @@
       welcomeBack = null;
       renderMessages(container);
       renderSuggestions(container);
-      const resetBtn = container.querySelector('.osa-reset-btn');
-      if (resetBtn) resetBtn.disabled = chatIsEmpty();
+      syncChatActions(container);
       evaluateContextSwitch();
       // The card the reader pressed is gone with the welcome: focus goes to the input.
       container.querySelector('.osa-chat-input input')?.focus();
@@ -14803,6 +14842,9 @@
             </div>
           </div>
           <div class="osa-header-actions">
+            <button type="button" class="osa-header-btn osa-center-new-btn" title="New chat" aria-label="New chat" disabled>
+              ${ICONS.newChat}<span class="osa-center-label">New chat</span>
+            </button>
             <button class="osa-header-btn osa-history-btn" title="History" aria-label="History" aria-expanded="false" aria-controls="osa-history-sheet" aria-describedby="osa-history-busy">
               ${ICONS.historyClock}<span class="osa-center-label">History</span>
             </button>
@@ -16923,6 +16965,8 @@
     input.disabled = true;
     sendBtn.disabled = true;
     resetBtn.disabled = true;
+    const newChatBtn = container.querySelector('.osa-center-new-btn');
+    if (newChatBtn) newChatBtn.disabled = true;
     emitHostEvent('send', { text: question.trim() });
 
     try {
@@ -17209,7 +17253,7 @@
       clearActivity();
       input.disabled = false;
       sendBtn.disabled = false;
-      resetBtn.disabled = chatIsEmpty();
+      syncChatActions(container);
       // The box was emptied when the question was sent and nothing has been typed since
       // (it was disabled), so the question goes back as it was written.
       if (questionRemoved && !input.value) input.value = question;
@@ -17281,6 +17325,10 @@
     }
     renderMessages(container);
     renderSuggestions(container);
+    // Clear chat is disabled now (the chat is empty); focus that was on it goes to the field.
+    const hadFocus = document.activeElement === container.querySelector('.osa-reset-btn');
+    syncChatActions(container);
+    if (hadFocus) focusChatField(container, true);
   }
 
   // Toggle chat window
@@ -17630,10 +17678,8 @@
       console.error('OSA Chat Widget: Required DOM elements not found. Widget may not function correctly.');
     }
 
-    // Update reset button state
-    if (resetBtn) {
-      resetBtn.disabled = chatIsEmpty();
-    }
+    // The conversation's actions, Clear chat and the dialog's New chat
+    syncChatActions(container);
 
     // Event listeners with null checks
     chatButton?.addEventListener('click', () => handleChatButtonClick(container));
@@ -17643,6 +17689,7 @@
     bindCenterStage(container);
     popoutBtn?.addEventListener('click', () => openPopout());
     expandBtn?.addEventListener('click', () => expandToCenter(container));
+    container.querySelector('.osa-center-new-btn')?.addEventListener('click', () => startDialogConversation(container));
     syncExpandButton(container);
     settingsBtn?.addEventListener('click', () => openSettings(container));
 
@@ -18006,8 +18053,7 @@
     saveHistoryQuietly('seeding a conversation');
     renderMessages(container);
     renderSuggestions(container);
-    const resetBtn = container.querySelector('.osa-reset-btn');
-    if (resetBtn) resetBtn.disabled = chatIsEmpty();
+    syncChatActions(container);
     syncCenterStart(container);
     evaluateContextSwitch();
     openChatWindow(container, mode);
