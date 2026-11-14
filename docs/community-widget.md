@@ -483,7 +483,9 @@ A community chooses what the corner window's expand button does with `widget.exp
 - A community that uses the center-stage dialog sets `center`, so the corner and the dialog go both ways and there is no third, detached window: NEMAR does.
 - `GET /{community}` sends `expand` only when it is not `popout`, and the widget remembers it with the rest of the community's look ("The first paint" below).
 - A host page can choose with `setConfig({expand})`, which outranks the community's value and redraws the header at once.
+  `null` puts it back to `popout` over the community's value, as `null` does for the launcher settings; `undefined` is not a value and is dropped without a warning.
   A value other than the three is ignored with a `console.warn`, from the page or from the config, and the community's value (or `popout`) still applies.
+  A pop-out window that is open when the page moves `expand` off `popout` is closed, so the window and the dialog do not show one conversation; an unsent draft typed into the window goes with it.
 - Expand is not drawn in the dialog (Move to corner stands there), and a pop-out window shows neither button: it is the expanded view already.
 
 ### What a host page's policy needs for the pop-out
