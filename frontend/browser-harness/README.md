@@ -253,6 +253,7 @@ It is what CI runs, in the Python 3.12 job, which has both uv and Bun.
 To check a server you started yourself, pass its page and a mode:
 `bun frontend/browser-harness/color-scheme-check.mjs http://127.0.0.1:8796/browser-harness/widget-e2e.html auto`
 (`light` for a community that never set `color_scheme`; `auto` for `--color-scheme auto` or `--nemar`).
+The pop-out part sets `expand` to `popout` itself, since NEMAR's own config expands to the dialog (#756).
 
 The bug behind issue #469 is the browser's own:
 on a host page that declares `color-scheme: dark`, Chrome draws a form control with no colors of its own in its dark field colors.
