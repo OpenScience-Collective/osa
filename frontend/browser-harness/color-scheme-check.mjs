@@ -167,6 +167,10 @@ async function checkPopout(cdp, sessionId, url, targetIdOfPage) {
   await evaluate(cdp, sessionId, `window.OSAChatWidget.setColorScheme('light')`);
   report(!(await evaluate(cdp, sessionId, IS_DARK)), 'the host chose light, on a dark device');
 
+  // NEMAR's own config expands to the center-stage dialog (#756), which hides the pop-out
+  // button; this page asks for the pop-out itself, as popout-check.mjs does in its URL.
+  await evaluate(cdp, sessionId, `window.OSAChatWidget.setConfig({ expand: 'popout' })`);
+
   // The pop-out: opened now, it starts in the host's light; then the host
   // switching to dark reaches it.
   const before = new Set((await cdp.send('Target.getTargets')).targetInfos.map((t) => t.targetId));

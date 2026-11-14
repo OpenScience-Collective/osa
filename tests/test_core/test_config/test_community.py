@@ -729,6 +729,31 @@ class TestWidgetConfig:
         result = WidgetConfig(color_scheme="auto").resolve("Test")
         assert result["color_scheme"] == "auto"
 
+    def test_expand_defaults_to_popout_and_is_omitted(self) -> None:
+        """A community that never sets expand keeps the pop-out button (#756)."""
+        widget = WidgetConfig()
+        assert widget.expand == "popout"
+        assert "expand" not in widget.resolve("Test")
+
+    @pytest.mark.parametrize("value", ["center", "none"])
+    def test_expand_other_than_popout_is_included(self, value: str) -> None:
+        assert WidgetConfig(expand=value).resolve("Test")["expand"] == value
+
+    @pytest.mark.parametrize("value", ["window", "Center", "dialog", ""])
+    def test_expand_outside_its_values_is_refused(self, value: str) -> None:
+        with pytest.raises(ValidationError):
+            WidgetConfig(expand=value)
+
+    def test_the_widget_response_carries_expand_only_when_not_the_default(self) -> None:
+        """The response model is its own guard: 'popout' is omitted rather than sent."""
+        from src.api.routers.community import WidgetConfigResponse
+
+        center = WidgetConfigResponse(**WidgetConfig(expand="center").resolve("T"))
+        assert center.expand == "center"
+        assert WidgetConfigResponse(**WidgetConfig().resolve("T")).expand is None
+        with pytest.raises(ValidationError):
+            WidgetConfigResponse(**{**WidgetConfig().resolve("T"), "expand": "popout"})
+
     @pytest.mark.parametrize("value", ["dark", "Auto", "system", ""])
     def test_color_scheme_rejects_anything_but_light_or_auto(self, value: str) -> None:
         """'dark' is refused on purpose: a forced-dark widget on a light page is a host

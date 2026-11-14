@@ -90,6 +90,11 @@
     // or 'auto'; a host page with its own theme switch passes the reader's choice
     // with OSAChatWidget.setColorScheme, which outranks the community's value.
     colorScheme: 'light',
+    // What the corner window's expand button does (#756): 'popout' (the default) opens
+    // the conversation in a separate window, 'center' opens the center-stage dialog
+    // (as setMode('center') does), 'none' leaves the button out. From the community
+    // config (widget.expand), or the host page's setConfig, which outranks it.
+    expand: 'popout',
     // The notebook site's base URL (a sibling PR builds it); setDataset's active
     // notebook button opens `${notebookUrl}open.html?community=...&dataset=...`.
     // /osa/ names this widget's project on the shared notebook.osc.earth plane,
@@ -414,7 +419,7 @@
   const DISPLAY_KEYS = ['title', 'initialMessage', 'placeholder', 'suggestedQuestions',
     'datasetSuggestedQuestions', 'searchPaths', 'centerStart', 'analysisDocs', 'privacyUrl', 'themeColor',
     'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor', 'logo', 'launcher',
-    'launcherLabel', 'colorScheme', ...LAUNCHER_GEOMETRY_KEYS.map(([, key]) => key)];
+    'launcherLabel', 'colorScheme', 'expand', ...LAUNCHER_GEOMETRY_KEYS.map(([, key]) => key)];
   // The header avatar as createWidget draws it, for a config that drops its logo.
   let defaultAvatarHtml = null;
   // Browser code execution (#431). browserToolsReady is assigned, to a pending
@@ -865,6 +870,11 @@
   // bottom right, where the window goes (boards C2, C3; #730).
   ICONS.sparkle = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z"/><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>';
   ICONS.dock = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7l10 10"/><path d="M17 7v10H7"/></svg>';
+  // New chat in the dialog's header (#759): the chat bubble with a plus.
+  ICONS.newChat = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="12" y1="7" x2="12" y2="13"/><line x1="9" y1="10" x2="15" y2="10"/></svg>';
+  // Expand to the center-stage dialog (#756): arrows out to two corners, the opposite of
+  // the dock's single arrow into one.
+  ICONS.expand = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
 
   // CSS Styles
   const STYLES = `
@@ -2174,9 +2184,11 @@
       .osa-chat-window.osa-center .osa-view,
       .osa-chat-window.osa-center .osa-view.osa-view-on,
       .osa-chat-window.osa-center .osa-view.osa-view-off,
+      .osa-capsule .osa-chat-window.osa-center .osa-center-new-btn,
       .osa-capsule .osa-chat-window.osa-center .osa-history-btn,
       .osa-capsule .osa-chat-window.osa-center .osa-settings-btn-open,
       .osa-capsule .osa-chat-window.osa-center .osa-center-notebook-btn,
+      .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-new-btn,
       .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-history-btn,
       .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-settings-btn-open,
       .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-notebook-btn,
@@ -2314,6 +2326,13 @@
     .osa-header-actions {
       display: flex;
       gap: 4px;
+    }
+
+    /* The expand buttons (#756) are shown or left out by their hidden attribute, which
+       the display: flex below would otherwise override. */
+    .osa-chat-header .osa-popout-btn[hidden],
+    .osa-chat-header .osa-expand-btn[hidden] {
+      display: none !important;
     }
 
     .osa-header-btn {
@@ -5714,6 +5733,7 @@
     /* What only the dialog shows. */
     .osa-center-pill,
     .osa-center-context,
+    .osa-center-new-btn,
     .osa-center-dock-btn,
     .osa-center-label,
     .osa-center-start {
@@ -5738,6 +5758,7 @@
 
     .osa-chat-window.osa-center .osa-resize-handle,
     .osa-chat-window.osa-center .osa-popout-btn,
+    .osa-chat-window.osa-center .osa-expand-btn,
     .osa-chat-window.osa-center .osa-reset-btn,
     .osa-chat-window.osa-center .osa-chat-avatar,
     .osa-chat-window.osa-center .osa-chat-title-area {
@@ -5805,10 +5826,12 @@
       background: var(--osa-assistant-bg);
     }
 
+    .osa-chat-window.osa-center .osa-center-new-btn,
     .osa-chat-window.osa-center .osa-center-dock-btn {
       display: flex;
     }
 
+    .osa-chat-window.osa-center .osa-center-new-btn,
     .osa-chat-window.osa-center .osa-history-btn,
     .osa-chat-window.osa-center .osa-center-dock-btn {
       gap: 6px;
@@ -5822,6 +5845,15 @@
 
     .osa-chat-window.osa-center .osa-center-label {
       display: inline;
+    }
+
+    /* New chat while it has nothing to do (#759): dimmed as a disabled header button is,
+       over the dialog's own opacity: 1 and hover wash. */
+    .osa-chat-window.osa-center .osa-center-new-btn:disabled,
+    .osa-chat-window.osa-center .osa-center-new-btn:disabled:hover {
+      opacity: 0.4;
+      cursor: not-allowed;
+      background: var(--osa-bg);
     }
 
     .osa-chat-widget.osa-dark .osa-chat-window.osa-center .osa-history-btn[aria-expanded="true"] {
@@ -6098,6 +6130,7 @@
         display: none;
       }
 
+      .osa-chat-window.osa-center .osa-center-new-btn,
       .osa-chat-window.osa-center .osa-history-btn,
       .osa-chat-window.osa-center .osa-center-dock-btn {
         padding: 0;
@@ -6238,12 +6271,14 @@
        chat's. Hidden, not removed, as in the corner, so Move to corner and Close do not
        move as the tabs switch; hidden controls are out of the Tab order too. The fade is
        the capsule's, shortened to a few tens of milliseconds. */
+    .osa-capsule .osa-chat-window.osa-center .osa-center-new-btn,
     .osa-capsule .osa-chat-window.osa-center .osa-history-btn,
     .osa-capsule .osa-chat-window.osa-center .osa-settings-btn-open,
     .osa-capsule .osa-chat-window.osa-center .osa-center-notebook-btn {
       transition: opacity 60ms linear, background 0.2s, visibility 0s;
     }
 
+    .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-new-btn,
     .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-history-btn,
     .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-settings-btn-open,
     .osa-capsule.osa-tab-notebook .osa-chat-window.osa-center .osa-center-notebook-btn {
@@ -6283,15 +6318,17 @@
 
     /* The header's buttons never shrink or wrap (the dataset line is what gives way, with
        an ellipsis), so they must fit the dialog on their own. Measured in Chrome with
-       Continue in notebook showing: pill, History, Continue in notebook, Move to corner,
-       Settings and Close with their labels need about 700px, and the dialog is the
-       viewport less 160px, so below 900px (a dialog of 740px, with room to spare) they
-       keep their icons only, as they do on a phone. */
-    @media (max-width: 900px) {
+       Continue in notebook showing: New chat (#759), History, Continue in notebook, Move to
+       corner, Settings and Close with their labels take 632px, about 780px with the pill
+       and the header's padding, and the dialog is the viewport less 160px, so below
+       1000px (a dialog of 840px, with room to spare) they keep their icons only, as they
+       do on a phone. */
+    @media (max-width: 1000px) {
       .osa-chat-window.osa-center .osa-center-label {
         display: none;
       }
 
+      .osa-chat-window.osa-center .osa-center-new-btn,
       .osa-chat-window.osa-center .osa-history-btn,
       .osa-chat-window.osa-center .osa-center-dock-btn,
       .osa-chat-window.osa-center .osa-center-notebook-btn:not([hidden]) {
@@ -6300,10 +6337,10 @@
     }
 
     /* The dialog's header with its tabs: the tabs share the pill's row while the row has
-       room for them (the labelled buttons, the pill and the tab pair need about 890px, a
-       dialog of a viewport of 1050px), and take a row of their own, shared between
-       them, from 1100px down. */
-    @media (max-width: 1100px) {
+       room for them (the labelled buttons, New chat included (#759), the pill and the tab
+       pair need about 1000px, a dialog of a viewport of 1160px), and take a row of their
+       own, shared between them, from 1200px down. */
+    @media (max-width: 1200px) {
       .osa-chat-window.osa-center.osa-center-tabbed .osa-chat-header {
         flex-wrap: wrap;
       }
@@ -9871,13 +9908,31 @@
     else openHistory(container);
   }
 
+  // The actions on the conversation as a whole, enabled as it allows: the corner's Clear
+  // chat, and the dialog's New chat (#759), which also waits for a reply to finish.
+  function syncChatActions(container) {
+    const empty = chatIsEmpty();
+    const resetBtn = container.querySelector('.osa-reset-btn');
+    if (resetBtn) resetBtn.disabled = empty;
+    // isLoading turns false at a reply's first visible text; currentReply lasts until the
+    // reply has ended, so New chat waits for that.
+    const newBtn = container.querySelector('.osa-center-new-btn');
+    if (newBtn) newBtn.disabled = empty || isLoading || currentReply !== null;
+  }
+
+  // The dialog's New chat (#759): what History's New chat does, without opening History.
+  // The conversation on screen stays in History, and the dialog shows its start screen.
+  function startDialogConversation(container) {
+    if (isLoading || currentReply !== null || chatIsEmpty()) return;
+    startHistoryConversation(container);
+  }
+
   // What the chat shows after the active conversation changed under it: the same
   // redraw the resume card makes.
   function redrawChat(container) {
     renderMessages(container);
     renderSuggestions(container);
-    const resetBtn = container.querySelector('.osa-reset-btn');
-    if (resetBtn) resetBtn.disabled = chatIsEmpty();
+    syncChatActions(container);
     evaluateContextSwitch();
   }
 
@@ -9929,7 +9984,8 @@
     if (startConversation({ context: pageContext() }) === null) return;
     closeHistory(container, { restoreFocus: false });
     redrawChat(container);
-    container.querySelector('.osa-chat-input input')?.focus();
+    // The field on screen: in the dialog, the start screen's, since the chat is empty.
+    focusChatField(container, true);
   }
 
   // Two clicks, as the workspace's Delete: a stray click leaves it one click from
@@ -10242,8 +10298,7 @@
       welcomeBack = null;
       renderMessages(container);
       renderSuggestions(container);
-      const resetBtn = container.querySelector('.osa-reset-btn');
-      if (resetBtn) resetBtn.disabled = chatIsEmpty();
+      syncChatActions(container);
       evaluateContextSwitch();
       // The card the reader pressed is gone with the welcome: focus goes to the input.
       container.querySelector('.osa-chat-input input')?.focus();
@@ -11002,6 +11057,14 @@
         changed = true;
       } else {
         warnInvalidColorScheme('color_scheme from the community config', w.color_scheme, COMMUNITY_COLOR_SCHEMES);
+      }
+    }
+    if (w.expand != null && !_userSetKeys.has('expand')) {
+      if (EXPAND_MODES.includes(w.expand)) {
+        CONFIG.expand = w.expand;
+        changed = true;
+      } else {
+        warnInvalidExpand('expand from the community config', w.expand);
       }
     }
     return changed;
@@ -13649,6 +13712,13 @@
   // (WidgetConfig.color_scheme refuses 'dark' on the server as well).
   const COLOR_SCHEMES = ['light', 'dark', 'auto'];
   const COMMUNITY_COLOR_SCHEMES = ['light', 'auto'];
+  // CONFIG.expand's values (#756), the community's and a host page's alike.
+  const EXPAND_MODES = ['popout', 'center', 'none'];
+
+  function warnInvalidExpand(what, value) {
+    const expected = EXPAND_MODES.map(v => `'${v}'`).join(', ');
+    console.warn(`[OSA] Ignoring invalid ${what} ${JSON.stringify(value)}; expected one of ${expected}`);
+  }
 
   function isValidColorScheme(value) {
     return COLOR_SCHEMES.includes(value);
@@ -13959,6 +14029,8 @@
     applyThemeProperties(container);
 
     applyColorScheme(container);
+
+    syncExpandButton(container);
 
     // Update header title
     const titleEl = container.querySelector('.osa-chat-title');
@@ -14770,6 +14842,9 @@
             </div>
           </div>
           <div class="osa-header-actions">
+            <button type="button" class="osa-header-btn osa-center-new-btn" title="New chat" aria-label="New chat" disabled>
+              ${ICONS.newChat}<span class="osa-center-label">New chat</span>
+            </button>
             <button class="osa-header-btn osa-history-btn" title="History" aria-label="History" aria-expanded="false" aria-controls="osa-history-sheet" aria-describedby="osa-history-busy">
               ${ICONS.historyClock}<span class="osa-center-label">History</span>
             </button>
@@ -14783,7 +14858,10 @@
             <button class="osa-header-btn osa-settings-btn-open" title="Settings">
               ${ICONS.settings}
             </button>
-            <button class="osa-header-btn osa-popout-btn" title="Open in new window" style="display: ${CONFIG.fullscreen ? 'none' : 'flex'}">
+            <button type="button" class="osa-header-btn osa-expand-btn" aria-label="Expand" title="Expand" hidden>
+              ${ICONS.expand}
+            </button>
+            <button class="osa-header-btn osa-popout-btn" title="Open in new window" aria-label="Open in new window" ${CONFIG.fullscreen || CONFIG.expand !== 'popout' ? 'hidden' : ''}>
               ${ICONS.popout}
             </button>
             <button class="osa-header-btn osa-reset-btn" title="Clear chat">
@@ -16887,6 +16965,8 @@
     input.disabled = true;
     sendBtn.disabled = true;
     resetBtn.disabled = true;
+    const newChatBtn = container.querySelector('.osa-center-new-btn');
+    if (newChatBtn) newChatBtn.disabled = true;
     emitHostEvent('send', { text: question.trim() });
 
     try {
@@ -17173,7 +17253,7 @@
       clearActivity();
       input.disabled = false;
       sendBtn.disabled = false;
-      resetBtn.disabled = chatIsEmpty();
+      syncChatActions(container);
       // The box was emptied when the question was sent and nothing has been typed since
       // (it was disabled), so the question goes back as it was written.
       if (questionRemoved && !input.value) input.value = question;
@@ -17245,6 +17325,10 @@
     }
     renderMessages(container);
     renderSuggestions(container);
+    // Clear chat is disabled now (the chat is empty); focus that was on it goes to the field.
+    const hadFocus = document.activeElement === container.querySelector('.osa-reset-btn');
+    syncChatActions(container);
+    if (hadFocus) focusChatField(container, true);
   }
 
   // Toggle chat window
@@ -17374,6 +17458,36 @@
     }
   }
 
+  // The header's expand button (#756), as CONFIG.expand says: the pop-out button, Expand
+  // (to the center-stage dialog), or neither. A pop-out window has neither: it is the
+  // expanded view already. In the dialog the stylesheet hides both, and Move to corner
+  // stands where Expand was.
+  function syncExpandButton(container) {
+    const mode = CONFIG.fullscreen ? 'none' : CONFIG.expand;
+    const popout = container.querySelector('.osa-popout-btn');
+    const expand = container.querySelector('.osa-expand-btn');
+    if (popout) popout.hidden = mode !== 'popout';
+    if (expand) expand.hidden = mode !== 'center';
+  }
+
+  // Expand (#756): the corner window becomes the center-stage dialog with the same
+  // conversation, the way setMode('center') makes it, modechange included; Move to
+  // corner brings it back. The dialog's open motion plays from the class it gains.
+  function expandToCenter(container) {
+    if (CONFIG.fullscreen || CONFIG.expand !== 'center') return;
+    // On the notebook tab nothing laid over it goes into the dialog, as setTab has it:
+    // the dialog's Tab trap is scoped to the topmost overlay and would keep the reader
+    // out of the notebook. On the chat tab an open panel is the reader's and stays.
+    if (activeTab === 'notebook') {
+      closeSettings(container);
+      closeFeedback(container);
+      closePrivacy(container, { restoreFocus: false });
+    }
+    if (!applyHostMode(container, 'center')) return;
+    if (isOpen) focusActiveView(container);
+    emitHostEvent('modechange', { mode: hostMode });
+  }
+
   // Open chat in a new popup window. The pop-out is an about:blank window of this
   // page's own origin, and so inherits this page's Content Security Policy: it
   // runs no inline script, which a host page without script-src 'unsafe-inline'
@@ -17382,6 +17496,8 @@
   // script's own address, integrity and crossorigin, which the host page's policy
   // already allows, since it loaded this script.
   function openPopout() {
+    // Only the pop-out button opens it, and only while the community's expand is 'popout'.
+    if (CONFIG.expand !== 'popout') return;
     const panel = document.querySelector('.osa-chat-widget');
     if (panel) closeHistory(panel, { restoreFocus: false });
     // Reuse existing popup if still open
@@ -17544,6 +17660,7 @@
     const closeBtn = container.querySelector('.osa-close-btn');
     const resetBtn = container.querySelector('.osa-reset-btn');
     const popoutBtn = container.querySelector('.osa-popout-btn');
+    const expandBtn = container.querySelector('.osa-expand-btn');
     const settingsBtn = container.querySelector('.osa-settings-btn-open');
     const input = container.querySelector('.osa-chat-input input');
     const sendBtn = container.querySelector('.osa-send-btn');
@@ -17561,10 +17678,8 @@
       console.error('OSA Chat Widget: Required DOM elements not found. Widget may not function correctly.');
     }
 
-    // Update reset button state
-    if (resetBtn) {
-      resetBtn.disabled = chatIsEmpty();
-    }
+    // The conversation's actions, Clear chat and the dialog's New chat
+    syncChatActions(container);
 
     // Event listeners with null checks
     chatButton?.addEventListener('click', () => handleChatButtonClick(container));
@@ -17573,6 +17688,9 @@
     bindHistoryPanel(container);
     bindCenterStage(container);
     popoutBtn?.addEventListener('click', () => openPopout());
+    expandBtn?.addEventListener('click', () => expandToCenter(container));
+    container.querySelector('.osa-center-new-btn')?.addEventListener('click', () => startDialogConversation(container));
+    syncExpandButton(container);
     settingsBtn?.addEventListener('click', () => openSettings(container));
 
     if (sendBtn && input) {
@@ -17935,8 +18053,7 @@
     saveHistoryQuietly('seeding a conversation');
     renderMessages(container);
     renderSuggestions(container);
-    const resetBtn = container.querySelector('.osa-reset-btn');
-    if (resetBtn) resetBtn.disabled = chatIsEmpty();
+    syncChatActions(container);
     syncCenterStart(container);
     evaluateContextSwitch();
     openChatWindow(container, mode);
@@ -18077,6 +18194,18 @@
   // notebook's frame is not taken over by a key that only changed the mode); and in the
   // corner on that tab, the window itself, so it is never left on a control that is gone.
   function focusActiveView(container) {
+    // What is laid over the view takes the focus first, the way the Tab trap is scoped:
+    // the topmost settings panel, else the History sheet. A field behind one is inert,
+    // so focusing it would leave focus on nothing (#756: Expand with History open).
+    const win = container.querySelector('.osa-chat-window');
+    const overlays = win ? [...win.querySelectorAll('.osa-settings-overlay.open')] : [];
+    const layer = overlays.length ? overlays[overlays.length - 1] : (historyOpen ? historySheet(container) : null);
+    if (layer) {
+      const first = focusablesIn(layer)[0];
+      if (first) first.focus();
+      else if (win) win.focus();
+      return;
+    }
     if (activeTab === 'chat') {
       focusChatField(container, true);
       return;
@@ -18931,6 +19060,20 @@
         warnInvalidColorScheme('colorScheme', opts.colorScheme, COLOR_SCHEMES);
         delete opts.colorScheme;
       }
+      // As for the launcher keys below: undefined is not a value (a wrapper passing along a
+      // setting it does not have), and null puts the setting back to its default, over the
+      // community's. Any other value outside the three modes is refused here, so the
+      // community's own value still applies.
+      if ('expand' in opts) {
+        if (opts.expand === undefined) {
+          delete opts.expand;
+        } else if (opts.expand === null) {
+          opts.expand = 'popout';
+        } else if (!EXPAND_MODES.includes(opts.expand)) {
+          warnInvalidExpand('expand', opts.expand);
+          delete opts.expand;
+        }
+      }
       // A launcher setting a page gets wrong is refused here, so the community's own value
       // still applies: a key the page sets outranks the community's, and a wrong one would
       // otherwise lock it out. undefined is not a value (a wrapper passing along a setting
@@ -18956,6 +19099,14 @@
       }
       Object.assign(CONFIG, opts);
       if ('colorScheme' in opts) applyColorSchemeEverywhere();
+      if ('expand' in opts) {
+        // A pop-out window the reader opened is closed when the host moves expand off 'popout':
+        // the window and the center-stage dialog would otherwise show one conversation. An
+        // unsent draft typed into the window goes with it.
+        if (CONFIG.expand !== 'popout' && chatPopup && !chatPopup.closed) chatPopup.close();
+        const container = document.querySelector('.osa-chat-widget');
+        if (container) syncExpandButton(container);
+      }
       // A page that moves or resizes the launcher after init() sees it at once.
       if (LAUNCHER_GEOMETRY_KEYS.some(([, key]) => key in opts)) {
         const container = document.querySelector('.osa-chat-widget');

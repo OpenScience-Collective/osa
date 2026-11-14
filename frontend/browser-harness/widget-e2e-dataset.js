@@ -13,6 +13,8 @@
 // - dataset=<id>, no zarr param: setDataset({id}) (zarr unknown).
 // - subject=<label> and task=<label> add those facts (#477), which fill the
 //   dataset questions' blanks; the widget drops a label that is not one.
+// - expand=popout|center|none: setConfig({expand}) (#756), the host page's choice of
+//   what the header's expand button does, over the community's (NEMAR's is center).
 (function () {
   const params = new URLSearchParams(window.location.search);
   if (params.has('dataset')) {
@@ -33,5 +35,9 @@
   const notebookUrl = params.get('notebookUrl');
   if (notebookUrl) {
     window.OSAChatWidget.setConfig({ notebookUrl });
+  }
+  const expand = params.get('expand');
+  if (expand) {
+    window.OSAChatWidget.setConfig({ expand });
   }
 })();

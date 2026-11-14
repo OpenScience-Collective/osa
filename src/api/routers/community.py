@@ -653,6 +653,11 @@ class WidgetConfigResponse(BaseModel):
         default=None,
         description="'auto' to follow the reader's light or dark setting; omitted for the 'light' default",
     )
+    expand: Literal["center", "none"] | None = Field(
+        default=None,
+        description="What the header's expand button does: 'center' opens the center-stage "
+        "dialog, 'none' hides it; omitted for the 'popout' default (a separate window)",
+    )
 
 
 class OfferedModelResponse(BaseModel):

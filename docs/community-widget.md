@@ -26,6 +26,7 @@ this page is about the widget's appearance and copy.
 | `center_start` | `{capabilities, note}` | none | The center-stage dialog's start screen: up to three `{title, text}` cards and a footer note; see [The start screen](#the-start-screen). |
 | `analysis_docs` | `{title, url}`, an `https://` address | none | A docs page linked from the start screen's footer and from Settings; see [The start screen](#the-start-screen). |
 | `privacy_url` | string, an `https://` address of at most 500 characters | the platform's own privacy page | The page the **Privacy choices** dialog links to; see [Privacy choices](#privacy-choices). |
+| `expand` | `"popout"`, `"center"` or `"none"` | `"popout"` | What the corner window's expand button does: a separate window, the center-stage dialog, or no button; see [`expand`](#expand-the-pop-out-window-the-center-stage-dialog-or-neither). |
 | `logo_url` | string: an `http://`/`https://` URL, or a path starting with `/` | none | A custom logo/icon for the widget header avatar. When unset, the API looks for a `logo.*` file (SVG, PNG, JPG, JPEG, WEBP) in the community's own folder; failing that, the widget falls back to a default brain icon. |
 
 ```yaml
@@ -398,8 +399,9 @@ close button, closes the panel.
   a starter with no setup cell), `Setup did not finish; see the notebook`, or
   `The notebook did not open here`.
   The chat's own header buttons (Settings and reset) are hidden on the notebook tab;
-  the close button stays, and so does the pop-out button, which opens the pop-out on
-  the notebook tab (see "The pop-out window" below).
+  the close button stays, and so does the expand button: the pop-out button, which opens
+  the pop-out on the notebook tab, or, with `expand: center`, **Expand**, which opens the
+  dialog on it (see "The pop-out window" below).
 - **The frame is kept.** Going back to chat hides it without unloading it, so its
   Python keeps running and returning finds the notebook as it was left.
   A new dataset on screen replaces the frame; a dataset with no Zarr copy drops it
@@ -469,6 +471,22 @@ The header's pop-out button opens the widget in a window of its own, which the p
   The notebook opens with the edits that had reached storage, which an edit does within about five seconds (`docs/community-notebook.md`).
   The page's own notebook frame is left as it was, still running, so both windows have the same stored notebook open: edit it in one of them at a time.
 - **A bubble community's pop-out is unchanged**: the chat only, with no tab strip.
+
+### `expand`: the pop-out window, the center-stage dialog, or neither
+
+A community chooses what the corner window's expand button does with `widget.expand` (#756):
+
+| Field | Values | Default | What it does |
+|---|---|---|---|
+| `expand` | `"popout"`, `"center"` or `"none"` | `"popout"` | `popout` is the pop-out button this section describes. `center` replaces it with **Expand**, which opens the center-stage dialog ("The host API and the center-stage dialog" below) with the same conversation, as `setMode('center')` does, `modechange` included; **Move to corner** goes back. `none` shows no expand button. |
+
+- A community that uses the center-stage dialog sets `center`, so the corner and the dialog go both ways and there is no third, detached window: NEMAR does.
+- `GET /{community}` sends `expand` only when it is not `popout`, and the widget remembers it with the rest of the community's look ("The first paint" below).
+- A host page can choose with `setConfig({expand})`, which outranks the community's value and redraws the header at once.
+  `null` puts it back to `popout` over the community's value, as `null` does for the launcher settings; `undefined` is not a value and is dropped without a warning.
+  A value other than the three is ignored with a `console.warn`, from the page or from the config, and the community's value (or `popout`) still applies.
+  A pop-out window that is open when the page moves `expand` off `popout` is closed, so the window and the dialog do not show one conversation; an unsent draft typed into the window goes with it.
+- Expand is not drawn in the dialog (Move to corner stands there), and a pop-out window shows neither button: it is the expanded view already.
 
 ### What a host page's policy needs for the pop-out
 
@@ -1210,7 +1228,7 @@ OSAChatWidget.close();
 | `close()` | Closes the window, as the Close button does. |
 | `ask(text, {mode}?)` | Opens the window (in `mode` if given), then sends `text` through the same path as a typed question: it is in the saved conversation and History, the page-context reset of [A context change starts a new chat](#a-context-change-starts-a-new-chat) applies, and the browser runtime is preloaded as for any first message. `text` must be a non-empty string; a reply that is still loading refuses it. What the reader had typed in the chat's input and not sent is theirs: it stays there (and in the start screen's field) after `ask`. |
 | `seed(text, {mode}?)` | Opens the window (in `mode` if given) with `text` as the assistant's first message, and sends nothing; see [seed](#seed) below. |
-| `setMode(mode)` | `'center'` makes the window the dialog; `'corner'` docks it. On a closed window the mode is kept for the next open. A capsule community's window that is on the notebook tab keeps it when it becomes the dialog (and when it docks), and **Continue in notebook** or **Open notebook**, under a reply or in the header, open the notebook as a tab of the dialog rather than docking it; see "The Notebook tab in the dialog" below. `open()`, `ask()` and `seed()` always show the chat tab, because they are about asking a question. |
+| `setMode(mode)` | `'center'` makes the window the dialog (the header's **Expand**, under `expand: center`, does the same); `'corner'` docks it. On a closed window the mode is kept for the next open. A capsule community's window that is on the notebook tab keeps it when it becomes the dialog (and when it docks), and **Continue in notebook** or **Open notebook**, under a reply or in the header, open the notebook as a tab of the dialog rather than docking it; see "The Notebook tab in the dialog" below. `open()`, `ask()` and `seed()` always show the chat tab, because they are about asking a question. |
 | `on(event, handler)` | Listens for an event, below, and returns a function that stops listening. |
 
 - **Before `init()`.**
@@ -1235,7 +1253,7 @@ OSAChatWidget.close();
 |---|---|---|
 | `open` | `{mode}` | The window opened, after the mode was applied. |
 | `close` | `{}` | The window closed, by the Close button, the launcher or `close()`. |
-| `modechange` | `{mode}` | The mode changed: `setMode`, `open({mode})`, Escape or Move to corner, or a dialog being closed (then `{mode: 'corner'}`, just before `close`). |
+| `modechange` | `{mode}` | The mode changed: `setMode`, `open({mode})`, **Expand** (`expand: center`), Escape or Move to corner, or a dialog being closed (then `{mode: 'corner'}`, just before `close`). |
 | `send` | `{text}` | A question was sent, typed or by `ask`; `text` is as the server receives it, trimmed. |
 
 Each event fires once per occurrence.
@@ -1257,7 +1275,11 @@ Center is the same `.osa-chat-window`, with an `osa-center` class and a scrim be
 - **Focus.**
   Focus moves into the dialog on open, and **Close** (or `close()`) gives it back to the element that had it before the window opened, or to the launcher when there was none.
 - **Header.**
-  The AI Mode pill, the dataset id and, when the page gave one, its title; History; **Continue in notebook** (below); Move to corner; Settings; and Close.
+  The AI Mode pill, the dataset id and, when the page gave one, its title; **New chat**; History; **Continue in notebook** (below); Move to corner; Settings; and Close.
+  **New chat** (#759) does what History's own **+ New chat** does, without opening History: a fresh conversation, with the one on screen kept in History, and the start screen with the focus in its field.
+  It is disabled while the conversation is empty or a reply is loading. The corner window has **Clear chat** instead, which discards the conversation.
+  At 1000 px and under the header's buttons show their icons only, and at 1200 px and under the Chat and Notebook tabs take a row of their own.
+  History's own **+ New chat** in the dialog also lands on the start screen's field.
   `setDataset({id, title})` takes an optional `title`, a string of 1 to 200 characters.
   A title that is not one is dropped alone, with a `console.warn`, and the id is shown without it.
 - **Continue in notebook.**
@@ -1267,14 +1289,14 @@ Center is the same `.osa-chat-window`, with an `osa-center` class and a scrim be
   A capsule community's dialog has a second view, the same notebook the corner shows, in the same window and the same `<iframe>`; the dialog is the corner window with a class, so the frame is not moved or reloaded by tab switches, docking or mode changes, and those keep the reader's Python session and edits (only Try again, or a change of dataset, replaces the frame).
   The header gets two tabs, **Chat** and **Notebook** (`role="tablist"`, `aria-selected`, arrow keys, Home and End, only the selected tab in the Tab order), from the start, before any reply has run code, whenever the page's dataset has a notebook available (#743); a dialog with no notebook (no dataset, as under a search's "Ask a follow-up") keeps the header above, and the corner never shows them.
   Selecting the Notebook tab the first time creates the frame; `open()`, `ask()` and `seed()` open on Chat.
-  On the Notebook tab History, Settings and **Continue in notebook** are hidden (they are the chat's), **Move to corner** and Close stay, and moving to the corner, with the button or with Escape, keeps the tab: the capsule shows the notebook.
+  On the Notebook tab New chat, History, Settings and **Continue in notebook** are hidden (they are the chat's), **Move to corner** and Close stay, and moving to the corner, with the button or with Escape, keeps the tab: the capsule shows the notebook.
   Raising the dialog from a corner window that is on the notebook keeps it too.
-  The tab switch fades the two views over each other in 60 ms, with nothing at all under `prefers-reduced-motion`; at 1100 px and under the tabs take a row of their own under the pill and the buttons.
+  The tab switch fades the two views over each other in 60 ms, with nothing at all under `prefers-reduced-motion`; at 1200 px and under the tabs take a row of their own under the pill and the buttons.
   Tabbing inside the notebook's frame is the frame's own (its keys never reach the page, so the dialog cannot trap them there, and Escape inside it is the notebook's).
   What the dialog guarantees is the way out: a focus guard (`.osa-nb-guard`) after the frame catches the focus when Tab leaves the frame's last stop and gives it to the dialog's first stop, the selected tab, with Move to corner and Close next, so focus never reaches the browser's controls behind the inert page.
   A frame that swallows Tab itself (an editor) is the follow-up in #740.
   A reply that ends while the Notebook tab is open puts a dot on the Chat tab (its name gains "new reply") and is announced by a live region in the header, since the chat's own live regions are in the inert chat view.
-  The header's labels become icons only at 900 px and under, so no control is clipped at any width.
+  The header's labels become icons only at 1000 px and under, so no control is clipped at any width.
 - **The plan rail.**
   A plan the conversation holds shows as a rail beside the thread; see [The plan card and step progress](#the-plan-card-and-step-progress).
 - **Narrow screens.**
@@ -1387,6 +1409,7 @@ field: once an embedder sets `themeColor`, no community config value for
 | `launcher_mobile_offset_x` | `launcherMobileOffsetX` |
 | `launcher_mobile_offset_y` | `launcherMobileOffsetY` |
 | `color_scheme` | `colorScheme` (also `'dark'`; see `setColorScheme` above) |
+| `expand` | `expand` (`'popout'`, `'center'` or `'none'`; see "`expand`" under "The pop-out window") |
 
 ```html
 <script src="https://demo.osc.earth/osa-chat-widget.js" data-no-auto-init></script>

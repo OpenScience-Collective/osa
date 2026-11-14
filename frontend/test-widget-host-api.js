@@ -1275,6 +1275,225 @@ console.log('\ncalls before init() are bounded, and a page that never calls init
   assertEqual(none.warn.filter((line) => /OSAChatWidget\.init/.test(line)), [], 'a page that does call init() in time hears nothing');
 }
 
+console.log('\nThe header\'s expand button follows widget.expand: pop-out, Expand to the dialog, or none (#756)');
+{
+  const plain = await start();
+  plain.api.open();
+  assert(!plain.q('.osa-popout-btn').hidden, 'by default the pop-out button is there');
+  assert(plain.q('.osa-expand-btn').hidden, 'and Expand is not');
+
+  const ctx = await start({ widget: { expand: 'center' } });
+  ctx.api.open();
+  await typeAndSend(ctx, 'What is the sampling rate?');
+  assert(!ctx.isCenter(), 'sanity: the corner window');
+  assert(ctx.q('.osa-popout-btn').hidden, 'with expand: center the pop-out button is gone');
+  assert(!ctx.q('.osa-expand-btn').hidden, 'and Expand stands in its place');
+  assertEqual(ctx.q('.osa-expand-btn').getAttribute('aria-label'), 'Expand', 'named Expand');
+  let opened = 0;
+  ctx.window.open = () => { opened++; return null; };
+  ctx.q('.osa-popout-btn').click();
+  assertEqual(opened, 0, 'the hidden pop-out button opens no window');
+  const nodes = ctx.qa('.osa-chat-messages .osa-message').length;
+  const session = ctx.hooks.getSessionId();
+  const heard = record(ctx);
+  ctx.q('.osa-expand-btn').click();
+  assert(ctx.isCenter() && ctx.isOpen(), 'Expand opens the center-stage dialog');
+  assertEqual(ctx.win().getAttribute('role'), 'dialog', 'as the modal dialog');
+  assertEqual(heard.events, [['modechange', { mode: 'center' }]], 'the page hears modechange once, with center');
+  assertEqual(ctx.qa('.osa-chat-messages .osa-message').length, nodes, 'with the same thread');
+  assertEqual(ctx.hooks.getSessionId(), session, 'and the same session');
+  assert(inWindow(ctx, active(ctx)), 'focus is in the dialog');
+  assertEqual(ctx.window.getComputedStyle(ctx.q('.osa-expand-btn')).display, 'none', 'Expand is not drawn in the dialog');
+  ctx.q('.osa-center-dock-btn').click();
+  assert(ctx.isOpen() && !ctx.isCenter(), 'Move to corner brings it back');
+  assert(!ctx.q('.osa-expand-btn').hidden, 'where Expand is again');
+  assertEqual(heard.names(), ['modechange', 'modechange'], 'and the page hears the dock too');
+  heard.stop();
+
+  const none = await start({ widget: { expand: 'none' } });
+  none.api.open();
+  assert(none.q('.osa-popout-btn').hidden && none.q('.osa-expand-btn').hidden, 'expand: none shows neither button');
+
+  const host = await load({ widget: { expand: 'center' } });
+  host.api.setConfig({ expand: 'none' });
+  await host.boot();
+  host.api.open();
+  assert(host.q('.osa-popout-btn').hidden && host.q('.osa-expand-btn').hidden, "a host page's expand outranks the community's");
+  host.api.setConfig({ expand: 'center' });
+  assert(!host.q('.osa-expand-btn').hidden, 'and a later setConfig redraws the header at once');
+
+  const bad = await load({ widget: { expand: 'center' } });
+  const warnings = listen();
+  bad.api.setConfig({ expand: 'window' });
+  warnings.stop();
+  await bad.boot();
+  bad.api.open();
+  assert(warnings.warn.some((line) => /invalid expand "window"/.test(line)), 'a host value outside popout, center and none is refused with a warning');
+  assert(!bad.q('.osa-expand-btn').hidden, "and the community's own value still applies");
+
+  // As for the launcher keys: undefined is not a value, so it is dropped without a warning and
+  // the community's value stands; null puts the setting back to the pop-out default, over the
+  // community's center.
+  const unset = await load({ widget: { expand: 'center' } });
+  const quiet = listen();
+  unset.api.setConfig({ expand: undefined });
+  quiet.stop();
+  await unset.boot();
+  unset.api.open();
+  assert(!quiet.warn.some((line) => /expand/.test(line)), 'expand: undefined is dropped without a warning');
+  assert(!unset.q('.osa-expand-btn').hidden, "and the community's own value still applies");
+
+  const reset = await load({ widget: { expand: 'center' } });
+  reset.api.setConfig({ expand: null });
+  await reset.boot();
+  reset.api.open();
+  assert(!reset.q('.osa-popout-btn').hidden && reset.q('.osa-expand-btn').hidden, "expand: null puts it back to the pop-out default, over the community's center");
+
+  const wrong = await load({ widget: { expand: 'sideways' } });
+  const heardWrong = listen();
+  await wrong.boot();
+  heardWrong.stop();
+  wrong.api.open();
+  assert(heardWrong.warn.some((line) => /invalid expand from the community config "sideways"/.test(line)), 'a community value outside them warns');
+  assert(!wrong.q('.osa-popout-btn').hidden && wrong.q('.osa-expand-btn').hidden, 'and the pop-out default stays');
+
+  // Escape after Expand docks, as it does any dialog, and the page hears it.
+  const esc = await start({ widget: { expand: 'center' } });
+  esc.api.open();
+  const escHeard = record(esc);
+  esc.q('.osa-expand-btn').click();
+  const escape = key(esc, 'Escape');
+  active(esc).dispatchEvent(escape);
+  assert(esc.isOpen() && !esc.isCenter(), 'Escape after Expand docks to the corner');
+  assertEqual(escHeard.events, [['modechange', { mode: 'center' }], ['modechange', { mode: 'corner' }]], 'with modechange center, then corner');
+  escHeard.stop();
+
+  // Expand with History open: the sheet goes into the dialog with the focus in it, not
+  // on the field behind it, which is inert, nor on the Expand button the dialog hides.
+  const hist = await start({ widget: { expand: 'center' } });
+  hist.api.open();
+  await typeAndSend(hist, 'A question for History');
+  hist.q('.osa-history-btn').click();
+  assert(hist.q('.osa-history-sheet').classList.contains('open'), 'sanity: History is open in the corner');
+  hist.q('.osa-expand-btn').focus();
+  hist.q('.osa-expand-btn').click();
+  assert(hist.isCenter() && hist.q('.osa-history-sheet').classList.contains('open'), 'Expand keeps History open, now in the dialog');
+  assert(hist.q('.osa-history-sheet').contains(active(hist)), 'and the focus is in the History sheet');
+  const histEscape = key(hist, 'Escape');
+  active(hist).dispatchEvent(histEscape);
+  assert(!hist.q('.osa-history-sheet').classList.contains('open') && hist.isCenter(), 'the first Escape closes History, and the dialog stays');
+
+  // A capsule on its notebook tab expands onto the notebook tab, as setMode('center') does.
+  const nb = await onNotebook({ widget: { launcher: 'capsule', center_start: CENTER_START, expand: 'center' } });
+  assertEqual(nb.tab(), 'notebook', 'sanity: the corner is on the notebook tab');
+  assert(!nb.q('.osa-expand-btn').hidden, 'Expand is there on the notebook tab');
+  nb.q('.osa-expand-btn').click();
+  assert(nb.isCenter() && nb.tab() === 'notebook', 'Expand opens the dialog on the notebook tab');
+  assertEqual(nb.tabButton('notebook').getAttribute('aria-selected'), 'true', 'with the Notebook tab selected');
+  assertEqual(active(nb), nb.tabButton('notebook'), 'and the focus on it');
+
+  const popout = await load({ popout: true, widget: { expand: 'center' } });
+  await popout.boot();
+  assert(popout.q('.osa-popout-btn').hidden && popout.q('.osa-expand-btn').hidden, 'a pop-out window shows neither: it is the expanded view');
+}
+
+console.log('\nThe dialog\'s New chat: a fresh conversation, the one on screen kept in History (#759)');
+{
+  const ctx = await start();
+  ctx.api.open({ mode: 'center' });
+  const newBtn = () => ctx.q('.osa-center-new-btn');
+  const actions = [...ctx.q('.osa-header-actions').children].filter((el) => el.tagName === 'BUTTON');
+  assert(actions.indexOf(newBtn()) === actions.indexOf(ctx.q('.osa-history-btn')) - 1, 'New chat is the pill just before History');
+  assertEqual([newBtn().getAttribute('aria-label'), text(newBtn())], ['New chat', 'New chat'], 'named and labelled New chat');
+  assert(newBtn().disabled, 'disabled while the conversation is empty');
+  assert(ctx.window.getComputedStyle(newBtn()).display !== 'none', 'drawn in the dialog');
+  assertEqual(ctx.window.getComputedStyle(newBtn()).opacity, '0.4', 'and dimmed while disabled, over the dialog\'s own opacity');
+
+  const release = ctx.hold();
+  ctx.q('.osa-center-input').value = 'What is the sampling rate?';
+  ctx.q('.osa-center-send').click();
+  await waitUntil(() => ctx.sent.length === 1, 'the question is in flight');
+  assert(newBtn().disabled, 'and while a reply is loading');
+  release();
+  await answered(ctx);
+  assert(!newBtn().disabled, 'enabled once the conversation has a reply');
+  assertEqual(ctx.window.getComputedStyle(newBtn()).opacity, '1', 'at full strength');
+
+  const before = ctx.stored();
+  const firstId = before.activeId;
+  const said = (list) => JSON.stringify(list.map((m) => [m.role, m.content]));
+  const firstMessages = said(before.conversations.find((c) => c.id === firstId).messages);
+  const session = ctx.hooks.getSessionId();
+  const heard = record(ctx);
+  newBtn().click();
+  const after = ctx.stored();
+  assert(after.activeId !== firstId, 'it starts a new conversation');
+  assertEqual(said((after.conversations.find((c) => c.id === firstId) || { messages: [] }).messages), firstMessages, 'and the one on screen is kept in History, with what was said');
+  assert(ctx.hooks.getSessionId() !== session, 'with a new session');
+  assert(ctx.isCenter() && ctx.win().classList.contains('osa-center-empty'), 'the dialog stays, on its start screen');
+  assertEqual(active(ctx), ctx.q('.osa-center-input'), 'with the focus in the start screen\'s field');
+  assert(newBtn().disabled, 'and New chat disabled again, the new conversation being empty');
+  assertEqual(heard.events, [], 'the page hears nothing: no mode change, no send');
+  heard.stop();
+
+  // History's own New chat, in the dialog, lands on the start screen's field too.
+  ctx.q('.osa-center-input').value = 'A second question';
+  ctx.q('.osa-center-send').click();
+  await answered(ctx, 2);
+  ctx.q('.osa-history-btn').click();
+  ctx.q('.osa-history-new').click();
+  assert(!ctx.q('.osa-history-sheet').classList.contains('open') && ctx.win().classList.contains('osa-center-empty'), 'History\'s New chat starts one as well');
+  assertEqual(active(ctx), ctx.q('.osa-center-input'), 'with the focus in the start screen\'s field, not the hidden chat field');
+
+  ctx.api.setMode('corner');
+  assertEqual(ctx.window.getComputedStyle(newBtn()).display, 'none', 'the corner does not draw it: Clear chat is the corner\'s');
+
+  const nb = await onNotebook();
+  nb.api.setMode('center');
+  assertEqual(nb.tab(), 'notebook', 'sanity: the dialog on the notebook tab');
+  assertEqual(nb.window.getComputedStyle(nb.q('.osa-center-new-btn')).visibility, 'hidden', 'on the notebook tab it is hidden, with History');
+  assert(!nb.api.__center.focusables(nb.win()).includes(nb.q('.osa-center-new-btn')), 'and out of the Tab order');
+  nb.tabButton('chat').click();
+  assert(nb.window.getComputedStyle(nb.q('.osa-center-new-btn')).visibility !== 'hidden', 'back on the Chat tab it shows again');
+}
+
+console.log('\nNew chat follows every path that changes the conversation, and Clear chat keeps the focus (#759)');
+{
+  const ctx = await start();
+  const newBtn = () => ctx.q('.osa-center-new-btn');
+  ctx.api.open({ mode: 'center' });
+  await typeAndSend(ctx, 'A first question');
+  const firstId = ctx.stored().activeId;
+  newBtn().click();
+  assert(newBtn().disabled, 'sanity: disabled on the new, empty conversation');
+  ctx.q('.osa-history-btn').click();
+  const row = ctx.qa('.osa-history-row').find((r) => r.getAttribute('data-id') === firstId);
+  assert(!!row, 'sanity: History lists the first conversation');
+  row.querySelector('.osa-history-open').click();
+  assertEqual(ctx.stored().activeId, firstId, 'History opens the first conversation');
+  assert(!newBtn().disabled, 'and New chat is enabled again');
+
+  const seeded = await start();
+  seeded.api.seed('**AI overview** for "a search"', { mode: 'center' });
+  assert(!seeded.q('.osa-center-new-btn').disabled, 'a seeded opening reply enables it');
+
+  const corner = await start();
+  corner.api.open();
+  await typeAndSend(corner, 'A question in the corner');
+  corner.q('.osa-reset-btn').focus();
+  corner.q('.osa-reset-btn').click();
+  assert(corner.q('.osa-reset-btn').disabled, 'Clear chat empties the chat and disables itself');
+  assertEqual(active(corner), corner.q('.osa-chat-input input'), 'and the focus it had goes to the chat field, not to nothing');
+  corner.api.setMode('center');
+  assert(corner.q('.osa-center-new-btn').disabled, 'raised after Clear chat, the dialog\'s New chat is disabled');
+
+  const full = await start();
+  full.api.open();
+  await typeAndSend(full, 'A question before raising');
+  full.api.setMode('center');
+  assert(!full.q('.osa-center-new-btn').disabled, 'raised with a conversation, it is enabled');
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`${passed} passed, ${failed} failed`);
 console.log('='.repeat(60));

@@ -343,6 +343,18 @@ console.log('\na later setConfig does not reach an open pop-out');
   assert(popup.__OSA_CHAT_CONFIG__.title !== 'A title set later', 'and its preset is unchanged');
 }
 
+console.log('\na host that moves expand off the pop-out closes a pop-out already open');
+{
+  // The window and the center-stage dialog would otherwise show one conversation.
+  const page = await hostPage();
+  const { popup } = await openPopout(page);
+  page.api.setConfig({ expand: 'popout' });
+  assert(!popup.closed, 'setting expand to the value it has leaves the pop-out open');
+  page.api.setConfig({ expand: 'center' });
+  assert(popup.closed, 'moving expand to center closes the pop-out');
+  assert(!page.q('.osa-expand-btn').hidden && page.q('.osa-popout-btn').hidden, 'and the corner header now shows Expand');
+}
+
 console.log('\n... and one whose widget has not started yet');
 {
   // happy-dom runs the pop-out's script as soon as it is added, and the widget

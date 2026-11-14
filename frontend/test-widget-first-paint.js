@@ -509,6 +509,32 @@ console.log('\nthe pop-out keeps its host\'s scheme over a remembered one');
   assert(!container.classList.contains('osa-launcher-waiting'), 'and it does not wait');
 }
 
+console.log('\na remembered expand is drawn at once, and a fresh config that drops or adds it redraws the header (#756)');
+{
+  const remembered = { [MEMORY_KEY]: JSON.stringify({ apiEndpoint: API, widget: { ...NEMAR_WIDGET, expand: 'center' } }) };
+  const dropped = configFetch(configResponse(NEMAR_WIDGET));
+  const stale = start({ fetch: dropped.fetch, storage: remembered });
+  assert(!stale.q('.osa-expand-btn').hidden && stale.q('.osa-popout-btn').hidden, 'drawn from memory: Expand, and no pop-out button');
+  dropped.release();
+  await waitUntil(() => stale.q('.osa-expand-btn').hidden, 'the fresh config arrives without expand');
+  assert(!stale.q('.osa-popout-btn').hidden, 'expand left out: the pop-out button is back');
+  assertEqual(stale.widget.getConfig().expand, 'popout', 'and the popout default with it');
+
+  const added = configFetch(configResponse({ ...NEMAR_WIDGET, expand: 'none' }));
+  const later = start({ fetch: added.fetch, storage: { [MEMORY_KEY]: JSON.stringify({ apiEndpoint: API, widget: NEMAR_WIDGET }) } });
+  assert(!later.q('.osa-popout-btn').hidden, 'remembered without expand: the pop-out button');
+  added.release();
+  await waitUntil(() => later.q('.osa-popout-btn').hidden, 'the fresh config adds expand: none');
+  assert(later.q('.osa-expand-btn').hidden, 'and neither button shows');
+
+  const own = configFetch(configResponse({ ...NEMAR_WIDGET, expand: 'none', title: 'Fresh title' }));
+  const page = start({ fetch: own.fetch, storage: remembered }, { expand: 'popout' });
+  assert(!page.q('.osa-popout-btn').hidden && page.q('.osa-expand-btn').hidden, "the page's own expand outranks the remembered one");
+  own.release();
+  await waitUntil(() => page.widget.getConfig().title === 'Fresh title', 'the fresh config arrives');
+  assert(!page.q('.osa-popout-btn').hidden && page.q('.osa-expand-btn').hidden, 'and the fresh one');
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 clearTimeout(watchdog);

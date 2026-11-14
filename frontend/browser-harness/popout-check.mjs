@@ -190,7 +190,9 @@ async function check(base, screenshotDir, { liveNotebook = false } = {}) {
   }
   if (screenshotDir) mkdirSync(screenshotDir, { recursive: true });
   const notebookUrl = liveNotebook ? LIVE_NOTEBOOK_URL : `${base}/notebook-stub/`;
-  const query = `?dataset=nm000103&zarr=true&notebookUrl=${encodeURIComponent(notebookUrl)}`;
+  // NEMAR's own config expands to the center-stage dialog (#756); the page chooses the
+  // pop-out, as a host page may, so the pop-out is what this checks.
+  const query = `?dataset=nm000103&zarr=true&notebookUrl=${encodeURIComponent(notebookUrl)}&expand=popout`;
   const profileDir = mkdtempSync(join(tmpdir(), 'osa-popout-check-'));
   let chrome, cdp;
   try {
